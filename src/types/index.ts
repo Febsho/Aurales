@@ -8,6 +8,8 @@ export interface SearchResult {
   overview?: string
   rating?: number
   provider: string
+  imdbId?: string
+  addonUrl?: string
 }
 
 export interface MovieDetails {
@@ -123,12 +125,18 @@ export interface MetadataProvider {
   getEpisode(showId: string, season: number, episode: number): Promise<EpisodeDetails>
 }
 
+export interface StremioAddonResource {
+  name: string
+  types?: string[]
+  idPrefixes?: string[]
+}
+
 export interface StremioAddonManifest {
   id: string
   name: string
   version: string
   description?: string
-  resources: string[]
+  resources: (string | StremioAddonResource)[]
   types: string[]
   catalogs: AddonCatalog[]
   logo?: string
