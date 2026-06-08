@@ -246,8 +246,10 @@ pub fn clear_cache(db: State<Database>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn launch_mpv(url: String, title: Option<String>, start_time: Option<f64>) -> Result<(), String> {
-    let mut args = vec![url];
+pub fn launch_mpv(app: tauri::AppHandle, url: String, title: Option<String>, start_time: Option<f64>) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let mut args: Vec<String> = vec![url];
     if let Some(t) = title {
         args.push(format!("--title={}", t));
     }
@@ -256,9 +258,12 @@ pub fn launch_mpv(url: String, title: Option<String>, start_time: Option<f64>) -
     }
     args.push("--force-window=yes".to_string());
 
-    std::process::Command::new("mpv")
-        .args(&args)
-        .spawn()
-        .map_err(|e| format!("Failed to launch mpv: {}. Make sure mpv is installed and in PATH.", e))?;
+    let shell = app.shell();
+    let sidecar = shell.sidecar("binaries/mpv")
+        .map_err(|e| format!("Failed to create mpv sidecar: {}", e))?
+        .args(&args);
+
+    sidecar.spawn()
+        .map_err(|e| format!("Failed to launch mpv: {}", e))?;
     Ok(())
 }
