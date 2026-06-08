@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
-import type { ShowDetails, SeasonDetails, StreamResult } from '../types'
+import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
-import { getInstalledAddons, getAddonStreams } from '../services/addons'
-import { launchPlayer } from '../services/player'
 import TrailerRow from '../components/TrailerRow'
 import CastRow from '../components/CastRow'
 import MediaRow from '../components/MediaRow'
+import StreamSelector from '../components/StreamSelector'
 
 export default function SeriesDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -15,6 +14,8 @@ export default function SeriesDetailPage() {
   const [selectedSeason, setSelectedSeason] = useState(1)
   const [seasonData, setSeasonData] = useState<SeasonDetails | null>(null)
   const [loading, setLoading] = useState(true)
+  const [streamOpen, setStreamOpen] = useState(false)
+  const [streamEpisode, setStreamEpisode] = useState<{ season: number; episode: number } | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -62,23 +63,9 @@ export default function SeriesDetailPage() {
     )
   }
 
-  const handlePlayEpisode = async (seasonNum: number, episodeNum: number) => {
-    const addons = getInstalledAddons()
-    for (const addon of addons) {
-      if (addon.manifest.resources.includes('stream')) {
-        try {
-          const streams = await getAddonStreams(addon.url, 'series', `${id}:${seasonNum}:${episodeNum}`)
-          if (streams.length > 0 && streams[0].url) {
-            launchPlayer({
-              url: streams[0].url,
-              title: `${show.title} S${seasonNum}E${episodeNum}`,
-            })
-            return
-          }
-        } catch { /* skip */ }
-      }
-    }
-    console.log(`Play S${seasonNum}E${episodeNum} — no stream found`)
+  const handlePlayEpisode = (seasonNum: number, episodeNum: number) => {
+    setStreamEpisode({ season: seasonNum, episode: episodeNum })
+    setStreamOpen(true)
   }
 
   return (
@@ -182,6 +169,15 @@ export default function SeriesDetailPage() {
           </div>
         )}
       </div>
+
+      <StreamSelector
+        open={streamOpen}
+        onClose={() => { setStreamOpen(false); setStreamEpisode(null) }}
+        mediaType="series"
+        mediaId={show.imdbId || id || ''}
+        title={show.title}
+        seasonEpisode={streamEpisode || undefined}
+      />
 
       <TrailerRow title="Videos & Trailers" videos={show.trailers} />
       <CastRow cast={show.cast} />

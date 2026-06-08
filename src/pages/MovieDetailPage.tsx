@@ -1,19 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
-import type { MovieDetails, StreamResult } from '../types'
+import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
-import { getInstalledAddons, getAddonStreams } from '../services/addons'
-import { launchPlayer } from '../services/player'
 import TrailerRow from '../components/TrailerRow'
 import CastRow from '../components/CastRow'
 import MediaRow from '../components/MediaRow'
+import StreamSelector from '../components/StreamSelector'
 
 export default function MovieDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [movie, setMovie] = useState<MovieDetails | null>(null)
-  const [streams, setStreams] = useState<StreamResult[]>([])
   const [loading, setLoading] = useState(true)
+  const [streamOpen, setStreamOpen] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -28,18 +27,6 @@ export default function MovieDetailPage() {
       } catch {
         setMovie({ ...MOCK_HERO_MOVIE, id: id || 'mock-1' })
       }
-
-      const addons = getInstalledAddons()
-      const streamResults: StreamResult[] = []
-      for (const addon of addons) {
-        if (addon.manifest.resources.includes('stream')) {
-          try {
-            const s = await getAddonStreams(addon.url, 'movie', id || '')
-            streamResults.push(...s)
-          } catch { /* skip */ }
-        }
-      }
-      setStreams(streamResults)
       setLoading(false)
     }
     load()
@@ -51,13 +38,6 @@ export default function MovieDetailPage() {
         <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
       </div>
     )
-  }
-
-  const handlePlay = (stream?: StreamResult) => {
-    const url = stream?.url || streams[0]?.url
-    if (url) {
-      launchPlayer({ url, title: movie.title })
-    }
   }
 
   return (
@@ -101,7 +81,7 @@ export default function MovieDetailPage() {
 
             <div className="flex items-center gap-3">
               <button
-                onClick={() => handlePlay()}
+                onClick={() => setStreamOpen(true)}
                 className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-black font-semibold rounded-xl transition-all duration-200 hover:scale-105 active:scale-95"
               >
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -114,28 +94,13 @@ export default function MovieDetailPage() {
         </div>
       </div>
 
-      {streams.length > 0 && (
-        <div className="px-6 mb-8">
-          <h2 className="text-lg font-semibold mb-3">Available Streams</h2>
-          <div className="space-y-2">
-            {streams.map((stream, i) => (
-              <button
-                key={i}
-                onClick={() => handlePlay(stream)}
-                className="w-full flex items-center justify-between p-3 bg-surface-elevated hover:bg-surface-hover rounded-xl transition-colors text-left"
-              >
-                <div>
-                  <div className="text-sm font-medium">{stream.name || stream.title || `Stream ${i + 1}`}</div>
-                  {stream.url && <div className="text-xs text-muted truncate max-w-md">{stream.url}</div>}
-                </div>
-                <svg className="w-5 h-5 text-accent" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <StreamSelector
+        open={streamOpen}
+        onClose={() => setStreamOpen(false)}
+        mediaType="movie"
+        mediaId={movie.imdbId || id || ''}
+        title={movie.title}
+      />
 
       <TrailerRow title="Videos & Trailers" videos={movie.trailers} />
       <CastRow cast={movie.cast} />
