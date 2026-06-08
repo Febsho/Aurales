@@ -1,36 +1,142 @@
 import { useState, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useLocation } from 'react-router-dom'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
+import { getAddonMeta, getMetaAddons } from '../services/addons'
+import { useAppStore } from '../stores/appStore'
 import TrailerRow from '../components/TrailerRow'
 import CastRow from '../components/CastRow'
 import MediaRow from '../components/MediaRow'
 import StreamSelector from '../components/StreamSelector'
 
+interface LocationState {
+  poster?: string
+  backdrop?: string
+  title?: string
+  year?: number
+  rating?: number
+  overview?: string
+  imdbId?: string
+  addonUrl?: string
+  provider?: string
+}
+
+function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetails {
+  const genres = Array.isArray(meta.genres) ? meta.genres as string[] :
+    (typeof meta.genre === 'string' ? (meta.genre as string).split(',').map(g => g.trim()) :
+    (Array.isArray(meta.genre) ? meta.genre as string[] : []))
+
+  return {
+    id,
+    title: (meta.name || meta.title || 'Unknown') as string,
+    originalTitle: meta.originalTitle as string | undefined,
+    year: meta.releaseInfo ? parseInt(String(meta.releaseInfo)) : (meta.year ? Number(meta.year) : undefined),
+    releaseDate: meta.released as string | undefined,
+    overview: (meta.description || meta.overview) as string | undefined,
+    tagline: meta.tagline as string | undefined,
+    runtime: meta.runtime ? parseInt(String(meta.runtime)) : undefined,
+    rating: meta.imdbRating ? parseFloat(String(meta.imdbRating)) : undefined,
+    voteCount: meta.imdbVotes ? parseInt(String(meta.imdbVotes).replace(/,/g, '')) : undefined,
+    genres,
+    poster: meta.poster as string | undefined,
+    backdrop: (meta.background || meta.banner) as string | undefined,
+    logo: meta.logo as string | undefined,
+    certification: meta.certification as string | undefined,
+    cast: Array.isArray(meta.cast) ? (meta.cast as string[]).map((name, i) => ({
+      id: `cast-${i}`, name, character: '', profilePath: undefined,
+    })) : [],
+    crew: [],
+    recommendations: [],
+    trailers: Array.isArray(meta.trailers) ? (meta.trailers as Record<string, string>[]).map((t, i) => ({
+      id: `trailer-${i}`, name: t.title || `Trailer ${i + 1}`,
+      key: t.source || '', site: t.type || 'YouTube', type: 'Trailer',
+    })) : [],
+    imdbId: (meta.imdb_id || meta.imdbId || (typeof meta.id === 'string' && (meta.id as string).startsWith('tt') ? meta.id : undefined)) as string | undefined,
+  }
+}
+
 export default function MovieDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const location = useLocation()
+  const state = (location.state || {}) as LocationState
   const [movie, setMovie] = useState<MovieDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [streamOpen, setStreamOpen] = useState(false)
+  const addons = useAppStore((s) => s.addons)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
-      try {
-        if (id?.startsWith('tmdb-')) {
+
+      // Try TMDB first if it's a TMDB ID
+      if (id?.startsWith('tmdb-')) {
+        try {
           const data = await tmdbProvider.getMovie(id)
           setMovie(data)
-        } else {
-          setMovie({ ...MOCK_HERO_MOVIE, id: id || 'mock-1' })
-        }
-      } catch {
-        setMovie({ ...MOCK_HERO_MOVIE, id: id || 'mock-1' })
+          setLoading(false)
+          return
+        } catch { /* fall through */ }
       }
+
+      // Try addon meta if we have addon context or the ID looks like IMDB
+      if (state.addonUrl || id?.startsWith('tt') || state.provider === 'addon') {
+        const addonUrl = state.addonUrl
+        if (addonUrl) {
+          try {
+            const meta = await getAddonMeta(addonUrl, 'movie', id || '')
+            if (meta) {
+              setMovie(addonMetaToMovie(meta, id || ''))
+              setLoading(false)
+              return
+            }
+          } catch { /* fall through */ }
+        }
+
+        // Try all meta addons
+        const metaAddons = getMetaAddons('movie')
+        const storeMetaAddons = addons.filter((a) => a.enabled)
+        const allMeta = metaAddons.length > 0 ? metaAddons : storeMetaAddons
+
+        for (const addon of allMeta) {
+          try {
+            const meta = await getAddonMeta(addon.url, 'movie', id || '')
+            if (meta) {
+              setMovie(addonMetaToMovie(meta, id || ''))
+              setLoading(false)
+              return
+            }
+          } catch { /* continue */ }
+        }
+      }
+
+      // Build from route state if we have it
+      if (state.title) {
+        setMovie({
+          id: id || 'unknown',
+          title: state.title,
+          year: state.year,
+          overview: state.overview,
+          rating: state.rating,
+          poster: state.poster,
+          backdrop: state.backdrop,
+          imdbId: state.imdbId,
+          genres: [],
+          cast: [],
+          crew: [],
+          recommendations: [],
+          trailers: [],
+        })
+        setLoading(false)
+        return
+      }
+
+      // Mock fallback
+      setMovie({ ...MOCK_HERO_MOVIE, id: id || 'mock-1' })
       setLoading(false)
     }
     load()
-  }, [id])
+  }, [id, state.addonUrl, state.provider, state.title, addons])
 
   if (loading || !movie) {
     return (
@@ -39,6 +145,8 @@ export default function MovieDetailPage() {
       </div>
     )
   }
+
+  const streamId = movie.imdbId || id || ''
 
   return (
     <div className="pb-12">
@@ -98,12 +206,12 @@ export default function MovieDetailPage() {
         open={streamOpen}
         onClose={() => setStreamOpen(false)}
         mediaType="movie"
-        mediaId={movie.imdbId || id || ''}
+        mediaId={streamId}
         title={movie.title}
       />
 
-      <TrailerRow title="Videos & Trailers" videos={movie.trailers} />
-      <CastRow cast={movie.cast} />
+      {movie.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={movie.trailers} />}
+      {movie.cast.length > 0 && <CastRow cast={movie.cast} />}
 
       {movie.recommendations.length > 0 && (
         <MediaRow title="More Like This" items={movie.recommendations} layout="poster" />

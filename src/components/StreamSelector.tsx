@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { StreamResult } from '../types'
 import { useAppStore } from '../stores/appStore'
-import { getAddonStreams, getInstalledAddons } from '../services/addons'
+import { getAddonStreams, getInstalledAddons, getStreamAddons } from '../services/addons'
 import { launchPlayer } from '../services/player'
 
 interface AddonStream extends StreamResult {
@@ -24,32 +24,42 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const addons = useAppStore((s) => s.addons)
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !mediaId) return
     setStreams([])
     setLoading(true)
-
-    const installed = getInstalledAddons()
-    const storeAddons = addons.filter((a) => a.enabled)
-    const allAddons = installed.length > 0 ? installed : storeAddons
 
     const streamId = seasonEpisode
       ? `${mediaId}:${seasonEpisode.season}:${seasonEpisode.episode}`
       : mediaId
 
-    const fetches = allAddons
-      .filter((a) => a.manifest.resources.includes('stream'))
-      .map(async (addon) => {
-        try {
-          const results = await getAddonStreams(addon.url, mediaType, streamId)
-          return results.map((s) => ({
-            ...s,
-            addonName: addon.manifest.name,
-            addonId: addon.manifest.id,
-          }))
-        } catch {
-          return []
-        }
-      })
+    // Merge installed addons (in-memory map) with store addons
+    const installedStream = getStreamAddons(mediaType)
+    const storeStream = addons.filter((a) => a.enabled)
+
+    const seenUrls = new Set<string>()
+    const allAddons = [...installedStream]
+    for (const a of allAddons) seenUrls.add(a.url)
+    for (const a of storeStream) {
+      if (!seenUrls.has(a.url)) allAddons.push(a)
+    }
+
+    if (allAddons.length === 0) {
+      setLoading(false)
+      return
+    }
+
+    const fetches = allAddons.map(async (addon) => {
+      try {
+        const results = await getAddonStreams(addon.url, mediaType, streamId)
+        return results.map((s) => ({
+          ...s,
+          addonName: addon.manifest.name,
+          addonId: addon.manifest.id,
+        }))
+      } catch {
+        return []
+      }
+    })
 
     Promise.all(fetches).then((results) => {
       setStreams(results.flat())
@@ -81,6 +91,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           <div>
             <h2 className="text-base font-semibold">Select Stream</h2>
             <p className="text-xs text-muted truncate max-w-sm">{displayTitle}</p>
+            {mediaId && (
+              <p className="text-[10px] text-muted/50 font-mono mt-0.5">{mediaId}</p>
+            )}
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-hover transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -100,7 +113,11 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           {!loading && streams.length === 0 && (
             <div className="text-center py-12">
               <p className="text-sm text-muted mb-1">No streams found</p>
-              <p className="text-xs text-muted">Install addons with stream support in Settings</p>
+              <p className="text-xs text-muted">
+                {addons.length === 0
+                  ? 'Install stream addons in Settings first'
+                  : 'None of your addons returned streams for this title'}
+              </p>
             </div>
           )}
 
@@ -119,12 +136,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                 <div className="text-sm font-medium truncate">
                   {stream.name || stream.title || `Stream ${i + 1}`}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-muted">
+                <div className="flex items-center gap-2 text-xs text-muted flex-wrap">
                   <span className="px-1.5 py-0.5 bg-white/5 rounded text-[10px]">{stream.addonName}</span>
-                  {stream.infoHash && <span>Torrent</span>}
-                  {stream.behaviorHints?.bingeGroup != null && (
-                    <span>{String(stream.behaviorHints.bingeGroup as string)}</span>
-                  )}
+                  {stream.infoHash && <span className="px-1.5 py-0.5 bg-purple-500/10 text-purple-300 rounded text-[10px]">Torrent</span>}
                 </div>
               </div>
               <svg className="w-4 h-4 text-muted group-hover:text-accent transition-colors flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
