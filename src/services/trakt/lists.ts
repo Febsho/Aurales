@@ -1,0 +1,54 @@
+import { traktFetch } from './auth'
+
+export interface TraktList {
+  name: string
+  description: string
+  privacy: string
+  displayNumbers: boolean
+  allowComments: boolean
+  sortBy: string
+  sortHow: string
+  createdAt: string
+  updatedAt: string
+  itemCount: number
+  commentCount: number
+  likes: number
+  ids: { trakt: number; slug: string }
+}
+
+export async function getUserLists(): Promise<TraktList[]> {
+  const data = await traktFetch('/users/me/lists') as Record<string, unknown>[]
+  return data.map((l) => ({
+    name: l.name as string,
+    description: l.description as string,
+    privacy: l.privacy as string,
+    displayNumbers: l.display_numbers as boolean,
+    allowComments: l.allow_comments as boolean,
+    sortBy: l.sort_by as string,
+    sortHow: l.sort_how as string,
+    createdAt: l.created_at as string,
+    updatedAt: l.updated_at as string,
+    itemCount: l.item_count as number,
+    commentCount: l.comment_count as number,
+    likes: l.likes as number,
+    ids: l.ids as { trakt: number; slug: string },
+  }))
+}
+
+export async function getListItems(listId: string): Promise<unknown[]> {
+  return await traktFetch(`/users/me/lists/${listId}/items`) as unknown[]
+}
+
+export async function addToWatchlist(items: { movies?: unknown[]; shows?: unknown[] }): Promise<void> {
+  await traktFetch('/sync/watchlist', {
+    method: 'POST',
+    body: JSON.stringify(items),
+  })
+}
+
+export async function removeFromWatchlist(items: { movies?: unknown[]; shows?: unknown[] }): Promise<void> {
+  await traktFetch('/sync/watchlist/remove', {
+    method: 'POST',
+    body: JSON.stringify(items),
+  })
+}
