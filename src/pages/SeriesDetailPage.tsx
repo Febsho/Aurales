@@ -1,59 +1,236 @@
 import { useState, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useLocation } from 'react-router-dom'
 import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
+import { getAddonMeta, getMetaAddons } from '../services/addons'
+import { useAppStore } from '../stores/appStore'
 import TrailerRow from '../components/TrailerRow'
 import CastRow from '../components/CastRow'
 import MediaRow from '../components/MediaRow'
 import StreamSelector from '../components/StreamSelector'
 
+interface LocationState {
+  poster?: string
+  backdrop?: string
+  title?: string
+  year?: number
+  rating?: number
+  overview?: string
+  imdbId?: string
+  addonUrl?: string
+  provider?: string
+}
+
+function addonMetaToShow(meta: Record<string, unknown>, id: string): ShowDetails {
+  const genres = Array.isArray(meta.genres) ? meta.genres as string[] :
+    (typeof meta.genre === 'string' ? (meta.genre as string).split(',').map(g => g.trim()) :
+    (Array.isArray(meta.genre) ? meta.genre as string[] : []))
+
+  const videos = Array.isArray(meta.videos) ? meta.videos as Record<string, unknown>[] : []
+  const seasons: { seasonNumber: number; name: string; episodeCount: number }[] = []
+
+  if (Array.isArray(meta.videos)) {
+    const seasonNums = new Set<number>()
+    for (const v of videos) {
+      const s = Number(v.season)
+      if (!isNaN(s) && s > 0) seasonNums.add(s)
+    }
+    for (const num of Array.from(seasonNums).sort((a, b) => a - b)) {
+      const eps = videos.filter(v => Number(v.season) === num)
+      seasons.push({ seasonNumber: num, name: `Season ${num}`, episodeCount: eps.length })
+    }
+  }
+
+  if (seasons.length === 0) {
+    const numSeasons = meta.seasons ? Number(meta.seasons) : (meta.numberOfSeasons ? Number(meta.numberOfSeasons) : 1)
+    for (let i = 1; i <= numSeasons; i++) {
+      seasons.push({ seasonNumber: i, name: `Season ${i}`, episodeCount: 0 })
+    }
+  }
+
+  return {
+    id,
+    title: (meta.name || meta.title || 'Unknown') as string,
+    year: meta.releaseInfo ? parseInt(String(meta.releaseInfo)) : (meta.year ? Number(meta.year) : undefined),
+    overview: (meta.description || meta.overview) as string | undefined,
+    rating: meta.imdbRating ? parseFloat(String(meta.imdbRating)) : undefined,
+    voteCount: meta.imdbVotes ? parseInt(String(meta.imdbVotes).replace(/,/g, '')) : undefined,
+    genres,
+    poster: meta.poster as string | undefined,
+    backdrop: (meta.background || meta.banner) as string | undefined,
+    logo: meta.logo as string | undefined,
+    certification: meta.certification as string | undefined,
+    status: meta.status as string | undefined,
+    numberOfSeasons: seasons.length,
+    numberOfEpisodes: meta.episodes ? Number(meta.episodes) : undefined,
+    seasons,
+    cast: Array.isArray(meta.cast) ? (meta.cast as string[]).map((name, i) => ({
+      id: `cast-${i}`, name, character: '', profilePath: undefined,
+    })) : [],
+    crew: [],
+    recommendations: [],
+    trailers: Array.isArray(meta.trailers) ? (meta.trailers as Record<string, string>[]).map((t, i) => ({
+      id: `trailer-${i}`, name: t.title || `Trailer ${i + 1}`,
+      key: t.source || '', site: t.type || 'YouTube', type: 'Trailer',
+    })) : [],
+    imdbId: (meta.imdb_id || meta.imdbId || (typeof meta.id === 'string' && (meta.id as string).startsWith('tt') ? meta.id : undefined)) as string | undefined,
+  }
+}
+
+function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number): SeasonDetails {
+  const videos = Array.isArray(meta.videos) ? meta.videos as Record<string, unknown>[] : []
+  const seasonEps = videos
+    .filter(v => Number(v.season) === seasonNum)
+    .sort((a, b) => Number(a.episode) - Number(b.episode))
+
+  return {
+    seasonNumber: seasonNum,
+    name: `Season ${seasonNum}`,
+    episodes: seasonEps.map((ep) => ({
+      id: `${seasonNum}-${ep.episode}`,
+      episodeNumber: Number(ep.episode) || 0,
+      seasonNumber: seasonNum,
+      name: (ep.name || ep.title || `Episode ${ep.episode}`) as string,
+      overview: (ep.description || ep.overview) as string | undefined,
+      airDate: ep.released as string | undefined,
+      runtime: ep.runtime ? parseInt(String(ep.runtime)) : undefined,
+      still: (ep.thumbnail || ep.still) as string | undefined,
+    })),
+  }
+}
+
 export default function SeriesDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const location = useLocation()
+  const state = (location.state || {}) as LocationState
   const [show, setShow] = useState<ShowDetails | null>(null)
+  const [addonMeta, setAddonMeta] = useState<Record<string, unknown> | null>(null)
   const [selectedSeason, setSelectedSeason] = useState(1)
   const [seasonData, setSeasonData] = useState<SeasonDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [streamOpen, setStreamOpen] = useState(false)
   const [streamEpisode, setStreamEpisode] = useState<{ season: number; episode: number } | null>(null)
+  const addons = useAppStore((s) => s.addons)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
-      try {
-        if (id?.startsWith('tmdb-')) {
+      setAddonMeta(null)
+
+      // Try TMDB
+      if (id?.startsWith('tmdb-')) {
+        try {
           const data = await tmdbProvider.getShow(id)
           setShow(data)
-          if (data.seasons.length > 0) {
-            setSelectedSeason(data.seasons[0].seasonNumber)
-          }
-        } else {
-          setShow({ ...MOCK_SHOW, id: id || 'mock-show-1' })
-        }
-      } catch {
-        setShow({ ...MOCK_SHOW, id: id || 'mock-show-1' })
+          if (data.seasons.length > 0) setSelectedSeason(data.seasons[0].seasonNumber)
+          setLoading(false)
+          return
+        } catch { /* fall through */ }
       }
+
+      // Try addon meta
+      if (state.addonUrl || id?.startsWith('tt') || state.provider === 'addon') {
+        const tryAddonMeta = async (addonUrl: string): Promise<boolean> => {
+          try {
+            const meta = await getAddonMeta(addonUrl, 'series', id || '')
+            if (meta) {
+              setAddonMeta(meta)
+              const showData = addonMetaToShow(meta, id || '')
+              setShow(showData)
+              if (showData.seasons.length > 0) setSelectedSeason(showData.seasons[0].seasonNumber)
+              return true
+            }
+          } catch { /* continue */ }
+          return false
+        }
+
+        if (state.addonUrl && await tryAddonMeta(state.addonUrl)) {
+          setLoading(false)
+          return
+        }
+
+        const metaAddons = getMetaAddons('series')
+        const storeAddons = addons.filter((a) => a.enabled)
+        const allMeta = metaAddons.length > 0 ? metaAddons : storeAddons
+
+        for (const addon of allMeta) {
+          if (await tryAddonMeta(addon.url)) {
+            setLoading(false)
+            return
+          }
+        }
+      }
+
+      // Route state fallback
+      if (state.title) {
+        setShow({
+          id: id || 'unknown',
+          title: state.title,
+          year: state.year,
+          overview: state.overview,
+          rating: state.rating,
+          poster: state.poster,
+          backdrop: state.backdrop,
+          imdbId: state.imdbId,
+          genres: [],
+          seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 0 }],
+          cast: [],
+          crew: [],
+          recommendations: [],
+          trailers: [],
+        })
+        setSelectedSeason(1)
+        setLoading(false)
+        return
+      }
+
+      // Mock fallback
+      setShow({ ...MOCK_SHOW, id: id || 'mock-show-1' })
       setLoading(false)
     }
     load()
-  }, [id])
+  }, [id, state.addonUrl, state.provider, state.title, addons])
 
   useEffect(() => {
     async function loadSeason() {
       if (!show || !id) return
-      try {
-        if (id.startsWith('tmdb-')) {
+
+      // If we have addon meta with episodes, use that
+      if (addonMeta && Array.isArray(addonMeta.videos)) {
+        setSeasonData(addonVideosToSeason(addonMeta, selectedSeason))
+        return
+      }
+
+      // TMDB seasons
+      if (id.startsWith('tmdb-')) {
+        try {
           const data = await tmdbProvider.getSeason(id, selectedSeason)
           setSeasonData(data)
-        } else {
-          setSeasonData(MOCK_SEASON)
-        }
-      } catch {
-        setSeasonData(MOCK_SEASON)
+          return
+        } catch { /* fall through */ }
       }
+
+      // Generate placeholder episodes from season info
+      const seasonInfo = show.seasons.find(s => s.seasonNumber === selectedSeason)
+      if (seasonInfo && seasonInfo.episodeCount > 0) {
+        setSeasonData({
+          seasonNumber: selectedSeason,
+          name: seasonInfo.name,
+          episodes: Array.from({ length: seasonInfo.episodeCount }, (_, i) => ({
+            id: `${selectedSeason}-${i + 1}`,
+            episodeNumber: i + 1,
+            seasonNumber: selectedSeason,
+            name: `Episode ${i + 1}`,
+          })),
+        })
+        return
+      }
+
+      setSeasonData(MOCK_SEASON)
     }
     loadSeason()
-  }, [show, id, selectedSeason])
+  }, [show, id, selectedSeason, addonMeta])
 
   if (loading || !show) {
     return (
@@ -67,6 +244,8 @@ export default function SeriesDetailPage() {
     setStreamEpisode({ season: seasonNum, episode: episodeNum })
     setStreamOpen(true)
   }
+
+  const streamId = show.imdbId || id || ''
 
   return (
     <div className="pb-12">
@@ -174,13 +353,13 @@ export default function SeriesDetailPage() {
         open={streamOpen}
         onClose={() => { setStreamOpen(false); setStreamEpisode(null) }}
         mediaType="series"
-        mediaId={show.imdbId || id || ''}
+        mediaId={streamId}
         title={show.title}
         seasonEpisode={streamEpisode || undefined}
       />
 
-      <TrailerRow title="Videos & Trailers" videos={show.trailers} />
-      <CastRow cast={show.cast} />
+      {show.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={show.trailers} />}
+      {show.cast.length > 0 && <CastRow cast={show.cast} />}
 
       {show.recommendations.length > 0 ? (
         <MediaRow title="More Like This" items={show.recommendations} layout="poster" />

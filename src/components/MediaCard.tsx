@@ -10,7 +10,20 @@ export default function MediaCard({ item, layout = 'poster' }: MediaCardProps) {
   const navigate = useNavigate()
 
   const handleClick = () => {
-    navigate(item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`)
+    const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
+    navigate(path, {
+      state: {
+        poster: item.poster,
+        backdrop: item.backdrop,
+        title: item.title,
+        year: item.year,
+        rating: item.rating,
+        overview: item.overview,
+        imdbId: item.imdbId,
+        addonUrl: item.addonUrl,
+        provider: item.provider,
+      },
+    })
   }
 
   if (layout === 'landscape') {

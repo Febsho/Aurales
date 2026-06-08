@@ -9,6 +9,18 @@ export interface InstalledAddon {
 
 const installedAddons: Map<string, InstalledAddon> = new Map()
 
+function addonSupportsResource(manifest: StremioAddonManifest, resourceName: string, type?: string): boolean {
+  return manifest.resources.some((r) => {
+    if (typeof r === 'string') return r === resourceName
+    if (typeof r === 'object' && r !== null) {
+      if (r.name !== resourceName) return false
+      if (type && r.types && !r.types.includes(type)) return false
+      return true
+    }
+    return false
+  })
+}
+
 export async function loadAddonManifest(url: string): Promise<StremioAddonManifest> {
   const manifestUrl = url.endsWith('/manifest.json') ? url : `${url.replace(/\/$/, '')}/manifest.json`
   const res = await fetch(manifestUrl)
@@ -32,13 +44,16 @@ export function getAddonById(addonId: string): InstalledAddon | undefined {
   return installedAddons.get(addonId)
 }
 
+function baseUrl(addonUrl: string): string {
+  return addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
+}
+
 export async function getAddonCatalog(
   addonUrl: string,
   type: string,
   catalogId: string,
   extra?: Record<string, string>
 ): Promise<SearchResult[]> {
-  const baseUrl = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
   let path = `/catalog/${type}/${catalogId}`
   if (extra) {
     const parts = Object.entries(extra).map(([k, v]) => `${k}=${v}`)
@@ -47,19 +62,21 @@ export async function getAddonCatalog(
   path += '.json'
 
   try {
-    const res = await fetch(`${baseUrl}${path}`)
+    const res = await fetch(`${baseUrl(addonUrl)}${path}`)
     if (!res.ok) throw new Error(`Addon catalog error: ${res.status}`)
     const data = await res.json()
     return (data.metas || []).map((m: Record<string, unknown>) => ({
       id: m.id as string,
-      title: m.name as string,
-      type: m.type as 'movie' | 'series',
-      year: m.releaseInfo ? parseInt(String(m.releaseInfo)) : undefined,
-      poster: m.poster as string | undefined,
-      backdrop: m.background as string | undefined,
-      overview: m.description as string | undefined,
+      title: (m.name || m.title || 'Unknown') as string,
+      type: (m.type || type) as 'movie' | 'series',
+      year: m.releaseInfo ? parseInt(String(m.releaseInfo)) : (m.year ? Number(m.year) : undefined),
+      poster: (m.poster || m.posterShape) as string | undefined,
+      backdrop: (m.background || m.banner) as string | undefined,
+      overview: (m.description || m.overview) as string | undefined,
       rating: m.imdbRating ? parseFloat(String(m.imdbRating)) : undefined,
+      imdbId: (m.imdb_id || (typeof m.id === 'string' && (m.id as string).startsWith('tt') ? m.id : undefined)) as string | undefined,
       provider: 'addon',
+      addonUrl: addonUrl,
     }))
   } catch {
     return []
@@ -71,28 +88,11 @@ export async function getAddonStreams(
   type: string,
   id: string
 ): Promise<StreamResult[]> {
-  const baseUrl = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
   try {
-    const res = await fetch(`${baseUrl}/stream/${type}/${id}.json`)
+    const res = await fetch(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`)
     if (!res.ok) return []
     const data = await res.json()
     return (data.streams || []) as StreamResult[]
-  } catch {
-    return []
-  }
-}
-
-export async function getAddonSubtitles(
-  addonUrl: string,
-  type: string,
-  id: string
-): Promise<SubtitleResult[]> {
-  const baseUrl = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
-  try {
-    const res = await fetch(`${baseUrl}/subtitles/${type}/${id}.json`)
-    if (!res.ok) return []
-    const data = await res.json()
-    return (data.subtitles || []) as SubtitleResult[]
   } catch {
     return []
   }
@@ -103,15 +103,41 @@ export async function getAddonMeta(
   type: string,
   id: string
 ): Promise<Record<string, unknown> | null> {
-  const baseUrl = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
   try {
-    const res = await fetch(`${baseUrl}/meta/${type}/${id}.json`)
+    const res = await fetch(`${baseUrl(addonUrl)}/meta/${type}/${encodeURIComponent(id)}.json`)
     if (!res.ok) return null
     const data = await res.json()
     return data.meta || null
   } catch {
     return null
   }
+}
+
+export async function getAddonSubtitles(
+  addonUrl: string,
+  type: string,
+  id: string
+): Promise<SubtitleResult[]> {
+  try {
+    const res = await fetch(`${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.subtitles || []) as SubtitleResult[]
+  } catch {
+    return []
+  }
+}
+
+export function getStreamAddons(type: string): InstalledAddon[] {
+  return Array.from(installedAddons.values()).filter(
+    (a) => a.enabled && addonSupportsResource(a.manifest, 'stream', type)
+  )
+}
+
+export function getMetaAddons(type: string): InstalledAddon[] {
+  return Array.from(installedAddons.values()).filter(
+    (a) => a.enabled && addonSupportsResource(a.manifest, 'meta', type)
+  )
 }
 
 export function getMockAddon(): InstalledAddon {
