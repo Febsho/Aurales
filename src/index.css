@@ -15,7 +15,7 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: var(--color-surface);
+  background: transparent;
   color: white;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow: hidden;
@@ -36,4 +36,19 @@ html, body, #root {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+video::cue {
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.72);
+  font-size: 1.25rem;
+  line-height: 1.35;
+  text-shadow:
+    0 2px 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.9);
+}
+
+select option {
+  background: #050508;
+  color: #ffffff;
 }

@@ -119,6 +119,7 @@ export interface MetadataProvider {
   id: string
   name: string
   search(query: string): Promise<SearchResult[]>
+  recommendationsForText?: (query: string, type: 'movie' | 'series') => Promise<SearchResult[]>
   getMovie(id: string): Promise<MovieDetails>
   getShow(id: string): Promise<ShowDetails>
   getSeason(showId: string, season: number): Promise<SeasonDetails>
@@ -145,7 +146,7 @@ export interface StremioAddonManifest {
 }
 
 export interface AddonCatalog {
-  type: 'movie' | 'series' | 'channel' | 'tv'
+  type: string
   id: string
   name: string
   extra?: AddonCatalogExtra[]
@@ -160,7 +161,12 @@ export interface AddonCatalogExtra {
 export interface StreamResult {
   name?: string
   title?: string
+  description?: string
+  filename?: string
+  subtitles?: SubtitleResult[]
   url?: string
+  externalUrl?: string
+  ytId?: string
   infoHash?: string
   fileIdx?: number
   behaviorHints?: Record<string, unknown>
@@ -177,8 +183,10 @@ export interface HomeRowConfig {
   id: string
   title: string
   addonId?: string
+  addonUrl?: string
   catalogType?: string
   catalogId?: string
+  catalogExtra?: Record<string, string>
   layout: 'poster' | 'landscape' | 'list' | 'continue' | 'hero'
   enabled: boolean
   order: number

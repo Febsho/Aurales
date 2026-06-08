@@ -43,6 +43,11 @@ pub fn run() {
             commands::get_cached_metadata,
             commands::clear_cache,
             commands::launch_mpv,
+            commands::launch_embedded_mpv,
+            commands::mpv_command,
+            commands::mpv_get_property,
+            commands::resize_embedded_mpv,
+            commands::stop_embedded_mpv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

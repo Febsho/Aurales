@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 
@@ -8,6 +9,8 @@ interface MediaCardProps {
 
 export default function MediaCard({ item, layout = 'poster' }: MediaCardProps) {
   const navigate = useNavigate()
+  const [imgError, setImgError] = useState(false)
+  const [backdropError, setBackdropError] = useState(false)
 
   const handleClick = () => {
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
@@ -33,23 +36,25 @@ export default function MediaCard({ item, layout = 'poster' }: MediaCardProps) {
         className="flex-shrink-0 w-72 group cursor-pointer focus:outline-none"
       >
         <div className="relative aspect-video rounded-xl overflow-hidden bg-surface-elevated mb-2">
-          {item.backdrop ? (
+          {item.backdrop && !backdropError ? (
             <img
               src={item.backdrop}
               alt={item.title}
               className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
               loading="lazy"
+              onError={() => setBackdropError(true)}
             />
-          ) : item.poster ? (
+          ) : item.poster && !imgError ? (
             <img
               src={item.poster}
               alt={item.title}
               className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
               loading="lazy"
+              onError={() => setImgError(true)}
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center text-muted">
-              No Image
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
+              <span className="text-2xl font-bold text-muted/30">{item.title?.charAt(0) || '?'}</span>
             </div>
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
@@ -80,16 +85,17 @@ export default function MediaCard({ item, layout = 'poster' }: MediaCardProps) {
       className="flex-shrink-0 w-36 group cursor-pointer focus:outline-none"
     >
       <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-surface-elevated mb-2">
-        {item.poster ? (
+        {item.poster && !imgError ? (
           <img
             src={item.poster}
             alt={item.title}
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
+            onError={() => setImgError(true)}
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-muted text-xs">
-            No Poster
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
+            <span className="text-3xl font-bold text-muted/30">{item.title?.charAt(0) || '?'}</span>
           </div>
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
