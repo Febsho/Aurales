@@ -43,6 +43,30 @@ interface AppState {
   addRecentlyWatched: (item: SearchResult) => void
 }
 
+function loadPersistedAddons(): InstalledAddon[] {
+  try {
+    const raw = localStorage.getItem('orynt_addons')
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return []
+}
+
+function persistAddons(addons: InstalledAddon[]): void {
+  localStorage.setItem('orynt_addons', JSON.stringify(addons))
+}
+
+function loadPersistedHomeRows(): HomeRowConfig[] | null {
+  try {
+    const raw = localStorage.getItem('orynt_home_rows')
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return null
+}
+
+function persistHomeRows(rows: HomeRowConfig[]): void {
+  localStorage.setItem('orynt_home_rows', JSON.stringify(rows))
+}
+
 const DEFAULT_HOME_ROWS: HomeRowConfig[] = [
   { id: 'hero-featured', title: 'Featured', layout: 'hero', enabled: true, order: 0 },
   { id: 'continue-watching', title: 'Continue Watching', layout: 'continue', enabled: true, order: 1 },
@@ -65,24 +89,42 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTraktClientSecret: (key) => { localStorage.setItem('trakt_client_secret', key); set({ traktClientSecret: key }) },
   setTraktConnected: (connected) => set({ traktConnected: connected }),
 
-  addons: [],
-  setAddons: (addons) => set({ addons }),
-  addAddon: (addon) => set((s) => ({ addons: [...s.addons, addon] })),
-  removeAddon: (addonId) => set((s) => ({ addons: s.addons.filter((a) => a.manifest.id !== addonId) })),
+  addons: loadPersistedAddons(),
+  setAddons: (addons) => { persistAddons(addons); set({ addons }) },
+  addAddon: (addon) => set((s) => {
+    const next = [...s.addons, addon]
+    persistAddons(next)
+    return { addons: next }
+  }),
+  removeAddon: (addonId) => set((s) => {
+    const next = s.addons.filter((a) => a.manifest.id !== addonId)
+    persistAddons(next)
+    return { addons: next }
+  }),
 
-  homeRows: DEFAULT_HOME_ROWS,
-  setHomeRows: (rows) => set({ homeRows: rows }),
-  addHomeRow: (row) => set((s) => ({
-    homeRows: [...s.homeRows, { ...row, id: uuid(), order: s.homeRows.length }],
-  })),
-  removeHomeRow: (id) => set((s) => ({
-    homeRows: s.homeRows.filter((r) => r.id !== id),
-  })),
-  updateHomeRow: (id, updates) => set((s) => ({
-    homeRows: s.homeRows.map((r) => r.id === id ? { ...r, ...updates } : r),
-  })),
-  reorderHomeRows: (rows) => set({ homeRows: rows.map((r, i) => ({ ...r, order: i })) }),
-  resetHomeRows: () => set({ homeRows: DEFAULT_HOME_ROWS }),
+  homeRows: loadPersistedHomeRows() || DEFAULT_HOME_ROWS,
+  setHomeRows: (rows) => { persistHomeRows(rows); set({ homeRows: rows }) },
+  addHomeRow: (row) => set((s) => {
+    const next = [...s.homeRows, { ...row, id: uuid(), order: s.homeRows.length }]
+    persistHomeRows(next)
+    return { homeRows: next }
+  }),
+  removeHomeRow: (id) => set((s) => {
+    const next = s.homeRows.filter((r) => r.id !== id)
+    persistHomeRows(next)
+    return { homeRows: next }
+  }),
+  updateHomeRow: (id, updates) => set((s) => {
+    const next = s.homeRows.map((r) => r.id === id ? { ...r, ...updates } : r)
+    persistHomeRows(next)
+    return { homeRows: next }
+  }),
+  reorderHomeRows: (rows) => {
+    const next = rows.map((r, i) => ({ ...r, order: i }))
+    persistHomeRows(next)
+    set({ homeRows: next })
+  },
+  resetHomeRows: () => { persistHomeRows(DEFAULT_HOME_ROWS); set({ homeRows: DEFAULT_HOME_ROWS }) },
 
   watchProgress: new Map(),
   setWatchProgress: (id, progress) => set((s) => {

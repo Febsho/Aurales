@@ -5,19 +5,53 @@ export interface PlaybackRequest {
   title?: string
   startTime?: number
   subtitleUrl?: string
+  viewport?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
 }
 
 export async function launchPlayer(request: PlaybackRequest): Promise<void> {
-  try {
-    await invoke('launch_mpv', {
-      url: request.url,
-      title: request.title || undefined,
-      startTime: request.startTime || undefined,
-    })
-  } catch (e) {
-    console.warn('Tauri invoke failed, trying web fallback:', e)
-    window.open(request.url, '_blank')
-  }
+  await invoke('launch_mpv', {
+    url: request.url,
+    title: request.title || undefined,
+    startTime: request.startTime || undefined,
+  })
+}
+
+export async function launchEmbeddedPlayer(request: PlaybackRequest): Promise<void> {
+  await invoke('launch_embedded_mpv', {
+    url: request.url,
+    title: request.title || undefined,
+    startTime: request.startTime || undefined,
+    x: request.viewport?.x,
+    y: request.viewport?.y,
+    width: request.viewport?.width,
+    height: request.viewport?.height,
+  })
+}
+
+export async function sendPlayerCommand(command: string, args: unknown[] = []): Promise<void> {
+  await invoke('mpv_command', { command, args })
+}
+
+export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest['viewport']>): Promise<void> {
+  await invoke('resize_embedded_mpv', {
+    x: viewport.x,
+    y: viewport.y,
+    width: viewport.width,
+    height: viewport.height,
+  })
+}
+
+export async function stopEmbeddedPlayer(): Promise<void> {
+  await invoke('stop_embedded_mpv')
+}
+
+export async function getPlayerProperty(property: string): Promise<unknown> {
+  return await invoke('mpv_get_property', { property })
 }
 
 export function formatTime(seconds: number): string {

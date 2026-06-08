@@ -1,6 +1,21 @@
 use crate::db::Database;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::{Mutex, OnceLock};
+use tauri::{Manager, State};
+
+struct NativePlayerState {
+    host_hwnd: isize,
+    child: Child,
+    ipc_path: String,
+}
+
+static NATIVE_PLAYER: OnceLock<Mutex<Option<NativePlayerState>>> = OnceLock::new();
+
+fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
+    NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Setting {
@@ -249,21 +264,292 @@ pub fn clear_cache(db: State<Database>) -> Result<(), String> {
 pub fn launch_mpv(app: tauri::AppHandle, url: String, title: Option<String>, start_time: Option<f64>) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let mut args: Vec<String> = vec![url];
+    let mut args: Vec<String> = vec![
+        "--force-window=yes".to_string(),
+        "--fullscreen".to_string(),
+        "--osc=yes".to_string(),
+        "--osd-bar=yes".to_string(),
+        "--input-default-bindings=yes".to_string(),
+        "--no-terminal".to_string(),
+    ];
     if let Some(t) = title {
-        args.push(format!("--title={}", t));
+        args.push(format!("--force-media-title={}", t));
     }
     if let Some(s) = start_time {
         args.push(format!("--start={}", s));
     }
-    args.push("--force-window=yes".to_string());
+    args.push(url);
 
     let shell = app.shell();
-    let sidecar = shell.sidecar("binaries/mpv")
-        .map_err(|e| format!("Failed to create mpv sidecar: {}", e))?
-        .args(&args);
+    if let Ok(sidecar) = shell.sidecar("binaries/mpv") {
+        if sidecar.args(&args).spawn().is_ok() {
+            return Ok(());
+        }
+    }
 
-    sidecar.spawn()
-        .map_err(|e| format!("Failed to launch mpv: {}", e))?;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("mpv.exe"));
+            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
+            candidates.push(dir.join("binaries").join("mpv.exe"));
+            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
+        }
+    }
+    candidates.push(PathBuf::from("src-tauri").join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
+
+    for candidate in candidates {
+        if candidate.exists() {
+            Command::new(&candidate)
+                .args(&args)
+                .spawn()
+                .map_err(|e| format!("Failed to launch mpv at {}: {}", candidate.display(), e))?;
+            return Ok(());
+        }
+    }
+
+    Err("Failed to launch mpv: bundled mpv executable was not found next to Orynt. Reinstall with the NSIS setup exe or copy mpv.exe beside orynt-app.exe.".to_string())
+}
+
+fn mpv_candidates() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("mpv.exe"));
+            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
+            candidates.push(dir.join("binaries").join("mpv.exe"));
+            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
+        }
+    }
+    candidates.push(PathBuf::from("src-tauri").join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
+    candidates
+}
+
+fn find_mpv() -> Option<PathBuf> {
+    mpv_candidates().into_iter().find(|candidate| candidate.exists())
+}
+
+#[tauri::command]
+pub fn launch_embedded_mpv(
+    app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<(), String> {
+    stop_embedded_mpv()?;
+
+    #[cfg(target_os = "windows")]
+    let hwnd = create_main_window_player_host(
+        &app,
+        x.unwrap_or(0),
+        y.unwrap_or(88),
+        width.unwrap_or(1280),
+        height.unwrap_or(720),
+    )?;
+
+    #[cfg(not(target_os = "windows"))]
+    let hwnd: isize = {
+        return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
+    };
+
+    launch_mpv_with_window(hwnd, url, title, start_time)
+}
+
+#[cfg(target_os = "windows")]
+fn create_main_window_player_host(app: &tauri::AppHandle, x: i32, y: i32, width: i32, height: i32) -> Result<isize, String> {
+    use windows::core::w;
+    use std::ptr::null_mut;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, SetForegroundWindow, SetWindowPos, ShowWindow,
+        HWND_TOP, SW_SHOW, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WS_CHILD, WS_CLIPSIBLINGS, WS_VISIBLE,
+    };
+
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main Orynt window was not found.".to_string())?;
+    let parent = main
+        .hwnd()
+        .map_err(|e| format!("Failed to get main window handle: {}", e))?;
+
+    let host = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("Orynt Native Player"),
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            x,
+            y,
+            width,
+            height,
+            Some(parent),
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| format!("Failed to create native player host inside Orynt: {}", e))?
+    };
+
+    if host.0 == null_mut() {
+        return Err("Failed to create native player host inside Orynt.".to_string());
+    }
+
+    unsafe {
+        let _ = SetWindowPos(host, Some(HWND_TOP), 0, 0, width, height, SWP_SHOWWINDOW);
+        let _ = ShowWindow(host, SW_SHOW);
+        let _ = SetForegroundWindow(HWND(parent.0));
+    }
+
+    Ok(host.0 as isize)
+}
+
+fn launch_mpv_with_window(hwnd: isize, url: String, title: Option<String>, start_time: Option<f64>) -> Result<(), String> {
+
+    let mpv = find_mpv().ok_or_else(|| {
+        "Failed to launch embedded mpv: bundled mpv executable was not found. Reinstall with the NSIS setup exe.".to_string()
+    })?;
+
+    let ipc_path = format!(r"\\.\pipe\orynt-mpv-{}", std::process::id());
+    let mut args: Vec<String> = vec![
+        format!("--wid={}", hwnd),
+        "--force-window=immediate".to_string(),
+        "--osc=no".to_string(),
+        "--osd-bar=no".to_string(),
+        "--no-config".to_string(),
+        "--cursor-autohide=1000".to_string(),
+        "--input-default-bindings=yes".to_string(),
+        "--input-builtin-bindings=yes".to_string(),
+        format!("--input-ipc-server={}", ipc_path),
+        "--no-terminal".to_string(),
+        "--keep-open=no".to_string(),
+    ];
+    if let Some(t) = title {
+        args.push(format!("--force-media-title={}", t));
+    }
+    if let Some(s) = start_time {
+        args.push(format!("--start={}", s));
+    }
+    args.push(url);
+
+    let child = Command::new(&mpv)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("Failed to launch embedded mpv at {}: {}", mpv.display(), e))?;
+
+    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+    *state = Some(NativePlayerState { host_hwnd: hwnd, child, ipc_path });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+    use std::io::Write;
+
+    let ipc_path = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        state
+            .as_ref()
+            .map(|player| player.ipc_path.clone())
+            .ok_or_else(|| "No native player is running.".to_string())?
+    };
+
+    let payload = serde_json::json!({
+        "command": std::iter::once(serde_json::Value::String(command))
+            .chain(args.unwrap_or_default())
+            .collect::<Vec<_>>()
+    });
+
+    let mut pipe = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&ipc_path)
+        .map_err(|e| format!("Failed to connect to mpv IPC: {}", e))?;
+    writeln!(pipe, "{}", payload).map_err(|e| format!("Failed to send mpv command: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mpv_get_property(property: String) -> Result<serde_json::Value, String> {
+    use std::io::{Read, Write};
+
+    let ipc_path = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        state
+            .as_ref()
+            .map(|player| player.ipc_path.clone())
+            .ok_or_else(|| "No native player is running.".to_string())?
+    };
+
+    // Open pipe for both read and write (mpv IPC uses PIPE_ACCESS_DUPLEX)
+    let mut pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&ipc_path)
+        .map_err(|e| format!("Failed to open mpv IPC for query: {}", e))?;
+
+    let req_id: u64 = 9001;
+    let cmd = serde_json::json!({
+        "command": ["get_property", property],
+        "request_id": req_id
+    });
+    writeln!(pipe, "{}", cmd).map_err(|e| format!("Failed to write property request: {}", e))?;
+
+    // Give mpv a moment to respond
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let mut buf = vec![0u8; 131072];
+    let n = pipe.read(&mut buf).map_err(|e| format!("Failed to read mpv response: {}", e))?;
+    let text = String::from_utf8_lossy(&buf[..n]);
+
+    for line in text.lines() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            if json.get("request_id").and_then(|v| v.as_u64()) == Some(req_id) {
+                let err = json.get("error").and_then(|v| v.as_str()).unwrap_or("success");
+                if err == "success" {
+                    return Ok(json.get("data").cloned().unwrap_or(serde_json::Value::Null));
+                }
+                return Err(format!("mpv property error: {}", err));
+            }
+        }
+    }
+
+    Err("No matching response received from mpv IPC".to_string())
+}
+
+#[tauri::command]
+pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+    let host_hwnd = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        state
+            .as_ref()
+            .map(|player| player.host_hwnd)
+            .ok_or_else(|| "No native player is running.".to_string())?
+    };
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_SHOWWINDOW};
+        let _ = SetWindowPos(HWND(host_hwnd as _), Some(HWND_TOP), x, y, width, height, SWP_SHOWWINDOW);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_embedded_mpv() -> Result<(), String> {
+    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+    if let Some(mut player) = state.take() {
+        let _ = player.child.kill();
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+            let _ = DestroyWindow(HWND(player.host_hwnd as _));
+        }
+    }
     Ok(())
 }
