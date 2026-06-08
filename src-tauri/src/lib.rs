@@ -1,0 +1,49 @@
+mod commands;
+mod db;
+
+use db::Database;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir");
+
+            let database =
+                Database::new(app_dir).expect("failed to initialize database");
+            app.manage(database);
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_setting,
+            commands::set_setting,
+            commands::get_all_settings,
+            commands::save_watch_progress,
+            commands::get_watch_progress,
+            commands::save_home_rows,
+            commands::get_home_rows,
+            commands::save_addon,
+            commands::remove_addon,
+            commands::get_addons,
+            commands::cache_metadata,
+            commands::get_cached_metadata,
+            commands::clear_cache,
+            commands::launch_mpv,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
