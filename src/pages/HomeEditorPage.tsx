@@ -72,8 +72,10 @@ function SortableRow({ row, onUpdate, onRemove }: {
             {row.title}
           </button>
         )}
-        {row.addonId && (
-          <span className="text-xs text-muted">Addon: {row.addonId}</span>
+        {row.addonId && row.addonId !== 'com.example.mockaddon' && (
+          <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded mt-0.5 inline-block">
+            {row.addonId} / {row.catalogId}
+          </span>
         )}
       </div>
 
@@ -119,7 +121,7 @@ function SortableRow({ row, onUpdate, onRemove }: {
 }
 
 export default function HomeEditorPage() {
-  const { homeRows, updateHomeRow, removeHomeRow, reorderHomeRows, addHomeRow, resetHomeRows } = useAppStore()
+  const { homeRows, updateHomeRow, removeHomeRow, reorderHomeRows, addHomeRow, resetHomeRows, addons } = useAppStore()
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -133,6 +135,33 @@ export default function HomeEditorPage() {
       const newIndex = homeRows.findIndex((r) => r.id === over.id)
       reorderHomeRows(arrayMove(homeRows, oldIndex, newIndex))
     }
+  }
+
+  const addonCatalogs = addons
+    .filter((a) => a.enabled)
+    .flatMap((addon) =>
+      addon.manifest.catalogs.map((cat) => ({
+        addonId: addon.manifest.id,
+        addonName: addon.manifest.name,
+        catalogId: cat.id,
+        catalogName: cat.name || cat.id,
+        catalogType: cat.type,
+        addonUrl: addon.url,
+      }))
+    )
+
+  const isAlreadyAdded = (addonId: string, catalogId: string) =>
+    homeRows.some((r) => r.addonId === addonId && r.catalogId === catalogId)
+
+  const handleAddCatalog = (cat: typeof addonCatalogs[0]) => {
+    addHomeRow({
+      title: `${cat.catalogName} (${cat.addonName})`,
+      addonId: cat.addonId,
+      catalogType: cat.catalogType,
+      catalogId: cat.catalogId,
+      layout: cat.catalogType === 'movie' ? 'poster' : 'landscape',
+      enabled: true,
+    })
   }
 
   return (
@@ -179,6 +208,55 @@ export default function HomeEditorPage() {
       {homeRows.length === 0 && (
         <div className="text-center py-12 text-muted">
           No rows configured. Add some rows or reset to default.
+        </div>
+      )}
+
+      {/* Addon Catalogs */}
+      {addonCatalogs.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-purple-400" />
+            Add Addon Catalogs
+          </h2>
+          <p className="text-sm text-muted mb-3">
+            Add catalog rows from your installed addons to the home screen.
+          </p>
+          <div className="space-y-2">
+            {addonCatalogs.map((cat) => {
+              const added = isAlreadyAdded(cat.addonId, cat.catalogId)
+              return (
+                <div
+                  key={`${cat.addonId}-${cat.catalogId}`}
+                  className="flex items-center justify-between p-3 bg-surface-elevated rounded-xl"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{cat.catalogName}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded">{cat.addonName}</span>
+                      <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded">{cat.catalogType}</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleAddCatalog(cat)}
+                    disabled={added}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      added
+                        ? 'bg-white/5 text-muted cursor-default'
+                        : 'bg-accent hover:bg-accent-hover text-black'
+                    }`}
+                  >
+                    {added ? 'Added' : 'Add to Home'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {addons.length === 0 && (
+        <div className="mt-8 p-4 bg-surface-elevated rounded-xl text-center">
+          <p className="text-sm text-muted">No addons installed. Go to Settings to add addons and their catalogs will appear here.</p>
         </div>
       )}
     </div>
