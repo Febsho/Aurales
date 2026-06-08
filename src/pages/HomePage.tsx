@@ -8,79 +8,92 @@ import type { SearchResult, HomeRowConfig } from '../types'
 
 function AddonCatalogRow({ row }: { row: HomeRowConfig }) {
   const [items, setItems] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(true)
   const addons = useAppStore((s) => s.addons)
+  const isMockCatalog = row.catalogId?.startsWith('mock-')
+  const displayItems = isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items
 
   useEffect(() => {
-    if (row.catalogId?.startsWith('mock-')) {
-      setItems(getMockCatalog(row.catalogId))
-      setLoading(false)
-      return
-    }
-
-    if (!row.addonId || !row.catalogType || !row.catalogId) {
-      setLoading(false)
-      return
-    }
+    if (isMockCatalog || !row.catalogType || !row.catalogId) return
 
     const addon = addons.find((a) => a.manifest.id === row.addonId)
-    if (!addon) {
-      setLoading(false)
-      return
-    }
+    const url = addon?.url || row.addonUrl
+    if (!url) return
 
-    setLoading(true)
-    getAddonCatalog(addon.url, row.catalogType, row.catalogId)
+    let cancelled = false
+    getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra)
       .then((results) => {
+        if (cancelled) return
         setItems(results)
-        setLoading(false)
       })
-      .catch(() => setLoading(false))
-  }, [row.addonId, row.catalogType, row.catalogId, addons])
+      .catch(() => undefined)
 
-  if (loading) {
-    return (
-      <div className="px-6 mb-6">
-        <h2 className="text-base font-semibold mb-3">{row.title}</h2>
-        <div className="flex gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="flex-shrink-0 w-36 aspect-[2/3] bg-surface-elevated rounded-xl animate-pulse" />
-          ))}
-        </div>
-      </div>
-    )
-  }
+    return () => {
+      cancelled = true
+    }
+  }, [isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
 
-  if (items.length === 0) return null
+  if (displayItems.length === 0) return null
 
   return (
     <MediaRow
       title={row.title}
-      items={items}
+      items={displayItems}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
     />
   )
 }
 
+function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
+  const [item, setItem] = useState<SearchResult | null>(null)
+  const addons = useAppStore((s) => s.addons)
+  const isMockCatalog = row.catalogId?.startsWith('mock-')
+
+  useEffect(() => {
+    if (isMockCatalog && row.catalogId) {
+      setItem(getMockCatalog(row.catalogId)[0] || null)
+      return
+    }
+
+    if (!row.catalogType || !row.catalogId) return
+    const addon = addons.find((a) => a.manifest.id === row.addonId)
+    const url = addon?.url || row.addonUrl
+    if (!url) return
+
+    let cancelled = false
+    getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra)
+      .then((results) => {
+        if (!cancelled) setItem(results[0] || null)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
+
+  const heroItem = item || MOCK_HERO_MOVIE
+  const heroType = 'type' in heroItem && heroItem.type === 'series' ? 'series' : 'movie'
+  return <HeroSection item={heroItem} type={heroType} />
+}
+
 export default function HomePage() {
   const homeRows = useAppStore((s) => s.homeRows)
+  const enabledRows = homeRows.filter((row) => row.enabled)
+  const heroRow = enabledRows.find((row) => row.layout === 'hero')
+  const contentRows = enabledRows
+    .filter((row) => row.id !== heroRow?.id)
+    .sort((a, b) => a.order - b.order)
 
   return (
     <div className="pb-12">
-      {homeRows
-        .filter((row) => row.enabled)
-        .sort((a, b) => a.order - b.order)
-        .map((row) => {
-          if (row.layout === 'hero') {
-            return (
-              <HeroSection
-                key={row.id}
-                item={MOCK_HERO_MOVIE}
-                type="movie"
-              />
-            )
-          }
+      {heroRow ? (
+        <HeroCatalogSection row={heroRow} />
+      ) : (
+        <HeroSection item={MOCK_HERO_MOVIE} type="movie" />
+      )}
 
+      {contentRows.map((row) => {
           if (row.layout === 'continue') {
             return null
           }
@@ -97,6 +110,7 @@ export default function HomePage() {
               title={row.title}
               items={items}
               layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+              showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
             />
           )
         })}

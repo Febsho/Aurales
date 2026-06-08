@@ -27,6 +27,18 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
   { value: 'continue', label: 'Continue Watching' },
 ]
 
+function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; options?: string[] }[] | undefined): Record<string, string> | undefined {
+  const required = (extra || []).filter((item) => item.isRequired)
+  if (required.length === 0) return undefined
+
+  const defaults = required.reduce<Record<string, string>>((acc, item) => {
+    const value = item.options?.[0]
+    if (value) acc[item.name] = value
+    return acc
+  }, {})
+  return Object.keys(defaults).length ? defaults : undefined
+}
+
 function SortableRow({ row, onUpdate, onRemove }: {
   row: HomeRowConfig
   onUpdate: (id: string, updates: Partial<HomeRowConfig>) => void
@@ -74,7 +86,7 @@ function SortableRow({ row, onUpdate, onRemove }: {
         )}
         {row.addonId && row.addonId !== 'com.example.mockaddon' && (
           <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded mt-0.5 inline-block">
-            {row.addonId} / {row.catalogId}
+            {row.addonId} / {row.catalogType} / {row.catalogId}
           </span>
         )}
       </div>
@@ -146,22 +158,46 @@ export default function HomeEditorPage() {
         catalogId: cat.id,
         catalogName: cat.name || cat.id,
         catalogType: cat.type,
+        catalogExtra: defaultCatalogExtra(cat.extra),
+        requiredExtras: (cat.extra || []).filter((extra) => extra.isRequired).map((extra) => extra.name),
         addonUrl: addon.url,
       }))
     )
 
-  const isAlreadyAdded = (addonId: string, catalogId: string) =>
-    homeRows.some((r) => r.addonId === addonId && r.catalogId === catalogId)
+  const isAlreadyAdded = (addonId: string, catalogType: string, catalogId: string) =>
+    homeRows.some((r) => r.addonId === addonId && r.catalogType === catalogType && r.catalogId === catalogId)
 
   const handleAddCatalog = (cat: typeof addonCatalogs[0]) => {
     addHomeRow({
       title: `${cat.catalogName} (${cat.addonName})`,
       addonId: cat.addonId,
+      addonUrl: cat.addonUrl,
       catalogType: cat.catalogType,
       catalogId: cat.catalogId,
+      catalogExtra: cat.catalogExtra,
       layout: cat.catalogType === 'movie' ? 'poster' : 'landscape',
       enabled: true,
     })
+  }
+
+  const handleSetHeroCatalog = (cat: typeof addonCatalogs[0]) => {
+    const heroRow = homeRows.find((row) => row.layout === 'hero')
+    const updates: Partial<HomeRowConfig> = {
+      title: `Featured: ${cat.catalogName}`,
+      addonId: cat.addonId,
+      addonUrl: cat.addonUrl,
+      catalogType: cat.catalogType,
+      catalogId: cat.catalogId,
+      catalogExtra: cat.catalogExtra,
+      layout: 'hero',
+      enabled: true,
+    }
+
+    if (heroRow) {
+      updateHomeRow(heroRow.id, updates)
+    } else {
+      addHomeRow(updates as Omit<HomeRowConfig, 'id' | 'order'>)
+    }
   }
 
   return (
@@ -223,10 +259,10 @@ export default function HomeEditorPage() {
           </p>
           <div className="space-y-2">
             {addonCatalogs.map((cat) => {
-              const added = isAlreadyAdded(cat.addonId, cat.catalogId)
+              const added = isAlreadyAdded(cat.addonId, cat.catalogType, cat.catalogId)
               return (
                 <div
-                  key={`${cat.addonId}-${cat.catalogId}`}
+                  key={`${cat.addonId}-${cat.catalogType}-${cat.catalogId}`}
                   className="flex items-center justify-between p-3 bg-surface-elevated rounded-xl"
                 >
                   <div className="min-w-0">
@@ -234,6 +270,11 @@ export default function HomeEditorPage() {
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded">{cat.addonName}</span>
                       <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded">{cat.catalogType}</span>
+                      {cat.requiredExtras.length > 0 && (
+                        <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded">
+                          {cat.requiredExtras.join(', ')}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button
@@ -246,6 +287,12 @@ export default function HomeEditorPage() {
                     }`}
                   >
                     {added ? 'Added' : 'Add to Home'}
+                  </button>
+                  <button
+                    onClick={() => handleSetHeroCatalog(cat)}
+                    className="ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    Set Hero
                   </button>
                 </div>
               )

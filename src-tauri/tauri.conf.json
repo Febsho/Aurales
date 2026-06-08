@@ -20,11 +20,11 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "transparent": false
+        "transparent": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https://image.tmdb.org https://artworks.thetvdb.com https://*.tmdb.org data:; connect-src 'self' https://api.themoviedb.org https://api4.thetvdb.com https://api.trakt.tv https://*; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' https: data:; media-src 'self' https: http: blob: data:; connect-src 'self' https://api.themoviedb.org https://api4.thetvdb.com https://api.trakt.tv https://api.strem.io https://*; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
