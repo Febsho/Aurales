@@ -207,17 +207,10 @@ export default function SettingsPage() {
           Player
         </h2>
         <div className="bg-surface-elevated rounded-2xl p-5">
-          <p className="text-sm text-muted">
-            Orynt uses mpv as the playback engine. Make sure mpv is installed and available in your system PATH.
-          </p>
-          <a
-            href="https://mpv.io/installation/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-accent hover:underline mt-2 inline-block"
-          >
-            Download mpv
-          </a>
+          <div className="flex items-center gap-3">
+            <div className="w-3 h-3 rounded-full bg-accent" />
+            <p className="text-sm">mpv is bundled with Orynt and ready to use.</p>
+          </div>
         </div>
       </section>
 

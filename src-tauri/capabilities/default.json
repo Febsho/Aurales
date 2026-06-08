@@ -8,6 +8,16 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "shell:allow-execute"
+    "shell:allow-execute",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/mpv",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
