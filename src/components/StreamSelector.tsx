@@ -478,7 +478,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     )
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 overflow-hidden bg-black" onClick={onClose}>
       {artwork?.backdrop && (
         <img src={artwork.backdrop} alt="" className="absolute inset-0 w-full h-full object-cover opacity-45 blur-sm scale-105" />
@@ -699,6 +699,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   )
 }

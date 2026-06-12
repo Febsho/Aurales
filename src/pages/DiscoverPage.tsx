@@ -84,11 +84,16 @@ function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchR
   useEffect(() => {
     let cancelled = false
     discoverTmdbWithCache(config, rowId)
-      .then((results) => {
-        if (!cancelled) setItems((results.length > 0 ? results : fallback).map(applySearchResultArt))
+      .then(async (results) => {
+        const rawItems = results.length > 0 ? results : fallback
+        const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+        const enriched = await enrichSearchResultsWithAppMetadata(rawItems)
+        if (!cancelled) setItems(enriched.map(applySearchResultArt))
       })
-      .catch(() => {
-        if (!cancelled) setItems(fallback.map(applySearchResultArt))
+      .catch(async () => {
+        const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+        const enriched = await enrichSearchResultsWithAppMetadata(fallback)
+        if (!cancelled) setItems(enriched.map(applySearchResultArt))
       })
     return () => { cancelled = true }
     // Config values are encoded into rowId so preference changes always refetch.

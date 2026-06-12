@@ -18,9 +18,33 @@ export const PMDB_LIST_SOURCES = [
 
 export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
   const id = row.providerListId || ''
-  if (row.sourceType === 'anilist') return getAniListList(id || 'CURRENT')
-  if (row.sourceType === 'trakt') return getTraktProviderList(id)
-  if (row.sourceType === 'pmdb') return getPmdbProviderList(id)
+  let items: SearchResult[] = []
+  if (row.sourceType === 'anilist') {
+    items = await getAniListList(id || 'CURRENT')
+  } else if (row.sourceType === 'trakt') {
+    items = await getTraktProviderList(id)
+  } else if (row.sourceType === 'pmdb') {
+    items = await getPmdbProviderList(id)
+  }
+
+  if (items.length > 0) {
+    const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
+    const enriched = await enrichSearchResultsWithAppMetadata(items)
+
+    if (row.sourceType === 'anilist') {
+      const seenAnilistId = new Set<number>()
+      const deduplicated: SearchResult[] = []
+      for (const item of enriched) {
+        const aid = item.anilistId ? Number(item.anilistId) : 0
+        if (aid && seenAnilistId.has(aid)) continue
+        if (aid) seenAnilistId.add(aid)
+        deduplicated.push(item)
+      }
+      return deduplicated
+    }
+
+    return enriched
+  }
   return []
 }
 

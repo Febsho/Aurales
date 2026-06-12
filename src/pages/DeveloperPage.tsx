@@ -3,6 +3,16 @@ import { invoke } from '@tauri-apps/api/core'
 import { getLogs, clearLogs, subscribeLogs, logEvent } from '../services/diagnostics'
 import { useAppStore } from '../stores/appStore'
 import { launchEmbeddedPlayer } from '../services/player'
+import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
+
+function hashUrl(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
 
 interface MpvInfo {
   path: string
@@ -49,6 +59,11 @@ export default function DeveloperPage() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
+        if (store.isolatedPlaybackMode) {
+          const state = await minimalMpvPlayer.getState()
+          setPlaybackState(state.running ? state : null)
+          return
+        }
         const timePos = await invoke('mpv_get_property', { property: 'time-pos' })
         const duration = await invoke('mpv_get_property', { property: 'duration' })
         const volume = await invoke('mpv_get_property', { property: 'volume' })
@@ -82,32 +97,41 @@ export default function DeveloperPage() {
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [])
+  }, [store.isolatedPlaybackMode])
 
   // Play Direct stream handler
   const handlePlayTestStream = async () => {
     if (!testUrl.trim()) return
     setError('')
-    logEvent('PLAYER DEBUG', `Test direct stream started with URL: ${testUrl}`)
+    const streamHash = hashUrl(testUrl)
+    logEvent('PLAYER DEBUG', `Test direct stream requested with URL hash: ${streamHash}`)
     try {
-      await launchEmbeddedPlayer({
-        url: testUrl,
-        title: testTitle,
-        startTime: 0,
-        volume: 100,
-        hwdecMode: store.hwdecMode,
-        cacheBufferSize: store.cacheBufferSize,
-        mpvCacheSecs: store.mpvCacheSecs,
-        mpvNetworkTimeout: store.mpvNetworkTimeout,
-        mpvCustomArgs: store.mpvCustomArgs,
-        viewport: {
-          x: 0,
-          y: 0,
-          width: Math.round(window.innerWidth * (window.devicePixelRatio || 1)),
-          height: Math.round(window.innerHeight * (window.devicePixelRatio || 1))
-        }
-      })
-      logEvent('PLAYER DEBUG', `launchEmbeddedPlayer returned success for test stream`)
+      if (store.isolatedPlaybackMode) {
+        await minimalMpvPlayer.play(testUrl, {
+          title: testTitle,
+          hwdecMode: store.isolatedPlaybackHwdec,
+        })
+        logEvent('PLAYER DEBUG', `Isolated mpv started for URL hash: ${streamHash}`)
+      } else {
+        await launchEmbeddedPlayer({
+          url: testUrl,
+          title: testTitle,
+          startTime: 0,
+          volume: 100,
+          hwdecMode: store.hwdecMode,
+          cacheBufferSize: store.cacheBufferSize,
+          mpvCacheSecs: store.mpvCacheSecs,
+          mpvNetworkTimeout: store.mpvNetworkTimeout,
+          mpvCustomArgs: store.mpvCustomArgs,
+          viewport: {
+            x: 0,
+            y: 0,
+            width: Math.round(window.innerWidth * (window.devicePixelRatio || 1)),
+            height: Math.round(window.innerHeight * (window.devicePixelRatio || 1))
+          }
+        })
+        logEvent('PLAYER DEBUG', `Embedded mpv started for URL hash: ${streamHash}`)
+      }
     } catch (err: any) {
       setError(String(err))
       logEvent('PLAYER DEBUG', `launchEmbeddedPlayer failed for test stream: ${err}`)
@@ -115,7 +139,8 @@ export default function DeveloperPage() {
   }
 
   // Copy debug report function
-  const handleCopyReport = () => {
+  const handleCopyReport = async () => {
+    const nativePlayerLogs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
     const report = {
       os: mpvInfo?.os || 'unknown',
       arch: mpvInfo?.arch || 'unknown',
@@ -129,7 +154,8 @@ export default function DeveloperPage() {
         mpvCustomArgs: store.mpvCustomArgs
       },
       playbackState: playbackState || 'No active session',
-      events: logEntries.map(e => `[${e.timestamp}] [${e.prefix}] ${e.message}`)
+      events: logEntries.map(e => `[${e.timestamp}] [${e.prefix}] ${e.message}`),
+      nativePlayerLogs,
     }
 
     navigator.clipboard.writeText(JSON.stringify(report, null, 2))
@@ -240,8 +266,16 @@ export default function DeveloperPage() {
                   onClick={handlePlayTestStream}
                   className="w-full py-2 bg-white/10 hover:bg-white/15 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer"
                 >
-                  Play Direct Stream
+                  {store.isolatedPlaybackMode ? 'Play Isolated Stream' : 'Play Embedded Stream'}
                 </button>
+                {store.isolatedPlaybackMode && (
+                  <button
+                    onClick={() => minimalMpvPlayer.stop('developer-stop').catch((cause) => setError(String(cause)))}
+                    className="w-full py-2 bg-red-500/10 hover:bg-red-500/15 text-red-200 font-semibold rounded-xl text-xs transition-all cursor-pointer"
+                  >
+                    Stop Isolated Stream
+                  </button>
+                )}
               </div>
             </div>
 

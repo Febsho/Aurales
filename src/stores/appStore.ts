@@ -133,6 +133,9 @@ interface AppState {
   discoveryMinRating: number
   discoveryIncludeAdult: boolean
   hwdecMode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox'
+  isolatedPlaybackMode: boolean
+  isolatedPlaybackHwdec: 'auto-safe' | 'no'
+  isolatedPlaybackResume: boolean
   cacheBufferSize: 'default' | 'large' | 'aggressive'
   audioPassthrough: boolean
   autoSkipSegments: boolean
@@ -218,6 +221,9 @@ interface AppState {
   setDiscoveryMinRating: (rating: number) => void
   setDiscoveryIncludeAdult: (include: boolean) => void
   setHwdecMode: (mode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox') => void
+  setIsolatedPlaybackMode: (value: boolean) => void
+  setIsolatedPlaybackHwdec: (mode: 'auto-safe' | 'no') => void
+  setIsolatedPlaybackResume: (value: boolean) => void
   setCacheBufferSize: (size: 'default' | 'large' | 'aggressive') => void
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
@@ -539,6 +545,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   discoveryMinRating: Number(localStorage.getItem('orynt_discovery_min_rating') || '6'),
   discoveryIncludeAdult: localStorage.getItem('orynt_discovery_include_adult') === 'true',
   hwdecMode: (localStorage.getItem('orynt_hwdec_mode') || 'auto') as 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox',
+  isolatedPlaybackMode: false,
+  isolatedPlaybackHwdec: (localStorage.getItem('orynt_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
+  isolatedPlaybackResume: localStorage.getItem('orynt_isolated_resume') === 'true',
   cacheBufferSize: (localStorage.getItem('orynt_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
   audioPassthrough: localStorage.getItem('orynt_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('orynt_auto_skip_segments') === 'true',
@@ -584,6 +593,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDiscoveryMinRating: (rating) => { localStorage.setItem('orynt_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('orynt_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
   setHwdecMode: (mode) => { localStorage.setItem('orynt_hwdec_mode', mode); set({ hwdecMode: mode }) },
+  setIsolatedPlaybackMode: (value) => { localStorage.removeItem('orynt_isolated_playback'); set({ isolatedPlaybackMode: value }) },
+  setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('orynt_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
+  setIsolatedPlaybackResume: (value) => { localStorage.setItem('orynt_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
   setCacheBufferSize: (size) => { localStorage.setItem('orynt_cache_buffer_size', size); set({ cacheBufferSize: size }) },
   setAudioPassthrough: (val) => { localStorage.setItem('orynt_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('orynt_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },

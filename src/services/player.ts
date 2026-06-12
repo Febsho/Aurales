@@ -66,6 +66,10 @@ export async function getPlayerProperty(property: string): Promise<unknown> {
   return await invoke('mpv_get_property', { property })
 }
 
+export async function isEmbeddedPlayerRunning(): Promise<boolean> {
+  return await invoke<boolean>('get_embedded_player_running')
+}
+
 export async function downloadSubtitle(url: string, fileName: string): Promise<string> {
   return await invoke('download_subtitle', { url, fileName })
 }

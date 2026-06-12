@@ -55,6 +55,7 @@ export default function DetailHero({
 }: DetailHeroProps) {
   const [backdropLoaded, setBackdropLoaded] = useState(false)
   const [backdropError, setBackdropError] = useState(false)
+  const [logoError, setLogoError] = useState(false)
 
   const runtimeStr = formatRuntime(runtime)
 
@@ -116,9 +117,19 @@ export default function DetailHero({
 
             {/* Title */}
             <div className="mb-5 min-h-[60px] flex items-end">
-              <h1 className="text-6xl font-extrabold drop-shadow-2xl leading-[1.05] tracking-tight max-w-2xl">
-                {title}
-              </h1>
+              {logo && !logoError ? (
+                <img
+                  src={logo}
+                  alt={title}
+                  className="max-h-[110px] md:max-h-[140px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+                  onError={() => setLogoError(true)}
+                  draggable={false}
+                />
+              ) : (
+                <h1 className="text-6xl font-extrabold drop-shadow-2xl leading-[1.05] tracking-tight max-w-2xl">
+                  {title}
+                </h1>
+              )}
             </div>
 
             {/* Metadata line: Type · Genre · Genre · [Certification] */}
