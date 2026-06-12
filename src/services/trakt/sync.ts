@@ -62,9 +62,18 @@ export async function markMovieWatched(imdbId: string): Promise<void> {
   })
 }
 
-export async function markEpisodeWatched(showImdbId: string, season: number, episode: number): Promise<void> {
+export async function markEpisodeWatched(
+  showImdbId: string, season: number, episode: number,
+  appSeasonCounts?: { season: number; count: number }[],
+): Promise<void> {
+  let traktSeason = season
+  let traktEpisode = episode
+  if (appSeasonCounts) {
+    const mapped = await convertToTraktNumbering(showImdbId, season, episode, appSeasonCounts)
+    if (mapped) { traktSeason = mapped.season; traktEpisode = mapped.episode }
+  }
   await addToHistory({
-    episodes: [{ ids: { imdb: showImdbId }, seasons: [{ number: season, episodes: [{ number: episode }] }], watched_at: new Date().toISOString() }],
+    shows: [{ ids: { imdb: showImdbId }, seasons: [{ number: traktSeason, episodes: [{ number: traktEpisode, watched_at: new Date().toISOString() }] }] }],
   })
 }
 
@@ -72,9 +81,18 @@ export async function markMovieUnwatched(imdbId: string): Promise<void> {
   await removeFromHistory({ movies: [{ ids: { imdb: imdbId } }] })
 }
 
-export async function markEpisodeUnwatched(showImdbId: string, season: number, episode: number): Promise<void> {
+export async function markEpisodeUnwatched(
+  showImdbId: string, season: number, episode: number,
+  appSeasonCounts?: { season: number; count: number }[],
+): Promise<void> {
+  let traktSeason = season
+  let traktEpisode = episode
+  if (appSeasonCounts) {
+    const mapped = await convertToTraktNumbering(showImdbId, season, episode, appSeasonCounts)
+    if (mapped) { traktSeason = mapped.season; traktEpisode = mapped.episode }
+  }
   await removeFromHistory({
-    shows: [{ ids: { imdb: showImdbId }, seasons: [{ number: season, episodes: [{ number: episode }] }] }],
+    shows: [{ ids: { imdb: showImdbId }, seasons: [{ number: traktSeason, episodes: [{ number: traktEpisode }] }] }],
   })
 }
 
@@ -82,6 +100,54 @@ export async function markShowUnwatched(showImdbId: string): Promise<void> {
   await removeFromHistory({ shows: [{ ids: { imdb: showImdbId } }] })
 }
 
+export async function convertToTraktNumbering(
+  showImdbId: string, appSeason: number, appEpisode: number,
+  appSeasonCounts: { season: number; count: number }[],
+): Promise<{ season: number; episode: number } | null> {
+  const traktSeasons = await getTraktShowSeasons(showImdbId).catch(() => [])
+  if (traktSeasons.length === 0) return null
+
+  // Convert app (season, episode) to absolute
+  let absolute = 0
+  for (const s of appSeasonCounts) {
+    if (s.season >= appSeason) break
+    absolute += s.count
+  }
+  absolute += appEpisode
+
+  // Convert absolute to Trakt (season, episode)
+  let remaining = absolute
+  for (const s of traktSeasons) {
+    if (remaining <= s.episodeCount) {
+      return { season: s.number, episode: remaining }
+    }
+    remaining -= s.episodeCount
+  }
+  return null
+}
+
 export async function getPlaybackProgress(): Promise<unknown[]> {
   return await traktFetch('/sync/playback') as unknown[]
+}
+
+export interface TraktSeasonSummary {
+  number: number
+  episodeCount: number
+}
+
+const traktSeasonCache = new Map<string, { data: TraktSeasonSummary[]; timestamp: number }>()
+const TRAKT_SEASON_CACHE_TTL = 30 * 60 * 1000
+
+export async function getTraktShowSeasons(showImdbId: string): Promise<TraktSeasonSummary[]> {
+  const cached = traktSeasonCache.get(showImdbId)
+  if (cached && Date.now() - cached.timestamp < TRAKT_SEASON_CACHE_TTL) return cached.data
+
+  const raw = await traktFetch(`/shows/${showImdbId}/seasons`) as Record<string, unknown>[]
+  const seasons = raw
+    .filter((s) => typeof s.number === 'number' && (s.number as number) > 0)
+    .map((s) => ({ number: s.number as number, episodeCount: (s.episode_count ?? s.aired_episodes ?? 0) as number }))
+    .sort((a, b) => a.number - b.number)
+
+  traktSeasonCache.set(showImdbId, { data: seasons, timestamp: Date.now() })
+  return seasons
 }

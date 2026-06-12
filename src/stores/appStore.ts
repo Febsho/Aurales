@@ -3,8 +3,6 @@ import type { HomeRowConfig, WatchProgress, SearchResult, TraktAccount } from '.
 import type { InstalledAddon } from '../services/addons'
 import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
-import type { ArtUrlOverrides } from '../services/artwork'
-import { getStoredArtOverrides, saveArtOverrides } from '../services/artwork'
 import { v4 as uuid } from 'uuid'
 
 interface AppState {
@@ -19,7 +17,6 @@ interface AppState {
   traktConnected: boolean
   traktAccount: TraktAccount | null
   mdblistApiKey: string
-  artOverrides: ArtUrlOverrides
   setTmdbApiKey: (key: string) => void
   setTvdbApiKey: (key: string) => void
   setTraktClientId: (key: string) => void
@@ -27,7 +24,6 @@ interface AppState {
   setTraktConnected: (connected: boolean) => void
   setTraktAccount: (account: TraktAccount | null) => void
   setMdblistApiKey: (key: string) => void
-  setArtOverrides: (overrides: ArtUrlOverrides) => void
 
   scrobbleSimkl: boolean
   scrobbleTrakt: boolean
@@ -230,6 +226,14 @@ interface AppState {
   setVisibleHeroRatings: (ratings: string[]) => void
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
+
+  mpvCacheSecs: number
+  mpvNetworkTimeout: number
+  mpvCustomArgs: string
+  setMpvCacheSecs: (secs: number) => void
+  setMpvNetworkTimeout: (secs: number) => void
+  setMpvCustomArgs: (args: string) => void
+  resetPlayerSettings: () => void
 }
 
 function loadPersistedAddons(): InstalledAddon[] {
@@ -351,7 +355,7 @@ const DEFAULT_HOME_ROWS: HomeRowConfig[] = [
   { id: 'popular-series', title: 'Popular Series', addonId: 'com.example.mockaddon', catalogType: 'series', catalogId: 'mock-series', layout: 'landscape', enabled: true, order: 3 },
 ]
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: true,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
@@ -367,7 +371,6 @@ export const useAppStore = create<AppState>((set) => ({
       return raw ? JSON.parse(raw) as TraktAccount : null
     } catch { return null }
   })(),
-  artOverrides: getStoredArtOverrides(),
   setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); set({ tmdbApiKey: key }) },
   setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); set({ tvdbApiKey: key }) },
   setTraktClientId: (key) => { localStorage.setItem('trakt_client_id', key); set({ traktClientId: key }) },
@@ -379,7 +382,6 @@ export const useAppStore = create<AppState>((set) => ({
     set({ traktAccount: account })
   },
   setMdblistApiKey: (key) => { localStorage.setItem('mdblist_api_key', key); set({ mdblistApiKey: key }) },
-  setArtOverrides: (overrides) => { saveArtOverrides(overrides); set({ artOverrides: overrides }) },
 
   scrobbleSimkl: localStorage.getItem('scrobble_simkl') !== 'false',
   scrobbleTrakt: localStorage.getItem('scrobble_trakt') !== 'false',
@@ -593,6 +595,27 @@ export const useAppStore = create<AppState>((set) => ({
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
+  mpvCacheSecs: Number(localStorage.getItem('orynt_mpv_cache_secs') || '60'),
+  mpvNetworkTimeout: Number(localStorage.getItem('orynt_mpv_network_timeout') || '15'),
+  mpvCustomArgs: localStorage.getItem('orynt_mpv_custom_args') || '',
+  setMpvCacheSecs: (secs) => { localStorage.setItem('orynt_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
+  setMpvNetworkTimeout: (secs) => { localStorage.setItem('orynt_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
+  setMpvCustomArgs: (args) => { localStorage.setItem('orynt_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
+  resetPlayerSettings: () => {
+    localStorage.setItem('orynt_hwdec_mode', 'auto')
+    localStorage.setItem('orynt_cache_buffer_size', 'default')
+    localStorage.setItem('orynt_mpv_cache_secs', '60')
+    localStorage.setItem('orynt_mpv_network_timeout', '15')
+    localStorage.setItem('orynt_mpv_custom_args', '')
+    set({
+      hwdecMode: 'auto',
+      cacheBufferSize: 'default',
+      mpvCacheSecs: 60,
+      mpvNetworkTimeout: 15,
+      mpvCustomArgs: ''
+    })
+  },
+
   movieMetadataSource: (localStorage.getItem('orynt_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
   seriesMetadataSource: (localStorage.getItem('orynt_series_meta_src') || 'tmdb') as 'tvdb' | 'tmdb',
   animeMetadataSource: (localStorage.getItem('orynt_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',
@@ -610,23 +633,23 @@ export const useAppStore = create<AppState>((set) => ({
   ignoreAddonMetadataForAnime: localStorage.getItem('orynt_ignore_addon_meta_anime') !== 'false',
   useGenericAnimeSeasonLabels: localStorage.getItem('orynt_generic_anime_season_labels') !== 'false',
   avoidJapaneseSeasonNames: localStorage.getItem('orynt_avoid_jp_season_names') !== 'false',
-  setMovieMetadataSource: (src) => { localStorage.setItem('orynt_movie_meta_src', src); set({ movieMetadataSource: src }) },
-  setSeriesMetadataSource: (src) => { localStorage.setItem('orynt_series_meta_src', src); set({ seriesMetadataSource: src }) },
-  setAnimeMetadataSource: (src) => { localStorage.setItem('orynt_anime_meta_src', src); set({ animeMetadataSource: src }) },
-  setMovieMetadataFallback: (val) => { localStorage.setItem('orynt_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }) },
-  setSeriesMetadataFallback: (val) => { localStorage.setItem('orynt_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }) },
-  setAnimeMetadataFallback: (val) => { localStorage.setItem('orynt_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }) },
+  setMovieMetadataSource: (src) => { localStorage.setItem('orynt_movie_meta_src', src); set({ movieMetadataSource: src }); get().clearAnimeCache() },
+  setSeriesMetadataSource: (src) => { localStorage.setItem('orynt_series_meta_src', src); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
+  setAnimeMetadataSource: (src) => { localStorage.setItem('orynt_anime_meta_src', src); set({ animeMetadataSource: src }); get().clearAnimeCache() },
+  setMovieMetadataFallback: (val) => { localStorage.setItem('orynt_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
+  setSeriesMetadataFallback: (val) => { localStorage.setItem('orynt_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
+  setAnimeMetadataFallback: (val) => { localStorage.setItem('orynt_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
   setEnableCommunityRatings: (val) => { localStorage.setItem('orynt_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
   setAppManagedMetadata: (val) => { localStorage.setItem('orynt_app_managed_metadata', String(val)); set({ appManagedMetadata: val }) },
   setUseAddonMetadataFallback: (val) => { localStorage.setItem('orynt_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
-  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('orynt_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }) },
-  setAnimeTitleLanguage: (val) => { localStorage.setItem('orynt_anime_title_language', val); set({ animeTitleLanguage: val }) },
-  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('orynt_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }) },
-  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('orynt_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }) },
-  setIncludeAnimeSpecials: (val) => { localStorage.setItem('orynt_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }) },
+  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('orynt_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
+  setAnimeTitleLanguage: (val) => { localStorage.setItem('orynt_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('orynt_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('orynt_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }); get().clearAnimeCache() },
+  setIncludeAnimeSpecials: (val) => { localStorage.setItem('orynt_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }); get().clearAnimeCache() },
   setIgnoreAddonMetadataForAnime: (val) => { localStorage.setItem('orynt_ignore_addon_meta_anime', String(val)); set({ ignoreAddonMetadataForAnime: val }) },
-  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('orynt_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }) },
-  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('orynt_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }) },
+  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('orynt_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }); get().clearAnimeCache() },
+  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('orynt_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }); get().clearAnimeCache() },
   clearAnimeCache: async () => {
     try {
       const { clearAnimeMetadataCache } = await import('../services/metadata/metadataResolver')

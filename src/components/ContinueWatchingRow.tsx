@@ -215,11 +215,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                     return { ...item, poster: meta.poster, backdrop: meta.backdrop }
                   }
                 } catch {
-                  // Fallback to BTTTR if imdbId is present
-                  if (item.imdbId) {
-                    const poster = `https://btttr.cc/poster/auto/${item.imdbId}/auto.png`
-                    return { ...item, poster }
-                  }
+                  // Ignore TMDB fetch errors
                 }
                 return item
               })
