@@ -409,25 +409,26 @@ export default function SeriesDetailPage() {
       if (isAnimeEarly) {
         console.log('[SeriesDetailPage] Anime detected early, using TVDB-first flow')
 
-        // Resolve TVDB ID if missing
-        let tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace('tvdb-', '') : undefined
+        // Always resolve via anime-lists for anime — its TVDB mapping is
+        // curated and more reliable than TMDB's external-ID linkage.
+        let tvdbId: string | undefined
         let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace('tmdb-', '') : undefined
-
+        try {
+          const { resolveAnimeIds } = await import('../services/animeLists')
+          const resolved = await resolveAnimeIds({
+            anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
+            malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+            imdbId: knownIds.imdbId,
+            tmdbId: tmdbId ? Number(tmdbId) : undefined,
+          })
+          if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
+          if (resolved?.tmdbId) tmdbId = tmdbId || String(resolved.tmdbId)
+          if (resolved?.imdbId) knownIds.imdbId = knownIds.imdbId || resolved.imdbId
+          if (resolved?.anilistId) knownIds.anilistId = knownIds.anilistId || String(resolved.anilistId)
+          if (resolved?.malId) knownIds.malId = knownIds.malId || String(resolved.malId)
+        } catch { /* continue */ }
         if (!tvdbId) {
-          try {
-            const { resolveAnimeIds } = await import('../services/animeLists')
-            const resolved = await resolveAnimeIds({
-              anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
-              malId: knownIds.malId ? Number(knownIds.malId) : undefined,
-              imdbId: knownIds.imdbId,
-              tmdbId: tmdbId ? Number(tmdbId) : undefined,
-            })
-            if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
-            if (resolved?.tmdbId) tmdbId = tmdbId || String(resolved.tmdbId)
-            if (resolved?.imdbId) knownIds.imdbId = knownIds.imdbId || resolved.imdbId
-            if (resolved?.anilistId) knownIds.anilistId = knownIds.anilistId || String(resolved.anilistId)
-            if (resolved?.malId) knownIds.malId = knownIds.malId || String(resolved.malId)
-          } catch { /* continue */ }
+          tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace('tvdb-', '') : undefined
         }
 
         // Resolve TMDB ID if missing (needed for artwork)
@@ -613,18 +614,21 @@ export default function SeriesDetailPage() {
 
           if (isAnimeLate) {
             console.log('[SeriesDetailPage] Late anime detection — applying TVDB season override')
-            let tvdbId = appResult.tvdbId ? String(appResult.tvdbId).replace('tvdb-', '') : undefined
+            // Always resolve via anime-lists for anime — its TVDB mapping is
+            // curated and more reliable than TMDB's external-ID linkage.
+            let tvdbId: string | undefined
+            try {
+              const { resolveAnimeIds } = await import('../services/animeLists')
+              const resolved = await resolveAnimeIds({
+                imdbId: appResult.imdbId,
+                tmdbId: tmdbId ? Number(tmdbId) : undefined,
+              })
+              if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
+              if (resolved?.anilistId) appResult = { ...appResult, anilistId: appResult.anilistId || resolved.anilistId }
+              if (resolved?.malId) appResult = { ...appResult, malId: appResult.malId || resolved.malId }
+            } catch { /* continue */ }
             if (!tvdbId) {
-              try {
-                const { resolveAnimeIds } = await import('../services/animeLists')
-                const resolved = await resolveAnimeIds({
-                  imdbId: appResult.imdbId,
-                  tmdbId: tmdbId ? Number(tmdbId) : undefined,
-                })
-                if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
-                if (resolved?.anilistId) appResult = { ...appResult, anilistId: appResult.anilistId || resolved.anilistId }
-                if (resolved?.malId) appResult = { ...appResult, malId: appResult.malId || resolved.malId }
-              } catch { /* continue */ }
+              tvdbId = appResult.tvdbId ? String(appResult.tvdbId).replace('tvdb-', '') : undefined
             }
             if (tvdbId) {
               try {
@@ -1060,6 +1064,11 @@ export default function SeriesDetailPage() {
           tvdbId: show.tvdbId ?? episode.tvdbId,
           season: episode.seasonNumber,
           episode: episode.episodeNumber,
+          isAnime,
+          appSeasonEpCounts: isAnime ? show.seasons
+            .filter((s) => s.seasonNumber > 0)
+            .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
+            .sort((a, b) => a.season - b.season) : undefined,
         }, watchedCheckmarkSources, watchedProgress)
         return watched ? `${episode.seasonNumber}:${episode.episodeNumber}` : null
       })
@@ -1341,6 +1350,7 @@ export default function SeriesDetailPage() {
               malId={show.malId}
               episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber }))}
               watched={allEpisodesWatched}
+              appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
               onMarked={() => {
                 setWatchedEpisodes(new Set(allEpisodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`)))
                 allEpisodes.forEach((episode) => setWatchProgress(`${show.id}:${episode.seasonNumber}:${episode.episodeNumber}`, {
@@ -1560,6 +1570,7 @@ export default function SeriesDetailPage() {
                             imdbId={show.imdbId}
                             anilistId={show.anilistId}
                             malId={show.malId}
+                            appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
                             compact
                             watched={isWatched}
                             onMarked={() => {

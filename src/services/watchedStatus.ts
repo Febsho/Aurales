@@ -1,5 +1,5 @@
 import type { SearchResult, WatchProgress } from '../types'
-import { getWatchedMovies, getWatchedShows, type TraktWatchedItem } from './trakt/sync'
+import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatchedItem, type TraktSeasonSummary } from './trakt/sync'
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
@@ -17,6 +17,8 @@ export interface WatchedLookupItem {
   anilistId?: string | number
   season?: number
   episode?: number
+  isAnime?: boolean
+  appSeasonEpCounts?: { season: number; count: number }[]
 }
 
 interface WatchedCache {
@@ -101,19 +103,56 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   }
 }
 
+function seasonEpToAbsolute(season: number, episode: number, seasonCounts: { season: number; count: number }[]): number {
+  let abs = 0
+  for (const s of seasonCounts) {
+    if (s.season >= season) break
+    abs += s.count
+  }
+  return abs + episode
+}
+
+function traktSeasonToAbsolute(season: number, episode: number, traktSeasons: TraktSeasonSummary[]): number {
+  let abs = 0
+  for (const s of traktSeasons) {
+    if (s.number >= season) break
+    abs += s.episodeCount
+  }
+  return abs + episode
+}
+
 async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
     const data = await getTraktCache()
     if (item.type === 'movie') {
       return data.movies.some((entry) => matchesIds(item, entry.movie?.ids))
     }
-    return data.shows.some((entry) => {
-      if (!matchesIds(item, entry.show?.ids)) return false
-      if (item.season == null || item.episode == null) return true
-      return entry.seasons?.some((season) =>
-        season.number === item.season && season.episodes.some((episode) => episode.number === item.episode && episode.plays > 0)
-      ) ?? false
-    })
+
+    const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
+    if (!matchedEntry) return false
+    if (item.season == null || item.episode == null) return true
+
+    // Direct season/episode match
+    const directMatch = matchedEntry.seasons?.some((season) =>
+      season.number === item.season && season.episodes.some((ep) => ep.number === item.episode && ep.plays > 0)
+    ) ?? false
+    if (directMatch) return true
+
+    // For anime, try absolute episode mapping (Trakt may have different season structure)
+    if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb && matchedEntry.seasons) {
+      const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
+      if (traktSeasons.length > 0) {
+        const myAbsolute = seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
+        return matchedEntry.seasons.some((season) =>
+          season.episodes.some((ep) => {
+            if (ep.plays <= 0) return false
+            return traktSeasonToAbsolute(season.number, ep.number, traktSeasons) === myAbsolute
+          })
+        )
+      }
+    }
+
+    return false
   } catch {
     return false
   }

@@ -699,6 +699,11 @@ pub fn launch_embedded_mpv(
     title: Option<String>,
     start_time: Option<f64>,
     volume: Option<f64>,
+    hwdec_mode: Option<String>,
+    cache_buffer_size: Option<String>,
+    mpv_cache_secs: Option<u32>,
+    mpv_network_timeout: Option<u32>,
+    mpv_custom_args: Option<String>,
     _x: Option<i32>,
     _y: Option<i32>,
     _width: Option<i32>,
@@ -714,7 +719,18 @@ pub fn launch_embedded_mpv(
         return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
     };
 
-    launch_mpv_with_window(hwnd, url, title, start_time, volume)
+    launch_mpv_with_window(
+        hwnd,
+        url,
+        title,
+        start_time,
+        volume,
+        hwdec_mode,
+        cache_buffer_size,
+        mpv_cache_secs,
+        mpv_network_timeout,
+        mpv_custom_args,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -734,6 +750,11 @@ fn launch_mpv_with_window(
     title: Option<String>,
     start_time: Option<f64>,
     volume: Option<f64>,
+    hwdec_mode: Option<String>,
+    cache_buffer_size: Option<String>,
+    mpv_cache_secs: Option<u32>,
+    mpv_network_timeout: Option<u32>,
+    mpv_custom_args: Option<String>,
 ) -> Result<(), String> {
     {
         if let Ok(mut cache) = get_property_cache().write() {
@@ -750,6 +771,25 @@ fn launch_mpv_with_window(
         std::process::id(),
         MPV_PIPE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     );
+
+    let hwdec = match hwdec_mode.as_deref() {
+        Some("no") => "no",
+        Some("d3d11va") => "d3d11va",
+        Some("nvdec") => "nvdec",
+        Some("vaapi") => "vaapi",
+        Some("videotoolbox") => "videotoolbox",
+        _ => "auto-safe",
+    };
+
+    let cache_secs = mpv_cache_secs.unwrap_or(60);
+    let network_timeout = mpv_network_timeout.unwrap_or(15);
+
+    let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
+        Some("large") => ("256MiB", "128MiB"),
+        Some("aggressive") => ("512MiB", "256MiB"),
+        _ => ("150MiB", "75MiB"),
+    };
+
     let mut args: Vec<String> = vec![
         format!("--wid={}", hwnd),
         "--force-window=immediate".to_string(),
@@ -759,7 +799,9 @@ fn launch_mpv_with_window(
         "--cursor-autohide=1000".to_string(),
         "--input-default-bindings=no".to_string(),
         "--input-builtin-bindings=no".to_string(),
-        "--hwdec=auto-safe".to_string(),
+        format!("--hwdec={}", hwdec),
+        "--vo=gpu-next".to_string(),
+        "--gpu-api=d3d11".to_string(),
         "--vd-lavc-dr=yes".to_string(),
         format!("--input-ipc-server={}", ipc_path),
         "--no-terminal".to_string(),
@@ -767,12 +809,17 @@ fn launch_mpv_with_window(
         "--sub-fix-timing=yes".to_string(),
         "--demuxer-mkv-subtitle-preroll=yes".to_string(),
         "--cache=yes".to_string(),
-        "--demuxer-readahead-secs=60".to_string(),
-        "--cache-secs=120".to_string(),
+        format!("--cache-secs={}", cache_secs),
+        format!("--demuxer-max-bytes={}", max_bytes),
+        format!("--demuxer-max-back-bytes={}", max_back_bytes),
+        format!("--demuxer-readahead-secs={}", cache_secs / 2),
+        format!("--network-timeout={}", network_timeout),
+        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
         "--subs-with-matching-audio=no".to_string(),
         "--secondary-sub-visibility=no".to_string(),
         "--sub-auto=fuzzy".to_string(),
     ];
+
     if let Some(t) = title {
         args.push(format!("--force-media-title={}", t));
     }
@@ -782,6 +829,15 @@ fn launch_mpv_with_window(
     if let Some(v) = volume {
         args.push(format!("--volume={}", v.max(0.0).min(130.0)));
     }
+
+    if let Some(custom) = mpv_custom_args {
+        for arg in custom.split_whitespace() {
+            if !arg.is_empty() {
+                args.push(arg.to_string());
+            }
+        }
+    }
+
     args.push(url);
 
     let child = Command::new(&mpv)
@@ -800,7 +856,6 @@ fn launch_mpv_with_window(
     let ipc_path_clone = ipc_path.clone();
     std::thread::spawn(move || {
         use std::io::Write;
-        // Try to connect to named pipe
         let mut pipe_file = None;
         let start_time = std::time::Instant::now();
         while start_time.elapsed() < std::time::Duration::from_secs(5) {
@@ -819,13 +874,11 @@ fn launch_mpv_with_window(
             return;
         };
 
-        // Clone the file for reading and writing
         let reader_file = match file.try_clone() {
             Ok(r) => r,
             Err(_) => return,
         };
 
-        // Store the writer file in NATIVE_PLAYER state
         if let Ok(mut state_lock) = native_player_state().lock() {
             if let Some(player) = state_lock.as_mut() {
                 if player.ipc_path == ipc_path_clone {
@@ -834,7 +887,6 @@ fn launch_mpv_with_window(
             }
         }
 
-        // Send observation commands
         let mut writer = file;
         let observe_cmds = [
             r#"{"command":["observe_property",1,"time-pos"]}"#,
@@ -843,18 +895,23 @@ fn launch_mpv_with_window(
             r#"{"command":["observe_property",4,"pause"]}"#,
             r#"{"command":["observe_property",5,"track-list"]}"#,
             r#"{"command":["observe_property",6,"sub-text"]}"#,
+            r#"{"command":["observe_property",7,"buffering"]}"#,
+            r#"{"command":["observe_property",8,"cache-buffering-state"]}"#,
+            r#"{"command":["observe_property",9,"demuxer-cache-duration"]}"#,
+            r#"{"command":["observe_property",10,"eof-reached"]}"#,
+            r#"{"command":["observe_property",11,"idle-active"]}"#,
+            r#"{"command":["observe_property",12,"core-idle"]}"#,
         ];
         for cmd in observe_cmds {
             let _ = writeln!(writer, "{}", cmd);
         }
 
-        // Start reading loop
         let reader = std::io::BufReader::new(reader_file);
         use std::io::BufRead;
         for line_res in reader.lines() {
             let line = match line_res {
                 Ok(l) => l,
-                Err(_) => break, // Connection closed or error
+                Err(_) => break,
             };
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
                 if json.get("event").and_then(|v| v.as_str()) == Some("property-change") {
@@ -1602,4 +1659,16 @@ pub async fn exchange_anilist_token(
     })
     .await
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?
+}
+
+#[tauri::command]
+pub fn get_mpv_info() -> Result<serde_json::Value, String> {
+    let path = find_mpv().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "Not Found".to_string());
+    let candidates: Vec<String> = mpv_candidates().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+    Ok(serde_json::json!({
+        "path": path,
+        "candidates": candidates,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+    }))
 }

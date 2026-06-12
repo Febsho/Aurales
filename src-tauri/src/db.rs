@@ -109,6 +109,11 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_app_media_tmdb ON app_media(tmdb_id);
             CREATE INDEX IF NOT EXISTS idx_app_media_tvdb ON app_media(tvdb_id);
             CREATE INDEX IF NOT EXISTS idx_addon_mapping_lookup ON addon_media_mappings(addon_id, addon_item_id);
+            CREATE INDEX IF NOT EXISTS idx_app_episodes_media_season ON app_episodes(local_media_id, season_number);
+            CREATE INDEX IF NOT EXISTS idx_app_seasons_media ON app_seasons(local_media_id);
+            CREATE INDEX IF NOT EXISTS idx_media_cache_updated ON app_media(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_watch_progress_media ON watch_progress(media_id);
+            CREATE INDEX IF NOT EXISTS idx_provider_watchlist_provider ON provider_watchlist_items(provider);
 
             CREATE TABLE IF NOT EXISTS anime_season_mappings (
                 id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_number INTEGER NOT NULL,

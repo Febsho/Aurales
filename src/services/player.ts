@@ -6,6 +6,11 @@ export interface PlaybackRequest {
   startTime?: number
   subtitleUrl?: string
   volume?: number
+  hwdecMode?: string
+  cacheBufferSize?: string
+  mpvCacheSecs?: number
+  mpvNetworkTimeout?: number
+  mpvCustomArgs?: string
   viewport?: {
     x: number
     y: number
@@ -28,6 +33,11 @@ export async function launchEmbeddedPlayer(request: PlaybackRequest): Promise<vo
     title: request.title || undefined,
     startTime: request.startTime || undefined,
     volume: request.volume ?? undefined,
+    hwdecMode: request.hwdecMode || undefined,
+    cacheBufferSize: request.cacheBufferSize || undefined,
+    mpvCacheSecs: request.mpvCacheSecs || undefined,
+    mpvNetworkTimeout: request.mpvNetworkTimeout || undefined,
+    mpvCustomArgs: request.mpvCustomArgs || undefined,
     x: request.viewport?.x,
     y: request.viewport?.y,
     width: request.viewport?.width,

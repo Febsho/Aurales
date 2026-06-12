@@ -26,6 +26,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
   const [imgError, setImgError] = useState(false)
   const [backdropError, setBackdropError] = useState(false)
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
+  const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
   const [providerWatched, setProviderWatched] = useState(false)
   const watchProgress = useAppStore((s) => s.watchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -114,6 +115,44 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
     return () => { cancelled = true }
   }, [layout, displayItem.id, displayItem.tmdbId, displayItem.type])
 
+  useEffect(() => {
+    let cancelled = false
+    const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
+    const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
+
+    if (!displayItem.poster || !displayItem.backdrop) {
+      (async () => {
+        try {
+          let resolvedTmdbId = tmdbId
+          if (!resolvedTmdbId && imdbId) {
+            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+            const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
+            if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
+          }
+          if (resolvedTmdbId) {
+            const isMovie = displayItem.type === 'movie'
+            if (isMovie) {
+              const { tmdbProvider } = await import('../services/tmdb')
+              const meta = await tmdbProvider.getMovie(`tmdb-${resolvedTmdbId}`)
+              if (!cancelled) {
+                if (meta.poster) setResolvedPoster(meta.poster)
+                if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
+              }
+            } else {
+              const { tmdbProvider } = await import('../services/tmdb')
+              const meta = await tmdbProvider.getShow(`tmdb-${resolvedTmdbId}`)
+              if (!cancelled) {
+                if (meta.poster) setResolvedPoster(meta.poster)
+                if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      })()
+    }
+    return () => { cancelled = true }
+  }, [displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
+
   const landscapeBackdrop = resolvedBackdrop || displayItem.backdrop
 
   const handleClick = () => {
@@ -121,8 +160,8 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
     navigate(path, {
       state: {
-        poster: displayItem.poster,
-        backdrop: displayItem.backdrop,
+        poster: resolvedPoster || displayItem.poster,
+        backdrop: resolvedBackdrop || displayItem.backdrop,
         title: displayItem.title,
         year: displayItem.year,
         rating: displayItem.rating,
@@ -155,9 +194,9 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
               loading="lazy"
               onError={() => setBackdropError(true)}
             />
-          ) : displayItem.poster && !imgError ? (
+          ) : (resolvedPoster || displayItem.poster) && !imgError ? (
             <img
-              src={displayItem.poster}
+              src={resolvedPoster || displayItem.poster}
               alt={displayItem.title}
               className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
@@ -222,9 +261,9 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
       className={`flex-shrink-0 group cursor-pointer focus-ring transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
     >
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-2 group-hover:scale-[1.04]">
-        {displayItem.poster && !imgError ? (
+        {(resolvedPoster || displayItem.poster) && !imgError ? (
           <img
-            src={displayItem.poster}
+            src={resolvedPoster || displayItem.poster}
             alt={displayItem.title}
             className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
             loading="lazy"

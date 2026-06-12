@@ -16,24 +16,34 @@ const DATA_URL =
 
 let cachedData: AnimeMapping[] | null = null
 let cacheTimestamp = 0
+let activePromise: Promise<AnimeMapping[]> | null = null
 
-export async function loadAnimeLists(): Promise<AnimeMapping[]> {
+export function loadAnimeLists(): Promise<AnimeMapping[]> {
   if (cachedData && Date.now() - cacheTimestamp < CACHE_DURATION_MS) {
-    return cachedData
+    return Promise.resolve(cachedData)
+  }
+  if (activePromise) {
+    return activePromise
   }
 
-  try {
-    const response = await fetch(DATA_URL)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data: AnimeMapping[] = await response.json()
-    cachedData = data
-    cacheTimestamp = Date.now()
-    console.log(`[anime-lists] loaded ${data.length} mappings`)
-    return data
-  } catch (e) {
-    console.warn('[anime-lists] fetch failed:', e)
-    return cachedData ?? []
-  }
+  activePromise = (async () => {
+    try {
+      const response = await fetch(DATA_URL)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data: AnimeMapping[] = await response.json()
+      cachedData = data
+      cacheTimestamp = Date.now()
+      console.log(`[anime-lists] loaded ${data.length} mappings`)
+      return data
+    } catch (e) {
+      console.warn('[anime-lists] fetch failed:', e)
+      return cachedData ?? []
+    } finally {
+      activePromise = null
+    }
+  })()
+
+  return activePromise
 }
 
 export async function lookupByAniListId(anilistId: number): Promise<AnimeMapping[]> {
@@ -54,6 +64,46 @@ export async function lookupByTvdbId(tvdbId: number): Promise<AnimeMapping[]> {
 export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | undefined> {
   const data = await loadAnimeLists()
   return data.find((e) => e.imdb_id === imdbId)
+}
+
+async function fetchYunaMoeIds(known: {
+  anilistId?: number
+  malId?: number
+  tvdbId?: number
+  tmdbId?: number
+  imdbId?: string
+}): Promise<{
+  anilistId?: number
+  malId?: number
+  tvdbId?: number
+  tmdbId?: number
+  imdbId?: string
+} | null> {
+  try {
+    let queryParam = ''
+    if (known.anilistId != null) queryParam = `anilist=${known.anilistId}`
+    else if (known.malId != null) queryParam = `mal=${known.malId}`
+    else if (known.tvdbId != null) queryParam = `thetvdb=${known.tvdbId}`
+    else if (known.tmdbId != null) queryParam = `themoviedb=${known.tmdbId}`
+    else if (known.imdbId != null) queryParam = `imdb=${known.imdbId}`
+
+    if (!queryParam) return null
+
+    const res = await fetch(`https://relations.yuna.moe/api/ids?${queryParam}`)
+    if (res.ok) {
+      const match = await res.json() as any
+      return {
+        anilistId: match.anilist ? Number(match.anilist) : undefined,
+        malId: match.mal ? Number(match.mal) : undefined,
+        tvdbId: match.thetvdb ? Number(match.thetvdb) : undefined,
+        tmdbId: match.themoviedb ? Number(match.themoviedb) : undefined,
+        imdbId: match.imdb || undefined,
+      }
+    }
+  } catch (e) {
+    console.warn('[anime-lists] Yuna Moe API lookup failed:', e)
+  }
+  return null
 }
 
 export async function resolveAnimeIds(known: {
@@ -91,17 +141,23 @@ export async function resolveAnimeIds(known: {
     match = data.find((e) => e.imdb_id === known.imdbId)
   }
 
-  if (!match) return null
-
-  return {
-    anilistId: match.anilist_id,
-    malId: match.mal_id,
-    tvdbId: match.thetvdb_id,
-    tmdbId: match.themoviedb_id,
-    imdbId: match.imdb_id,
-    tvdbSeason: match.tvdb_season,
-    tvdbEpOffset: match.tvdb_epoffset,
+  if (match) {
+    return {
+      anilistId: match.anilist_id,
+      malId: match.mal_id,
+      tvdbId: match.thetvdb_id,
+      tmdbId: match.themoviedb_id,
+      imdbId: match.imdb_id,
+      tvdbSeason: match.tvdb_season,
+      tvdbEpOffset: match.tvdb_epoffset,
+    }
   }
+
+  // Fallback to online API lookup
+  const online = await fetchYunaMoeIds(known)
+  if (online) return online
+
+  return null
 }
 
 export async function mapAniListEpisodeToTvdb(

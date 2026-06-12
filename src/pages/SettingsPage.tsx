@@ -20,7 +20,6 @@ import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
 import { loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
-import { ART_PROVIDER_BTTTR, ART_PROVIDER_CUSTOM, presetForProvider, resolveArtPattern } from '../services/artwork'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
@@ -86,7 +85,6 @@ const BACKUP_KEYS = [
   'anilist_account',
   'anilist_client_id',
   'anilist_client_secret',
-  'orynt_art_url_overrides',
   'openrouter_api_key',
   'openrouter_model',
   'orynt_sub_translation_enabled',
@@ -258,7 +256,7 @@ function SearchSettingsSection() {
 
 export default function SettingsPage() {
   const store = useAppStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'art' | 'player' | 'advanced' | 'interface'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface'>('accounts')
   const [progressSubPage, setProgressSubPage] = useState<'main' | 'local' | 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'anime'>('main')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
@@ -297,7 +295,6 @@ export default function SettingsPage() {
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
-  const [artPreviewImdbId, setArtPreviewImdbId] = useState('tt0111161')
 
   const testPmdbConnection = async () => {
     setPmdbConnChecking(true)
@@ -796,11 +793,6 @@ export default function SettingsPage() {
   const isConnected = store.traktConnected || isAuthenticated()
   const hasBundledTrakt = hasBundledTraktClientCredentials()
   const canConnectTrakt = hasTraktClientCredentials() && !traktPolling
-  const artOverrides = store.artOverrides
-  const updateArtOverrides = (updates: Partial<typeof artOverrides>) => {
-    store.setArtOverrides({ ...artOverrides, ...updates })
-  }
-
   const categories = [
     {
       title: 'CONNECTIONS',
@@ -890,16 +882,6 @@ export default function SettingsPage() {
             </svg>
           )
         },
-        {
-          id: 'art',
-          label: 'Artwork',
-          description: 'Custom poster, background, and thumbnail URL patterns.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
-            </svg>
-          )
-        }
       ]
     },
     {
@@ -2646,128 +2628,6 @@ export default function SettingsPage() {
           )}
 
           {/* ═══════════════════════════════════════════════
-              ART TAB
-              ═══════════════════════════════════════════════ */}
-          {activeTab === 'art' && (
-            <>
-              <SettingSection title="Art URL Overrides" description="Replace artwork with custom URL patterns. Overrides apply to search results and detail recommendations.">
-                <SettingRow label="Rating Poster Provider" description="BTTTR pre-fills poster pattern using IMDb IDs.">
-                  <select
-                    value={artOverrides.provider}
-                    onChange={(e) => store.setArtOverrides(presetForProvider(e.target.value, artOverrides))}
-                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value={ART_PROVIDER_CUSTOM}>Custom Art URLs</option>
-                    <option value={ART_PROVIDER_BTTTR}>BTTTR Posters</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="Proxy Rating & Custom Art" description="Reserved for addon-routed art requests.">
-                  <SettingToggle checked={artOverrides.proxyEnabled} onChange={(v) => updateArtOverrides({ proxyEnabled: v })} />
-                </SettingRow>
-              </SettingSection>
-
-              <SettingSection title="URL Patterns">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Poster URL</label>
-                      <input
-                        type="text"
-                        value={artOverrides.posterPattern}
-                        onChange={(e) => updateArtOverrides({ posterPattern: e.target.value, provider: ART_PROVIDER_CUSTOM })}
-                        placeholder="https://btttr.cc/poster/auto/{imdb_id}/auto.png"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Background URL</label>
-                      <input
-                        type="text"
-                        value={artOverrides.backgroundPattern}
-                        onChange={(e) => updateArtOverrides({ backgroundPattern: e.target.value })}
-                        placeholder="https://example.com/background/{tmdb_id}.jpg"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Logo URL</label>
-                      <input
-                        type="text"
-                        value={artOverrides.logoPattern}
-                        onChange={(e) => updateArtOverrides({ logoPattern: e.target.value })}
-                        placeholder="https://example.com/logo/{tmdb_id}.png"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Episode Thumbnail URL</label>
-                      <input
-                        type="text"
-                        value={artOverrides.episodeThumbnailPattern}
-                        onChange={(e) => updateArtOverrides({ episodeThumbnailPattern: e.target.value })}
-                        placeholder="https://example.com/thumb/{imdb_id}/{season}/{episode}.jpg"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 bg-white/[0.02] rounded-xl text-xs text-white/30 leading-relaxed border border-white/[0.04]">
-                    <p><span className="font-semibold text-white/50">ID placeholders:</span> {'{id} {imdb_id} {tmdb_id} {tvdb_id} {mal_id} {kitsu_id} {anilist_id} {anidb_id} {type}'}</p>
-                    <p><span className="font-semibold text-white/50">Episode:</span> {'{season} {episode} {thumbnail}'}</p>
-                    <p><span className="font-semibold text-white/50">Language:</span> {'{language} {language_short}'}</p>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Preview */}
-              <SettingSection title="Preview">
-                <div className="px-6 py-4 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="text"
-                      value={artPreviewImdbId}
-                      onChange={(e) => setArtPreviewImdbId(e.target.value)}
-                      placeholder="tt0111161"
-                      className="w-40 px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-sm text-white focus:outline-none focus:border-accent/50"
-                    />
-                    <span className="text-xs text-white/30">Enter IMDb ID to preview</span>
-                  </div>
-                  {artOverrides.posterPattern && (() => {
-                    const resolved = resolveArtPattern(artOverrides.posterPattern, { imdbId: artPreviewImdbId || undefined })
-                    return (
-                      <div className="flex gap-4 items-start">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[11px] text-white/30 mb-1 font-semibold uppercase">Resolved poster URL</p>
-                          <p className="text-xs text-white/50 break-all font-mono bg-white/[0.03] rounded-lg px-2.5 py-1.5">
-                            {resolved || <span className="text-red-400">Missing placeholder</span>}
-                          </p>
-                        </div>
-                        {resolved && (
-                          <img
-                            src={resolved}
-                            alt="Preview"
-                            className="w-20 h-28 object-cover rounded-lg border border-white/[0.06] flex-shrink-0"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                          />
-                        )}
-                      </div>
-                    )
-                  })()}
-                </div>
-              </SettingSection>
-
-              {/* Reset */}
-              <SettingSection title="Danger Zone">
-                <SettingRow label="Reset all art patterns" description="Clear all custom URL patterns back to defaults.">
-                  <DangerButton onClick={() => store.setArtOverrides({ provider: ART_PROVIDER_CUSTOM, proxyEnabled: false, posterPattern: '', backgroundPattern: '', logoPattern: '', episodeThumbnailPattern: '' })}>
-                    Reset Patterns
-                  </DangerButton>
-                </SettingRow>
-              </SettingSection>
-            </>
-          )}
-
-          {/* ═══════════════════════════════════════════════
               PLAYER TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'player' && (
@@ -2790,6 +2650,7 @@ export default function SettingsPage() {
                   >
                     <option value="auto">Auto-detect (Recommended)</option>
                     <option value="no">Disabled (Software)</option>
+                    <option value="d3d11va">Direct3D 11 (d3d11va)</option>
                     <option value="nvdec">NVIDIA (nvdec)</option>
                     <option value="vaapi">Intel/AMD Linux (vaapi)</option>
                     <option value="videotoolbox">macOS (videotoolbox)</option>
@@ -2805,11 +2666,56 @@ export default function SettingsPage() {
                     onChange={(e) => store.setCacheBufferSize(e.target.value as any)}
                     className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
-                    <option value="default">Default (64MB)</option>
-                    <option value="large">Large (128MB)</option>
-                    <option value="aggressive">Aggressive (256MB)</option>
+                    <option value="default">Default (150MB)</option>
+                    <option value="large">Large (256MB)</option>
+                    <option value="aggressive">Aggressive (512MB)</option>
                   </select>
                 </SettingRow>
+                <SettingRow label="Cache duration (seconds)" description="Amount of stream time to buffer ahead.">
+                  <input
+                    type="number"
+                    min="5"
+                    max="600"
+                    value={store.mpvCacheSecs}
+                    onChange={(e) => store.setMpvCacheSecs(Number(e.target.value) || 60)}
+                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </SettingRow>
+                <SettingRow label="Network timeout (seconds)" description="Connection timeout before giving up on a stream.">
+                  <input
+                    type="number"
+                    min="5"
+                    max="120"
+                    value={store.mpvNetworkTimeout}
+                    onChange={(e) => store.setMpvNetworkTimeout(Number(e.target.value) || 15)}
+                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </SettingRow>
+              </SettingSection>
+
+              {/* Advanced Player Settings */}
+              <SettingSection title="Advanced Player Options" description="Configure custom parameters for the mpv player.">
+                <SettingRow label="Custom mpv arguments" description="Pass additional CLI flags to mpv (space-separated, e.g. --alang=eng --volume-max=150).">
+                  <input
+                    type="text"
+                    placeholder="e.g. --alang=eng --volume-max=150"
+                    value={store.mpvCustomArgs}
+                    onChange={(e) => store.setMpvCustomArgs(e.target.value)}
+                    className="w-96 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50"
+                  />
+                </SettingRow>
+                <div className="px-6 py-4">
+                  <button
+                    onClick={() => {
+                      if (confirm("Are you sure you want to reset all player settings to safe defaults?")) {
+                        store.resetPlayerSettings()
+                      }
+                    }}
+                    className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-200 rounded-xl text-sm font-semibold transition-all"
+                  >
+                    Reset Player Settings to Safe Defaults
+                  </button>
+                </div>
               </SettingSection>
 
               {/* Audio Passthrough */}

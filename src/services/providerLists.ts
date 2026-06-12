@@ -81,7 +81,7 @@ function traktItemToSearchResult(raw: unknown): SearchResult | null {
     title: media.title || 'Untitled',
     type,
     year: media.year,
-    poster: ids.imdb ? `https://btttr.cc/poster/auto/${ids.imdb}/auto.png` : undefined,
+    poster: undefined,
     provider: 'trakt',
     imdbId: ids.imdb,
     tmdbId: ids.tmdb,
