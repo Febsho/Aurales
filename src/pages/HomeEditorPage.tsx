@@ -27,6 +27,24 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
   { value: 'continue', label: 'Continue Watching' },
 ]
 
+const SIMKL_LIST_SOURCES = [
+  { id: 'watchlist', label: 'Plan to Watch - All', layout: 'poster' as const },
+  { id: 'watching', label: 'Watching - All', layout: 'landscape' as const },
+  { id: 'completed', label: 'Completed - All', layout: 'poster' as const },
+  { id: 'history', label: 'Watch History', layout: 'landscape' as const },
+  { id: 'movies-watchlist', label: 'Movies - Watchlist', layout: 'poster' as const },
+  { id: 'movies-watching', label: 'Movies - Watching', layout: 'landscape' as const },
+  { id: 'movies-completed', label: 'Movies - Completed', layout: 'poster' as const },
+  { id: 'shows-watchlist', label: 'Shows - Watchlist', layout: 'poster' as const },
+  { id: 'shows-watching', label: 'Shows - Watching', layout: 'landscape' as const },
+  { id: 'shows-completed', label: 'Shows - Completed', layout: 'poster' as const },
+  { id: 'anime-watchlist', label: 'Anime - Watchlist', layout: 'poster' as const },
+  { id: 'anime-watching', label: 'Anime - Watching', layout: 'landscape' as const },
+  { id: 'anime-completed', label: 'Anime - Completed', layout: 'poster' as const },
+  { id: 'on-hold', label: 'On Hold', layout: 'poster' as const },
+  { id: 'dropped', label: 'Dropped', layout: 'poster' as const },
+]
+
 function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; options?: string[] }[] | undefined): Record<string, string> | undefined {
   const required = (extra || []).filter((item) => item.isRequired)
   if (required.length === 0) return undefined
@@ -133,7 +151,7 @@ function SortableRow({ row, onUpdate, onRemove }: {
 }
 
 export default function HomeEditorPage() {
-  const { homeRows, updateHomeRow, removeHomeRow, reorderHomeRows, addHomeRow, resetHomeRows, addons } = useAppStore()
+  const { homeRows, updateHomeRow, removeHomeRow, reorderHomeRows, addHomeRow, resetHomeRows, addons, simklConnected } = useAppStore()
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -198,6 +216,19 @@ export default function HomeEditorPage() {
     } else {
       addHomeRow(updates as Omit<HomeRowConfig, 'id' | 'order'>)
     }
+  }
+
+  const isSimklListAdded = (listId: string) =>
+    homeRows.some((r) => r.sourceType === 'simkl' && r.providerListId === listId)
+
+  const handleAddSimklList = (list: typeof SIMKL_LIST_SOURCES[number]) => {
+    addHomeRow({
+      title: `Simkl - ${list.label}`,
+      sourceType: 'simkl',
+      providerListId: list.id,
+      layout: list.layout,
+      enabled: true,
+    })
   }
 
   return (
@@ -304,6 +335,44 @@ export default function HomeEditorPage() {
       {addons.length === 0 && (
         <div className="mt-8 p-4 bg-surface-elevated rounded-xl text-center">
           <p className="text-sm text-muted">No addons installed. Go to Settings to add addons and their catalogs will appear here.</p>
+        </div>
+      )}
+
+      {simklConnected && (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-green-400" />
+            Add Simkl Lists
+          </h2>
+          <p className="text-sm text-muted mb-3">
+            Add separate movie, show, and anime Simkl rows to the home screen.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {SIMKL_LIST_SOURCES.map((list) => {
+              const added = isSimklListAdded(list.id)
+              return (
+                <div key={list.id} className="flex items-center justify-between p-3 bg-surface-elevated rounded-xl">
+                  <div>
+                    <div className="text-sm font-medium">{list.label}</div>
+                    <span className="text-[10px] text-muted px-1.5 py-0.5 bg-white/5 rounded mt-1 inline-block">
+                      {list.layout}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleAddSimklList(list)}
+                    disabled={added}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      added
+                        ? 'bg-white/5 text-muted cursor-default'
+                        : 'bg-accent hover:bg-accent-hover text-black'
+                    }`}
+                  >
+                    {added ? 'Added' : 'Add to Home'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

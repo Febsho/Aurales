@@ -66,6 +66,83 @@ impl Database {
                 cached_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS app_media (
+                id TEXT PRIMARY KEY, media_type TEXT NOT NULL, title TEXT NOT NULL,
+                original_title TEXT, localized_title TEXT, year INTEGER, overview TEXT,
+                poster TEXT, backdrop TEXT, logo TEXT, genres_json TEXT, runtime INTEGER,
+                rating REAL, age_rating TEXT, language TEXT, country TEXT, tmdb_id INTEGER,
+                tvdb_id INTEGER, imdb_id TEXT, trakt_id INTEGER, simkl_id INTEGER,
+                anilist_id INTEGER, mal_id INTEGER, source_metadata_provider TEXT NOT NULL,
+                source_addon_id TEXT, raw_json TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_seasons (
+                id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_number INTEGER NOT NULL,
+                title TEXT, overview TEXT, poster TEXT, episode_count INTEGER, air_date TEXT,
+                is_released INTEGER DEFAULT 1, raw_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL, FOREIGN KEY(local_media_id) REFERENCES app_media(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS app_episodes (
+                id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL, episode_number INTEGER NOT NULL,
+                absolute_episode_number INTEGER, title TEXT, overview TEXT, still TEXT, air_date TEXT,
+                runtime INTEGER, tmdb_id INTEGER, tvdb_id INTEGER, anilist_id INTEGER,
+                is_released INTEGER DEFAULT 1,
+                raw_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(local_media_id) REFERENCES app_media(id) ON DELETE CASCADE,
+                FOREIGN KEY(season_id) REFERENCES app_seasons(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS addon_media_mappings (
+                id TEXT PRIMARY KEY, addon_id TEXT NOT NULL, addon_item_id TEXT NOT NULL,
+                local_media_id TEXT NOT NULL, media_type TEXT NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, UNIQUE(addon_id, addon_item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS metadata_resolution_log (
+                id TEXT PRIMARY KEY, addon_id TEXT, addon_item_id TEXT, local_media_id TEXT,
+                status TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_app_media_imdb ON app_media(imdb_id);
+            CREATE INDEX IF NOT EXISTS idx_app_media_tmdb ON app_media(tmdb_id);
+            CREATE INDEX IF NOT EXISTS idx_app_media_tvdb ON app_media(tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_addon_mapping_lookup ON addon_media_mappings(addon_id, addon_item_id);
+
+            CREATE TABLE IF NOT EXISTS anime_season_mappings (
+                id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_number INTEGER NOT NULL,
+                tvdb_id INTEGER, tvdb_series_id INTEGER, tvdb_season_number INTEGER,
+                anilist_id INTEGER, mal_id INTEGER, title TEXT, year INTEGER,
+                relation_type TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(local_media_id, season_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS anime_episode_mappings (
+                id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL, absolute_episode_number INTEGER,
+                tvdb_episode_id INTEGER, addon_id TEXT, addon_episode_id TEXT,
+                anilist_id INTEGER, mal_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(local_media_id, season_number, episode_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS anime_mapping_overrides (
+                id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL,
+                override_type TEXT NOT NULL, tvdb_series_id INTEGER,
+                tvdb_order_type TEXT, anilist_id INTEGER, mal_id INTEGER,
+                season_number INTEGER, note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_anime_season_map_media ON anime_season_mappings(local_media_id);
+            CREATE INDEX IF NOT EXISTS idx_anime_ep_map_media ON anime_episode_mappings(local_media_id);
+            CREATE INDEX IF NOT EXISTS idx_anime_override_media ON anime_mapping_overrides(local_media_id);
+
             CREATE TABLE IF NOT EXISTS trakt_sync (
                 id TEXT PRIMARY KEY,
                 sync_type TEXT NOT NULL,
@@ -92,6 +169,57 @@ impl Database {
                 poster_url TEXT,
                 backdrop_url TEXT,
                 watched_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_accounts (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                username TEXT,
+                avatar TEXT,
+                access_token_encrypted TEXT,
+                refresh_token_encrypted TEXT,
+                connected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_sync_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_watchlist_items (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                local_media_id TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                external_id TEXT,
+                title TEXT NOT NULL,
+                year INTEGER,
+                added_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_mappings (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                local_media_id TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                simkl_id INTEGER,
+                tmdb_id INTEGER,
+                tvdb_id INTEGER,
+                imdb_id TEXT,
+                mal_id INTEGER,
+                title TEXT,
+                year INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_items (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                external_id TEXT,
+                media_type TEXT NOT NULL,
+                local_media_id TEXT,
+                status TEXT,
+                progress REAL,
+                watched_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             ",
         )?;
