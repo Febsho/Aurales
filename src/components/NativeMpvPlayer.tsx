@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
+import { logEvent } from '../services/diagnostics'
 import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -364,6 +365,14 @@ function TrackMenuPanel({ type, tracks, selected, onSelect, onClose, onToggleTra
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
+interface PlayerSession {
+  id: string
+  mediaId: string
+  streamUrl: string
+  startedAt: number
+  status: "starting" | "playing" | "paused" | "buffering" | "stopped" | "error"
+}
+
 export default function NativeMpvPlayer({
   url,
   title,
@@ -378,6 +387,7 @@ export default function NativeMpvPlayer({
 }: NativeMpvPlayerProps) {
 
   // ─ Refs ───────────────────────────────────────────────────────────────────
+  const activeSessionRef = useRef<PlayerSession | null>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const trackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -390,6 +400,17 @@ export default function NativeMpvPlayer({
   const lastPmdbPlaybackSaveRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastVolumeEnforceRef = useRef(0)
+  const lastPauseRef = useRef<boolean | null>(null)
+  const lastBufferingRef = useRef<boolean | null>(null)
+  const lastCacheBuffStateRef = useRef<number | null>(null)
+  const lastDemuxerCacheDurRef = useRef<number | null>(null)
+  const lastEofReachedRef = useRef<boolean | null>(null)
+  const lastIdleActiveRef = useRef<boolean | null>(null)
+  const lastCoreIdleRef = useRef<boolean | null>(null)
+  const lastTimePosUpdateRef = useRef<number>(Date.now())
+  const lastTimePosValRef = useRef<number>(-1)
+  const autoRestartCountRef = useRef<number>(0)
+  const lastRestartTimeRef = useRef<number>(0)
   // Counts auto-select attempts; capped at 10. Resets to 0 on episode transition.
   const autoSelectAttemptsRef = useRef(0)
   const hasAutoSelectedAudioRef = useRef(false)
@@ -497,6 +518,7 @@ export default function NativeMpvPlayer({
       : item.localId
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
     const isCompleted = completedFlag || progressPct >= 85
+    logEvent('PLAYBACK SYNC DEBUG', `Save watch progress local DB: ${Math.round(time)}s / ${Math.round(dur)}s (Completed: ${isCompleted})`)
     useAppStore.getState().setWatchProgress(key, {
       id: key,
       mediaType: item.mediaType === 'show' ? 'series' : item.mediaType,
@@ -543,6 +565,7 @@ export default function NativeMpvPlayer({
     }
 
     if (pmdbSaveResumePosition && dur > 0) {
+      logEvent('PLAYBACK SYNC DEBUG', `Save PMDB resume point: ${Math.floor(pos)}s / ${Math.floor(dur)}s`)
       savePMDBPlaybackProgress(
         tmdbId,
         mediaType,
@@ -827,8 +850,7 @@ export default function NativeMpvPlayer({
       if (key === ' ' || key === 'Spacebar') {
         e.preventDefault()
         e.stopPropagation()
-        setPaused(!pausedRef.current)
-        sendPlayerCommand('cycle', ['pause']).catch(() => {})
+        togglePlay()
         showControls()
         return
       }
@@ -915,11 +937,43 @@ export default function NativeMpvPlayer({
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
+    const streamUrl = url
+    const mediaId = playbackItem?.localId || url
+
+    if (activeSessionRef.current && activeSessionRef.current.streamUrl === streamUrl && activeSessionRef.current.status !== "stopped") {
+      console.warn("[PLAYER DEBUG] startPlayback ignored: already playing same stream")
+      return
+    }
+
+    const session: PlayerSession = {
+      id: Math.random().toString(36).substring(7),
+      mediaId,
+      streamUrl,
+      startedAt: Date.now(),
+      status: "starting"
+    }
+    activeSessionRef.current = session
+    logEvent('PLAYER DEBUG', `Player started session ${session.id} for media ${session.mediaId}`)
+
     let cancelled = false
     const start = async () => {
       try {
-        await launchEmbeddedPlayer({ url, title, startTime, volume: volumeRef.current, viewport: buildVideoViewport() })
-        if (cancelled) return
+        logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with url: ${url}`)
+        const storeState = useAppStore.getState()
+        await launchEmbeddedPlayer({
+          url,
+          title,
+          startTime,
+          volume: volumeRef.current,
+          viewport: buildVideoViewport(),
+          hwdecMode: storeState.hwdecMode,
+          cacheBufferSize: storeState.cacheBufferSize,
+          mpvCacheSecs: storeState.mpvCacheSecs,
+          mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+          mpvCustomArgs: storeState.mpvCustomArgs
+        })
+        if (cancelled || session.status === "stopped") return
+        session.status = "playing"
 
         // Enforce saved volume a few times because mpv can reset filters/audio
         // while the demuxer initializes on some streams.
@@ -929,6 +983,7 @@ export default function NativeMpvPlayer({
           const startProgress = startTime && progressRef.current.duration > 0
             ? startTime / progressRef.current.duration : 0
           if (scrobbleSimkl) {
+            logEvent('PLAYBACK SYNC DEBUG', `Send Simkl start for session ${session.id}`)
             onSimklPlaybackStart(playbackItem, startProgress).catch(() => {})
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
@@ -936,6 +991,7 @@ export default function NativeMpvPlayer({
             const payload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, pct)
               : buildMovieScrobble(playbackItem.imdbId, pct)
+            logEvent('PLAYBACK SYNC DEBUG', `Send Trakt start for session ${session.id} at ${pct}%`)
             traktScrobbleStart(payload).catch(() => {})
           }
 
@@ -960,20 +1016,20 @@ export default function NativeMpvPlayer({
                 ...(pmdbSkips.status === 'fulfilled' ? pmdbSkips.value : []),
                 ...(introdbSkips.status === 'fulfilled' ? introdbSkips.value : []),
               ]
-              if (!cancelled) setSkips(merged)
+              if (!cancelled && session.status !== "stopped") setSkips(merged)
             }
           }
           resolveAndFetchSkips()
         }
 
         ;[500, 1000, 2000, 3500].forEach((delay) => {
-          setTimeout(() => { if (!cancelled) invoke('setup_player_click_through').catch(() => {}) }, delay)
+          setTimeout(() => { if (!cancelled && session.status !== "stopped") invoke('setup_player_click_through').catch(() => {}) }, delay)
         })
 
         await loadAddonSubtitles()
         let attempts = 0
         trackPollRef.current = setInterval(async () => {
-          if (cancelled) return
+          if (cancelled || session.status === "stopped") return
           attempts += 1
           await loadAddonSubtitles()
           try {
@@ -987,20 +1043,22 @@ export default function NativeMpvPlayer({
           }
         }, 1000)
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        if (!cancelled && session.status !== "stopped") setError(e instanceof Error ? e.message : String(e))
       }
     }
     start()
     showControls()
     return () => {
       cancelled = true
+      session.status = "stopped"
+      logEvent('PLAYER DEBUG', `Stop playback session ${session.id}`)
       if (pollRef.current) clearInterval(pollRef.current)
       if (trackPollRef.current) clearInterval(trackPollRef.current)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
       stopEmbeddedPlayer().catch(() => {})
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, title, startTime])
+  }, [url, title])
 
   // ─ Resize ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1085,6 +1143,30 @@ export default function NativeMpvPlayer({
     return () => clearInterval(sync)
   }, [discordRichPresence, paused, title, playbackItem, poster])
 
+  const triggerRestart = useCallback(async (resumeTime: number) => {
+    logEvent('PLAYER DEBUG', `Restarting player session at position ${resumeTime}s...`)
+    try {
+      await stopEmbeddedPlayer()
+      const storeState = useAppStore.getState()
+      await launchEmbeddedPlayer({
+        url,
+        title,
+        startTime: resumeTime,
+        volume: volumeRef.current,
+        viewport: buildVideoViewport(),
+        hwdecMode: storeState.hwdecMode,
+        cacheBufferSize: storeState.cacheBufferSize,
+        mpvCacheSecs: storeState.mpvCacheSecs,
+        mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+        mpvCustomArgs: storeState.mpvCustomArgs
+      })
+      applySavedVolume()
+      logEvent('PLAYER DEBUG', `Player restarted successfully`)
+    } catch (err) {
+      logEvent('PLAYER DEBUG', `Auto-restart failed: ${err}`)
+    }
+  }, [url, title, applySavedVolume])
+
   // ─ Polling ───────────────────────────────────────────────────────────────
   useEffect(() => {
     let polling = false
@@ -1094,7 +1176,46 @@ export default function NativeMpvPlayer({
       try {
         const pos = await getPlayerProperty('time-pos') as number | null
         const dur = await getPlayerProperty('duration') as number | null
+        const isPause = await getPlayerProperty('pause') as boolean | null
+        const isBuffering = await getPlayerProperty('buffering') as boolean | null
+        const cacheBuffState = await getPlayerProperty('cache-buffering-state') as number | null
+        const demuxerCacheDur = await getPlayerProperty('demuxer-cache-duration') as number | null
+        const eofReached = await getPlayerProperty('eof-reached') as boolean | null
+        const idleActive = await getPlayerProperty('idle-active') as boolean | null
+        const coreIdle = await getPlayerProperty('core-idle') as boolean | null
+
         const nowMs = Date.now()
+
+        // Log property changes
+        if (isPause !== null && isPause !== lastPauseRef.current) {
+          lastPauseRef.current = isPause
+          logEvent('MPV DEBUG', `pause changed to: ${isPause}`)
+        }
+        if (isBuffering !== null && isBuffering !== lastBufferingRef.current) {
+          lastBufferingRef.current = isBuffering
+          logEvent('MPV DEBUG', `buffering changed to: ${isBuffering}`)
+        }
+        if (cacheBuffState !== null && cacheBuffState !== lastCacheBuffStateRef.current) {
+          lastCacheBuffStateRef.current = cacheBuffState
+          logEvent('MPV DEBUG', `cache-buffering-state changed: ${cacheBuffState}%`)
+        }
+        if (demuxerCacheDur !== null && demuxerCacheDur !== lastDemuxerCacheDurRef.current) {
+          lastDemuxerCacheDurRef.current = demuxerCacheDur
+          logEvent('MPV DEBUG', `demuxer-cache-duration changed: ${demuxerCacheDur}s`)
+        }
+        if (eofReached !== null && eofReached !== lastEofReachedRef.current) {
+          lastEofReachedRef.current = eofReached
+          logEvent('MPV DEBUG', `eof-reached changed: ${eofReached}`)
+        }
+        if (idleActive !== null && idleActive !== lastIdleActiveRef.current) {
+          lastIdleActiveRef.current = idleActive
+          logEvent('MPV DEBUG', `idle-active changed: ${idleActive}`)
+        }
+        if (coreIdle !== null && coreIdle !== lastCoreIdleRef.current) {
+          lastCoreIdleRef.current = coreIdle
+          logEvent('MPV DEBUG', `core-idle changed: ${coreIdle}`)
+        }
+
         if (nowMs - lastVolumeEnforceRef.current >= 5000) {
           lastVolumeEnforceRef.current = nowMs
           const actualVolume = await getPlayerProperty('volume') as number | null
@@ -1105,36 +1226,55 @@ export default function NativeMpvPlayer({
         if (pos != null) { setCurrentTime(pos); progressRef.current.currentTime = pos }
         if (dur != null && dur > 0) { setDuration(dur); progressRef.current.duration = dur }
 
+        // Stall detection
+        const PLAYER_STALL_TIMEOUT_MS = 30000
+        const PLAYER_RESTART_COOLDOWN_MS = 15000
+        const MAX_AUTO_RESTARTS = 1
+
+        const isPlaying = pos !== null && !isPause && !isBuffering
+        if (isPlaying) {
+          if (pos !== lastTimePosValRef.current) {
+            lastTimePosValRef.current = pos
+            lastTimePosUpdateRef.current = nowMs
+          } else {
+            const timeSinceLastPosUpdate = nowMs - lastTimePosUpdateRef.current
+            if (timeSinceLastPosUpdate >= PLAYER_STALL_TIMEOUT_MS) {
+              logEvent('PLAYER DEBUG', `Playback stall detected! No position update for ${Math.round(timeSinceLastPosUpdate / 1000)}s while playing.`)
+              if (autoRestartCountRef.current < MAX_AUTO_RESTARTS && nowMs - lastRestartTimeRef.current >= PLAYER_RESTART_COOLDOWN_MS) {
+                logEvent('PLAYER DEBUG', `Triggering player auto-restart (attempt ${autoRestartCountRef.current + 1})`)
+                autoRestartCountRef.current++
+                lastRestartTimeRef.current = nowMs
+                lastTimePosUpdateRef.current = nowMs
+                triggerRestart(pos)
+              } else {
+                logEvent('PLAYER DEBUG', `Stall auto-restart skipped: max auto-restarts exceeded or within cooldown.`)
+              }
+            }
+          }
+        } else {
+          lastTimePosUpdateRef.current = nowMs
+        }
+
         if (pos != null && dur != null && dur > 0) {
-          if (Math.abs(pos - lastSavedTimeRef.current) >= 2) {
+          if (Math.abs(pos - lastSavedTimeRef.current) >= 15) {
             lastSavedTimeRef.current = pos
             saveLocalProgress(pos, dur, false)
           }
           const item = currentItemRef.current
-          if (item && scrobbleSimkl && pos - lastSimklPlaybackSaveRef.current >= 20) {
+          if (item && scrobbleSimkl && pos - lastSimklPlaybackSaveRef.current >= 60) {
             lastSimklPlaybackSaveRef.current = pos
+            logEvent('PLAYBACK SYNC DEBUG', `Save Simkl scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveSimklPlaybackProgress(item, pos / dur).catch(() => {})
           }
-          if (item && scrobbleAnilist && item.mediaType === 'anime' && pos - lastAniListPlaybackSaveRef.current >= 20) {
+          if (item && scrobbleAnilist && item.mediaType === 'anime' && pos - lastAniListPlaybackSaveRef.current >= 60) {
             lastAniListPlaybackSaveRef.current = pos
+            logEvent('PLAYBACK SYNC DEBUG', `Save AniList scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveAniListProgress(item, pos / dur).catch(() => {})
           }
-          if (item && pmdbApiKey && pmdbSaveResumePosition && (tmdbIdRef.current || item.imdbId) && pos - lastPmdbPlaybackSaveRef.current >= 20) {
+          if (item && pmdbApiKey && pmdbSaveResumePosition && (tmdbIdRef.current || item.imdbId) && pos - lastPmdbPlaybackSaveRef.current >= 60) {
             lastPmdbPlaybackSaveRef.current = pos
             const mediaType = item.mediaType === 'show' ? 'tv' : 'movie'
-            // Save resume point only — scrobbling is handled exclusively by
-            // close() / pickAnother() using our local progress calculation, so
-            // we don't rely on PMDB's {action:'completed'} response which uses
-            // its own stored runtime and can fire prematurely.
-            savePMDBPlaybackProgress(
-              tmdbIdRef.current,
-              mediaType,
-              item.season,
-              item.episode,
-              Math.floor(pos * 1000),
-              Math.floor(dur * 1000),
-              item.imdbId
-            ).catch(() => {})
+            savePMDBProgressHelper(pos, dur, false)
           }
 
           // Detect near-end for Up Next
@@ -1189,6 +1329,7 @@ export default function NativeMpvPlayer({
             const segmentKey = `${found.id}:${foundType}:${startMs ?? 0}:${endMs ?? 0}`
             if (endMs != null && endMs > ms && !autoSkippedSegmentsRef.current.has(segmentKey)) {
               autoSkippedSegmentsRef.current.add(segmentKey)
+              logEvent('PLAYER DEBUG', `Auto-skipping segment [${foundType}] to ${endMs / 1000}s`)
               await command('set_property', ['time-pos', endMs / 1000])
               setActiveSkip(null)
               setSkipType(null)
@@ -1202,7 +1343,7 @@ export default function NativeMpvPlayer({
       finally { polling = false }
     }, 1000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition])
+  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {

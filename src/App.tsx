@@ -6,6 +6,7 @@ import SearchPage from './pages/SearchPage'
 import MovieDetailPage from './pages/MovieDetailPage'
 import SeriesDetailPage from './pages/SeriesDetailPage'
 import SettingsPage from './pages/SettingsPage'
+import DeveloperPage from './pages/DeveloperPage'
 import CatalogPage from './pages/CatalogPage'
 import HomeEditorPage from './pages/HomeEditorPage'
 import CollectionsPage from './pages/CollectionsPage'
@@ -74,6 +75,7 @@ export default function App() {
         <Route path="/movie/:id" element={<MovieDetailPage />} />
         <Route path="/series/:id" element={<SeriesDetailPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/developer" element={<DeveloperPage />} />
         <Route path="/discover" element={<DiscoverPage />} />
         <Route path="/catalog/:rowId" element={<CatalogPage />} />
         <Route path="/home-editor" element={<HomeEditorPage />} />

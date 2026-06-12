@@ -24,8 +24,8 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
   const backdrops = ((images.backdrops as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
-      const aLang = a.iso_639_1 === 'en' ? 1 : 0
-      const bLang = b.iso_639_1 === 'en' ? 1 : 0
+      const aLang = (a.iso_639_1 === null || a.iso_639_1 === 'xx' || !a.iso_639_1) ? 1 : 0
+      const bLang = (b.iso_639_1 === null || b.iso_639_1 === 'xx' || !b.iso_639_1) ? 1 : 0
       if (aLang !== bLang) return bLang - aLang
       const aVotes = Number(a.vote_count || 0)
       const bVotes = Number(b.vote_count || 0)
@@ -34,6 +34,23 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
     })
   const selected = backdrops[0]
   return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
+}
+
+function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
+  const posters = ((images.posters as Record<string, unknown>[]) || [])
+    .filter((image) => typeof image.file_path === 'string')
+    .sort((a, b) => {
+      const aLang = a.iso_639_1 === 'en' ? 1 : 0
+      const bLang = b.iso_639_1 === 'en' ? 1 : 0
+      if (aLang !== bLang) return bLang - aLang
+      const aVotes = Number(a.vote_count || 0)
+      const bVotes = Number(b.vote_count || 0)
+      if (aVotes !== bVotes) return bVotes - aVotes
+      return Number(b.vote_average || 0) - Number(a.vote_average || 0)
+    })
+  const selected = posters[0]
+  if (selected) return `${IMG_BASE}/w780${selected.file_path}`
+  return defaultPosterPath ? `${IMG_BASE}/w780${defaultPosterPath}` : undefined
 }
 
 export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
@@ -103,7 +120,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/movie/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/movie/${tmdbId}/images`) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/movie/${tmdbId}/images`, { include_image_language: 'en,null' }) as Promise<Record<string, unknown>>,
     ])
 
     const cast = ((credits.cast as Record<string, unknown>[]) || []).slice(0, 20).map((c): CastMember => ({
@@ -152,7 +169,7 @@ export const tmdbProvider: MetadataProvider = {
       rating: details.vote_average as number,
       voteCount: details.vote_count as number,
       genres,
-      poster: details.poster_path ? `${IMG_BASE}/w500${details.poster_path}` : undefined,
+      poster: pickBestPoster(images, details.poster_path as string),
       backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,
@@ -173,7 +190,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/tv/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/tv/${tmdbId}/images`) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/tv/${tmdbId}/images`, { include_image_language: 'en,null' }) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/external_ids`) as Promise<Record<string, unknown>>,
     ])
 
@@ -223,7 +240,7 @@ export const tmdbProvider: MetadataProvider = {
       rating: details.vote_average as number,
       voteCount: details.vote_count as number,
       genres,
-      poster: details.poster_path ? `${IMG_BASE}/w500${details.poster_path}` : undefined,
+      poster: pickBestPoster(images, details.poster_path as string),
       backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,

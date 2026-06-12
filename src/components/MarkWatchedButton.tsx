@@ -30,6 +30,7 @@ interface MarkWatchedButtonProps {
   watched?: boolean
   onMarked?: () => void
   onUnmarked?: () => void
+  appSeasonCounts?: { season: number; count: number }[]
 }
 
 type Service = 'trakt' | 'simkl' | 'anilist'
@@ -46,7 +47,7 @@ const SERVICE_LABELS: Record<Service, string> = {
   anilist: 'AniList',
 }
 
-export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, compact, watched = false, onMarked, onUnmarked }: MarkWatchedButtonProps) {
+export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, compact, watched = false, onMarked, onUnmarked, appSeasonCounts }: MarkWatchedButtonProps) {
   const [open, setOpen] = useState(false)
   const [allDone, setAllDone] = useState(watched)
   const [states, setStates] = useState<Record<Service, ServiceState>>({
@@ -83,9 +84,9 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         if (mediaType === 'movie' && imdbId) {
           await traktMarkMovie(imdbId)
         } else if (episode && imdbId) {
-          await traktMarkEpisode(imdbId, episode.season, episode.episode)
+          await traktMarkEpisode(imdbId, episode.season, episode.episode, appSeasonCounts)
         } else if (imdbId && episodes.length > 0) {
-          await Promise.all(episodes.map((item) => traktMarkEpisode(imdbId, item.season, item.episode)))
+          await Promise.all(episodes.map((item) => traktMarkEpisode(imdbId, item.season, item.episode, appSeasonCounts)))
         }
       } else if (service === 'simkl') {
         if (mediaType === 'movie') {
@@ -115,7 +116,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
     try {
       if (service === 'trakt') {
         if (mediaType === 'movie' && imdbId) await traktUnmarkMovie(imdbId)
-        else if (episode && imdbId) await traktUnmarkEpisode(imdbId, episode.season, episode.episode)
+        else if (episode && imdbId) await traktUnmarkEpisode(imdbId, episode.season, episode.episode, appSeasonCounts)
         else if (imdbId) await traktUnmarkShow(imdbId)
       } else if (service === 'simkl') {
         if (mediaType === 'movie') await removeWatchedFromSimkl(mediaRef, 'movie')

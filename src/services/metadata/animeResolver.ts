@@ -1,6 +1,7 @@
 import { tvdbProvider } from '../tvdb'
 import { tmdbProvider } from '../tmdb'
 import { normalizeShow, selectAnimeTitle } from './metadataNormalizer'
+import { useAppStore } from '../../stores/appStore'
 import { mapTvdbSeasons } from './tvdbSeasonMapper'
 import { validateAnimeTvdbStructure, scoreAnimeStructure, debugAnimeMapping } from './animeStructureValidator'
 import { resolveSeasonTitles } from './animeTitleResolver'
@@ -110,10 +111,34 @@ export async function resolveAnimeMetadata(
   preferTvdbSeasons = true,
   opts?: Partial<AnimeResolverOptions>,
 ): Promise<AppMediaItem | null> {
-  if (!ids.tvdbId) return null
   const options = { ...DEFAULT_OPTIONS, ...opts, titleLanguage, preferTvdbSeasons }
+  const settings = useAppStore.getState()
+  const source = settings.animeMetadataSource ?? 'tvdb'
+  const fallback = settings.animeMetadataFallback ?? true
 
-  const details = await tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
+  let details: any = null
+  let usedSource: 'tvdb' | 'tmdb' = 'tvdb'
+
+  if (source === 'tmdb') {
+    if (ids.tmdbId) {
+      details = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
+      if (details) usedSource = 'tmdb'
+    }
+    if (!details && fallback && ids.tvdbId) {
+      details = await tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
+      if (details) usedSource = 'tvdb'
+    }
+  } else { // default to 'tvdb' (or anilist/mal/kitsu which fall back to tvdb)
+    if (ids.tvdbId) {
+      details = await tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
+      if (details) usedSource = 'tvdb'
+    }
+    if (!details && fallback && ids.tmdbId) {
+      details = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
+      if (details) usedSource = 'tmdb'
+    }
+  }
+
   if (!details) return null
 
   const normalized = normalizeShow(details, { ...input, ...ids }, 'anime')
@@ -132,7 +157,7 @@ export async function resolveAnimeMetadata(
   normalized.originalTitle = selected.originalTitle
   normalized.sourceMetadataProvider = 'tvdb'
 
-  if (options.preferTvdbSeasons) {
+  if (options.preferTvdbSeasons && ids.tvdbId) {
     let mappedSeasons = await mapTvdbSeasons(ids.tvdbId, normalized.seasons || [], {
       hideUnairedSeasons: options.hideUnairedSeasons,
       hideUnairedEpisodes: options.hideUnairedEpisodes,
