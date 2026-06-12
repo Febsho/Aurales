@@ -5,11 +5,24 @@ export interface SearchResult {
   year?: number
   poster?: string
   backdrop?: string
+  /** Transparent logo/wordmark image for hero display */
+  logo?: string
   overview?: string
   rating?: number
   provider: string
   imdbId?: string
+  tmdbId?: string | number
+  tvdbId?: string | number
+  malId?: string | number
+  anilistId?: string | number
+  season?: number
+  episode?: number
   addonUrl?: string
+  sourceAddonId?: string
+  sourceAddonItemId?: string
+  metadataFallback?: boolean
+  genreIds?: number[]
+  genres?: string[]
 }
 
 export interface MovieDetails {
@@ -33,6 +46,11 @@ export interface MovieDetails {
   recommendations: SearchResult[]
   trailers: Video[]
   imdbId?: string
+  tmdbId?: string | number
+  tvdbId?: string | number
+  malId?: string | number
+  anilistId?: string | number
+  provider?: string
 }
 
 export interface ShowDetails {
@@ -59,6 +77,11 @@ export interface ShowDetails {
   recommendations: SearchResult[]
   trailers: Video[]
   imdbId?: string
+  tmdbId?: string | number
+  tvdbId?: string | number
+  malId?: string | number
+  anilistId?: string | number
+  provider?: string
 }
 
 export interface SeasonSummary {
@@ -76,6 +99,8 @@ export interface SeasonDetails {
   overview?: string
   poster?: string
   episodes: EpisodeDetails[]
+  debugSource?: string
+  debugResolverStep?: string
 }
 
 export interface EpisodeDetails {
@@ -87,8 +112,17 @@ export interface EpisodeDetails {
   airDate?: string
   runtime?: number
   still?: string
+  imdbId?: string
+  tmdbId?: string | number
+  tvdbId?: string | number
   rating?: number
   voteCount?: number
+  imdbRating?: string
+  debugSource?: string
+  debugResolverStep?: string
+  debugOriginalSeasonNumber?: number
+  debugOriginalEpisodeNumber?: number
+  debugOriginalAbsoluteNumber?: number
 }
 
 export interface CastMember {
@@ -177,6 +211,53 @@ export interface SubtitleResult {
   url: string
   lang: string
   label?: string
+  source?: 'stream' | 'addon'
+  addonName?: string
+}
+
+export interface DiscoverConfig {
+  source: 'TMDB' | 'TVDB' | 'Simkl' | 'AniList'
+  contentType: 'movie' | 'series'
+  sortBy: string
+  cacheTtl: number
+  releasedOnly: boolean
+  includeAdult: boolean
+  
+  // Reference Filters
+  includeGenres: string[]
+  excludeGenres: string[]
+  genreMatchMode: 'AND' | 'OR'
+  originalLanguage?: string
+  originCountry?: string
+  releaseRegion?: string
+  certificationCountry?: string
+  certification?: string
+  filterMode?: 'Exact' | 'Loose'
+  
+  // People, Companies, and Keywords
+  people: { id: string | number; name: string }[]
+  peopleMatchMode: 'AND' | 'OR'
+  includeCompanies: { id: string | number; name: string }[]
+  excludeCompanies: { id: string | number; name: string }[]
+  companyMatchMode: 'AND' | 'OR'
+  includeKeywords: { id: string | number; name: string }[]
+  excludeKeywords: { id: string | number; name: string }[]
+  keywordMatchMode: 'AND' | 'OR'
+  
+  // Streaming and Region
+  watchRegion: string
+  providerMatchMode: 'AND' | 'OR'
+  selectedProviders: { id: string | number; name: string; logo?: string }[]
+  
+  // Numeric and Date Ranges
+  voteAverageMin: number
+  voteAverageMax: number
+  voteCountMin?: number
+  runtimeMin?: number
+  runtimeMax?: number
+  releaseDateFrom?: string
+  releaseDateTo?: string
+  presetName?: string
 }
 
 export interface HomeRowConfig {
@@ -190,6 +271,12 @@ export interface HomeRowConfig {
   layout: 'poster' | 'landscape' | 'list' | 'continue' | 'hero'
   enabled: boolean
   order: number
+  /** Determines which data source drives this row */
+  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'anilist'
+  /** Provider-specific list key, for example Simkl/Trakt/PMDB/AniList status or list id */
+  providerListId?: string
+  sortBy?: 'default' | 'alphabetical'
+  discoverConfig?: DiscoverConfig
 }
 
 export interface WatchProgress {
@@ -201,6 +288,14 @@ export interface WatchProgress {
   progressSeconds: number
   durationSeconds: number
   completed: boolean
+  title?: string
+  poster?: string
+  backdrop?: string
+  updatedAt?: string
+  imdbId?: string
+  tmdbId?: string | number
+  malId?: string | number
+  anilistId?: string | number
 }
 
 export interface TraktTokens {
@@ -216,4 +311,10 @@ export interface TraktDeviceCode {
   verificationUrl: string
   expiresIn: number
   interval: number
+}
+
+export interface TraktAccount {
+  username: string
+  name: string
+  avatar?: string
 }

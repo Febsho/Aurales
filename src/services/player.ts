@@ -5,6 +5,7 @@ export interface PlaybackRequest {
   title?: string
   startTime?: number
   subtitleUrl?: string
+  volume?: number
   viewport?: {
     x: number
     y: number
@@ -26,6 +27,7 @@ export async function launchEmbeddedPlayer(request: PlaybackRequest): Promise<vo
     url: request.url,
     title: request.title || undefined,
     startTime: request.startTime || undefined,
+    volume: request.volume ?? undefined,
     x: request.viewport?.x,
     y: request.viewport?.y,
     width: request.viewport?.width,
@@ -52,6 +54,26 @@ export async function stopEmbeddedPlayer(): Promise<void> {
 
 export async function getPlayerProperty(property: string): Promise<unknown> {
   return await invoke('mpv_get_property', { property })
+}
+
+export async function downloadSubtitle(url: string, fileName: string): Promise<string> {
+  return await invoke('download_subtitle', { url, fileName })
+}
+
+export async function writeTempSubtitle(content: string, extension = 'srt'): Promise<string> {
+  return await invoke('write_temp_subtitle', { content, extension })
+}
+
+export async function readTempSubtitle(path: string): Promise<string> {
+  return await invoke('read_temp_subtitle', { path })
+}
+
+export async function updateTempSubtitle(path: string, content: string): Promise<void> {
+  await invoke('update_temp_subtitle', { path, content })
+}
+
+export async function openRouterChat(apiKey: string, requestBody: Record<string, unknown>): Promise<string> {
+  return await invoke('openrouter_chat', { apiKey, requestBody })
 }
 
 export function formatTime(seconds: number): string {

@@ -68,6 +68,20 @@ export async function markEpisodeWatched(showImdbId: string, season: number, epi
   })
 }
 
+export async function markMovieUnwatched(imdbId: string): Promise<void> {
+  await removeFromHistory({ movies: [{ ids: { imdb: imdbId } }] })
+}
+
+export async function markEpisodeUnwatched(showImdbId: string, season: number, episode: number): Promise<void> {
+  await removeFromHistory({
+    shows: [{ ids: { imdb: showImdbId }, seasons: [{ number: season, episodes: [{ number: episode }] }] }],
+  })
+}
+
+export async function markShowUnwatched(showImdbId: string): Promise<void> {
+  await removeFromHistory({ shows: [{ ids: { imdb: showImdbId } }] })
+}
+
 export async function getPlaybackProgress(): Promise<unknown[]> {
   return await traktFetch('/sync/playback') as unknown[]
 }

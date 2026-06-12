@@ -1,13 +1,22 @@
-import type { TraktTokens, TraktDeviceCode } from '../../types'
+import type { TraktTokens, TraktDeviceCode, TraktAccount } from '../../types'
 
 const TRAKT_API = 'https://api.trakt.tv'
+const LS_ACCOUNT = 'trakt_account'
 
-function getClientId(): string {
+export function getClientId(): string {
   return localStorage.getItem('trakt_client_id') || import.meta.env.VITE_TRAKT_CLIENT_ID || ''
 }
 
 function getClientSecret(): string {
   return localStorage.getItem('trakt_client_secret') || import.meta.env.VITE_TRAKT_CLIENT_SECRET || ''
+}
+
+export function hasTraktClientCredentials(): boolean {
+  return !!getClientId() && !!getClientSecret()
+}
+
+export function hasBundledTraktClientCredentials(): boolean {
+  return !!import.meta.env.VITE_TRAKT_CLIENT_ID && !!import.meta.env.VITE_TRAKT_CLIENT_SECRET
 }
 
 export function getStoredTokens(): TraktTokens | null {
@@ -20,8 +29,23 @@ export function storeTokens(tokens: TraktTokens): void {
   localStorage.setItem('trakt_tokens', JSON.stringify(tokens))
 }
 
+export function saveTraktAccount(account: TraktAccount): void {
+  localStorage.setItem(LS_ACCOUNT, JSON.stringify(account))
+}
+
+export function getStoredTraktAccount(): TraktAccount | null {
+  try {
+    const raw = localStorage.getItem(LS_ACCOUNT)
+    if (!raw) return null
+    return JSON.parse(raw) as TraktAccount
+  } catch {
+    return null
+  }
+}
+
 export function clearTokens(): void {
   localStorage.removeItem('trakt_tokens')
+  localStorage.removeItem(LS_ACCOUNT)
 }
 
 export function isAuthenticated(): boolean {
@@ -54,6 +78,7 @@ export async function getDeviceCode(): Promise<TraktDeviceCode> {
 export async function pollForToken(deviceCode: string): Promise<TraktTokens | null> {
   const clientId = getClientId()
   const clientSecret = getClientSecret()
+  if (!clientId || !clientSecret) throw new Error('Trakt client credentials not configured')
 
   const res = await fetch(`${TRAKT_API}/oauth/device/token`, {
     method: 'POST',
@@ -135,4 +160,15 @@ export async function traktFetch(path: string, options: RequestInit = {}): Promi
   if (!res.ok) throw new Error(`Trakt API error: ${res.status}`)
   if (res.status === 204) return null
   return res.json()
+}
+
+export async function fetchTraktAccount(): Promise<TraktAccount> {
+  const data = await traktFetch('/users/settings') as any
+  const user = data?.user || {}
+  const avatar = user.images?.avatar?.full
+  return {
+    username: user.username || 'Trakt User',
+    name: user.name || user.username || 'Trakt User',
+    avatar: avatar || undefined,
+  }
 }
