@@ -1,7 +1,7 @@
 use crate::db::Database;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Manager, State};
@@ -260,6 +260,38 @@ struct NativePlayerState {
 }
 
 static NATIVE_PLAYER: OnceLock<Mutex<Option<NativePlayerState>>> = OnceLock::new();
+
+#[derive(Default)]
+struct PlayerDebugState {
+    session_id: Option<String>,
+    stream_hash: Option<String>,
+    started_at_ms: Option<u128>,
+    logs: Vec<String>,
+}
+
+static PLAYER_DEBUG_STATE: OnceLock<Mutex<PlayerDebugState>> = OnceLock::new();
+
+fn player_debug_state() -> &'static Mutex<PlayerDebugState> {
+    PLAYER_DEBUG_STATE.get_or_init(|| Mutex::new(PlayerDebugState::default()))
+}
+
+fn player_debug_log(message: impl Into<String>) {
+    let message = message.into();
+    eprintln!("{}", message);
+    if let Ok(mut state) = player_debug_state().lock() {
+        state.logs.push(message);
+        if state.logs.len() > 2_000 {
+            state.logs.drain(..500);
+        }
+    }
+}
+
+fn stable_stream_hash(value: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
     NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
@@ -562,6 +594,84 @@ pub fn get_app_metadata_for_addon(addon_id: String, addon_item_id: String, db: S
 }
 
 #[tauri::command]
+pub fn get_app_metadata_by_ids(
+    id: Option<String>,
+    imdb_id: Option<String>,
+    tmdb_id: Option<i64>,
+    tvdb_id: Option<i64>,
+    anilist_id: Option<i64>,
+    db: State<Database>,
+) -> Option<String> {
+    let conn = db.conn.lock().unwrap();
+    
+    // 1. Try by id first
+    if let Some(ref id_str) = id {
+        if let Ok(json) = conn.query_row(
+            "SELECT raw_json FROM app_media WHERE id = ?1",
+            [id_str],
+            |row| row.get::<_, String>(0)
+        ) {
+            return Some(json);
+        }
+    }
+    
+    // 2. Try by imdb_id
+    if let Some(ref imdb) = imdb_id {
+        if !imdb.is_empty() {
+            if let Ok(json) = conn.query_row(
+                "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
+                [imdb],
+                |row| row.get::<_, String>(0)
+            ) {
+                return Some(json);
+            }
+        }
+    }
+    
+    // 3. Try by tmdb_id
+    if let Some(tmdb) = tmdb_id {
+        if tmdb > 0 {
+            if let Ok(json) = conn.query_row(
+                "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
+                [tmdb],
+                |row| row.get::<_, String>(0)
+            ) {
+                return Some(json);
+            }
+        }
+    }
+    
+    // 4. Try by tvdb_id
+    if let Some(tvdb) = tvdb_id {
+        if tvdb > 0 {
+            if let Ok(json) = conn.query_row(
+                "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
+                [tvdb],
+                |row| row.get::<_, String>(0)
+            ) {
+                return Some(json);
+            }
+        }
+    }
+    
+    // 5. Try by anilist_id
+    if let Some(anilist) = anilist_id {
+        if anilist > 0 {
+            if let Ok(json) = conn.query_row(
+                "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
+                [anilist],
+                |row| row.get::<_, String>(0)
+            ) {
+                return Some(json);
+            }
+        }
+    }
+    
+    None
+}
+
+
+#[tauri::command]
 pub fn delete_app_metadata(
     addon_id: String,
     addon_item_id: String,
@@ -622,7 +732,7 @@ pub fn launch_mpv(
         "--osc=yes".to_string(),
         "--osd-bar=yes".to_string(),
         "--input-default-bindings=yes".to_string(),
-        "--no-terminal".to_string(),
+        "--terminal=yes".to_string(),
         "--hwdec=auto-safe".to_string(),
     ];
     if let Some(t) = title {
@@ -733,6 +843,208 @@ pub fn launch_embedded_mpv(
     )
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinimalPlayerInfo {
+    pub session_id: String,
+    pub pid: u32,
+    pub stream_hash: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinimalPlayerStateResponse {
+    pub running: bool,
+    pub session_id: Option<String>,
+    pub pid: Option<u32>,
+    pub stream_hash: Option<String>,
+    pub started_at_ms: Option<u128>,
+}
+
+/// Diagnostic player path. It intentionally avoids property observation,
+/// metadata, custom arguments, reconnect loops, and automatic restarts.
+#[tauri::command]
+pub fn launch_minimal_mpv(
+    _app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    hwdec_mode: Option<String>,
+) -> Result<MinimalPlayerInfo, String> {
+    stop_embedded_mpv()?;
+
+    let mpv = find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
+    let stream_hash = stable_stream_hash(&url);
+    let session_id = format!(
+        "minimal-{}-{}",
+        std::process::id(),
+        MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    let hwdec = if hwdec_mode.as_deref() == Some("no") { "no" } else { "auto-safe" };
+
+    let mut args = vec![
+        "--force-window=yes".to_string(),
+        "--idle=no".to_string(),
+        "--keep-open=no".to_string(),
+        "--no-config".to_string(),
+        "--terminal=yes".to_string(),
+        format!("--hwdec={}", hwdec),
+        "--cache=yes".to_string(),
+        "--cache-secs=120".to_string(),
+        "--demuxer-readahead-secs=60".to_string(),
+        "--demuxer-max-bytes=512MiB".to_string(),
+        "--demuxer-max-back-bytes=128MiB".to_string(),
+        "--network-timeout=30".to_string(),
+        "--hr-seek=yes".to_string(),
+    ];
+    if let Some(value) = title {
+        args.push(format!("--force-media-title={}", value));
+    }
+    if let Some(value) = start_time.filter(|value| *value > 0.0) {
+        args.push(format!("--start={}", value));
+    }
+    args.push(url);
+
+    player_debug_log(format!(
+        "[PLAYER START] session={} stream={} hwdec={} args=safe-minimal",
+        session_id, stream_hash, hwdec
+    ));
+
+    let mut child = Command::new(&mpv)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to launch minimal mpv: {}", error))?;
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    {
+        let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+        *state = Some(NativePlayerState {
+            host_hwnd: 0,
+            child,
+            ipc_path: session_id.clone(),
+            writer: None,
+        });
+    }
+    {
+        let mut debug = player_debug_state().lock().map_err(|e| e.to_string())?;
+        debug.session_id = Some(session_id.clone());
+        debug.stream_hash = Some(stream_hash.clone());
+        debug.started_at_ms = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        );
+    }
+
+    if let Some(stderr) = stderr {
+        let stderr_session = session_id.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
+            }
+        });
+    }
+
+    if let Some(stdout) = stdout {
+        let stdout_session = session_id.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
+            }
+        });
+    }
+
+    let monitor_session = session_id.clone();
+    let monitor_identity = session_id.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let exit = {
+            let mut state = match native_player_state().lock() {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+            let Some(player) = state.as_mut() else { return };
+            if player.ipc_path != monitor_identity {
+                return;
+            }
+            match player.child.try_wait() {
+                Ok(Some(status)) => {
+                    *state = None;
+                    Some(format!("{}", status))
+                }
+                Ok(None) => None,
+                Err(error) => Some(format!("wait-error: {}", error)),
+            }
+        };
+        if let Some(status) = exit {
+            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            return;
+        }
+    });
+
+    Ok(MinimalPlayerInfo { session_id, pid, stream_hash })
+}
+
+#[tauri::command]
+pub fn minimal_mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+    let _ = args;
+    player_debug_log(format!("[PLAYER CONTROL IGNORED] command={} reason=ipc-disabled-in-isolation", command));
+    Err("Player controls are disabled in isolated playback. Use mpv's native controls.".to_string())
+}
+
+#[tauri::command]
+pub fn stop_minimal_mpv(reason: Option<String>) -> Result<(), String> {
+    player_debug_log(format!("[PLAYER STOP CALLED] reason={}", reason.unwrap_or_else(|| "unspecified".to_string())));
+    stop_embedded_mpv()
+}
+
+#[tauri::command]
+pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> {
+    let (running, pid) = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        (state.is_some(), state.as_ref().map(|player| player.child.id()))
+    };
+    let debug = player_debug_state().lock().map_err(|e| e.to_string())?;
+    Ok(MinimalPlayerStateResponse {
+        running,
+        session_id: debug.session_id.clone(),
+        pid,
+        stream_hash: debug.stream_hash.clone(),
+        started_at_ms: debug.started_at_ms,
+    })
+}
+
+#[tauri::command]
+pub fn get_embedded_player_running() -> Result<bool, String> {
+    Ok(native_player_state().lock().map_err(|e| e.to_string())?.is_some())
+}
+
+#[tauri::command]
+pub fn get_player_debug_logs() -> Result<Vec<String>, String> {
+    Ok(player_debug_state().lock().map_err(|e| e.to_string())?.logs.clone())
+}
+
+#[tauri::command]
+pub fn clear_player_debug_logs() -> Result<(), String> {
+    player_debug_state().lock().map_err(|e| e.to_string())?.logs.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn select_local_video_file() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("Video", &["mkv", "mp4", "webm", "avi", "mov", "m4v", "ts"])
+        .pick_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 #[cfg(target_os = "windows")]
 fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     let main = app
@@ -804,7 +1116,10 @@ fn launch_mpv_with_window(
         "--gpu-api=d3d11".to_string(),
         "--vd-lavc-dr=yes".to_string(),
         format!("--input-ipc-server={}", ipc_path),
-        "--no-terminal".to_string(),
+        "--terminal=yes".to_string(),
+        "--msg-level=all=warn".to_string(),
+        "--term-osd-bar=no".to_string(),
+        "--term-status-msg=".to_string(),
         "--keep-open=no".to_string(),
         "--sub-fix-timing=yes".to_string(),
         "--demuxer-mkv-subtitle-preroll=yes".to_string(),
@@ -814,6 +1129,7 @@ fn launch_mpv_with_window(
         format!("--demuxer-max-back-bytes={}", max_back_bytes),
         format!("--demuxer-readahead-secs={}", cache_secs / 2),
         format!("--network-timeout={}", network_timeout),
+        "--hr-seek=yes".to_string(),
         "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
         "--subs-with-matching-audio=no".to_string(),
         "--secondary-sub-visibility=no".to_string(),
@@ -840,17 +1156,68 @@ fn launch_mpv_with_window(
 
     args.push(url);
 
-    let child = Command::new(&mpv)
+    let mut child = Command::new(&mpv)
         .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to launch embedded mpv at {}: {}", mpv.display(), e))?;
+    let stderr = child.stderr.take();
+    let normal_session = format!("embedded-{}", child.id());
 
-    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
-    *state = Some(NativePlayerState {
-        host_hwnd: hwnd,
-        child,
-        ipc_path: ipc_path.clone(),
-        writer: None,
+    player_debug_log(format!(
+        "[PLAYER START] session={} stream={} hwdec={} args=embedded-buffered",
+        normal_session,
+        stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
+        hwdec
+    ));
+
+    if let Some(stderr) = stderr {
+        let stderr_session = normal_session.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
+            }
+        });
+    }
+
+    {
+        let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+        *state = Some(NativePlayerState {
+            host_hwnd: hwnd,
+            child,
+            ipc_path: ipc_path.clone(),
+            writer: None,
+        });
+    }
+
+    let monitor_session = normal_session.clone();
+    let monitor_ipc_path = ipc_path.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let exit = {
+            let mut state = match native_player_state().lock() {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+            let Some(player) = state.as_mut() else { continue };
+            if player.ipc_path != monitor_ipc_path {
+                return;
+            }
+            match player.child.try_wait() {
+                Ok(Some(status)) => {
+                    *state = None;
+                    Some(status.to_string())
+                }
+                Ok(None) => None,
+                Err(error) => Some(format!("wait-error: {}", error)),
+            }
+        };
+        if let Some(status) = exit {
+            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            return;
+        }
     });
 
     let ipc_path_clone = ipc_path.clone();

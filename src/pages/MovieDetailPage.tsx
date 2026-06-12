@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useLocation } from 'react-router-dom'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -122,6 +122,7 @@ function rotateFallback<T>(items: T[], seed: string): T[] {
 export default function MovieDetailPage() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
+  const navigate = useNavigate()
   const state = (location.state || {}) as LocationState
   const [movie, setMovie] = useState<MovieDetails | null>(null)
   const [malRating, setMalRating] = useState<number | null>(null)
@@ -143,11 +144,31 @@ export default function MovieDetailPage() {
 
       // Collect known IDs
       const knownIds = {
-        imdbId: state.imdbId || (id?.startsWith('tt') ? id : undefined),
-        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : undefined),
-        tvdbId: state.tvdbId,
-        malId: state.malId,
-        anilistId: state.anilistId,
+        imdbId: state.imdbId || (id?.startsWith('tt') ? id : id?.startsWith('app_movie_') ? id.replace('app_movie_', '') : undefined),
+        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : id?.startsWith('app_tmdb_movie_') ? id.replace('app_tmdb_movie_', '') : id?.startsWith('app_tmdb_') ? id.replace('app_tmdb_', '') : undefined),
+        tvdbId: state.tvdbId || (id?.startsWith('tvdb-') ? id.replace('tvdb-', '') : id?.startsWith('app_tvdb_') ? id.replace('app_tvdb_', '') : undefined),
+        malId: state.malId || (id?.startsWith('mal-') ? id.replace('mal-', '') : undefined),
+        anilistId: state.anilistId || (id?.startsWith('anilist-') ? id.replace('anilist-', '') : undefined),
+      }
+
+      // Early resolve anime IDs if they are AniList / MAL but we don't have TMDB ID
+      if ((knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
+        try {
+          const { resolveAnimeIds } = await import('../services/animeLists')
+          const resolved = await resolveAnimeIds({
+            anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
+            malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+          })
+          if (resolved) {
+            if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
+            if (resolved.tmdbId) knownIds.tmdbId = String(resolved.tmdbId)
+            if (resolved.imdbId) knownIds.imdbId = resolved.imdbId
+            if (resolved.anilistId) knownIds.anilistId = String(resolved.anilistId)
+            if (resolved.malId) knownIds.malId = String(resolved.malId)
+          }
+        } catch (e) {
+          console.error('[MovieDetailPage] Failed early anime resolution:', e)
+        }
       }
 
       if (state.sourceAddonId && state.sourceAddonItemId) {
@@ -252,9 +273,25 @@ export default function MovieDetailPage() {
         } catch { /* continue */ }
       }
 
+      const finalTmdbId = finalResult.tmdbId ? String(finalResult.tmdbId).replace('tmdb-', '') : undefined
+      const finalImdbId = finalResult.imdbId
+      
+      const targetId = finalTmdbId
+        ? `app_tmdb_movie_${finalTmdbId}`
+        : finalImdbId
+        ? `app_movie_${finalImdbId}`
+        : finalResult.id || id || 'unknown'
+
+      finalResult.id = targetId
+
       const artApplied = applyMovieArt(finalResult)
       setMovie(artApplied)
       setLoading(false)
+
+      if (id && (id.startsWith('anilist-') || id.startsWith('mal-')) && artApplied.id && artApplied.id !== id) {
+        console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
+        navigate(`/movie/${artApplied.id}`, { replace: true, state })
+      }
     }
     load()
   }, [id, state.addonUrl, state.provider, state.title, addons])

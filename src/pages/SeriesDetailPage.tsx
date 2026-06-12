@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useLocation } from 'react-router-dom'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -226,6 +226,7 @@ function formatEpisodeAirDate(dateStr?: string): string {
 export default function SeriesDetailPage() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
+  const navigate = useNavigate()
   const state = (location.state || {}) as LocationState
   const [show, setShow] = useState<ShowDetails | null>(null)
   const [malRating, setMalRating] = useState<number | null>(null)
@@ -278,9 +279,9 @@ export default function SeriesDetailPage() {
 
       // Collect all known IDs from route state
       const knownIds = {
-        imdbId: state.imdbId || (id?.startsWith('tt') ? id : undefined),
-        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : undefined),
-        tvdbId: state.tvdbId || (id?.startsWith('tvdb-') ? id.replace('tvdb-', '') : undefined),
+        imdbId: state.imdbId || (id?.startsWith('tt') ? id : id?.startsWith('app_show_') ? id.replace('app_show_', '') : undefined),
+        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : id?.startsWith('app_tmdb_tv_') ? id.replace('app_tmdb_tv_', '') : undefined),
+        tvdbId: state.tvdbId || (id?.startsWith('tvdb-') ? id.replace('tvdb-', '') : id?.startsWith('app_tvdb_') ? id.replace('app_tvdb_', '') : undefined),
         malId: state.malId || (id?.startsWith('mal-') ? id.replace('mal-', '') : undefined),
         anilistId: state.anilistId || (id?.startsWith('anilist-') ? id.replace('anilist-', '') : undefined),
       }
@@ -725,6 +726,20 @@ export default function SeriesDetailPage() {
 
       // Use app result if available, otherwise keep addon/placeholder
       const finalResult = appResult || result || (placeholder ? placeholder : { ...MOCK_SHOW, id: id || 'mock-show-1' })
+
+      const finalTvdbId = finalResult.tvdbId ? String(finalResult.tvdbId).replace('tvdb-', '') : undefined
+      const finalTmdbId = finalResult.tmdbId ? String(finalResult.tmdbId).replace('tmdb-', '') : undefined
+      const finalImdbId = finalResult.imdbId
+      
+      const targetId = finalTvdbId
+        ? `app_tvdb_${finalTvdbId}`
+        : finalTmdbId
+        ? `app_tmdb_tv_${finalTmdbId}`
+        : finalImdbId
+        ? `app_show_${finalImdbId}`
+        : finalResult.id || id || 'unknown'
+
+      finalResult.id = targetId
       finalResult.seasons = processSeasons(finalResult.seasons)
       const artApplied = applyShowArt(finalResult)
 
@@ -769,6 +784,11 @@ export default function SeriesDetailPage() {
       }
       setMetadataStatus(status)
       setLoading(false)
+
+      if (id && (id.startsWith('anilist-') || id.startsWith('mal-')) && finalArt.id && finalArt.id !== id) {
+        console.log('[SeriesDetailPage] Normalizing URL route ID to:', finalArt.id)
+        navigate(`/series/${finalArt.id}`, { replace: true, state })
+      }
     }
     load()
   }, [id, state.addonUrl, state.provider, state.title, addons])
@@ -1481,10 +1501,13 @@ export default function SeriesDetailPage() {
                 const blurTitle = shouldBlur && blurTitles;
                 const blurDesc = shouldBlur && blurDescriptions;
                 return (
-                  <button
+                  <div
                     key={ep.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber)}
-                    className="episode-showcase-card flex-shrink-0 text-left group flex flex-col"
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handlePlayEpisode(ep.seasonNumber, ep.episodeNumber) } }}
+                    className="episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer"
                   >
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated shadow-xl mb-3 ring-1 ring-white/10 group-hover:ring-accent/50 transition-all">
                       {ep.still ? (
@@ -1542,20 +1565,19 @@ export default function SeriesDetailPage() {
                           {ep.overview}
                         </p>
                       )}
-                      <RatingsStrip
-                        mediaType="series"
-                        imdbId={ep.imdbId || show.imdbId}
-                        tmdbId={show.tmdbId ?? ep.tmdbId}
-                        tvdbId={show.tvdbId ?? ep.tvdbId}
-                        season={ep.seasonNumber}
-                        episode={ep.episodeNumber}
-                        episodeRating={ep.imdbRating}
-                        tmdbRating={ep.rating}
-                        compact
-                        className="mt-2"
-                      />
-                      {ep.airDate && <p className="text-sm text-white/45 mt-2">{formatEpisodeAirDate(ep.airDate)}</p>}
-                      <div className="mt-auto pt-3 pb-1 min-h-8 overflow-visible relative z-20" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-3 mt-2">
+                        <RatingsStrip
+                          mediaType="series"
+                          imdbId={ep.imdbId || show.imdbId}
+                          tmdbId={show.tmdbId ?? ep.tmdbId}
+                          tvdbId={show.tvdbId ?? ep.tvdbId}
+                          season={ep.seasonNumber}
+                          episode={ep.episodeNumber}
+                          episodeRating={ep.imdbRating}
+                          tmdbRating={ep.rating}
+                          compact
+                        />
+                        <div className="overflow-visible relative z-20" onClick={(e) => e.stopPropagation()}>
                           <MarkWatchedButton
                             mediaRef={{
                               localId: show.id,
@@ -1603,9 +1625,11 @@ export default function SeriesDetailPage() {
                               return next
                             })}
                           />
+                        </div>
                       </div>
+                      {ep.airDate && <p className="text-sm text-white/45 mt-2">{formatEpisodeAirDate(ep.airDate)}</p>}
                     </div>
-                  </button>
+                  </div>
                 );
               });
             })()}

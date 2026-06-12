@@ -68,7 +68,11 @@ export default function CatalogPage() {
           const results = await discoverTmdb(row.discoverConfig!, page)
           if (cancelled) return
 
-          if (results.length === 0 || results.length < 20) {
+          const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+          const enriched = await enrichSearchResultsWithAppMetadata(results)
+          if (cancelled) return
+
+          if (enriched.length === 0 || enriched.length < 20) {
             canLoadMore = false
             setHasMore(false)
           } else {
@@ -76,9 +80,9 @@ export default function CatalogPage() {
             setHasMore(true)
           }
 
-          if (results.length > 0) {
+          if (enriched.length > 0) {
             setItems((current) => {
-              const merged = [...current, ...results]
+              const merged = [...current, ...enriched]
               return merged.filter((item, idx, self) => self.findIndex(i => i.id === item.id) === idx)
             })
           }

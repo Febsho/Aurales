@@ -201,149 +201,170 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
   return { posters, count, loading }
 }
 
-// ── Poster grid (2×2 mosaic) ───────────────────────────────────────────────────
+// ── Poster strip (horizontal row for list items) ──────────────────────────────
 
-function PosterGrid({ posters, loading }: { posters: string[]; loading: boolean }) {
+function PosterStrip({ posters, loading }: { posters: string[]; loading: boolean }) {
   if (loading) {
-    return <div className="w-full aspect-square bg-white/5 animate-pulse" />
+    return (
+      <div className="flex gap-1">
+        {[0, 1, 2].map((i) => <div key={i} className="w-9 h-[52px] rounded-md bg-white/5 animate-pulse flex-shrink-0" />)}
+      </div>
+    )
   }
-
   if (posters.length === 0) {
     return (
-      <div className="w-full aspect-square bg-white/[0.03] flex items-center justify-center">
-        <svg className="w-8 h-8 text-white/10" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-          <rect x="3" y="3" width="7" height="7" rx="0.5" />
-          <rect x="14" y="3" width="7" height="7" rx="0.5" />
-          <rect x="3" y="14" width="7" height="7" rx="0.5" />
-          <rect x="14" y="14" width="7" height="7" rx="0.5" />
+      <div className="w-9 h-[52px] rounded-md bg-white/[0.04] flex items-center justify-center flex-shrink-0">
+        <svg className="w-4 h-4 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M3 16l5-5 4 4 4-5 5 6" />
         </svg>
       </div>
     )
   }
-
-  if (posters.length === 1) {
-    return (
-      <div className="w-full aspect-square overflow-hidden">
-        <img src={posters[0]} alt="" className="w-full h-full object-cover" loading="lazy" />
-      </div>
-    )
-  }
-
   return (
-    <div className="w-full aspect-square grid grid-cols-2 gap-px bg-black/60 overflow-hidden">
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="overflow-hidden bg-black/40">
-          {posters[i] ? (
-            <img src={posters[i]} alt="" className="w-full h-full object-cover" loading="lazy" />
-          ) : (
-            <div className="w-full h-full bg-white/5" />
-          )}
-        </div>
+    <div className="flex gap-1 flex-shrink-0">
+      {posters.slice(0, 3).map((url, i) => (
+        <img key={i} src={url} alt="" className="w-9 h-[52px] rounded-md object-cover flex-shrink-0" loading="lazy" />
       ))}
     </div>
   )
 }
 
-// ── Create tile ────────────────────────────────────────────────────────────────
-
-function CreateTile({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="rounded-xl overflow-hidden border border-dashed border-white/10 hover:border-white/20 bg-white/[0.01] hover:bg-white/[0.03] transition-all text-left cursor-pointer flex flex-col justify-between"
-    >
-      <div className="w-full aspect-square flex items-center justify-center">
-        <div className="w-10 h-10 rounded-full border-2 border-white/15 flex items-center justify-center transition-colors">
-          <svg className="w-4 h-4 text-white/40" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </div>
-      </div>
-      <div className="px-3 pt-1.5 pb-3">
-        <p className="text-[10px] font-bold text-white/40 uppercase tracking-wider leading-tight">
-          Create a new Collection
-        </p>
-      </div>
-    </button>
-  )
+function shelfSourceLabel(row: HomeRowConfig): string {
+  if (row.layout === 'continue') return 'Built-in'
+  if (row.sourceType === 'simkl') return 'Simkl'
+  if (row.sourceType === 'trakt') return 'Trakt'
+  if (row.sourceType === 'anilist') return 'AniList'
+  if (row.sourceType === 'pmdb') return 'PMDB'
+  if (row.sourceType === 'discover') return 'Discover'
+  if (row.addonId) return 'Addon'
+  return 'Catalog'
 }
 
-// ── Sortable widget tile ───────────────────────────────────────────────────────
+function shelfLayoutLabel(row: HomeRowConfig): string {
+  switch (row.layout) {
+    case 'poster': return 'Poster'
+    case 'landscape': return 'Landscape'
+    case 'list': return 'List'
+    case 'continue': return 'Continue'
+    case 'hero': return 'Hero'
+    default: return row.layout || 'Poster'
+  }
+}
 
-function SortableWidgetTile({
+function sourceColor(row: HomeRowConfig): string {
+  if (row.sourceType === 'simkl') return 'bg-emerald-500/15 text-emerald-400'
+  if (row.sourceType === 'trakt') return 'bg-red-500/15 text-red-400'
+  if (row.sourceType === 'anilist') return 'bg-sky-500/15 text-sky-400'
+  if (row.sourceType === 'pmdb') return 'bg-purple-500/15 text-purple-300'
+  if (row.sourceType === 'discover') return 'bg-amber-500/15 text-amber-400'
+  if (row.layout === 'continue') return 'bg-accent/15 text-accent'
+  return 'bg-white/[0.06] text-white/50'
+}
+
+// ── Sortable shelf row ────────────────────────────────────────────────────────
+
+function SortableShelfRow({
   row,
   addons,
   onRemove,
   onEdit,
+  onToggle,
 }: {
   row: HomeRowConfig
   addons: InstalledAddon[]
   onRemove: () => void
   onEdit: () => void
+  onToggle: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id })
   const { posters, count, loading } = useRowPosters(row, addons)
-  const [hovered, setHovered] = useState(false)
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition: isDragging ? 'none' : transition,
     zIndex: isDragging ? 50 : undefined,
-    opacity: isDragging ? 0.6 : undefined,
-    scale: isDragging ? 1.05 : undefined,
-    boxShadow: isDragging ? '0 20px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.5)' : undefined,
   }
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`relative rounded-xl overflow-hidden border transition-all cursor-grab active:cursor-grabbing select-none ${
-        !row.enabled ? 'opacity-40 border-white/5' : 'border-white/5 hover:border-white/15'
+      className={`group flex items-center gap-4 px-4 py-3 rounded-xl border transition-all ${
+        isDragging
+          ? 'bg-white/[0.06] border-white/15 shadow-[0_12px_40px_rgba(0,0,0,0.5)] scale-[1.01]'
+          : !row.enabled
+            ? 'bg-white/[0.01] border-white/[0.04] opacity-50'
+            : 'bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.1]'
       }`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      {...attributes}
-      {...listeners}
     >
-      <PosterGrid posters={posters} loading={loading} />
-
-      {/* Edit Gear Button */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onEdit() }}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-purple-600 hover:bg-purple-500 flex items-center justify-center text-white transition-colors z-10 shadow-md cursor-pointer"
-        title="Edit Catalog"
+      {/* Drag handle */}
+      <div
+        className="flex-shrink-0 cursor-grab active:cursor-grabbing text-white/20 hover:text-white/40 transition-colors touch-none"
+        {...attributes}
+        {...listeners}
       >
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 005 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+        <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="5" cy="3" r="1.5" /><circle cx="11" cy="3" r="1.5" />
+          <circle cx="5" cy="8" r="1.5" /><circle cx="11" cy="8" r="1.5" />
+          <circle cx="5" cy="13" r="1.5" /><circle cx="11" cy="13" r="1.5" />
         </svg>
-      </button>
+      </div>
 
-      {/* Remove button */}
-      {hovered && (
+      {/* Poster thumbnails */}
+      <PosterStrip posters={posters} loading={loading} />
+
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-white/85 truncate leading-tight">{row.title}</p>
+        <div className="flex items-center gap-2 mt-1">
+          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${sourceColor(row)}`}>
+            {shelfSourceLabel(row)}
+          </span>
+          <span className="text-[10px] text-white/25">{shelfLayoutLabel(row)}</span>
+          <span className="text-[10px] text-white/25">{loading ? '...' : `${count} items`}</span>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-1.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggle() }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={row.enabled ? 'Hide from home' : 'Show on home'}
+          className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+            row.enabled ? 'text-white/40 hover:text-white hover:bg-white/[0.08]' : 'text-white/20 hover:text-accent hover:bg-accent/10'
+          }`}
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            {row.enabled ? (
+              <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
+            ) : (
+              <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></>
+            )}
+          </svg>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onEdit() }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title="Edit"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+        </button>
         <button
           onClick={(e) => { e.stopPropagation(); onRemove() }}
           onPointerDown={(e) => e.stopPropagation()}
-          className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-red-500/90 hover:bg-red-600 flex items-center justify-center text-white transition-colors z-10 cursor-pointer"
           title="Remove"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
         >
-          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
           </svg>
         </button>
-      )}
-
-      <div className="px-2 pt-1.5 pb-2">
-        <p className="text-[10px] text-white/30 tabular-nums truncate">
-          ({loading ? '...' : count})
-        </p>
-        <p className="text-[11px] font-semibold text-white/80 truncate leading-tight">
-          {row.title}
-        </p>
       </div>
     </div>
   )
@@ -392,28 +413,22 @@ function HeroBannerSection({
   }
 
   return (
-    <div className="flex items-center justify-between px-3 py-3 bg-white/[0.03] rounded-2xl border border-white/5 mb-5">
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="w-9 h-9 flex-shrink-0 rounded-xl bg-accent/10 flex items-center justify-center">
+    <div className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] rounded-xl border border-white/[0.06]">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <div className="w-8 h-8 flex-shrink-0 rounded-lg bg-accent/10 flex items-center justify-center">
           <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0110 0v4" />
+            <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
           </svg>
         </div>
         <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-sm font-semibold text-white/80">Featured Hero banner</span>
-            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-accent/20 text-accent rounded uppercase tracking-widest">Pinned Top</span>
-          </div>
-          <p className="text-[11px] text-white/30 truncate">
-            Choose the main catalog to showcase as the widescreen hero header on your home screen.
-          </p>
+          <p className="text-sm font-semibold text-white/80">Hero Banner</p>
+          <p className="text-[11px] text-white/30 truncate">Featured catalog at the top of your home screen</p>
         </div>
       </div>
       <select
         value={currentValue}
         onChange={(e) => handleCatalogChange(e.target.value)}
-        className="bg-white/8 border border-white/10 text-white/70 text-xs rounded-xl px-3 py-2 outline-none cursor-pointer max-w-[220px] truncate flex-shrink-0 ml-4"
+        className="bg-white/[0.06] border border-white/[0.08] text-white/70 text-xs rounded-lg px-3 py-2 outline-none cursor-pointer max-w-[240px] truncate flex-shrink-0"
       >
         {catalogOptions.map((opt) => {
           const val = `${opt.addonId}::${opt.catalogType}::${opt.catalogId}`
@@ -453,45 +468,46 @@ function ProviderListPickerSection({
   onClose: () => void
 }) {
   const label = service === 'anilist' ? 'AniList' : service === 'pmdb' ? 'PMDB' : 'Trakt'
-  const color = service === 'anilist' ? 'text-sky-400 bg-sky-400/10' : service === 'pmdb' ? 'text-purple-300 bg-purple-400/10' : 'text-red-300 bg-red-400/10'
+  const borderColor = service === 'anilist' ? 'border-l-[#3b82f6]' : service === 'pmdb' ? 'border-l-[#a855f7]' : 'border-l-[#ef4444]'
+  const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#3b82f6]' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#a855f7]' : 'bg-[#ef4444]/15 text-[#ef4444]'
   return (
-    <div>
-      <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/30 mb-2">{title}</h3>
-      <div className="space-y-1.5">
-        {lists.map((list) => {
-          const added = isAlreadyAdded(`${service}:${list.id}`)
-          return (
-            <button
-              key={`${service}-${list.id}`}
-              disabled={added}
-              onClick={() => {
-                onAdd({
-                  title: `${label} - ${list.label}`,
-                  sourceType: service,
-                  providerListId: list.id,
-                  layout: list.type,
-                  enabled: true,
-                })
-                onClose()
-              }}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors text-left ${
-                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.07] cursor-pointer'
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${color}`}>
-                  <span className="text-[11px] font-black">{label[0]}</span>
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-                  <p className="text-[10px] text-white/25">{label} - {list.type}</p>
-                </div>
+    <div className="space-y-1.5">
+      {lists.map((list) => {
+        const added = isAlreadyAdded(`${service}:${list.id}`)
+        return (
+          <button
+            key={`${service}-${list.id}`}
+            disabled={added}
+            onClick={() => {
+              onAdd({
+                title: `${label} - ${list.label}`,
+                sourceType: service,
+                providerListId: list.id,
+                layout: list.type,
+                enabled: true,
+              })
+              onClose()
+            }}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${borderColor} transition-colors text-left ${
+              added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+            }`}
+          >
+            <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${badgeBg}`}>
+              <span className="text-[10px] font-black">{label[0]}</span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
+              <p className="text-[10px] text-white/25">{list.type} layout</p>
+            </div>
+            {added && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+                <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
               </div>
-              <span className="text-[10px] text-white/25 flex-shrink-0">{added ? 'Added' : ''}</span>
-            </button>
-          )
-        })}
-      </div>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -1106,33 +1122,83 @@ function AddWidgetOverlay({
 
   if (!open) return null
 
+  // Source color helpers
+  const sourceColors: Record<string, { bg: string; text: string; border: string; dot: string }> = {
+    simkl: { bg: 'bg-[#0ea5e9]/15', text: 'text-[#0ea5e9]', border: 'border-l-[#0ea5e9]', dot: 'bg-[#0ea5e9]' },
+    trakt: { bg: 'bg-[#ef4444]/15', text: 'text-[#ef4444]', border: 'border-l-[#ef4444]', dot: 'bg-[#ef4444]' },
+    anilist: { bg: 'bg-[#3b82f6]/15', text: 'text-[#3b82f6]', border: 'border-l-[#3b82f6]', dot: 'bg-[#3b82f6]' },
+    pmdb: { bg: 'bg-[#a855f7]/15', text: 'text-[#a855f7]', border: 'border-l-[#a855f7]', dot: 'bg-[#a855f7]' },
+    builtin: { bg: 'bg-accent/15', text: 'text-accent', border: 'border-l-accent', dot: 'bg-accent' },
+    addons: { bg: 'bg-orange-500/15', text: 'text-orange-400', border: 'border-l-orange-400', dot: 'bg-orange-400' },
+  }
+
+  // Toggle component for checkboxes
+  const PillToggle = ({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) => (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer select-none ${
+        checked
+          ? 'bg-accent/15 border-accent/40 text-accent'
+          : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:text-white/60'
+      }`}
+    >
+      <div className={`w-7 h-4 rounded-full flex items-center transition-all ${checked ? 'bg-accent justify-end' : 'bg-white/10 justify-start'}`}>
+        <div className={`w-3 h-3 rounded-full mx-0.5 transition-all ${checked ? 'bg-black' : 'bg-white/30'}`} />
+      </div>
+      {label}
+    </button>
+  )
+
+  // Match mode toggle
+  const MatchModeToggle = ({ value, onChange, name }: { value: 'AND' | 'OR'; onChange: (v: 'AND' | 'OR') => void; name: string }) => (
+    <div className="flex rounded-lg border border-white/[0.06] overflow-hidden">
+      {(['OR', 'AND'] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={`px-3 py-1.5 text-[10px] font-bold transition-all cursor-pointer ${
+            value === m ? 'bg-accent/20 text-accent' : 'bg-white/[0.02] text-white/30 hover:text-white/50'
+          }`}
+        >
+          {m === 'OR' ? 'Any' : 'All'}
+        </button>
+      ))}
+    </div>
+  )
+
+  // Styled select component
+  const styledSelect = "w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-accent/40 transition-colors"
+  const styledInput = "w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/40 transition-colors"
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div
-        className={`bg-[#0f1115] border border-white/10 rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl transition-all duration-300 max-h-[85vh] ${
+        className={`bg-[#0a0b0e] border border-white/[0.06] rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl transition-all duration-300 max-h-[85vh] ${
           mode === 'discover' ? 'max-w-4xl' : 'max-w-2xl'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] bg-white/[0.01]">
           <div>
-            <h2 className="text-base font-bold text-white">
-              {editingRow 
-                ? editingRow.sourceType === 'discover' 
-                  ? 'Edit Custom Catalog' 
-                  : 'Edit Shelf Settings'
-                : 'Add Widget'}
-            </h2>
-            <p className="text-[10px] text-white/30 mt-0.5">
+            <h2 className="text-base font-bold text-white tracking-tight">
               {editingRow
                 ? editingRow.sourceType === 'discover'
-                  ? 'Modify filter and search settings for this discover catalog'
-                  : 'Rename or change layout for this content shelf'
-                : 'Configure home screen content rows'}
+                  ? 'Edit Custom Catalog'
+                  : 'Edit Shelf Settings'
+                : 'Add to Home'}
+            </h2>
+            <p className="text-[11px] text-white/30 mt-0.5">
+              {editingRow
+                ? editingRow.sourceType === 'discover'
+                  ? 'Modify your discover catalog filters'
+                  : 'Rename or change layout'
+                : 'Browse catalogs or build a custom discover shelf'}
             </p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors">
+          <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -1141,11 +1207,11 @@ function AddWidgetOverlay({
 
         {/* Navigation Tabs */}
         {!editingRow && (
-          <div className="flex border-b border-white/5 px-5 bg-white/[0.01]">
+          <div className="flex border-b border-white/[0.06] px-6 bg-white/[0.01]">
             <button
               onClick={() => setMode('preset')}
               className={`px-4 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer ${
-                mode === 'preset' ? 'border-accent text-accent' : 'border-transparent text-white/40 hover:text-white/70'
+                mode === 'preset' ? 'border-accent text-accent' : 'border-transparent text-white/30 hover:text-white/60'
               }`}
             >
               Add Standard Shelf
@@ -1153,7 +1219,7 @@ function AddWidgetOverlay({
             <button
               onClick={() => setMode('discover')}
               className={`px-4 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer ${
-                mode === 'discover' ? 'border-accent text-accent' : 'border-transparent text-white/40 hover:text-white/70'
+                mode === 'discover' ? 'border-accent text-accent' : 'border-transparent text-white/30 hover:text-white/60'
               }`}
             >
               Build Your Catalog
@@ -1164,43 +1230,35 @@ function AddWidgetOverlay({
         {editingRow && editingRow.sourceType !== 'discover' ? (
           /* Simple Edit Form for standard shelf */
           <>
-            <div className="flex-1 overflow-y-auto px-5 py-6 space-y-4" style={{ scrollbarWidth: 'thin' }}>
+            <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5" style={{ scrollbarWidth: 'thin' }}>
               <div>
-                <label className="block text-[11px] text-white/50 mb-1.5 font-medium">Catalog Name</label>
+                <label className="block text-[11px] text-white/40 mb-1.5 font-medium uppercase tracking-wider">Catalog Name</label>
                 <input
                   value={catalogName}
                   onChange={(e) => setCatalogName(e.target.value)}
                   placeholder="Catalog Name"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/40"
+                  className={styledInput}
                   autoFocus
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-white/50 mb-1.5 font-medium">Layout Style</label>
+                <label className="block text-[11px] text-white/40 mb-1.5 font-medium uppercase tracking-wider">Layout Style</label>
                 <select
                   value={editLayout}
                   onChange={(e) => setEditLayout(e.target.value as any)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-accent/40"
+                  className={styledSelect}
                 >
-                  <option value="poster" className="bg-neutral-900">Poster Carousel</option>
-                  <option value="landscape" className="bg-neutral-900">Landscape Carousel</option>
-                  <option value="list" className="bg-neutral-900">Compact List</option>
+                  <option value="poster" className="bg-[#0a0b0e]">Poster Carousel</option>
+                  <option value="landscape" className="bg-[#0a0b0e]">Landscape Carousel</option>
+                  <option value="list" className="bg-[#0a0b0e]">Compact List</option>
                 </select>
               </div>
             </div>
-            
-            {/* Footer */}
-            <div className="px-5 py-4 border-t border-white/5 bg-white/[0.01] flex items-center justify-end gap-3">
-              <button
-                onClick={onClose}
-                className="px-5 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
-              >
+            <div className="px-6 py-4 border-t border-white/[0.06] bg-white/[0.01] flex items-center justify-end gap-3">
+              <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer">
                 Cancel
               </button>
-              <button
-                onClick={handleSaveStandardEdit}
-                className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg transition-all cursor-pointer"
-              >
+              <button onClick={handleSaveStandardEdit} className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg shadow-accent/10 transition-all cursor-pointer">
                 Save Changes
               </button>
             </div>
@@ -1224,130 +1282,147 @@ function AddWidgetOverlay({
 
             const totalVisible = builtinCount + pmdbAddonCatalogsCount + otherAddonCatalogsCount + simklListsCount + aniListListsCount + traktListsCount + pmdbListsCount
 
+            // Disconnected empty state helper
+            const DisconnectedCard = ({ source, letter, name, desc }: { source: string; letter: string; name: string; desc: string }) => {
+              const c = sourceColors[source] || sourceColors.builtin
+              return (
+                <div className="flex flex-col items-center justify-center text-center py-10 px-6">
+                  <div className={`w-14 h-14 rounded-2xl ${c.bg} flex items-center justify-center mb-4`}>
+                    <span className={`text-xl font-black ${c.text}`}>{letter}</span>
+                  </div>
+                  <h4 className="text-sm font-semibold text-white mb-1">{name} not connected</h4>
+                  <p className="text-xs text-white/30 max-w-xs leading-relaxed">{desc}</p>
+                </div>
+              )
+            }
+
             return (
               <>
                 {/* Search */}
-                <div className="px-5 py-3 border-b border-white/5">
+                <div className="px-6 py-3 border-b border-white/[0.06]">
                   <div className="relative">
-                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/25" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                       <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                     </svg>
                     <input
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                       placeholder="Search catalogs and lists..."
-                      className="w-full bg-white/5 border border-white/8 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/40"
+                      className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/30 transition-colors"
                       autoFocus
                     />
                   </div>
                 </div>
 
-                {/* Source Filters */}
-                <div className="px-5 py-2 border-b border-white/5 bg-white/[0.01] flex gap-1.5 overflow-x-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+                {/* Source Filter Pills */}
+                <div className="px-6 py-2.5 border-b border-white/[0.06] flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
                   {([
-                    { id: 'all', label: 'All' },
-                    { id: 'builtin', label: 'Built-in' },
-                    { id: 'addons', label: 'Addons' },
-                    { id: 'simkl', label: 'Simkl', connected: simklConnected },
-                    { id: 'trakt', label: 'Trakt', connected: traktConnected },
-                    { id: 'anilist', label: 'AniList', connected: anilistConnected },
-                    { id: 'pmdb', label: 'PMDB', connected: !!pmdbApiKey }
-                  ] as const).map((filter) => {
+                    { id: 'all' as const, label: 'All', color: null, connected: undefined },
+                    { id: 'builtin' as const, label: 'Built-in', color: sourceColors.builtin, connected: undefined },
+                    { id: 'addons' as const, label: 'Addons', color: sourceColors.addons, connected: undefined },
+                    { id: 'simkl' as const, label: 'Simkl', color: sourceColors.simkl, connected: simklConnected },
+                    { id: 'trakt' as const, label: 'Trakt', color: sourceColors.trakt, connected: traktConnected },
+                    { id: 'anilist' as const, label: 'AniList', color: sourceColors.anilist, connected: anilistConnected },
+                    { id: 'pmdb' as const, label: 'PMDB', color: sourceColors.pmdb, connected: !!pmdbApiKey },
+                  ]).map((filter) => {
                     const active = selectedSourceFilter === filter.id
                     return (
                       <button
                         key={filter.id}
                         onClick={() => setSelectedSourceFilter(filter.id)}
-                        className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex-shrink-0 ${
+                        className={`h-8 flex items-center gap-1.5 px-3.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-shrink-0 ${
                           active
-                            ? 'bg-accent text-black border-accent'
-                            : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                            ? filter.color
+                              ? `${filter.color.bg} ${filter.color.text} border border-current/20`
+                              : 'bg-accent/15 text-accent border border-accent/20'
+                            : 'bg-white/[0.03] text-white/40 hover:bg-white/[0.06] hover:text-white/60 border border-transparent'
                         }`}
                       >
-                        {filter.label}
-                        {('connected' in filter && !filter.connected) && (
-                          <span className="ml-1 text-[9px] opacity-60">🔒</span>
+                        {filter.connected !== undefined && (
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${filter.connected ? (filter.color?.dot || 'bg-emerald-400') : 'bg-white/20'}`} />
                         )}
+                        {filter.label}
                       </button>
                     )
                   })}
                 </div>
 
-                {/* Presets List */}
-                <div className="flex-1 overflow-y-auto px-5 py-3 space-y-5" style={{ scrollbarWidth: 'thin' }}>
-                  {/* Unconnected guidance cards */}
-                  {!simklConnected && selectedSourceFilter === 'simkl' && (
-                    <div className="p-6 bg-white/[0.02] border border-white/5 rounded-2xl text-center space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-[#2ecc71]/10 flex items-center justify-center mx-auto text-xl font-bold text-[#2ecc71]">S</div>
-                      <h4 className="text-sm font-semibold text-white">Simkl is not connected</h4>
-                      <p className="text-xs text-muted max-w-sm mx-auto">Connect your Simkl account in Settings &gt; Accounts to access your custom watchlists, anime lists, and history shelves.</p>
+                {/* Catalog List */}
+                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5" style={{ scrollbarWidth: 'thin' }}>
+
+                  {/* Not-connected empty states -- shown only when that specific filter is selected */}
+                  {selectedSourceFilter === 'simkl' && !simklConnected && (
+                    <DisconnectedCard source="simkl" letter="S" name="Simkl" desc="Connect your Simkl account in Settings > Accounts to access watchlists, anime lists, and history." />
+                  )}
+                  {selectedSourceFilter === 'trakt' && !traktConnected && (
+                    <DisconnectedCard source="trakt" letter="T" name="Trakt" desc="Connect your Trakt account in Settings > Accounts to sync watchlists, custom lists, and recommendations." />
+                  )}
+                  {selectedSourceFilter === 'anilist' && !anilistConnected && (
+                    <DisconnectedCard source="anilist" letter="A" name="AniList" desc="Connect your AniList account in Settings > Accounts to load your anime watching, planning, and completed lists." />
+                  )}
+                  {selectedSourceFilter === 'pmdb' && !pmdbApiKey && (
+                    <DisconnectedCard source="pmdb" letter="P" name="PMDB" desc="Enter your PublicMetaDB API key in Settings > Accounts to access scrobble history and synced lists." />
+                  )}
+                  {selectedSourceFilter === 'addons' && addons.length === 0 && (
+                    <div className="flex flex-col items-center justify-center text-center py-10 px-6">
+                      <div className="w-14 h-14 rounded-2xl bg-orange-500/15 flex items-center justify-center mb-4">
+                        <svg className="w-6 h-6 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                          <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                        </svg>
+                      </div>
+                      <h4 className="text-sm font-semibold text-white mb-1">No addons installed</h4>
+                      <p className="text-xs text-white/30 max-w-xs leading-relaxed">Install Stremio addons in Settings to browse their catalogs here.</p>
                     </div>
                   )}
 
-                  {!traktConnected && selectedSourceFilter === 'trakt' && (
-                    <div className="p-6 bg-white/[0.02] border border-white/5 rounded-2xl text-center space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-[#ff3b30]/10 flex items-center justify-center mx-auto text-xl font-bold text-[#ff3b30]">T</div>
-                      <h4 className="text-sm font-semibold text-white">Trakt is not connected</h4>
-                      <p className="text-xs text-muted max-w-sm mx-auto">Connect your Trakt account in Settings &gt; Accounts to sync your watchlist, custom lists, recommendations, and history shelves.</p>
-                    </div>
-                  )}
-
-                  {!anilistConnected && selectedSourceFilter === 'anilist' && (
-                    <div className="p-6 bg-white/[0.02] border border-white/5 rounded-2xl text-center space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-[#3db4f2]/10 flex items-center justify-center mx-auto text-xl font-bold text-[#3db4f2]">A</div>
-                      <h4 className="text-sm font-semibold text-white">AniList is not connected</h4>
-                      <p className="text-xs text-muted max-w-sm mx-auto">Connect your AniList account in Settings &gt; Accounts to load your current anime watching, planning, and completed shelves.</p>
-                    </div>
-                  )}
-
-                  {!pmdbApiKey && selectedSourceFilter === 'pmdb' && (
-                    <div className="p-6 bg-white/[0.02] border border-white/5 rounded-2xl text-center space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-[#f39c12]/10 flex items-center justify-center mx-auto text-xl font-bold text-[#f39c12]">P</div>
-                      <h4 className="text-sm font-semibold text-white">PublicMetaDB is not configured</h4>
-                      <p className="text-xs text-muted max-w-sm mx-auto">Set up your PublicMetaDB API Key in Settings &gt; Accounts to access scrobble history and synced lists.</p>
-                    </div>
-                  )}
-
-                  {/* Built-in */}
+                  {/* Built-in Section */}
                   {showBuiltin && builtinCount > 0 && (
                     <div>
-                      <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/30 mb-2">Built-in</h3>
-                      <div className="space-y-1.5">
-                        {(() => {
-                          const added = homeRows.some((r) => r.layout === 'continue')
-                          return (
-                            <button
-                              disabled={added}
-                              onClick={() => {
-                                onAdd({ title: 'Continue Watching', layout: 'continue', enabled: true, sourceType: 'local' })
-                                onClose()
-                              }}
-                              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.07] cursor-pointer'
-                              }`}
-                            >
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
-                                  <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                                </div>
-                                <div>
-                                  <p className="text-sm font-medium text-white/80">Continue Watching</p>
-                                  <p className="text-[10px] text-white/30">Resume where you left off</p>
-                                </div>
-                              </div>
-                              <span className="text-[10px] text-white/25">{added ? 'Added' : ''}</span>
-                            </button>
-                          )
-                        })()}
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.builtin.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Built-in</h3>
                       </div>
+                      {(() => {
+                        const added = homeRows.some((r) => r.layout === 'continue')
+                        return (
+                          <button
+                            disabled={added}
+                            onClick={() => {
+                              onAdd({ title: 'Continue Watching', layout: 'continue', enabled: true, sourceType: 'local' })
+                              onClose()
+                            }}
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.builtin.border} transition-colors text-left ${
+                              added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+                            }`}
+                          >
+                            <div className={`w-7 h-7 rounded-lg ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
+                              <svg className="w-3.5 h-3.5 text-accent" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-white/80">Continue Watching</p>
+                              <p className="text-[10px] text-white/25">Resume where you left off</p>
+                            </div>
+                            {added && (
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+                                <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                              </div>
+                            )}
+                          </button>
+                        )
+                      })()}
                     </div>
                   )}
 
                   {/* PMDB Catalogs */}
                   {(showPmdb || showAddons) && filteredPmdbAddonCatalogs.length > 0 && (
                     <div>
-                      <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/30 mb-2">PMDB Catalogs</h3>
-                      <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.pmdb.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">PMDB Catalogs</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredPmdbAddonCatalogs.length}</span>
+                      </div>
+                      <div className="space-y-1">
                         {filteredPmdbAddonCatalogs.map((cat) => {
                           const key = `${cat.addonId}::${cat.catalogType}::${cat.catalogId}`
                           const added = isAlreadyAdded(key)
@@ -1368,26 +1443,27 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.07] cursor-pointer'
+                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.pmdb.border} transition-colors text-left ${
+                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
                               }`}
                             >
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
-                                  <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                                    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                  </svg>
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
-                                  <div className="flex items-center gap-1.5 mt-0.5">
-                                    <span className="text-[10px] text-white/25">{cat.addonName}</span>
-                                    <span className="text-[10px] text-white/15">·</span>
-                                    <span className="text-[10px] text-white/25">{cat.catalogType}</span>
-                                  </div>
+                              <div className={`w-7 h-7 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[10px] text-white/20">{cat.addonName}</span>
+                                  <span className="text-[10px] text-white/10">·</span>
+                                  <span className="text-[10px] text-white/20">{cat.catalogType}</span>
                                 </div>
                               </div>
-                              <span className="text-[10px] text-white/25 flex-shrink-0">{added ? 'Added' : ''}</span>
+                              {added && (
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                </div>
+                              )}
                             </button>
                           )
                         })}
@@ -1398,8 +1474,12 @@ function AddWidgetOverlay({
                   {/* Addon Catalogs */}
                   {showAddons && filteredOtherAddonCatalogs.length > 0 && (
                     <div>
-                      <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/30 mb-2">Addon Catalogs</h3>
-                      <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.addons.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Addon Catalogs</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredOtherAddonCatalogs.length}</span>
+                      </div>
+                      <div className="space-y-1">
                         {filteredOtherAddonCatalogs.map((cat) => {
                           const key = `${cat.addonId}::${cat.catalogType}::${cat.catalogId}`
                           const added = isAlreadyAdded(key)
@@ -1420,26 +1500,29 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.07] cursor-pointer'
+                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.addons.border} transition-colors text-left ${
+                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
                               }`}
                             >
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
-                                  <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                                    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                  </svg>
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
-                                  <div className="flex items-center gap-1.5 mt-0.5">
-                                    <span className="text-[10px] text-white/25">{cat.addonName}</span>
-                                    <span className="text-[10px] text-white/15">·</span>
-                                    <span className="text-[10px] text-white/25">{cat.catalogType}</span>
-                                  </div>
+                              <div className={`w-7 h-7 rounded-lg ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
+                                <svg className="w-3.5 h-3.5 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                  <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                                </svg>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[10px] text-white/20">{cat.addonName}</span>
+                                  <span className="text-[10px] text-white/10">·</span>
+                                  <span className="text-[10px] text-white/20">{cat.catalogType}</span>
                                 </div>
                               </div>
-                              <span className="text-[10px] text-white/25 flex-shrink-0">{added ? 'Added' : ''}</span>
+                              {added && (
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                </div>
+                              )}
                             </button>
                           )
                         })}
@@ -1447,11 +1530,15 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
-                  {/* Simkl lists */}
+                  {/* Simkl Lists */}
                   {showSimkl && simklConnected && filteredSimklLists.length > 0 && (
                     <div>
-                      <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/30 mb-2">Simkl Lists</h3>
-                      <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.simkl.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Simkl Lists</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredSimklLists.length}</span>
+                      </div>
+                      <div className="space-y-1">
                         {filteredSimklLists.map((list) => {
                           const added = isAlreadyAdded(`simkl:${list.id}`)
                           return (
@@ -1468,20 +1555,23 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.07] cursor-pointer'
+                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.simkl.border} transition-colors text-left ${
+                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
                               }`}
                             >
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-8 h-8 rounded-lg bg-[#2ecc71]/10 flex items-center justify-center flex-shrink-0">
-                                  <span className="text-[11px] font-bold text-[#2ecc71]">S</span>
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-                                  <p className="text-[10px] text-white/25">Simkl · {list.type}</p>
-                                </div>
+                              <div className={`w-7 h-7 rounded-lg ${sourceColors.simkl.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-[10px] font-black ${sourceColors.simkl.text}`}>S</span>
                               </div>
-                              <span className="text-[10px] text-white/25 flex-shrink-0">{added ? 'Added' : ''}</span>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
+                                <p className="text-[10px] text-white/20">{list.type} layout</p>
+                              </div>
+                              {added && (
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                </div>
+                              )}
                             </button>
                           )
                         })}
@@ -1489,111 +1579,82 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
+                  {/* AniList Lists */}
                   {showAniList && anilistConnected && filteredAniListLists.length > 0 && (
-                    <ProviderListPickerSection
-                      title="AniList Lists"
-                      service="anilist"
-                      lists={filteredAniListLists}
-                      isAlreadyAdded={isAlreadyAdded}
-                      onAdd={onAdd}
-                      onClose={onClose}
-                    />
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.anilist.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">AniList Lists</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredAniListLists.length}</span>
+                      </div>
+                      <ProviderListPickerSection
+                        title="AniList Lists"
+                        service="anilist"
+                        lists={filteredAniListLists}
+                        isAlreadyAdded={isAlreadyAdded}
+                        onAdd={onAdd}
+                        onClose={onClose}
+                      />
+                    </div>
                   )}
 
+                  {/* Trakt Lists */}
                   {showTrakt && traktConnected && filteredTraktLists.length > 0 && (
-                    <ProviderListPickerSection
-                      title="Trakt Lists"
-                      service="trakt"
-                      lists={filteredTraktLists.map((l) => ({ id: l.id, label: l.label.replace(/^Trakt - /, ''), type: l.layout }))}
-                      isAlreadyAdded={isAlreadyAdded}
-                      onAdd={onAdd}
-                      onClose={onClose}
-                    />
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.trakt.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Trakt Lists</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredTraktLists.length}</span>
+                      </div>
+                      <ProviderListPickerSection
+                        title="Trakt Lists"
+                        service="trakt"
+                        lists={filteredTraktLists.map((l) => ({ id: l.id, label: l.label.replace(/^Trakt - /, ''), type: l.layout }))}
+                        isAlreadyAdded={isAlreadyAdded}
+                        onAdd={onAdd}
+                        onClose={onClose}
+                      />
+                    </div>
                   )}
 
+                  {/* PMDB Lists */}
                   {showPmdb && !!pmdbApiKey && filteredPmdbLists.length > 0 && (
-                    <ProviderListPickerSection
-                      title="PMDB Lists"
-                      service="pmdb"
-                      lists={filteredPmdbLists.map((l) => ({ id: l.id, label: l.label.replace(/^PMDB - /, ''), type: l.layout }))}
-                      isAlreadyAdded={isAlreadyAdded}
-                      onAdd={onAdd}
-                      onClose={onClose}
-                    />
-                  )}
-
-                  {selectedSourceFilter === 'simkl' && !simklConnected && (
-                    <div className="flex flex-col items-center justify-center text-center p-8 bg-white/[0.02] border border-white/5 rounded-2xl">
-                      <div className="w-12 h-12 rounded-xl bg-[#2ecc71]/10 flex items-center justify-center mb-4">
-                        <span className="text-xl font-bold text-[#2ecc71]">S</span>
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1 h-4 rounded-full ${sourceColors.pmdb.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">PMDB Lists</h3>
+                        <span className="text-[10px] text-white/15 font-medium">{filteredPmdbLists.length}</span>
                       </div>
-                      <h4 className="text-sm font-bold text-white mb-1">Simkl not connected</h4>
-                      <p className="text-xs text-white/45 max-w-sm leading-relaxed">
-                        To add Simkl lists or sync your progress, connect your Simkl account in Settings &gt; Accounts.
-                      </p>
+                      <ProviderListPickerSection
+                        title="PMDB Lists"
+                        service="pmdb"
+                        lists={filteredPmdbLists.map((l) => ({ id: l.id, label: l.label.replace(/^PMDB - /, ''), type: l.layout }))}
+                        isAlreadyAdded={isAlreadyAdded}
+                        onAdd={onAdd}
+                        onClose={onClose}
+                      />
                     </div>
                   )}
 
-                  {selectedSourceFilter === 'trakt' && !traktConnected && (
-                    <div className="flex flex-col items-center justify-center text-center p-8 bg-white/[0.02] border border-white/5 rounded-2xl">
-                      <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center mb-4">
-                        <span className="text-xl font-bold text-red-500">T</span>
-                      </div>
-                      <h4 className="text-sm font-bold text-white mb-1">Trakt not connected</h4>
-                      <p className="text-xs text-white/45 max-w-sm leading-relaxed">
-                        To add Trakt lists or sync your progress, connect your Trakt account in Settings &gt; Accounts.
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedSourceFilter === 'anilist' && !anilistConnected && (
-                    <div className="flex flex-col items-center justify-center text-center p-8 bg-white/[0.02] border border-white/5 rounded-2xl">
-                      <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center mb-4">
-                        <span className="text-xl font-bold text-blue-400">A</span>
-                      </div>
-                      <h4 className="text-sm font-bold text-white mb-1">AniList not connected</h4>
-                      <p className="text-xs text-white/45 max-w-sm leading-relaxed">
-                        To add AniList lists or sync your progress, connect your AniList account in Settings &gt; Accounts.
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedSourceFilter === 'pmdb' && !pmdbApiKey && (
-                    <div className="flex flex-col items-center justify-center text-center p-8 bg-white/[0.02] border border-white/5 rounded-2xl">
-                      <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center mb-4">
-                        <span className="text-xl font-bold text-green-400">P</span>
-                      </div>
-                      <h4 className="text-sm font-bold text-white mb-1">PublicMetaDB not connected</h4>
-                      <p className="text-xs text-white/45 max-w-sm leading-relaxed">
-                        To add PublicMetaDB lists or sync your progress, enter your PMDB API key in Settings &gt; Accounts.
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedSourceFilter === 'addons' && addons.length === 0 && (
-                    <div className="flex flex-col items-center justify-center text-center p-8 bg-white/[0.02] border border-white/5 rounded-2xl">
-                      <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center mb-4">
-                        <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <path d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </div>
-                      <h4 className="text-sm font-bold text-white mb-1">No custom addons installed</h4>
-                      <p className="text-xs text-white/45 max-w-sm leading-relaxed">
-                        To add catalogs from Stremio addons, install them in Settings &gt; Addons.
-                      </p>
-                    </div>
-                  )}
-
+                  {/* Search empty state */}
                   {totalVisible === 0 && search && (
-                    <div className="text-center py-8 text-sm text-white/25">
-                      No results for "{search}"
+                    <div className="flex flex-col items-center justify-center text-center py-12">
+                      <svg className="w-10 h-10 text-white/10 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
+                      <p className="text-sm text-white/25">No results for &ldquo;{search}&rdquo;</p>
                     </div>
                   )}
 
-                  {addons.length === 0 && !simklConnected && !traktConnected && !anilistConnected && !pmdbApiKey && (
-                    <div className="text-center py-8">
-                      <p className="text-sm text-white/30 mb-1">No addons or services connected</p>
-                      <p className="text-[11px] text-white/20">Install addons or connect Simkl/Trakt/PMDB/AniList in Settings</p>
+                  {/* Nothing connected at all */}
+                  {selectedSourceFilter === 'all' && addons.length === 0 && !simklConnected && !traktConnected && !anilistConnected && !pmdbApiKey && !search && (
+                    <div className="flex flex-col items-center justify-center text-center py-12">
+                      <svg className="w-10 h-10 text-white/8 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+                        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+                      </svg>
+                      <p className="text-sm text-white/25 mb-1">No services connected</p>
+                      <p className="text-[11px] text-white/15">Install addons or connect accounts in Settings</p>
                     </div>
                   )}
                 </div>
@@ -1602,585 +1663,25 @@ function AddWidgetOverlay({
           })()
         ) : (
           /* Custom Discover Catalog Builder Form */
-          <div className="flex-1 flex flex-col min-h-0 bg-neutral-950/20">
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6" style={{ scrollbarWidth: 'thin' }}>
-              
-              {/* SECTION 1: Catalog Setup */}
-              <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Catalog Setup</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Catalog Name</label>
-                    <input
-                      value={catalogName}
-                      onChange={(e) => setCatalogName(e.target.value)}
-                      placeholder="e.g. Cyberpunk Essentials"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Source</label>
-                    <select
-                      value={source}
-                      onChange={(e) => setSource(e.target.value as any)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="TMDB" className="bg-neutral-900">TMDB</option>
-                      <option value="TVDB" className="bg-neutral-900">TVDB</option>
-                      <option value="Simkl" className="bg-neutral-900">Simkl</option>
-                      <option value="AniList" className="bg-neutral-900">AniList</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Content Type</label>
-                    <select
-                      value={contentType}
-                      onChange={(e) => setContentType(e.target.value as any)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="movie" className="bg-neutral-900">Movies</option>
-                      <option value="series" className="bg-neutral-900">TV Shows</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Sort By</label>
-                    <select
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="popularity.desc" className="bg-neutral-900">Popularity (High to Low)</option>
-                      <option value="popularity.asc" className="bg-neutral-900">Popularity (Low to High)</option>
-                      <option value="vote_average.desc" className="bg-neutral-900">Rating (High to Low)</option>
-                      <option value="vote_average.asc" className="bg-neutral-900">Rating (Low to High)</option>
-                      {contentType === 'movie' ? (
-                        <>
-                          <option value="primary_release_date.desc" className="bg-neutral-900">Release Date (Newest first)</option>
-                          <option value="primary_release_date.asc" className="bg-neutral-900">Release Date (Oldest first)</option>
-                        </>
-                      ) : (
-                        <>
-                          <option value="first_air_date.desc" className="bg-neutral-900">Air Date (Newest first)</option>
-                          <option value="first_air_date.asc" className="bg-neutral-900">Air Date (Oldest first)</option>
-                        </>
-                      )}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Cache TTL (seconds)</label>
-                    <input
-                      type="number"
-                      value={cacheTtl}
-                      onChange={(e) => setCacheTtl(Math.max(300, parseInt(e.target.value) || 300))}
-                      min="300"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    />
-                    <span className="text-[9px] text-white/25 mt-0.5 block">Minimum: 300 seconds (5 minutes)</span>
-                  </div>
-                  <div className="flex items-center gap-6 h-full pt-4">
-                    <label className="flex items-center gap-2 text-xs text-white/70 select-none cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={releasedOnly}
-                        onChange={(e) => setReleasedOnly(e.target.checked)}
-                        className="rounded border-white/10 text-accent focus:ring-accent"
-                      />
-                      <span>Released Only</span>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-white/70 select-none cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={includeAdult}
-                        onChange={(e) => setIncludeAdult(e.target.checked)}
-                        className="rounded border-white/10 text-accent focus:ring-accent"
-                      />
-                      <span>Include Adult</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 2: Reference Filters */}
-              <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Reference Filters</h3>
-                
-                {/* Genres multiselect */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Include Genres</label>
-                    <select
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (val && !selectedIncludeGenres.includes(val)) {
-                          setSelectedIncludeGenres([...selectedIncludeGenres, val])
-                        }
-                        e.target.value = ''
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="">Select genre</option>
-                      {genresList.map((g) => (
-                        <option key={g.id} value={g.id} className="bg-neutral-900">{g.name}</option>
-                      ))}
-                    </select>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {selectedIncludeGenres.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No included genres</span>
-                      )}
-                      {selectedIncludeGenres.map((gid) => {
-                        const g = genresList.find((item) => String(item.id) === gid)
-                        return (
-                          <span key={gid} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                            {g?.name || gid}
-                            <button
-                              onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((id) => id !== gid))}
-                              className="hover:text-white cursor-pointer ml-1"
-                            >
-                              &times;
-                            </button>
-                          </span>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Exclude Genres</label>
-                    <select
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (val && !selectedExcludeGenres.includes(val)) {
-                          setSelectedExcludeGenres([...selectedExcludeGenres, val])
-                        }
-                        e.target.value = ''
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="">Select genre</option>
-                      {genresList.map((g) => (
-                        <option key={g.id} value={g.id} className="bg-neutral-900">{g.name}</option>
-                      ))}
-                    </select>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {selectedExcludeGenres.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No excluded genres</span>
-                      )}
-                      {selectedExcludeGenres.map((gid) => {
-                        const g = genresList.find((item) => String(item.id) === gid)
-                        return (
-                          <span key={gid} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                            {g?.name || gid}
-                            <button
-                              onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((id) => id !== gid))}
-                              className="hover:text-white cursor-pointer ml-1"
-                            >
-                              &times;
-                            </button>
-                          </span>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Genre Match Mode</label>
-                    <div className="flex gap-4 h-9 items-center">
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="genreMatchMode"
-                          checked={genreMatchMode === 'OR'}
-                          onChange={() => setGenreMatchMode('OR')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>OR (Any Match)</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="genreMatchMode"
-                          checked={genreMatchMode === 'AND'}
-                          onChange={() => setGenreMatchMode('AND')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>AND (All Match)</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Original Language</label>
-                    <select
-                      value={originalLanguage}
-                      onChange={(e) => setOriginalLanguage(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="Any" className="bg-neutral-900">Any</option>
-                      {languagesList.map((lang) => (
-                        <option key={lang.iso_639_1} value={lang.iso_639_1} className="bg-neutral-900">
-                          {lang.english_name} ({lang.iso_639_1})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Origin Country</label>
-                    <select
-                      value={originCountry}
-                      onChange={(e) => setOriginCountry(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="Any" className="bg-neutral-900">Any</option>
-                      {countriesList.map((c) => (
-                        <option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-neutral-900">
-                          {c.english_name} ({c.iso_3166_1})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Release Region (Movies)</label>
-                    <select
-                      value={releaseRegion}
-                      disabled={contentType !== 'movie'}
-                      onChange={(e) => setReleaseRegion(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40 disabled:opacity-40"
-                    >
-                      <option value="Any" className="bg-neutral-900">Any</option>
-                      {countriesList.map((c) => (
-                        <option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-neutral-900">
-                          {c.english_name} ({c.iso_3166_1})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Certification Country</label>
-                    <select
-                      value={certificationCountry}
-                      onChange={(e) => {
-                        setCertificationCountry(e.target.value)
-                        setCertification('None')
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="None" className="bg-neutral-900">None</option>
-                      {certificationCountries.map((country) => (
-                        <option key={country} value={country} className="bg-neutral-900">{country}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Certification</label>
-                    <select
-                      value={certification}
-                      disabled={certificationCountry === 'None'}
-                      onChange={(e) => setCertification(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40 disabled:opacity-40"
-                    >
-                      <option value="None" className="bg-neutral-900">None</option>
-                      {certificationsForCountry.map((c) => (
-                        <option key={c.certification} value={c.certification} className="bg-neutral-900">{c.certification}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Filter Mode</label>
-                    <select
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    >
-                      <option value="Exact" className="bg-neutral-900">Exact</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 3: People, Companies, and Keywords */}
-              <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">People, Companies, and Keywords</h3>
-                
-                {/* People AutoComplete Search */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="relative">
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">People ({peopleList.length})</label>
-                    <input
-                      value={peopleSearch}
-                      onChange={(e) => setPeopleSearch(e.target.value)}
-                      placeholder="Search person (e.g. Denis Villeneuve)"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    />
-                    {peopleSuggestions.length > 0 && (
-                      <div className="absolute left-0 right-0 z-20 mt-1 bg-[#14161d] border border-white/10 rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
-                        {peopleSuggestions.map((p) => (
-                          <button
-                            key={p.id}
-                            onClick={() => {
-                              if (!peopleList.some((item) => item.id === p.id)) {
-                                setPeopleList([...peopleList, { id: p.id, name: p.name }])
-                              }
-                              setPeopleSearch('')
-                              setPeopleSuggestions([])
-                            }}
-                            className="w-full text-left px-3 py-2 text-xs text-white hover:bg-accent/10 transition-colors flex items-center gap-2 cursor-pointer"
-                          >
-                            {p.profile_path && (
-                              <img src={`https://image.tmdb.org/t/p/w92${p.profile_path}`} className="w-5 h-7 object-cover rounded-sm" alt="" />
-                            )}
-                            <span>{p.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {peopleList.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No people selected</span>
-                      )}
-                      {peopleList.map((p) => (
-                        <span key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-[10px]">
-                          {p.name}
-                          <button onClick={() => setPeopleList(peopleList.filter((item) => item.id !== p.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">People Match Mode</label>
-                    <div className="flex gap-4 h-9 items-center">
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="peopleMatchMode"
-                          checked={peopleMatchMode === 'OR'}
-                          onChange={() => setPeopleMatchMode('OR')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>OR (Any Match)</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="peopleMatchMode"
-                          checked={peopleMatchMode === 'AND'}
-                          onChange={() => setPeopleMatchMode('AND')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>AND (All Match)</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Companies AutoComplete Search */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-white/5 pt-3">
-                  <div className="relative">
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Companies ({includeCompanies.length} include / {excludeCompanies.length} exclude)</label>
-                    <input
-                      value={companySearch}
-                      onChange={(e) => setCompanySearch(e.target.value)}
-                      placeholder="Search company (e.g. Pixar)"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    />
-                    {companySuggestions.length > 0 && (
-                      <div className="absolute left-0 right-0 z-20 mt-1 bg-[#14161d] border border-white/10 rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
-                        {companySuggestions.map((c) => (
-                          <div key={c.id} className="flex justify-between items-center px-3 py-1.5 hover:bg-white/5 border-b border-white/5 text-xs">
-                            <span className="text-white font-medium">{c.name}</span>
-                            <div className="flex gap-1.5">
-                              <button
-                                onClick={() => {
-                                  if (!includeCompanies.some((item) => item.id === c.id)) {
-                                    setIncludeCompanies([...includeCompanies, c])
-                                  }
-                                  setCompanySearch('')
-                                  setCompanySuggestions([])
-                                }}
-                                className="px-2 py-0.5 bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold rounded text-[10px] cursor-pointer"
-                              >
-                                Include
-                              </button>
-                              <button
-                                onClick={() => {
-                                  if (!excludeCompanies.some((item) => item.id === c.id)) {
-                                    setExcludeCompanies([...excludeCompanies, c])
-                                  }
-                                  setCompanySearch('')
-                                  setCompanySuggestions([])
-                                }}
-                                className="px-2 py-0.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 font-semibold rounded text-[10px] cursor-pointer"
-                              >
-                                Exclude
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Included companies</label>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {includeCompanies.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No included companies</span>
-                      )}
-                      {includeCompanies.map((c) => (
-                        <span key={c.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                          {c.name}
-                          <button onClick={() => setIncludeCompanies(includeCompanies.filter((item) => item.id !== c.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Excluded companies</label>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {excludeCompanies.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No excluded companies</span>
-                      )}
-                      {excludeCompanies.map((c) => (
-                        <span key={c.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                          {c.name}
-                          <button onClick={() => setExcludeCompanies(excludeCompanies.filter((item) => item.id !== c.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Company Match Mode</label>
-                    <div className="flex gap-4 h-9 items-center">
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="companyMatchMode"
-                          checked={companyMatchMode === 'OR'}
-                          onChange={() => setCompanyMatchMode('OR')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>OR (Any Match)</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="radio"
-                          name="companyMatchMode"
-                          checked={companyMatchMode === 'AND'}
-                          onChange={() => setCompanyMatchMode('AND')}
-                          className="text-accent focus:ring-accent"
-                        />
-                        <span>AND (All Match)</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Keywords AutoComplete Search */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-white/5 pt-3">
-                  <div className="relative">
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Keywords ({includeKeywords.length} include / {excludeKeywords.length} exclude)</label>
-                    <input
-                      value={keywordSearch}
-                      onChange={(e) => setKeywordSearch(e.target.value)}
-                      placeholder="Search keyword (e.g. time travel)"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                    />
-                    {keywordSuggestions.length > 0 && (
-                      <div className="absolute left-0 right-0 z-20 mt-1 bg-[#14161d] border border-white/10 rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
-                        {keywordSuggestions.map((k) => (
-                          <div key={k.id} className="flex justify-between items-center px-3 py-1.5 hover:bg-white/5 border-b border-white/5 text-xs">
-                            <span className="text-white font-medium">{k.name}</span>
-                            <div className="flex gap-1.5">
-                              <button
-                                onClick={() => {
-                                  if (!includeKeywords.some((item) => item.id === k.id)) {
-                                    setIncludeKeywords([...includeKeywords, k])
-                                  }
-                                  setKeywordSearch('')
-                                  setKeywordSuggestions([])
-                                }}
-                                className="px-2 py-0.5 bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold rounded text-[10px] cursor-pointer"
-                              >
-                                Include
-                              </button>
-                              <button
-                                onClick={() => {
-                                  if (!excludeKeywords.some((item) => item.id === k.id)) {
-                                    setExcludeKeywords([...excludeKeywords, k])
-                                  }
-                                  setKeywordSearch('')
-                                  setKeywordSuggestions([])
-                                }}
-                                className="px-2 py-0.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 font-semibold rounded text-[10px] cursor-pointer"
-                              >
-                                Exclude
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Included keywords</label>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {includeKeywords.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No included keywords</span>
-                      )}
-                      {includeKeywords.map((k) => (
-                        <span key={k.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                          {k.name}
-                          <button onClick={() => setIncludeKeywords(includeKeywords.filter((item) => item.id !== k.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Excluded keywords</label>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {excludeKeywords.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No excluded keywords</span>
-                      )}
-                      {excludeKeywords.map((k) => (
-                        <span key={k.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                          {k.name}
-                          <button onClick={() => setExcludeKeywords(excludeKeywords.filter((item) => item.id !== k.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-          /* Custom Discover Catalog Builder Form */
-          <div className="flex-1 flex flex-col min-h-0 bg-neutral-950/20">
+          <div className="flex-1 flex flex-col min-h-0">
             {/* Discover Sub-tabs */}
-            <div className="px-6 py-2 border-b border-white/5 bg-white/[0.01] flex gap-1.5 overflow-x-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+            <div className="px-6 py-2.5 border-b border-white/[0.06] flex gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
               {([
-                { id: 'setup', label: 'Setup' },
-                { id: 'filters', label: 'Genres & Lang' },
-                { id: 'streaming', label: 'Streaming' },
-                { id: 'people', label: 'Credits & Keywords' },
-                { id: 'ranges', label: 'Ratings & Dates' }
-              ] as const).map((tab) => {
+                { id: 'setup' as const, label: 'Setup', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' },
+                { id: 'filters' as const, label: 'Filters' },
+                { id: 'streaming' as const, label: 'Streaming' },
+                { id: 'people' as const, label: 'People & Tags' },
+                { id: 'ranges' as const, label: 'Date & Rating' },
+              ]).map((tab) => {
                 const active = discoverTab === tab.id
                 return (
                   <button
                     key={tab.id}
                     onClick={() => setDiscoverTab(tab.id)}
-                    className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex-shrink-0 ${
+                    className={`h-8 flex items-center gap-1.5 px-3.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-shrink-0 ${
                       active
-                        ? 'bg-accent text-black border-accent'
-                        : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                        ? 'bg-accent/15 text-accent border border-accent/20'
+                        : 'bg-white/[0.03] text-white/35 hover:bg-white/[0.06] hover:text-white/55 border border-transparent'
                     }`}
                   >
                     {tab.label}
@@ -2189,859 +1690,518 @@ function AddWidgetOverlay({
               })}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6" style={{ scrollbarWidth: 'thin' }}>
-              
-              {/* SECTION 1: Catalog Setup */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5" style={{ scrollbarWidth: 'thin' }}>
+
+              {/* ── Setup Tab ── */}
               {discoverTab === 'setup' && (
-                <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                  <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Catalog Setup</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Catalog Name</label>
-                      <input
-                        value={catalogName}
-                        onChange={(e) => setCatalogName(e.target.value)}
-                        placeholder="e.g. Cyberpunk Essentials"
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
+                <div className="space-y-5">
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Catalog Setup</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Name</label>
+                        <input value={catalogName} onChange={(e) => setCatalogName(e.target.value)} placeholder="e.g. Cyberpunk Essentials" className={styledInput} />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Source</label>
+                        <select value={source} onChange={(e) => setSource(e.target.value as any)} className={styledSelect}>
+                          <option value="TMDB" className="bg-[#0a0b0e]">TMDB</option>
+                          <option value="TVDB" className="bg-[#0a0b0e]">TVDB</option>
+                          <option value="Simkl" className="bg-[#0a0b0e]">Simkl</option>
+                          <option value="AniList" className="bg-[#0a0b0e]">AniList</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Content Type</label>
+                        <select value={contentType} onChange={(e) => setContentType(e.target.value as any)} className={styledSelect}>
+                          <option value="movie" className="bg-[#0a0b0e]">Movies</option>
+                          <option value="series" className="bg-[#0a0b0e]">TV Shows</option>
+                        </select>
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Source</label>
-                      <select
-                        value={source}
-                        onChange={(e) => setSource(e.target.value as any)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="TMDB" className="bg-neutral-900">TMDB</option>
-                        <option value="TVDB" className="bg-neutral-900">TVDB</option>
-                        <option value="Simkl" className="bg-neutral-900">Simkl</option>
-                        <option value="AniList" className="bg-neutral-900">AniList</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Content Type</label>
-                      <select
-                        value={contentType}
-                        onChange={(e) => setContentType(e.target.value as any)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="movie" className="bg-neutral-900">Movies</option>
-                        <option value="series" className="bg-neutral-900">TV Shows</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Sort By</label>
-                      <select
-                        value={sortBy}
-                        onChange={(e) => setSortBy(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="popularity.desc" className="bg-neutral-900">Popularity (High to Low)</option>
-                        <option value="popularity.asc" className="bg-neutral-900">Popularity (Low to High)</option>
-                        <option value="vote_average.desc" className="bg-neutral-900">Rating (High to Low)</option>
-                        <option value="vote_average.asc" className="bg-neutral-900">Rating (Low to High)</option>
-                        {contentType === 'movie' ? (
-                          <>
-                            <option value="primary_release_date.desc" className="bg-neutral-900">Release Date (Newest first)</option>
-                            <option value="primary_release_date.asc" className="bg-neutral-900">Release Date (Oldest first)</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="first_air_date.desc" className="bg-neutral-900">Air Date (Newest first)</option>
-                            <option value="first_air_date.asc" className="bg-neutral-900">Air Date (Oldest first)</option>
-                          </>
-                        )}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Cache TTL (seconds)</label>
-                      <input
-                        type="number"
-                        value={cacheTtl}
-                        onChange={(e) => setCacheTtl(Math.max(300, parseInt(e.target.value) || 300))}
-                        min="300"
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      <span className="text-[9px] text-white/25 mt-0.5 block">Minimum: 300 seconds (5 minutes)</span>
-                    </div>
-                    <div className="flex items-center gap-6 h-full pt-4">
-                      <label className="flex items-center gap-2 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={releasedOnly}
-                          onChange={(e) => setReleasedOnly(e.target.checked)}
-                          className="rounded border-white/10 text-accent focus:ring-accent"
-                        />
-                        <span>Released Only</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-white/70 select-none cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={includeAdult}
-                          onChange={(e) => setIncludeAdult(e.target.checked)}
-                          className="rounded border-white/10 text-accent focus:ring-accent"
-                        />
-                        <span>Include Adult</span>
-                      </label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Sort By</label>
+                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className={styledSelect}>
+                          <option value="popularity.desc" className="bg-[#0a0b0e]">Popularity (High to Low)</option>
+                          <option value="popularity.asc" className="bg-[#0a0b0e]">Popularity (Low to High)</option>
+                          <option value="vote_average.desc" className="bg-[#0a0b0e]">Rating (High to Low)</option>
+                          <option value="vote_average.asc" className="bg-[#0a0b0e]">Rating (Low to High)</option>
+                          {contentType === 'movie' ? (
+                            <>
+                              <option value="primary_release_date.desc" className="bg-[#0a0b0e]">Release Date (Newest)</option>
+                              <option value="primary_release_date.asc" className="bg-[#0a0b0e]">Release Date (Oldest)</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="first_air_date.desc" className="bg-[#0a0b0e]">Air Date (Newest)</option>
+                              <option value="first_air_date.asc" className="bg-[#0a0b0e]">Air Date (Oldest)</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Cache TTL (seconds)</label>
+                        <input type="number" value={cacheTtl} onChange={(e) => setCacheTtl(Math.max(300, parseInt(e.target.value) || 300))} min="300" className={styledInput} />
+                        <span className="text-[9px] text-white/20 mt-1 block">Min 300s (5 min)</span>
+                      </div>
+                      <div className="flex items-start gap-3 pt-5">
+                        <PillToggle checked={releasedOnly} onChange={setReleasedOnly} label="Released Only" />
+                        <PillToggle checked={includeAdult} onChange={setIncludeAdult} label="Adult" />
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* SECTION 2: Reference Filters */}
+              {/* ── Filters Tab ── */}
               {discoverTab === 'filters' && (
-                <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                  <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Reference Filters</h3>
-                  
-                  {/* Genres multiselect */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Include Genres</label>
-                      <select
-                        onChange={(e) => {
-                          const val = e.target.value
-                          if (val && !selectedIncludeGenres.includes(val)) {
-                            setSelectedIncludeGenres([...selectedIncludeGenres, val])
-                          }
-                          e.target.value = ''
-                        }}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="">Select genre</option>
-                        {genresList.map((g) => (
-                          <option key={g.id} value={g.id} className="bg-neutral-900">{g.name}</option>
-                        ))}
-                      </select>
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {selectedIncludeGenres.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No included genres</span>
-                        )}
-                        {selectedIncludeGenres.map((gid) => {
-                          const g = genresList.find((item) => String(item.id) === gid)
-                          return (
-                            <span key={gid} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                              {g?.name || gid}
-                              <button
-                                onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((id) => id !== gid))}
-                                className="hover:text-white cursor-pointer ml-1"
-                              >
-                                &times;
-                              </button>
-                            </span>
-                          )
-                        })}
-                      </div>
-                    </div>
+                <div className="space-y-5">
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Genres & Language</h3>
 
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Exclude Genres</label>
-                      <select
-                        onChange={(e) => {
-                          const val = e.target.value
-                          if (val && !selectedExcludeGenres.includes(val)) {
-                            setSelectedExcludeGenres([...selectedExcludeGenres, val])
-                          }
-                          e.target.value = ''
-                        }}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="">Select genre</option>
-                        {genresList.map((g) => (
-                          <option key={g.id} value={g.id} className="bg-neutral-900">{g.name}</option>
-                        ))}
-                      </select>
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {selectedExcludeGenres.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No excluded genres</span>
-                        )}
-                        {selectedExcludeGenres.map((gid) => {
-                          const g = genresList.find((item) => String(item.id) === gid)
-                          return (
-                            <span key={gid} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                              {g?.name || gid}
-                              <button
-                                onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((id) => id !== gid))}
-                                className="hover:text-white cursor-pointer ml-1"
-                              >
-                                &times;
-                              </button>
-                            </span>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Genre Matching Mode</label>
-                      <div className="flex gap-4 items-center h-8">
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="genreMatchMode"
-                            checked={genreMatchMode === 'OR'}
-                            onChange={() => setGenreMatchMode('OR')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>OR (Any Match)</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="genreMatchMode"
-                            checked={genreMatchMode === 'AND'}
-                            onChange={() => setGenreMatchMode('AND')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>AND (All Match)</span>
-                        </label>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Original Language</label>
-                      <select
-                        value={originalLanguage}
-                        onChange={(e) => setOriginalLanguage(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="Any" className="bg-neutral-900">Any</option>
-                        {languagesList.map((lang) => (
-                          <option key={lang.iso_639_1} value={lang.iso_639_1} className="bg-neutral-900">
-                            {lang.english_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Origin Country</label>
-                      <select
-                        value={originCountry}
-                        onChange={(e) => setOriginCountry(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="Any" className="bg-neutral-900">Any</option>
-                        {countriesList.map((c) => (
-                          <option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-neutral-900">
-                            {c.english_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Release Region</label>
-                      <select
-                        value={releaseRegion}
-                        onChange={(e) => setReleaseRegion(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="Any" className="bg-neutral-900">Any</option>
-                        {countriesList.map((c) => (
-                          <option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-neutral-900">
-                            {c.english_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Certification Country</label>
-                      <select
-                        value={certificationCountry}
-                        onChange={(e) => {
-                          setCertificationCountry(e.target.value)
-                          setCertification('None')
-                        }}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="None" className="bg-neutral-900">None</option>
-                        {certificationCountries.map((c) => (
-                          <option key={c} value={c} className="bg-neutral-900">{c}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Certification</label>
-                      <select
-                        value={certification}
-                        disabled={certificationCountry === 'None'}
-                        onChange={(e) => setCertification(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40 disabled:opacity-40"
-                      >
-                        <option value="None" className="bg-neutral-900">None</option>
-                        {certificationsForCountry.map((c) => (
-                          <option key={c.certification} value={c.certification} className="bg-neutral-900">
-                            {c.certification}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* SECTION 3: People, Companies, and Keywords */}
-              {discoverTab === 'people' && (
-                <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                  <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">People, Companies, and Keywords</h3>
-                  
-                  {/* People AutoComplete Search */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="relative">
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">People ({peopleList.length})</label>
-                      <input
-                        value={peopleSearch}
-                        onChange={(e) => setPeopleSearch(e.target.value)}
-                        placeholder="Search director/actor..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      {peopleSuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-neutral-900 border border-white/10 rounded-lg shadow-xl" style={{ scrollbarWidth: 'thin' }}>
-                          {peopleSuggestions.map((p) => (
-                            <button
-                              key={p.id}
-                              onClick={() => {
-                                if (!peopleList.some((item) => item.id === p.id)) {
-                                  setPeopleList([...peopleList, { id: p.id, name: p.name }])
-                                }
-                                setPeopleSearch('')
-                                setPeopleSuggestions([])
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors border-b border-white/5 last:border-none flex items-center gap-2"
-                            >
-                              {p.profile_path && (
-                                <img
-                                  src={`https://image.tmdb.org/t/p/w92${p.profile_path}`}
-                                  className="w-5 h-5 rounded-full object-cover"
-                                  alt=""
-                                />
-                              )}
-                              <span>{p.name}</span>
-                            </button>
-                          ))}
+                    {/* Genre Include/Exclude */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[11px] text-white/40 font-medium">Include Genres</label>
+                          <MatchModeToggle value={genreMatchMode} onChange={setGenreMatchMode} name="genre" />
                         </div>
-                      )}
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {peopleList.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No people added</span>
-                        )}
-                        {peopleList.map((p) => (
-                          <span key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-[10px]">
-                            {p.name}
-                            <button onClick={() => setPeopleList(peopleList.filter((item) => item.id !== p.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">People Match Mode</label>
-                      <div className="flex gap-4 items-center h-8">
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="peopleMatchMode"
-                            checked={peopleMatchMode === 'OR'}
-                            onChange={() => setPeopleMatchMode('OR')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>OR (Any Match)</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="peopleMatchMode"
-                            checked={peopleMatchMode === 'AND'}
-                            onChange={() => setPeopleMatchMode('AND')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>AND (All Match)</span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Companies autocomplete */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                    <div className="relative">
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Include Production Companies</label>
-                      <input
-                        value={companySearch}
-                        onChange={(e) => setCompanySearch(e.target.value)}
-                        placeholder="Search company (e.g. Marvel)..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      {companySuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-neutral-900 border border-white/10 rounded-lg shadow-xl" style={{ scrollbarWidth: 'thin' }}>
-                          {companySuggestions.map((c) => (
-                            <button
-                              key={c.id}
-                              onClick={() => {
-                                if (!includeCompanies.some((item) => item.id === c.id)) {
-                                  setIncludeCompanies([...includeCompanies, { id: c.id, name: c.name }])
-                                }
-                                setCompanySearch('')
-                                setCompanySuggestions([])
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors border-b border-white/5 last:border-none"
-                            >
-                              {c.name}
-                            </button>
-                          ))}
+                        <select onChange={(e) => { const v = e.target.value; if (v && !selectedIncludeGenres.includes(v)) setSelectedIncludeGenres([...selectedIncludeGenres, v]); e.target.value = '' }} className={styledSelect}>
+                          <option value="">+ Add genre</option>
+                          {genresList.map((g) => (<option key={g.id} value={g.id} className="bg-[#0a0b0e]">{g.name}</option>))}
+                        </select>
+                        <div className="flex flex-wrap gap-1.5 mt-2 min-h-[28px]">
+                          {selectedIncludeGenres.length === 0 && <span className="text-[10px] text-white/15 italic">No genres selected</span>}
+                          {selectedIncludeGenres.map((gid) => {
+                            const g = genresList.find((item) => String(item.id) === gid)
+                            return (
+                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                                {g?.name || gid}
+                                <button onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((id) => id !== gid))} className="hover:text-white cursor-pointer text-emerald-400/60 hover:text-emerald-300 transition-colors">&times;</button>
+                              </span>
+                            )
+                          })}
                         </div>
-                      )}
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {includeCompanies.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No companies added</span>
-                        )}
-                        {includeCompanies.map((c) => (
-                          <span key={c.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                            {c.name}
-                            <button onClick={() => setIncludeCompanies(includeCompanies.filter((item) => item.id !== c.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                          </span>
-                        ))}
                       </div>
-                    </div>
-
-                    <div className="relative">
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Exclude Production Companies</label>
-                      <input
-                        value={companySearch}
-                        onChange={(e) => setCompanySearch(e.target.value)}
-                        placeholder="Search company..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      {companySuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-neutral-900 border border-white/10 rounded-lg shadow-xl" style={{ scrollbarWidth: 'thin' }}>
-                          {companySuggestions.map((c) => (
-                            <button
-                              key={c.id}
-                              onClick={() => {
-                                if (!excludeCompanies.some((item) => item.id === c.id)) {
-                                  setExcludeCompanies([...excludeCompanies, { id: c.id, name: c.name }])
-                                }
-                                setCompanySearch('')
-                                setCompanySuggestions([])
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors border-b border-white/5 last:border-none"
-                            >
-                              {c.name}
-                            </button>
-                          ))}
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Exclude Genres</label>
+                        <select onChange={(e) => { const v = e.target.value; if (v && !selectedExcludeGenres.includes(v)) setSelectedExcludeGenres([...selectedExcludeGenres, v]); e.target.value = '' }} className={styledSelect}>
+                          <option value="">+ Exclude genre</option>
+                          {genresList.map((g) => (<option key={g.id} value={g.id} className="bg-[#0a0b0e]">{g.name}</option>))}
+                        </select>
+                        <div className="flex flex-wrap gap-1.5 mt-2 min-h-[28px]">
+                          {selectedExcludeGenres.length === 0 && <span className="text-[10px] text-white/15 italic">None excluded</span>}
+                          {selectedExcludeGenres.map((gid) => {
+                            const g = genresList.find((item) => String(item.id) === gid)
+                            return (
+                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                                {g?.name || gid}
+                                <button onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((id) => id !== gid))} className="hover:text-white cursor-pointer text-red-400/60 hover:text-red-300 transition-colors">&times;</button>
+                              </span>
+                            )
+                          })}
                         </div>
-                      )}
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {excludeCompanies.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No excluded companies</span>
-                        )}
-                        {excludeCompanies.map((c) => (
-                          <span key={c.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                            {c.name}
-                            <button onClick={() => setExcludeCompanies(excludeCompanies.filter((item) => item.id !== c.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                          </span>
-                        ))}
                       </div>
                     </div>
 
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Company Match Mode</label>
-                      <div className="flex gap-4 items-center h-8">
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="companyMatchMode"
-                            checked={companyMatchMode === 'OR'}
-                            onChange={() => setCompanyMatchMode('OR')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>OR (Any Match)</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="companyMatchMode"
-                            checked={companyMatchMode === 'AND'}
-                            onChange={() => setCompanyMatchMode('AND')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>AND (All Match)</span>
-                        </label>
+                    {/* Language / Country / Region / Certification */}
+                    <div className="border-t border-white/[0.06] pt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Original Language</label>
+                        <select value={originalLanguage} onChange={(e) => setOriginalLanguage(e.target.value)} className={styledSelect}>
+                          <option value="Any" className="bg-[#0a0b0e]">Any</option>
+                          {languagesList.map((lang) => (<option key={lang.iso_639_1} value={lang.iso_639_1} className="bg-[#0a0b0e]">{lang.english_name}</option>))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Origin Country</label>
+                        <select value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} className={styledSelect}>
+                          <option value="Any" className="bg-[#0a0b0e]">Any</option>
+                          {countriesList.map((c) => (<option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-[#0a0b0e]">{c.english_name}</option>))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Release Region</label>
+                        <select value={releaseRegion} onChange={(e) => setReleaseRegion(e.target.value)} className={styledSelect}>
+                          <option value="Any" className="bg-[#0a0b0e]">Any</option>
+                          {countriesList.map((c) => (<option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-[#0a0b0e]">{c.english_name}</option>))}
+                        </select>
                       </div>
                     </div>
-                  </div>
-
-                  {/* Keywords autocomplete */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-                    <div className="relative">
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Include Keywords</label>
-                      <input
-                        value={keywordSearch}
-                        onChange={(e) => setKeywordSearch(e.target.value)}
-                        placeholder="Search keyword (e.g. superhero)..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      {keywordSuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-neutral-900 border border-white/10 rounded-lg shadow-xl" style={{ scrollbarWidth: 'thin' }}>
-                          {keywordSuggestions.map((k) => (
-                            <button
-                              key={k.id}
-                              onClick={() => {
-                                if (!includeKeywords.some((item) => item.id === k.id)) {
-                                  setIncludeKeywords([...includeKeywords, { id: k.id, name: k.name }])
-                                }
-                                setKeywordSearch('')
-                                setKeywordSuggestions([])
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors border-b border-white/5 last:border-none"
-                            >
-                              {k.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {includeKeywords.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No keywords added</span>
-                        )}
-                        {includeKeywords.map((k) => (
-                          <span key={k.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/20 rounded-md text-[10px]">
-                            {k.name}
-                            <button onClick={() => setIncludeKeywords(includeKeywords.filter((item) => item.id !== k.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                          </span>
-                        ))}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Certification Country</label>
+                        <select value={certificationCountry} onChange={(e) => { setCertificationCountry(e.target.value); setCertification('None') }} className={styledSelect}>
+                          <option value="None" className="bg-[#0a0b0e]">None</option>
+                          {certificationCountries.map((c) => (<option key={c} value={c} className="bg-[#0a0b0e]">{c}</option>))}
+                        </select>
                       </div>
-                    </div>
-
-                    <div className="relative">
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Exclude Keywords</label>
-                      <input
-                        value={keywordSearch}
-                        onChange={(e) => setKeywordSearch(e.target.value)}
-                        placeholder="Search keyword..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                      {keywordSuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-neutral-900 border border-white/10 rounded-lg shadow-xl" style={{ scrollbarWidth: 'thin' }}>
-                          {keywordSuggestions.map((k) => (
-                            <button
-                              key={k.id}
-                              onClick={() => {
-                                if (!excludeKeywords.some((item) => item.id === k.id)) {
-                                  setExcludeKeywords([...excludeKeywords, { id: k.id, name: k.name }])
-                                }
-                                setKeywordSearch('')
-                                setKeywordSuggestions([])
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors border-b border-white/5 last:border-none"
-                            >
-                              {k.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {excludeKeywords.length === 0 && (
-                          <span className="text-[10px] text-white/20 italic">No excluded keywords</span>
-                        )}
-                        {excludeKeywords.map((k) => (
-                          <span key={k.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px]">
-                            {k.name}
-                            <button onClick={() => setExcludeKeywords(excludeKeywords.filter((item) => item.id !== k.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Keyword Match Mode</label>
-                      <div className="flex gap-4 items-center h-8">
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="keywordMatchMode"
-                            checked={keywordMatchMode === 'OR'}
-                            onChange={() => setKeywordMatchMode('OR')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>OR (Any Match)</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="keywordMatchMode"
-                            checked={keywordMatchMode === 'AND'}
-                            onChange={() => setKeywordMatchMode('AND')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>AND (All Match)</span>
-                        </label>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Certification</label>
+                        <select value={certification} disabled={certificationCountry === 'None'} onChange={(e) => setCertification(e.target.value)} className={`${styledSelect} disabled:opacity-30`}>
+                          <option value="None" className="bg-[#0a0b0e]">None</option>
+                          {certificationsForCountry.map((c) => (<option key={c.certification} value={c.certification} className="bg-[#0a0b0e]">{c.certification}</option>))}
+                        </select>
                       </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* SECTION 4: Streaming and Region */}
+              {/* ── Streaming Tab ── */}
               {discoverTab === 'streaming' && (
-                <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
-                  <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Streaming and Region</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Watch Region</label>
-                      <select
-                        value={watchRegion}
-                        onChange={(e) => setWatchRegion(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      >
-                        <option value="US" className="bg-neutral-900">United States (US)</option>
-                        <option value="GB" className="bg-neutral-900">United Kingdom (GB)</option>
-                        <option value="CA" className="bg-neutral-900">Canada (CA)</option>
-                        <option value="AU" className="bg-neutral-900">Australia (AU)</option>
-                        <option value="DE" className="bg-neutral-900">Germany (DE)</option>
-                        <option value="FR" className="bg-neutral-900">France (FR)</option>
-                        <option value="ES" className="bg-neutral-900">Spain (ES)</option>
-                        <option value="IT" className="bg-neutral-900">Italy (IT)</option>
-                        <option value="BR" className="bg-neutral-900">Brazil (BR)</option>
-                        <option value="IN" className="bg-neutral-900">India (IN)</option>
-                        <option value="JP" className="bg-neutral-900">Japan (JP)</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Provider Match Mode</label>
-                      <div className="flex gap-4 items-center h-8">
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="providerMatchMode"
-                            checked={providerMatchMode === 'OR'}
-                            onChange={() => setProviderMatchMode('OR')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>OR (Any Match)</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-white/70 select-none cursor-pointer">
-                          <input
-                            type="radio"
-                            name="providerMatchMode"
-                            checked={providerMatchMode === 'AND'}
-                            onChange={() => setProviderMatchMode('AND')}
-                            className="text-accent focus:ring-accent"
-                          />
-                          <span>AND (All Match)</span>
-                        </label>
+                <div className="space-y-5">
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Streaming & Region</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Watch Region</label>
+                        <select value={watchRegion} onChange={(e) => setWatchRegion(e.target.value)} className={styledSelect}>
+                          <option value="US" className="bg-[#0a0b0e]">United States (US)</option>
+                          <option value="GB" className="bg-[#0a0b0e]">United Kingdom (GB)</option>
+                          <option value="CA" className="bg-[#0a0b0e]">Canada (CA)</option>
+                          <option value="AU" className="bg-[#0a0b0e]">Australia (AU)</option>
+                          <option value="DE" className="bg-[#0a0b0e]">Germany (DE)</option>
+                          <option value="FR" className="bg-[#0a0b0e]">France (FR)</option>
+                          <option value="ES" className="bg-[#0a0b0e]">Spain (ES)</option>
+                          <option value="IT" className="bg-[#0a0b0e]">Italy (IT)</option>
+                          <option value="BR" className="bg-[#0a0b0e]">Brazil (BR)</option>
+                          <option value="IN" className="bg-[#0a0b0e]">India (IN)</option>
+                          <option value="JP" className="bg-[#0a0b0e]">Japan (JP)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[11px] text-white/40 font-medium">Provider Matching</label>
+                          <MatchModeToggle value={providerMatchMode} onChange={setProviderMatchMode} name="provider" />
+                        </div>
+                        <input value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} placeholder="Filter providers..." className={styledInput} />
                       </div>
                     </div>
-                    <div>
-                      <label className="block text-[11px] text-white/50 mb-1 font-medium">Provider Search</label>
-                      <input
-                        value={providerSearch}
-                        onChange={(e) => setProviderSearch(e.target.value)}
-                        placeholder="Filter providers..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-accent/40"
-                      />
-                    </div>
-                  </div>
 
-                  {/* Popular streaming quick select services */}
-                  {quickSelectProviders.length > 0 && (
-                    <div className="mb-2">
-                      <label className="block text-[10px] text-white/30 mb-1.5 uppercase tracking-wider font-semibold">Popular Services</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {quickSelectProviders.map((provider) => {
+                    {/* Quick select popular */}
+                    {quickSelectProviders.length > 0 && (
+                      <div>
+                        <label className="block text-[10px] text-white/25 mb-2 uppercase tracking-wider font-semibold">Popular Services</label>
+                        <div className="flex flex-wrap gap-2">
+                          {quickSelectProviders.map((provider) => {
+                            const selected = selectedProviders.some((p) => p.id === provider.provider_id)
+                            return (
+                              <button
+                                key={`quick-${provider.provider_id}`}
+                                onClick={() => {
+                                  if (selected) setSelectedProviders(selectedProviders.filter((p) => p.id !== provider.provider_id))
+                                  else setSelectedProviders([...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])
+                                }}
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
+                                  selected
+                                    ? 'bg-accent/15 border-accent/30 text-white'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:bg-white/[0.06] hover:text-white/60'
+                                }`}
+                              >
+                                {provider.logo_path && (
+                                  <img src={`https://image.tmdb.org/t/p/original${provider.logo_path}`} alt="" className="w-5 h-5 rounded object-cover" loading="lazy" />
+                                )}
+                                <span>{provider.provider_name}</span>
+                                {selected && <svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Full provider grid */}
+                    <div>
+                      <label className="block text-[11px] text-white/40 mb-2 font-medium">All Providers</label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-1.5 max-h-44 overflow-y-auto border border-white/[0.04] bg-black/20 p-2.5 rounded-xl" style={{ scrollbarWidth: 'thin' }}>
+                        {filteredProviders.map((provider) => {
                           const selected = selectedProviders.some((p) => p.id === provider.provider_id)
                           return (
                             <button
-                              key={`quick-${provider.provider_id}`}
+                              key={provider.provider_id}
                               onClick={() => {
-                                if (selected) {
-                                  setSelectedProviders(selectedProviders.filter((p) => p.id !== provider.provider_id))
-                                } else {
-                                  setSelectedProviders([...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])
-                                }
+                                if (selected) setSelectedProviders(selectedProviders.filter((p) => p.id !== provider.provider_id))
+                                else setSelectedProviders([...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])
                               }}
-                              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] transition-all cursor-pointer ${
+                              className={`flex items-center gap-2 p-2 rounded-lg border text-left text-[11px] transition-all cursor-pointer select-none ${
                                 selected
-                                  ? 'bg-accent/20 border-accent text-white'
-                                  : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10 hover:text-white'
+                                  ? 'bg-accent/10 border-accent/25 text-white'
+                                  : 'bg-white/[0.02] border-white/[0.04] text-white/35 hover:bg-white/[0.04]'
                               }`}
                             >
                               {provider.logo_path && (
-                                <img
-                                  src={`https://image.tmdb.org/t/p/original${provider.logo_path}`}
-                                  alt=""
-                                  className="w-4 h-4 rounded-sm object-cover"
-                                  loading="lazy"
-                                />
+                                <img src={`https://image.tmdb.org/t/p/original${provider.logo_path}`} alt="" className="w-5 h-5 rounded object-cover flex-shrink-0" loading="lazy" />
                               )}
-                              <span>{provider.provider_name}</span>
+                              <span className="truncate">{provider.provider_name}</span>
                             </button>
                           )
                         })}
                       </div>
                     </div>
-                  )}
 
-                  {/* Searchable watch providers list */}
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-2 font-medium">Select Watch Providers</label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto border border-white/5 bg-black/20 p-2.5 rounded-lg" style={{ scrollbarWidth: 'thin' }}>
-                      {filteredProviders.map((provider) => {
-                        const selected = selectedProviders.some((p) => p.id === provider.provider_id)
-                        return (
-                          <button
-                            key={provider.provider_id}
-                            onClick={() => {
-                              if (selected) {
-                                setSelectedProviders(selectedProviders.filter((p) => p.id !== provider.provider_id))
-                              } else {
-                                setSelectedProviders([...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])
-                              }
-                            }}
-                            className={`flex items-center gap-2 p-1.5 rounded-lg border text-left text-[10px] transition-all cursor-pointer select-none ${
-                              selected
-                                ? 'bg-accent/15 border-accent text-white'
-                                : 'bg-white/[0.02] border-white/5 text-white/50 hover:bg-white/[0.05]'
-                            }`}
-                          >
-                            {provider.logo_path && (
-                              <img
-                                src={`https://image.tmdb.org/t/p/original${provider.logo_path}`}
-                                alt=""
-                                className="w-5 h-5 rounded object-cover flex-shrink-0"
-                                loading="lazy"
-                              />
-                            )}
-                            <span className="truncate">{provider.provider_name}</span>
-                          </button>
-                        )
-                      })}
+                    {/* Selected providers chips */}
+                    {selectedProviders.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedProviders.map((p) => (
+                          <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-[11px] font-medium">
+                            {p.name}
+                            <button onClick={() => setSelectedProviders(selectedProviders.filter((item) => item.id !== p.id))} className="text-accent/50 hover:text-accent cursor-pointer transition-colors">&times;</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ── People & Tags Tab ── */}
+              {discoverTab === 'people' && (
+                <div className="space-y-5">
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">People</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4">
+                      <div className="relative">
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Search People</label>
+                        <input value={peopleSearch} onChange={(e) => setPeopleSearch(e.target.value)} placeholder="e.g. Denis Villeneuve, Timothee Chalamet..." className={styledInput} />
+                        {peopleSuggestions.length > 0 && (
+                          <div className="absolute z-50 left-0 right-0 mt-1 max-h-44 overflow-y-auto bg-[#14161d] border border-white/10 rounded-xl shadow-2xl" style={{ scrollbarWidth: 'thin' }}>
+                            {peopleSuggestions.map((p) => (
+                              <button key={p.id} onClick={() => { if (!peopleList.some((item) => item.id === p.id)) setPeopleList([...peopleList, { id: p.id, name: p.name }]); setPeopleSearch(''); setPeopleSuggestions([]) }} className="w-full text-left px-3 py-2.5 text-sm hover:bg-white/[0.05] transition-colors border-b border-white/[0.04] last:border-none flex items-center gap-3 cursor-pointer">
+                                {p.profile_path && (<img src={`https://image.tmdb.org/t/p/w92${p.profile_path}`} className="w-6 h-6 rounded-full object-cover" alt="" />)}
+                                <span className="text-white/80">{p.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-end pb-0.5">
+                        <MatchModeToggle value={peopleMatchMode} onChange={setPeopleMatchMode} name="people" />
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {selectedProviders.length === 0 && (
-                        <span className="text-[10px] text-white/20 italic">No providers selected</span>
-                      )}
-                      {selectedProviders.map((p) => (
-                        <span key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-[10px]">
+                    <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                      {peopleList.length === 0 && <span className="text-[10px] text-white/15 italic">No people selected</span>}
+                      {peopleList.map((p) => (
+                        <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-[11px] font-medium">
                           {p.name}
-                          <button onClick={() => setSelectedProviders(selectedProviders.filter((item) => item.id !== p.id))} className="hover:text-white cursor-pointer ml-1">&times;</button>
+                          <button onClick={() => setPeopleList(peopleList.filter((item) => item.id !== p.id))} className="text-accent/50 hover:text-accent cursor-pointer transition-colors">&times;</button>
                         </span>
                       ))}
                     </div>
                   </div>
-                </div>
-              )}
 
-              {/* SECTION 5: Numeric and Date Ranges */}
-                      <span className="text-white/30 text-xs">to</span>
-                      <input
-                        type="number"
-                        placeholder="Max"
-                        value={runtimeMax}
-                        onChange={(e) => setRuntimeMax(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white outline-none"
-                      />
+                  {/* Companies */}
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Companies</h3>
+                      <MatchModeToggle value={companyMatchMode} onChange={setCompanyMatchMode} name="company" />
+                    </div>
+                    <div className="relative">
+                      <input value={companySearch} onChange={(e) => setCompanySearch(e.target.value)} placeholder="Search company (e.g. Pixar, Marvel)..." className={styledInput} />
+                      {companySuggestions.length > 0 && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-44 overflow-y-auto bg-[#14161d] border border-white/10 rounded-xl shadow-2xl" style={{ scrollbarWidth: 'thin' }}>
+                          {companySuggestions.map((c) => (
+                            <div key={c.id} className="flex justify-between items-center px-3 py-2 hover:bg-white/[0.04] border-b border-white/[0.04] last:border-none">
+                              <span className="text-sm text-white/80">{c.name}</span>
+                              <div className="flex gap-1.5">
+                                <button onClick={() => { if (!includeCompanies.some((item) => item.id === c.id)) setIncludeCompanies([...includeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Include</button>
+                                <button onClick={() => { if (!excludeCompanies.some((item) => item.id === c.id)) setExcludeCompanies([...excludeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Exclude</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
+                        <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                          {includeCompanies.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {includeCompanies.map((c) => (
+                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                              {c.name}
+                              <button onClick={() => setIncludeCompanies(includeCompanies.filter((item) => item.id !== c.id))} className="text-emerald-400/50 hover:text-emerald-300 cursor-pointer transition-colors">&times;</button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
+                        <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                          {excludeCompanies.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {excludeCompanies.map((c) => (
+                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                              {c.name}
+                              <button onClick={() => setExcludeCompanies(excludeCompanies.filter((item) => item.id !== c.id))} className="text-red-400/50 hover:text-red-300 cursor-pointer transition-colors">&times;</button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Keywords */}
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Keywords</h3>
+                      <MatchModeToggle value={keywordMatchMode} onChange={setKeywordMatchMode} name="keyword" />
+                    </div>
+                    <div className="relative">
+                      <input value={keywordSearch} onChange={(e) => setKeywordSearch(e.target.value)} placeholder="Search keyword (e.g. time travel, dystopia)..." className={styledInput} />
+                      {keywordSuggestions.length > 0 && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-44 overflow-y-auto bg-[#14161d] border border-white/10 rounded-xl shadow-2xl" style={{ scrollbarWidth: 'thin' }}>
+                          {keywordSuggestions.map((k) => (
+                            <div key={k.id} className="flex justify-between items-center px-3 py-2 hover:bg-white/[0.04] border-b border-white/[0.04] last:border-none">
+                              <span className="text-sm text-white/80">{k.name}</span>
+                              <div className="flex gap-1.5">
+                                <button onClick={() => { if (!includeKeywords.some((item) => item.id === k.id)) setIncludeKeywords([...includeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Include</button>
+                                <button onClick={() => { if (!excludeKeywords.some((item) => item.id === k.id)) setExcludeKeywords([...excludeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Exclude</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
+                        <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                          {includeKeywords.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {includeKeywords.map((k) => (
+                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                              {k.name}
+                              <button onClick={() => setIncludeKeywords(includeKeywords.filter((item) => item.id !== k.id))} className="text-emerald-400/50 hover:text-emerald-300 cursor-pointer transition-colors">&times;</button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
+                        <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                          {excludeKeywords.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {excludeKeywords.map((k) => (
+                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                              {k.name}
+                              <button onClick={() => setExcludeKeywords(excludeKeywords.filter((item) => item.id !== k.id))} className="text-red-400/50 hover:text-red-300 cursor-pointer transition-colors">&times;</button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
+              )}
 
-                <div className="space-y-2 pt-2 border-t border-white/5">
-                  <label className="block text-[11px] text-white/50 font-medium">Primary Release Presets</label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {['This Month', 'Last Month', 'This Year', 'Last Year', 'Last 5 Years', 'Last 10 Years', '2010s', '2000s', '1990s', '1980s'].map((preset) => (
-                      <button
-                        key={preset}
-                        onClick={() => applyPreset(preset)}
-                        className={`px-3 py-1 rounded-md text-[10px] font-semibold border transition-all cursor-pointer ${
-                          presetName === preset
-                            ? 'bg-accent/15 border-accent text-white'
-                            : 'bg-white/5 border-white/5 text-white/60 hover:border-white/10'
-                        }`}
-                      >
-                        {preset}
-                      </button>
-                    ))}
-                    <button
-                      onClick={() => applyPreset('Clear')}
-                      className="px-3 py-1 rounded-md text-[10px] font-semibold bg-red-500/10 border border-red-500/10 text-red-400 hover:bg-red-500/25 transition-all cursor-pointer"
-                    >
-                      Clear
-                    </button>
+              {/* ── Date & Rating Tab ── */}
+              {discoverTab === 'ranges' && (
+                <div className="space-y-5">
+                  {/* Rating & Runtime */}
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Rating & Runtime</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-2 font-medium">Vote Average: {voteAverageMin} - {voteAverageMax}</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min="0" max="10" step="0.5" value={voteAverageMin} onChange={(e) => setVoteAverageMin(parseFloat(e.target.value))} className="flex-1 accent-accent" />
+                          <span className="text-white/20 text-xs">to</span>
+                          <input type="range" min="0" max="10" step="0.5" value={voteAverageMax} onChange={(e) => setVoteAverageMax(parseFloat(e.target.value))} className="flex-1 accent-accent" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Min Vote Count</label>
+                        <input type="number" placeholder="e.g. 100" value={voteCountMin} onChange={(e) => setVoteCountMin(e.target.value)} className={styledInput} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Runtime (min)</label>
+                        <div className="flex items-center gap-2">
+                          <input type="number" placeholder="Min" value={runtimeMin} onChange={(e) => setRuntimeMin(e.target.value)} className={styledInput} />
+                          <span className="text-white/20 text-xs flex-shrink-0">to</span>
+                          <input type="number" placeholder="Max" value={runtimeMax} onChange={(e) => setRuntimeMax(e.target.value)} className={styledInput} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Release Date */}
+                  <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Release Date</h3>
+                    <div>
+                      <label className="block text-[10px] text-white/25 mb-2 uppercase tracking-wider font-semibold">Quick Presets</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['This Month', 'Last Month', 'This Year', 'Last Year', 'Last 5 Years', 'Last 10 Years', '2010s', '2000s', '1990s', '1980s'].map((preset) => (
+                          <button
+                            key={preset}
+                            onClick={() => applyPreset(preset)}
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
+                              presetName === preset
+                                ? 'bg-accent/15 border-accent/30 text-accent'
+                                : 'bg-white/[0.03] border-white/[0.06] text-white/35 hover:border-white/10 hover:text-white/50'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                        <button onClick={() => applyPreset('Clear')} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-500/10 border border-red-500/15 text-red-400/70 hover:bg-red-500/20 hover:text-red-400 transition-all cursor-pointer">
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">From</label>
+                        <input type="date" value={releaseDateFrom} onChange={(e) => { setReleaseDateFrom(e.target.value); setPresetName('') }} className={styledInput} />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">To</label>
+                        <input type="date" value={releaseDateTo} onChange={(e) => { setReleaseDateTo(e.target.value); setPresetName('') }} className={styledInput} />
+                      </div>
+                    </div>
                   </div>
                 </div>
+              )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Primary Release From</label>
-                    <input
-                      type="date"
-                      value={releaseDateFrom}
-                      onChange={(e) => {
-                        setReleaseDateFrom(e.target.value)
-                        setPresetName('')
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-white/50 mb-1 font-medium">Primary Release To</label>
-                    <input
-                      type="date"
-                      value={releaseDateTo}
-                      onChange={(e) => {
-                        setReleaseDateTo(e.target.value)
-                        setPresetName('')
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 6: Preview Section */}
-              <div className="border border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-4">
+              {/* ── Preview Section (always visible) ── */}
+              <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
                 <div className="flex justify-between items-center">
-                  <h3 className="text-xs font-bold text-accent uppercase tracking-wider text-green-400">Preview</h3>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={runPreview}
-                      disabled={previewLoading}
-                      className="px-4 py-1.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 text-xs font-semibold rounded-lg transition-colors cursor-pointer disabled:opacity-40"
-                    >
-                      {previewLoading ? 'Loading...' : 'Preview Query'}
-                    </button>
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Preview</h3>
+                    <p className="text-[10px] text-white/25 mt-0.5">{Object.keys(livePreview).length - 3} active filters</p>
                   </div>
+                  <button
+                    onClick={runPreview}
+                    disabled={previewLoading}
+                    className="px-5 py-2 bg-white/[0.05] hover:bg-white/[0.08] text-white/70 border border-white/[0.08] text-xs font-semibold rounded-lg transition-all cursor-pointer disabled:opacity-30 flex items-center gap-2"
+                  >
+                    {previewLoading ? (
+                      <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                    ) : (
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    )}
+                    {previewLoading ? 'Testing...' : 'Test Query'}
+                  </button>
                 </div>
-                <p className="text-[10px] text-white/40">
-                  {Object.keys(livePreview).length - 3} active filters plus sorting and adult-content rules.
-                </p>
-                <div className="bg-black/40 border border-white/5 rounded-lg p-3 text-[10px] font-mono text-white/60 overflow-x-auto">
-                  {JSON.stringify(livePreview)}
+
+                <div className="bg-black/30 border border-white/[0.04] rounded-lg p-3 text-[10px] font-mono text-white/40 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+                  {JSON.stringify(livePreview, null, 0)}
                 </div>
 
                 {previewItems.length > 0 && (
                   <div className="space-y-2">
-                    <h4 className="text-[10px] font-bold text-white/40 uppercase tracking-wider">Matching Titles ({previewItems.length})</h4>
-                    <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none max-h-36">
+                    <h4 className="text-[10px] font-bold text-white/30 uppercase tracking-wider">Matching Titles ({previewItems.length})</h4>
+                    <div className="flex gap-2.5 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
                       {previewItems.map((item) => (
-                        <div key={item.id} className="w-16 flex-shrink-0 flex flex-col items-center">
+                        <div key={item.id} className="w-[72px] flex-shrink-0 flex flex-col items-center group">
                           {item.poster ? (
-                            <img src={item.poster} className="w-full aspect-[2/3] object-cover rounded-md border border-white/5" alt="" />
+                            <img src={item.poster} className="w-full aspect-[2/3] object-cover rounded-lg border border-white/[0.06] group-hover:border-white/15 transition-colors" alt="" />
                           ) : (
-                            <div className="w-full aspect-[2/3] bg-white/5 border border-white/5 rounded-md flex items-center justify-center text-[9px] text-white/20 text-center px-1">
+                            <div className="w-full aspect-[2/3] bg-white/[0.04] border border-white/[0.06] rounded-lg flex items-center justify-center text-[8px] text-white/15 text-center px-1">
                               {item.title}
                             </div>
                           )}
-                          <span className="text-[9px] text-white/40 truncate w-full text-center mt-1">{item.title}</span>
+                          <span className="text-[9px] text-white/30 truncate w-full text-center mt-1.5">{item.title}</span>
                         </div>
                       ))}
                     </div>
@@ -3050,23 +2210,17 @@ function AddWidgetOverlay({
               </div>
             </div>
 
-            {/* Footer buttons */}
-            <div className="px-6 py-4 border-t border-white/5 bg-white/[0.01] flex items-center justify-end gap-3">
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-white/[0.06] bg-white/[0.01] flex items-center justify-end gap-3">
               <button
-                onClick={() => {
-                  if (editingRow) {
-                    onClose()
-                  } else {
-                    setMode('preset')
-                  }
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
+                onClick={() => { if (editingRow) onClose(); else setMode('preset') }}
+                className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveDiscover}
-                className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg transition-all cursor-pointer"
+                className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg shadow-accent/10 transition-all cursor-pointer"
               >
                 {editingRow ? 'Save Changes' : 'Save Catalog'}
               </button>
@@ -3087,18 +2241,7 @@ export default function CollectionsPage() {
   const reorderHomeRows = useAppStore((s) => s.reorderHomeRows)
   const addHomeRow = useAppStore((s) => s.addHomeRow)
   const addons = useAppStore((s) => s.addons)
-  const posterSize = useAppStore((s) => s.posterSize)
 
-  const widgetGridMinMax = useMemo(() => {
-    switch (posterSize) {
-      case 'compact': return 'minmax(112px, 1fr)'
-      case 'large': return 'minmax(180px, 1fr)'
-      case 'huge': return 'minmax(220px, 1fr)'
-      case 'default':
-      default:
-        return 'minmax(148px, 1fr)'
-    }
-  }, [posterSize])
   const [addOverlay, setAddOverlay] = useState(false)
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
 
@@ -3117,63 +2260,92 @@ export default function CollectionsPage() {
       const oldIndex = widgetRows.findIndex((r) => r.id === active.id)
       const newIndex = widgetRows.findIndex((r) => r.id === over.id)
       const reordered = arrayMove(widgetRows, oldIndex, newIndex)
-
-      // Reconstruct full list preserving hero + disabled
       const hero = homeRows.find((r) => r.layout === 'hero')
-      const nextRows = [
-        ...(hero ? [hero] : []),
-        ...reordered,
-      ]
-      reorderHomeRows(nextRows)
+      reorderHomeRows([...(hero ? [hero] : []), ...reordered])
     }
   }
 
   return (
-    <div className="p-6">
-      {/* Hero banner config */}
-      <HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} />
-
-      {/* Widget grid header */}
-      <div className="flex items-center gap-2 mb-4">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
-          Your Collections
-        </h2>
-        <button
-          className="w-4 h-4 rounded-full border border-white/15 flex items-center justify-center text-[9px] text-white/25 hover:text-white/50 transition-colors"
-          title="Drag to reorder. Each tile is a shelf on your home screen."
-        >
-          ?
-        </button>
+    <div className="pb-12">
+      {/* Header */}
+      <div className="px-8 pt-8 pb-6">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Library</h1>
+            <p className="text-sm text-white/35">Manage your home screen shelves and collections</p>
+          </div>
+          <button
+            onClick={() => { setEditingRow(null); setAddOverlay(true) }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent/80 text-black text-sm font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-accent/20"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New Shelf
+          </button>
+        </div>
       </div>
 
-      {/* Draggable widget grid */}
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={widgetRows.map((r) => r.id)} strategy={rectSortingStrategy}>
-          <div
-            className="grid gap-3"
-            style={{ gridTemplateColumns: `repeat(auto-fill, ${widgetGridMinMax})` }}
-          >
-            <CreateTile onClick={() => { setEditingRow(null); setAddOverlay(true); }} />
+      <div className="px-8 space-y-6">
+        {/* Hero banner config */}
+        <HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} />
 
-            {widgetRows.map((row) => (
-              <SortableWidgetTile
-                key={row.id}
-                row={row}
-                addons={addons}
-                onRemove={() => {
-                  if (confirm(`Remove "${row.title}" from your home screen?`)) {
-                    removeHomeRow(row.id)
-                  }
-                }}
-                onEdit={() => {
-                  setEditingRow(row)
-                  setAddOverlay(true)
-                }}
-              />
-            ))}
+        {/* Shelves list */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
+              Shelves ({widgetRows.length})
+            </h2>
+            <span className="text-[10px] text-white/20">Drag to reorder</span>
           </div>
-        </SortableContext>
-      </DndContext>
+
+          {widgetRows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 bg-white/[0.01] border border-dashed border-white/[0.08] rounded-2xl">
+              <svg className="w-10 h-10 text-white/10 mb-4" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+              </svg>
+              <p className="text-sm text-white/30 mb-1">No shelves yet</p>
+              <p className="text-xs text-white/20 mb-5">Add catalogs, lists, or custom discover shelves to your home screen</p>
+              <button
+                onClick={() => { setEditingRow(null); setAddOverlay(true) }}
+                className="flex items-center gap-2 px-4 py-2 bg-white/[0.06] hover:bg-white/[0.1] text-white/70 text-xs font-semibold rounded-xl border border-white/[0.08] transition-all cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add your first shelf
+              </button>
+            </div>
+          ) : (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={widgetRows.map((r) => r.id)} strategy={rectSortingStrategy}>
+                <div className="space-y-2">
+                  {widgetRows.map((row) => (
+                    <SortableShelfRow
+                      key={row.id}
+                      row={row}
+                      addons={addons}
+                      onRemove={() => {
+                        if (confirm(`Remove "${row.title}" from your home screen?`)) {
+                          removeHomeRow(row.id)
+                        }
+                      }}
+                      onEdit={() => {
+                        setEditingRow(row)
+                        setAddOverlay(true)
+                      }}
+                      onToggle={() => {
+                        updateHomeRow(row.id, { enabled: !row.enabled })
+                      }}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
+        </div>
+      </div>
 
       {/* Add widget overlay */}
       <AddWidgetOverlay

@@ -187,14 +187,26 @@ export default function SearchPage() {
         return item
       }))
       const ranked = rankResults(mappedMerged, text)
-      if (ranked.length > 0) {
-        setResults(ranked)
+      const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+      const enriched = await enrichSearchResultsWithAppMetadata(ranked)
+      if (requestId !== requestIdRef.current) return
+      if (enriched.length > 0) {
+        setResults(enriched)
       } else {
-        setResults(rankResults([...MOCK_TRENDING, ...MOCK_POPULAR_SHOWS], text))
+        const defaultFallback = rankResults([...MOCK_TRENDING, ...MOCK_POPULAR_SHOWS], text)
+        const enrichedFallback = await enrichSearchResultsWithAppMetadata(defaultFallback)
+        if (requestId !== requestIdRef.current) return
+        setResults(enrichedFallback)
       }
     } catch {
       if (requestId !== requestIdRef.current) return
-      setResults(rankResults([...MOCK_TRENDING, ...MOCK_POPULAR_SHOWS], text))
+      const defaultFallback = rankResults([...MOCK_TRENDING, ...MOCK_POPULAR_SHOWS], text)
+      const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+      enrichSearchResultsWithAppMetadata(defaultFallback).then((enriched) => {
+        if (requestId === requestIdRef.current) setResults(enriched)
+      }).catch(() => {
+        if (requestId === requestIdRef.current) setResults(defaultFallback)
+      })
     } finally {
       if (requestId === requestIdRef.current) setLoading(false)
     }

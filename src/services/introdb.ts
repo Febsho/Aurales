@@ -3,18 +3,24 @@
  * Provides intro, outro, and recap skip timestamps for TV episodes.
  * API docs: https://introdb.app/docs/api
  *
- * Correct endpoint: GET https://introdb.app/segments?imdb_id={tt...}&season={n}&episode={n}
+ * Endpoint: GET https://api.introdb.app/segments?imdb_id={tt...}&season={n}&episode={n}
  * No authentication required for reads.
  * Times in response are SECONDS — converted to ms for PMDBSkipSegment compatibility.
  */
 import type { PMDBSkipSegment } from './pmdb'
+import { invoke } from '@tauri-apps/api/core'
 
-const BASE_URL = 'https://introdb.app'
+const BASE_URL = 'https://api.introdb.app'
 
 export interface IntroDBSegment {
-  segment_type: 'intro' | 'outro' | 'recap' | 'credits'
   start_sec: number
   end_sec: number
+}
+
+interface IntroDBResponse {
+  intro?: IntroDBSegment | null
+  recap?: IntroDBSegment | null
+  outro?: IntroDBSegment | null
 }
 
 /**
@@ -34,25 +40,11 @@ export async function getIntroDBSkips(
 
   try {
     const url = `${BASE_URL}/segments?imdb_id=${encodeURIComponent(imdbId)}&season=${season}&episode=${episode}`
-    const res = await fetch(url)
-    if (!res.ok) {
-      if (res.status !== 404) {
-        console.warn('[IntroDB] Fetch failed:', res.status)
-      }
-      return []
-    }
-
-    // Response is an array of segments OR wrapped in { data: [...] } or { segments: [...] }
-    const raw = await res.json()
-    const segments: IntroDBSegment[] = Array.isArray(raw)
-      ? raw
-      : (raw.segments ?? raw.data ?? raw.items ?? [])
-
-    if (!segments.length) return []
-
-    const intro = segments.find((s) => s.segment_type === 'intro')
-    const outro = segments.find((s) => s.segment_type === 'outro' || s.segment_type === 'credits')
-    const recap = segments.find((s) => s.segment_type === 'recap')
+    const body = await invoke<string>('http_get_text', { url })
+    const raw = JSON.parse(body) as IntroDBResponse
+    const intro = raw.intro ?? null
+    const outro = raw.outro ?? null
+    const recap = raw.recap ?? null
 
     // Need at least one valid segment to return anything
     if (!intro && !outro && !recap) return []

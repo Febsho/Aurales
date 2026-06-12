@@ -406,9 +406,12 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     setLoading(true)
     setError(null)
     discoverTmdbWithCache(row.discoverConfig, row.id)
-      .then((results) => {
+      .then(async (results) => {
         if (cancelled) return
-        setItems(results)
+        const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+        const enriched = await enrichSearchResultsWithAppMetadata(results)
+        if (cancelled) return
+        setItems(enriched)
         setLoading(false)
       })
       .catch((err) => {

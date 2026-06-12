@@ -32,6 +32,7 @@ import {
   cssColorFromFilterColor,
 } from '../services/streamRegexFilters'
 import type { TraktDeviceCode } from '../types'
+import NativeMpvPlayer from '../components/NativeMpvPlayer'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -260,6 +261,7 @@ export default function SettingsPage() {
   const [progressSubPage, setProgressSubPage] = useState<'main' | 'local' | 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'anime'>('main')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
+  const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
   const [addonError, setAddonError] = useState('')
@@ -2640,6 +2642,71 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
+              <SettingSection
+                title="Developer / Player Debug"
+                description="Run mpv through a minimal path with no scrobbling, progress polling, metadata work, custom arguments, or automatic restart."
+              >
+                <SettingRow
+                  label="Isolated Playback Mode"
+                  description="Use this to determine whether freezes originate in mpv/the stream or in Orynt's full player integration."
+                >
+                  <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
+                </SettingRow>
+                <SettingRow label="Isolated hardware decoding" description="Compare auto-safe GPU decoding against software decoding.">
+                  <select
+                    value={store.isolatedPlaybackHwdec}
+                    onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                  >
+                    <option value="auto-safe">Auto-safe</option>
+                    <option value="no">Software only</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
+                  <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
+                </SettingRow>
+                <div className="flex gap-3 px-6 py-4">
+                  <button
+                    onClick={async () => {
+                      const path = await invoke<string | null>('select_local_video_file')
+                      if (!path) return
+                      store.setIsolatedPlaybackMode(true)
+                      setPlayerDebugTest({ url: path, title: 'Local isolation test' })
+                    }}
+                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
+                  >
+                    Test Local File
+                  </button>
+                  <button
+                    onClick={() => {
+                      store.setIsolatedPlaybackMode(true)
+                      setPlayerDebugTest({
+                        url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+                        title: 'Stable HTTP isolation test',
+                      })
+                    }}
+                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
+                  >
+                    Test Direct HTTP
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const logs = await invoke<string[]>('get_player_debug_logs')
+                      await navigator.clipboard.writeText(logs.join('\n'))
+                    }}
+                    className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1]"
+                  >
+                    Copy Player Logs
+                  </button>
+                  <button
+                    onClick={() => invoke('clear_player_debug_logs')}
+                    className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-semibold text-white/65 hover:text-white"
+                  >
+                    Clear Logs
+                  </button>
+                </div>
+              </SettingSection>
+
               {/* Hardware Decoding */}
               <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
                 <SettingRow label="Decoding API">
@@ -2912,6 +2979,14 @@ export default function SettingsPage() {
 
         </div>
       </div>
+      {playerDebugTest && (
+        <NativeMpvPlayer
+          url={playerDebugTest.url}
+          title={playerDebugTest.title}
+          onClose={() => setPlayerDebugTest(null)}
+          onPickAnother={() => setPlayerDebugTest(null)}
+        />
+      )}
     </div>
   )
 }
