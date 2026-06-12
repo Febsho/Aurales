@@ -27,6 +27,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
   const [backdropError, setBackdropError] = useState(false)
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
+  const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
   const [providerWatched, setProviderWatched] = useState(false)
   const watchProgress = useAppStore((s) => s.watchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -137,6 +138,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
               if (!cancelled) {
                 if (meta.poster) setResolvedPoster(meta.poster)
                 if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
+                if (meta.genres?.[0]) setResolvedGenre(meta.genres[0])
               }
             } else {
               const { tmdbProvider } = await import('../services/tmdb')
@@ -144,6 +146,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
               if (!cancelled) {
                 if (meta.poster) setResolvedPoster(meta.poster)
                 if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
+                if (meta.genres?.[0]) setResolvedGenre(meta.genres[0])
               }
             }
           }
@@ -279,6 +282,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
         {(() => {
           const genre = displayItem.genres?.[0]
             || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+            || resolvedGenre
           return genre ? (
             <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
               <span className="text-[10px] font-semibold text-white/70 tracking-wide">

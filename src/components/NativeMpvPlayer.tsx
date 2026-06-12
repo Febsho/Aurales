@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -28,6 +28,7 @@ import { getIntroDBSkips } from '../services/introdb'
 import { getAddonStreams, getStreamAddons } from '../services/addons'
 import { useAppStore, getLanguageCodeFromTrack, APP_LANGUAGES } from '../stores/appStore'
 import { setDiscordActivity, clearDiscordActivity } from '../services/discord'
+import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -373,7 +374,67 @@ interface PlayerSession {
   status: "starting" | "playing" | "paused" | "buffering" | "stopped" | "error"
 }
 
-export default function NativeMpvPlayer({
+function playerUrlHash(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+function IsolatedNativeMpvPlayer({ url, title, startTime, onClose, onPickAnother }: NativeMpvPlayerProps) {
+  const hwdecMode = useAppStore((state) => state.isolatedPlaybackHwdec)
+  const resumeEnabled = useAppStore((state) => state.isolatedPlaybackResume)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    console.debug('[PLAYER MOUNT] isolated player', new Error().stack)
+    return () => {
+      console.debug('[PLAYER UNMOUNT] isolated player; process intentionally retained', new Error().stack)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    minimalMpvPlayer.play(url, {
+      title,
+      startTime: resumeEnabled ? startTime : undefined,
+      hwdecMode,
+    }).catch((cause) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+    })
+    return () => { cancelled = true }
+  }, [url, title, startTime, hwdecMode, resumeEnabled])
+
+  const close = async (pickAnother = false) => {
+    await minimalMpvPlayer.stop(pickAnother ? 'pick-another-stream' : 'close-player').catch(() => {})
+    if (pickAnother) onPickAnother()
+    else onClose()
+  }
+
+  const overlay = (
+    <div className="fixed inset-0 z-[60] select-none bg-black text-white">
+      <div className="absolute left-0 top-0 z-10 flex gap-3 p-6">
+        <button onClick={() => close(false)} className="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-2xl">‹</button>
+        <button onClick={() => close(true)} className="rounded-full border border-white/15 bg-black/60 px-4 text-sm font-semibold">Change stream</button>
+      </div>
+      <div className="absolute inset-0 flex items-center justify-center px-8 text-center">
+        <div>
+          <p className="text-lg font-semibold">Isolated playback is running in a separate mpv window.</p>
+          <p className="mt-2 text-sm text-white/55">Use mpv's native controls. Orynt IPC and window hooks are disabled.</p>
+          <p className="mt-4 text-xs text-white/35">Hardware decoding: {hwdecMode}</p>
+        </div>
+      </div>
+      {error && <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-xl border border-red-500/30 bg-red-950/85 px-5 py-3 text-sm text-red-100">{error}</div>}
+    </div>
+  )
+
+  return createPortal(overlay, document.body)
+}
+
+function FullNativeMpvPlayer({
   url,
   title,
   subtitle,
@@ -445,6 +506,8 @@ export default function NativeMpvPlayer({
   const [selectedAudio, setSelectedAudio] = useState<number>(1)
   const [selectedSub, setSelectedSub] = useState<number | 'no'>('no')
   const [tracksLoaded, setTracksLoaded] = useState(false)
+  const [playerReady, setPlayerReady] = useState(false)
+  const [playerRunning, setPlayerRunning] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [skips, setSkips] = useState<PMDBSkipSegment[]>([])
@@ -452,6 +515,10 @@ export default function NativeMpvPlayer({
   const [skipType, setSkipType] = useState<'intro' | 'credits' | 'recap' | null>(null)
   const [trackMenu, setTrackMenu] = useState<'subs' | 'audio' | null>(null)
   const [showTimeRemaining, setShowTimeRemaining] = useState(true)
+  const [isDragging, setIsDragging] = useState(false)
+  const [draggingProgress, setDraggingProgress] = useState(0)
+  const [accumulatedSeek, setAccumulatedSeek] = useState<number | null>(null)
+  const accumulatedSeekRef = useRef<number | null>(null)
 
   // Up Next state
   const [nextEpInfo, setNextEpInfo] = useState<NextEpInfo | null>(null)
@@ -554,7 +621,8 @@ export default function NativeMpvPlayer({
     if (!item || !pmdbApiKey) return
     if (!tmdbId && !imdbId) return
 
-    const mediaType = item.mediaType === 'show' ? 'tv' : 'movie'
+    const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
+    const mediaType = isEpisodic ? 'tv' : 'movie'
     const progress = dur > 0 ? pos / dur : 0
 
     // Scrobble only when: caller explicitly permits it, we're confident the
@@ -866,11 +934,16 @@ export default function NativeMpvPlayer({
         if (spoolInterval) clearInterval(spoolInterval)
 
         pressedKey = key
+        accumulatedSeekRef.current = key === 'ArrowRight' ? 10 : -10
+        setAccumulatedSeek(accumulatedSeekRef.current)
 
         holdTimeout = setTimeout(() => {
           spoolInterval = setInterval(() => {
-            sendPlayerCommand('no-osd', ['seek', key === 'ArrowRight' ? 5 : -5, 'relative']).catch(() => {})
-          }, 80)
+            if (accumulatedSeekRef.current !== null) {
+              accumulatedSeekRef.current += key === 'ArrowRight' ? 5 : -5
+              setAccumulatedSeek(accumulatedSeekRef.current)
+            }
+          }, 150)
         }, 250)
         return
       }
@@ -912,14 +985,18 @@ export default function NativeMpvPlayer({
           e.preventDefault()
           e.stopPropagation()
           if (holdTimeout) clearTimeout(holdTimeout)
-          if (spoolInterval) {
-            clearInterval(spoolInterval)
-            spoolInterval = null
-          } else {
-            sendPlayerCommand('seek', [key === 'ArrowRight' ? 10 : -10, 'relative']).catch(() => {})
+          if (spoolInterval) clearInterval(spoolInterval)
+          
+          if (accumulatedSeekRef.current !== null) {
+            logEvent('PLAYER DEBUG', `Keyboard seek triggered for: ${accumulatedSeekRef.current}s`)
+            sendPlayerCommand('seek', [accumulatedSeekRef.current, 'relative']).catch(() => {})
           }
+          
           pressedKey = null
           holdTimeout = null
+          spoolInterval = null
+          accumulatedSeekRef.current = null
+          setAccumulatedSeek(null)
         }
       }
     }
@@ -958,7 +1035,7 @@ export default function NativeMpvPlayer({
     let cancelled = false
     const start = async () => {
       try {
-        logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with url: ${url}`)
+        logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with URL hash: ${playerUrlHash(url)}`)
         const storeState = useAppStore.getState()
         await launchEmbeddedPlayer({
           url,
@@ -973,6 +1050,7 @@ export default function NativeMpvPlayer({
           mpvCustomArgs: storeState.mpvCustomArgs
         })
         if (cancelled || session.status === "stopped") return
+        setPlayerRunning(true)
         session.status = "playing"
 
         // Enforce saved volume a few times because mpv can reset filters/audio
@@ -999,25 +1077,27 @@ export default function NativeMpvPlayer({
           const resolveAndFetchSkips = async () => {
             if (!tmdbIdRef.current && playbackItem.imdbId) {
               try {
-                const preferredType = playbackItem.mediaType === 'show' ? 'tv' : 'movie'
+                const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+                const preferredType = isEpisodic ? 'tv' : 'movie'
                 const mapping = await lookupTmdbId('imdb', playbackItem.imdbId, preferredType)
                 if (mapping) tmdbIdRef.current = mapping.tmdbId
               } catch {}
             }
-            if (tmdbIdRef.current) {
-              const mediaType = playbackItem.mediaType === 'show' ? 'tv' : 'movie'
-              const [pmdbSkips, introdbSkips] = await Promise.allSettled([
-                getPMDBSkips(tmdbIdRef.current, mediaType, playbackItem.season, playbackItem.episode),
-                playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
-                  ? getIntroDBSkips(playbackItem.imdbId ?? '', playbackItem.season, playbackItem.episode)
-                  : Promise.resolve([]),
-              ])
-              const merged: PMDBSkipSegment[] = [
-                ...(pmdbSkips.status === 'fulfilled' ? pmdbSkips.value : []),
-                ...(introdbSkips.status === 'fulfilled' ? introdbSkips.value : []),
-              ]
-              if (!cancelled && session.status !== "stopped") setSkips(merged)
-            }
+            const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+            const mediaType = isEpisodic ? 'tv' : 'movie'
+            const [pmdbSkips, introdbSkips] = await Promise.allSettled([
+              tmdbIdRef.current
+                ? getPMDBSkips(tmdbIdRef.current, mediaType, playbackItem.season, playbackItem.episode)
+                : Promise.resolve([]),
+              isEpisodic && playbackItem.imdbId && playbackItem.season != null && playbackItem.episode != null
+                ? getIntroDBSkips(playbackItem.imdbId, playbackItem.season, playbackItem.episode)
+                : Promise.resolve([]),
+            ])
+            const merged: PMDBSkipSegment[] = [
+              ...(pmdbSkips.status === 'fulfilled' ? pmdbSkips.value : []),
+              ...(introdbSkips.status === 'fulfilled' ? introdbSkips.value : []),
+            ]
+            if (!cancelled && session.status !== "stopped") setSkips(merged)
           }
           resolveAndFetchSkips()
         }
@@ -1059,6 +1139,35 @@ export default function NativeMpvPlayer({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, title])
+
+  useEffect(() => {
+    if (playerReady || error) return
+    let cancelled = false
+    const startedAt = Date.now()
+    const interval = setInterval(async () => {
+      const running = await isEmbeddedPlayerRunning().catch(() => false)
+      if (cancelled) return
+      setPlayerRunning(running)
+
+      if (!running && Date.now() - startedAt > 1500) {
+        const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
+        const reversed = [...logs].reverse()
+        const detail = reversed.find((line) => line.includes('[MPV STDERR]'))
+          ?? reversed.find((line) => line.includes('[MPV OUTPUT]'))
+          ?? reversed.find((line) => line.includes('[PLAYER EXIT]'))
+        setError(detail ? detail.replace(/^.*?\] /, '') : 'The stream closed before video playback started.')
+        clearInterval(interval)
+      } else if (Date.now() - startedAt > 30000) {
+        setError('The stream did not provide a playable video frame within 30 seconds.')
+        clearInterval(interval)
+      }
+    }, 750)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [playerReady, error, url])
 
   // ─ Resize ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1174,15 +1283,17 @@ export default function NativeMpvPlayer({
       if (polling) return
       polling = true
       try {
-        const pos = await getPlayerProperty('time-pos') as number | null
-        const dur = await getPlayerProperty('duration') as number | null
-        const isPause = await getPlayerProperty('pause') as boolean | null
-        const isBuffering = await getPlayerProperty('buffering') as boolean | null
-        const cacheBuffState = await getPlayerProperty('cache-buffering-state') as number | null
-        const demuxerCacheDur = await getPlayerProperty('demuxer-cache-duration') as number | null
-        const eofReached = await getPlayerProperty('eof-reached') as boolean | null
-        const idleActive = await getPlayerProperty('idle-active') as boolean | null
-        const coreIdle = await getPlayerProperty('core-idle') as boolean | null
+        const [pos, dur, isPause, isBuffering, cacheBuffState, demuxerCacheDur, eofReached, idleActive, coreIdle] = await Promise.all([
+          getPlayerProperty('time-pos') as Promise<number | null>,
+          getPlayerProperty('duration') as Promise<number | null>,
+          getPlayerProperty('pause') as Promise<boolean | null>,
+          getPlayerProperty('buffering') as Promise<boolean | null>,
+          getPlayerProperty('cache-buffering-state') as Promise<number | null>,
+          getPlayerProperty('demuxer-cache-duration') as Promise<number | null>,
+          getPlayerProperty('eof-reached') as Promise<boolean | null>,
+          getPlayerProperty('idle-active') as Promise<boolean | null>,
+          getPlayerProperty('core-idle') as Promise<boolean | null>,
+        ])
 
         const nowMs = Date.now()
 
@@ -1223,13 +1334,21 @@ export default function NativeMpvPlayer({
             sendPlayerCommand('set_property', ['volume', volumeRef.current]).catch(() => {})
           }
         }
-        if (pos != null) { setCurrentTime(pos); progressRef.current.currentTime = pos }
-        if (dur != null && dur > 0) { setDuration(dur); progressRef.current.duration = dur }
+        if (pos != null) {
+          setCurrentTime(pos)
+          setPlayerReady(true)
+          progressRef.current.currentTime = pos
+        }
+        if (dur != null && dur > 0) {
+          setDuration(dur)
+          setPlayerReady(true)
+          progressRef.current.duration = dur
+        }
 
         // Stall detection
         const PLAYER_STALL_TIMEOUT_MS = 30000
         const PLAYER_RESTART_COOLDOWN_MS = 15000
-        const MAX_AUTO_RESTARTS = 1
+        const MAX_AUTO_RESTARTS = 0
 
         const isPlaying = pos !== null && !isPause && !isBuffering
         if (isPlaying) {
@@ -1273,7 +1392,6 @@ export default function NativeMpvPlayer({
           }
           if (item && pmdbApiKey && pmdbSaveResumePosition && (tmdbIdRef.current || item.imdbId) && pos - lastPmdbPlaybackSaveRef.current >= 60) {
             lastPmdbPlaybackSaveRef.current = pos
-            const mediaType = item.mediaType === 'show' ? 'tv' : 'movie'
             savePMDBProgressHelper(pos, dur, false)
           }
 
@@ -1313,8 +1431,8 @@ export default function NativeMpvPlayer({
               }
             }
           }
-          setActiveSkip(found)
-          setSkipType(foundType)
+          setActiveSkip((previous) => previous?.id === found?.id ? previous : found)
+          setSkipType((previous) => previous === foundType ? previous : foundType)
           if (autoSkipSegments && found && foundType) {
             const endMs = foundType === 'intro'
               ? found.intro_end_ms
@@ -1330,7 +1448,7 @@ export default function NativeMpvPlayer({
             if (endMs != null && endMs > ms && !autoSkippedSegmentsRef.current.has(segmentKey)) {
               autoSkippedSegmentsRef.current.add(segmentKey)
               logEvent('PLAYER DEBUG', `Auto-skipping segment [${foundType}] to ${endMs / 1000}s`)
-              await command('set_property', ['time-pos', endMs / 1000])
+              await command('seek', [endMs / 1000, 'absolute'])
               setActiveSkip(null)
               setSkipType(null)
             }
@@ -1347,7 +1465,7 @@ export default function NativeMpvPlayer({
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
-    if (!playbackItem || playbackItem.mediaType !== 'show') return
+    if (!playbackItem || (playbackItem.mediaType !== 'show' && playbackItem.mediaType !== 'anime')) return
     if (!playbackItem.season || !playbackItem.episode) return
 
     const doFetch = async () => {
@@ -1435,7 +1553,7 @@ export default function NativeMpvPlayer({
       setCurrentDisplaySubtitle(`${epCode} · ${nextEp.title}`)
 
       // Reset progress state
-      setCurrentTime(0); setDuration(0); setPaused(false)
+      setCurrentTime(0); setDuration(0); setPaused(false); setPlayerReady(false)
       setTracksLoaded(false); setAudioTracks([]); setSubTracks([])
       setSkips([]); setActiveSkip(null); setSkipType(null)
       setShowUpNext(false)
@@ -1546,7 +1664,7 @@ export default function NativeMpvPlayer({
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = item.mediaType === 'show' && item.season != null && item.episode != null
+        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
         traktScrobbleStop(payload).catch(() => {})
@@ -1577,7 +1695,7 @@ export default function NativeMpvPlayer({
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = item.mediaType === 'show' && item.season != null && item.episode != null
+        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
         traktScrobbleStop(payload).catch(() => {})
@@ -1590,6 +1708,10 @@ export default function NativeMpvPlayer({
   }
 
   const togglePlay = () => {
+    if (!playerRunning) {
+      setError('The player process has exited. Go back and choose another stream.')
+      return
+    }
     setPaused((prev) => {
       const newPaused = !prev
       const item = currentItemRef.current
@@ -1604,7 +1726,7 @@ export default function NativeMpvPlayer({
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = item.mediaType === 'show' && item.season != null && item.episode != null
+            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobblePause(payload).catch(() => {})
@@ -1617,7 +1739,7 @@ export default function NativeMpvPlayer({
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = item.mediaType === 'show' && item.season != null && item.episode != null
+            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobbleStart(payload).catch(() => {})
@@ -1629,12 +1751,11 @@ export default function NativeMpvPlayer({
     command('cycle', ['pause'])
   }
 
-  const seekBy = (secs: number) => command('seek', [secs, 'relative'])
-  const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const seekTo = (pct: number) => {
-    if (seekTimerRef.current) clearTimeout(seekTimerRef.current)
-    seekTimerRef.current = setTimeout(() => command('set_property', ['percent-pos', pct]), 50)
+  const seekBy = (secs: number) => {
+    if (!playerRunning) return
+    command('seek', [secs, 'relative'])
   }
+  // seekTo is now handled directly by inline slider events.
   const changeVolume = (val: number) => {
     volumeRef.current = val
     command('set_property', ['volume', val])
@@ -1652,7 +1773,9 @@ export default function NativeMpvPlayer({
   }
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0
-  const remaining = Math.max(0, duration - currentTime)
+  const displayProgressPct = isDragging ? draggingProgress : progressPct
+  const displayCurrentTime = isDragging ? duration * (draggingProgress / 100) : currentTime
+  const displayRemaining = Math.max(0, duration - displayCurrentTime)
   const skipTimelineRanges = duration > 0
     ? skips.flatMap((segment) => {
         const ranges = [
@@ -1675,9 +1798,17 @@ export default function NativeMpvPlayer({
   const overlay = (
     <div
       className={`fixed inset-0 z-[60] text-white select-none ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
-      style={{ background: 'rgba(0,0,0,0.01)' }}
+      style={{ background: playerReady ? 'rgba(0,0,0,0.01)' : '#000' }}
       onMouseMove={showControls}
     >
+      {!playerReady && !error && (
+        <div className="absolute inset-0 z-[3] flex items-center justify-center bg-black pointer-events-none">
+          <div className="flex flex-col items-center gap-4">
+            <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            <p className="text-sm font-semibold text-white/70">Loading video...</p>
+          </div>
+        </div>
+      )}
       {/* Video click area (sit below controls) */}
       <div
         className="absolute inset-0 z-[1]"
@@ -1692,6 +1823,17 @@ export default function NativeMpvPlayer({
             <svg className="w-10 h-10 ml-1" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
+          </div>
+        </div>
+      )}
+
+      {/* Keyboard Seek HUD */}
+      {accumulatedSeek !== null && (
+        <div className="absolute inset-0 z-[20] flex items-center justify-center pointer-events-none">
+          <div className="bg-black/75 border border-white/10 px-6 py-3.5 rounded-2xl flex items-center gap-3 shadow-2xl backdrop-blur-md">
+            <span className="text-xl font-bold font-mono text-white">
+              {accumulatedSeek > 0 ? `+${accumulatedSeek}` : accumulatedSeek}s
+            </span>
           </div>
         </div>
       )}
@@ -1736,7 +1878,7 @@ export default function NativeMpvPlayer({
             else endMs = activeSkip.credits_end_ms ?? duration * 1000
             const targetSec = endMs / 1000
             if (!isNaN(targetSec)) {
-              command('set_property', ['time-pos', targetSec])
+              command('seek', [targetSec, 'absolute'])
               setActiveSkip(null)
               setSkipType(null)
             }
@@ -1893,32 +2035,62 @@ export default function NativeMpvPlayer({
               )}
             </button>
 
-            <div className="relative flex-1 h-1 group cursor-pointer">
+            <div className="relative flex-1 h-1.5 group cursor-pointer">
               <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
-                <div
+                <button
                   key={`${range.type}-${range.start}-${range.end}-${index}`}
-                  title={`${range.type.charAt(0).toUpperCase()}${range.type.slice(1)} skip range`}
-                  className="absolute inset-y-0 z-[2] rounded-full bg-yellow-400/90 shadow-[0_0_5px_rgba(250,204,21,0.65)]"
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    command('seek', [range.end / 1000, 'absolute'])
+                  }}
+                  title={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
+                  aria-label={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
+                  className={`absolute inset-y-[1px] z-[3] min-w-[3px] rounded-sm opacity-65 transition-all hover:inset-y-[-2px] hover:opacity-100 ${
+                    range.type === 'recap'
+                      ? 'bg-sky-400/90'
+                      : range.type === 'intro'
+                        ? 'bg-violet-400/90'
+                        : 'bg-amber-400/90'
+                  }`}
                   style={{ left: `${range.left}%`, width: `${range.width}%` }}
                 />
               ))}
               <div
                 className="absolute inset-y-0 left-0 z-[1] rounded-full bg-white/90 transition-all"
-                style={{ width: `${progressPct}%` }}
+                style={{ width: `${displayProgressPct}%` }}
               />
               {/* Thumb dot */}
               <div
                 className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ left: `calc(${progressPct}% - 6px)` }}
+                style={{ left: `calc(${displayProgressPct}% - 6px)` }}
               />
               <input
                 type="range"
                 min={0}
                 max={100}
                 step={0.05}
-                value={progressPct}
-                onChange={(e) => seekTo(Number(e.target.value))}
+                value={displayProgressPct}
+                onMouseDown={() => {
+                  setIsDragging(true)
+                  setDraggingProgress(progressPct)
+                }}
+                onMouseUp={() => {
+                  setIsDragging(false)
+                  command('seek', [draggingProgress, 'absolute-percent'])
+                }}
+                onTouchStart={() => {
+                  setIsDragging(true)
+                  setDraggingProgress(progressPct)
+                }}
+                onTouchEnd={() => {
+                  setIsDragging(false)
+                  command('seek', [draggingProgress, 'absolute-percent'])
+                }}
+                onChange={(e) => {
+                  setDraggingProgress(Number(e.target.value))
+                }}
                 className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
               />
             </div>
@@ -1926,14 +2098,14 @@ export default function NativeMpvPlayer({
 
           {/* Timestamps row */}
           <div className="flex items-center justify-between text-[11px] text-white/45 px-10">
-            <span>{duration > 0 ? formatTime(currentTime) : '--:--'}</span>
+            <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
             <button
               onClick={() => setShowTimeRemaining((r) => !r)}
               className="hover:text-white/70 transition-colors"
             >
               {duration > 0
                 ? showTimeRemaining
-                  ? `-${formatTime(remaining)}`
+                  ? `-${formatTime(displayRemaining)}`
                   : formatTime(duration)
                 : '--:--'}
             </button>
@@ -1972,4 +2144,11 @@ export default function NativeMpvPlayer({
   )
 
   return createPortal(overlay, document.body)
+}
+
+export default function NativeMpvPlayer(props: NativeMpvPlayerProps) {
+  const isolatedPlaybackMode = useAppStore((state) => state.isolatedPlaybackMode)
+  return isolatedPlaybackMode
+    ? <IsolatedNativeMpvPlayer {...props} />
+    : <FullNativeMpvPlayer {...props} />
 }

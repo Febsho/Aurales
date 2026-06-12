@@ -30,6 +30,7 @@ export interface AniListContinueItem {
   progressSeconds: number
   durationSeconds: number
   progressPct: number
+  tmdbId?: number
   malId?: number
   anilistId: number
   updatedAt: string
@@ -213,6 +214,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
     let mediaId = `anilist-${media.id}`
     let seasonNum = 1
     let episodeNum = nextEpisode
+    let tmdbId: number | undefined
 
     try {
       const mapped = await mapAniListEpisodeToTvdb(media.id, nextEpisode)
@@ -220,21 +222,38 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
         mediaId = `tvdb-${mapped.tvdbId}`
         seasonNum = mapped.season
         episodeNum = mapped.episode
-      } else {
-        const idMap = await resolveAnimeIds({ anilistId: media.id, malId: media.idMal })
-        if (idMap?.tvdbId) {
-          mediaId = `tvdb-${idMap.tvdbId}`
-          // Use tvdbSeason and tvdbEpOffset if available for better season assignment
-          if (idMap.tvdbSeason != null && idMap.tvdbSeason > 0) {
-            seasonNum = idMap.tvdbSeason
-            if (idMap.tvdbEpOffset != null) {
-              episodeNum = nextEpisode - idMap.tvdbEpOffset
-              if (episodeNum <= 0) episodeNum = nextEpisode // safety fallback
-            }
+      }
+      const idMap = await resolveAnimeIds({ anilistId: media.id, malId: media.idMal })
+      if (idMap?.tmdbId) tmdbId = idMap.tmdbId
+      if (!mapped && idMap?.tvdbId) {
+        mediaId = `tvdb-${idMap.tvdbId}`
+        if (idMap.tvdbSeason != null && idMap.tvdbSeason > 0) {
+          seasonNum = idMap.tvdbSeason
+          if (idMap.tvdbEpOffset != null) {
+            episodeNum = nextEpisode - idMap.tvdbEpOffset
+            if (episodeNum <= 0) episodeNum = nextEpisode
           }
         }
       }
     } catch { /* ignore */ }
+
+    let poster: string | undefined
+    let backdrop: string | undefined
+    if (tmdbId) {
+      const tmdbApiKey = localStorage.getItem('tmdb_api_key') || ''
+      if (tmdbApiKey) {
+        try {
+          const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${tmdbApiKey}`)
+          if (res.ok) {
+            const tmdbData = await res.json()
+            if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
+            if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/w1280${tmdbData.backdrop_path}`
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    if (!poster) poster = media.coverImage?.extraLarge || media.coverImage?.large
+    if (!backdrop) backdrop = media.bannerImage
 
     return {
       id: `${mediaId}-${seasonNum}-${episodeNum}`,
@@ -242,21 +261,32 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
       mediaType: 'series',
       title: mediaTitle(media),
       subtitle: `S${seasonNum}E${episodeNum}`,
-      poster: media.coverImage?.extraLarge || media.coverImage?.large,
-      backdrop: media.bannerImage || media.coverImage?.extraLarge || media.coverImage?.large,
+      poster,
+      backdrop,
       season: seasonNum,
       episode: episodeNum,
       progressSeconds: 0,
       durationSeconds,
       progressPct: total > 0 ? Math.min(99, (progress / total) * 100) : 0,
+      tmdbId,
       malId: media.idMal,
       anilistId: media.id,
       updatedAt: entry.updatedAt ? new Date(entry.updatedAt * 1000).toISOString() : new Date(0).toISOString(),
     } satisfies AniListContinueItem
   }))
-  return items
+  const filtered = items
     .filter((item): item is AniListContinueItem => item !== null)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+
+  const seenMediaIds = new Set<string>()
+  const deduplicatedItems: AniListContinueItem[] = []
+  for (const item of filtered) {
+    if (seenMediaIds.has(item.mediaId)) continue
+    seenMediaIds.add(item.mediaId)
+    deduplicatedItems.push(item)
+  }
+
+  return deduplicatedItems
 }
 
 export async function getAniListList(status: AniListStatus | string): Promise<SearchResult[]> {
@@ -307,7 +337,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
   } catch { /* ignore */ }
 
   const anilistPoster = media.coverImage?.extraLarge || media.coverImage?.large
-  const anilistBackdrop = media.bannerImage || media.coverImage?.extraLarge || media.coverImage?.large
+  const anilistBackdrop = media.bannerImage
 
   return {
     id,

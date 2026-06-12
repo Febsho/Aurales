@@ -12,12 +12,17 @@ interface HeroSectionProps {
 export default function HeroSection({ items }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
+  const [logoError, setLogoError] = useState(false)
   const count = items.length
 
   const goTo = useCallback(
     (i: number) => setActiveIndex(((i % count) + count) % count),
     [count],
   )
+
+  useEffect(() => {
+    setLogoError(false)
+  }, [activeIndex])
 
   useEffect(() => {
     setActiveIndex(0)
@@ -136,9 +141,19 @@ export default function HeroSection({ items }: HeroSectionProps) {
 
         {/* Title */}
         <div className="mb-4 min-h-[60px] flex items-end">
-          <h1 className="text-6xl font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl">
-            {item.title}
-          </h1>
+          {item.logo && !logoError ? (
+            <img
+              src={item.logo}
+              alt={item.title}
+              className="max-h-[110px] md:max-h-[140px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+              onError={() => setLogoError(true)}
+              draggable={false}
+            />
+          ) : (
+            <h1 className="text-6xl font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl">
+              {item.title}
+            </h1>
+          )}
         </div>
 
         <RatingsStrip
