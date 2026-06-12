@@ -1,5 +1,7 @@
 import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult } from '../types'
+import { invoke } from '@tauri-apps/api/core'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
+import { appMediaToSearchResult, resolveMetadataBatch } from './metadata'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -91,7 +93,16 @@ function getImdbId(meta: Record<string, unknown>): string | undefined {
   )
 }
 
-function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: string): SearchResult {
+function getIdValue(meta: Record<string, unknown>, ...keys: string[]): string | number | undefined {
+  const ids = (meta.ids && typeof meta.ids === 'object') ? meta.ids as Record<string, unknown> : {}
+  for (const key of keys) {
+    const value = meta[key] ?? ids[key]
+    if (typeof value === 'string' || typeof value === 'number') return value
+  }
+  return undefined
+}
+
+function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: string, addonId?: string): SearchResult {
   const poster = normalizeImageUrl(meta.poster, addonUrl)
   const background = normalizeImageUrl(meta.background, addonUrl)
   const banner = normalizeImageUrl(meta.banner, addonUrl)
@@ -104,11 +115,18 @@ function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: s
     year: parseYear(meta),
     poster,
     backdrop: background || banner || (poster ? undefined : logo),
+    logo,
     overview: firstString(meta.description, meta.overview),
     rating: meta.imdbRating ? parseFloat(String(meta.imdbRating)) : undefined,
     imdbId: getImdbId(meta),
+    tmdbId: getIdValue(meta, 'tmdb', 'tmdb_id', 'tmdbId'),
+    tvdbId: getIdValue(meta, 'tvdb', 'tvdb_id', 'tvdbId'),
+    malId: getIdValue(meta, 'mal', 'mal_id', 'malId'),
+    anilistId: getIdValue(meta, 'anilist', 'anilist_id', 'anilistId'),
     provider: 'addon',
     addonUrl,
+    sourceAddonId: addonId,
+    sourceAddonItemId: String(meta.id || ''),
   }
 }
 
@@ -124,7 +142,8 @@ export async function getAddonCatalog(
   addonUrl: string,
   type: string,
   catalogId: string,
-  extra?: Record<string, string>
+  extra?: Record<string, string>,
+  addonId?: string,
 ): Promise<SearchResult[]> {
   const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
 
@@ -132,9 +151,22 @@ export async function getAddonCatalog(
     const res = await fetch(`${baseUrl(addonUrl)}${path}`)
     if (!res.ok) throw new Error(`Addon catalog error: ${res.status}`)
     const data = await res.json()
-    return ((data.metas || []) as Record<string, unknown>[])
-      .map((m) => mapMetaPreview(m, type, addonUrl))
-      .filter((m) => m.id)
+    const raw = ((data.metas || []) as Record<string, unknown>[]).filter((m) => m.id)
+    const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
+    const managed = localStorage.getItem('orynt_app_managed_metadata') !== 'false'
+    if (!managed) return previews
+    const resolved = await resolveMetadataBatch(raw.map((meta, index) => ({
+      addonId: addonId || addonUrl, addonUrl, addonType: String(meta.type || type), id: String(meta.id || ''),
+      title: previews[index].title, year: previews[index].year, imdbId: previews[index].imdbId,
+      tmdbId: Number(previews[index].tmdbId) || undefined, tvdbId: Number(previews[index].tvdbId) || undefined,
+      anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
+      rawAddonMeta: meta,
+    })))
+    const bySourceId = new Map(resolved.map((item) => [item.sourceAddonItemId, item]))
+    return previews.map((preview) => {
+      const item = bySourceId.get(preview.sourceAddonItemId)
+      return item ? appMediaToSearchResult(item, addonUrl) : preview
+    })
   } catch {
     return []
   }
@@ -175,13 +207,29 @@ export async function getAddonSubtitles(
   type: string,
   id: string
 ): Promise<SubtitleResult[]> {
+  const url = `${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`
+  const normalize = (tracks: SubtitleResult[]): SubtitleResult[] => tracks
+    .filter((track) => typeof track?.url === 'string' && track.url.length > 0)
+    .map((track) => {
+      try {
+        return { ...track, url: new URL(track.url, `${baseUrl(addonUrl)}/`).toString() }
+      } catch {
+        return track
+      }
+    })
   try {
-    const res = await fetch(`${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`)
+    const res = await fetch(url)
     if (!res.ok) return []
     const data = await res.json()
-    return (data.subtitles || []) as SubtitleResult[]
+    return normalize((data.subtitles || []) as SubtitleResult[])
   } catch {
-    return []
+    try {
+      const body = await invoke<string>('http_get_text', { url })
+      const data = JSON.parse(body)
+      return normalize((data.subtitles || []) as SubtitleResult[])
+    } catch {
+      return []
+    }
   }
 }
 

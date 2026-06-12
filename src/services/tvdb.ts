@@ -4,6 +4,10 @@ const BASE_URL = 'https://api4.thetvdb.com/v4'
 
 let cachedToken: string | null = null
 
+// Cache full series extended data so getSeason can extract episodes directly
+const seriesDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
+const SERIES_CACHE_TTL = 30 * 60 * 1000 // 30 min
+
 function getApiKey(): string {
   return localStorage.getItem('tvdb_api_key') || import.meta.env.VITE_TVDB_API_KEY || ''
 }
@@ -28,7 +32,7 @@ async function tvdbFetch(path: string, params: Record<string, string> = {}): Pro
   const url = new URL(`${BASE_URL}${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'eng' },
   })
   if (!res.ok) {
     if (res.status === 401) {
@@ -38,6 +42,28 @@ async function tvdbFetch(path: string, params: Record<string, string> = {}): Pro
     throw new Error(`TVDB error: ${res.status}`)
   }
   return res.json()
+}
+
+async function getSeriesExtended(tvdbId: string): Promise<Record<string, unknown>> {
+  const cached = seriesDataCache.get(tvdbId)
+  if (cached && Date.now() - cached.timestamp < SERIES_CACHE_TTL) {
+    return cached.data
+  }
+  const data = await tvdbFetch(`/series/${tvdbId}/extended`) as Record<string, unknown>
+  const series = data.data as Record<string, unknown>
+  seriesDataCache.set(tvdbId, { data: series, timestamp: Date.now() })
+  return series
+}
+
+async function getSeasonEpisodes(seasonTvdbId: number): Promise<Record<string, unknown>[]> {
+  const data = await tvdbFetch(`/seasons/${seasonTvdbId}/extended`) as Record<string, unknown>
+  const season = data.data as Record<string, unknown>
+  return (season.episodes as Record<string, unknown>[]) || []
+}
+
+function getOfficialSeasons(series: Record<string, unknown>): Record<string, unknown>[] {
+  return ((series.seasons as Record<string, unknown>[]) || [])
+    .filter((s) => (s.type as Record<string, unknown>)?.type === 'official')
 }
 
 export const tvdbProvider: MetadataProvider = {
@@ -64,64 +90,163 @@ export const tvdbProvider: MetadataProvider = {
 
   async getShow(id: string): Promise<ShowDetails> {
     const tvdbId = id.replace('tvdb-', '')
-    const data = await tvdbFetch(`/series/${tvdbId}/extended`, { meta: 'episodes' }) as Record<string, unknown>
-    const series = data.data as Record<string, unknown>
+    const series = await getSeriesExtended(tvdbId)
 
-    const seasons = ((series.seasons as Record<string, unknown>[]) || [])
-      .filter((s) => (s.type as Record<string, unknown>)?.type === 'official')
-      .map((s) => ({
-        seasonNumber: s.number as number,
-        name: s.name as string || `Season ${s.number}`,
-        episodeCount: (s.episodes as unknown[])?.length || 0,
-        poster: s.image as string | undefined,
-        airDate: undefined,
-      }))
+    const officialSeasons = getOfficialSeasons(series)
+    const currentYear = new Date().getFullYear()
+    const hasJapanese = (value: unknown) => typeof value === 'string' && /[぀-ヿ㐀-鿿]/.test(value)
+    const seasons = await Promise.all(
+      officialSeasons
+        .filter((s) => {
+          const year = s.year as number | undefined
+          if (!year) return true
+          return year <= currentYear + 1
+        })
+        .map(async (s) => {
+          let name = s.name as string || `Season ${s.number}`
+          if (hasJapanese(name)) {
+            const seasonId = Number(s.id)
+            if (seasonId) {
+              const translation = await tvdbFetch(`/seasons/${seasonId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
+              const english = (translation?.data as Record<string, unknown> | undefined)
+              if (english?.name && typeof english.name === 'string') name = english.name
+            }
+          }
+          return {
+            seasonNumber: s.number as number,
+            name,
+            episodeCount: 0,
+            poster: s.image as string | undefined,
+            airDate: s.year ? `${s.year}-01-01` : undefined,
+          }
+        })
+    )
 
     const genres = ((series.genres as Record<string, unknown>[]) || []).map((g) => g.name as string)
 
+    const characters = (series.characters as Record<string, unknown>[]) || []
+    const cast = characters
+      .filter((c) => c.type === 3 || c.peopleType === 'Actor' || (c.personName && c.name))
+      .slice(0, 20)
+      .map((c) => ({
+        id: String(c.peopleId || c.id || ''),
+        name: (c.personName || c.name) as string,
+        character: (c.name || c.personName) as string,
+        profilePath: (c.personImgURL || c.image) as string | undefined,
+      }))
+
+    const artworks = (series.artworks as Record<string, unknown>[]) || []
+    const backdrop = artworks.find((a) => a.type === 3)?.image as string
+      || artworks.find((a) => a.type === 'background')?.image as string
+      || artworks[0]?.image as string | undefined
+
+    let seriesTitle = series.name as string
+    let seriesOverview = series.overview as string
+    if (hasJapanese(seriesTitle) || hasJapanese(seriesOverview)) {
+      const translation = await tvdbFetch(`/series/${tvdbId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
+      const english = (translation?.data as Record<string, unknown> | undefined)
+      if (english?.name && typeof english.name === 'string') seriesTitle = english.name
+      if (english?.overview && typeof english.overview === 'string') seriesOverview = english.overview
+    }
+
     return {
       id,
-      title: series.name as string,
+      title: seriesTitle,
+      originalTitle: seriesTitle !== (series.name as string) ? (series.name as string) : undefined,
       year: (series.firstAired as string)?.slice(0, 4) ? parseInt((series.firstAired as string).slice(0, 4)) : undefined,
       firstAirDate: series.firstAired as string,
-      overview: series.overview as string,
+      overview: seriesOverview,
       rating: undefined,
       voteCount: undefined,
       genres,
       poster: series.image as string | undefined,
-      backdrop: series.artworks ? ((series.artworks as Record<string, unknown>[])[0]?.image as string) : undefined,
+      backdrop,
       certification: undefined,
       status: series.status?.toString(),
       numberOfSeasons: seasons.length,
       seasons,
-      cast: [],
+      cast,
       crew: [],
       recommendations: [],
       trailers: [],
+      provider: 'tvdb',
     }
   },
 
   async getSeason(showId: string, season: number): Promise<SeasonDetails> {
     const tvdbId = showId.replace('tvdb-', '')
-    const data = await tvdbFetch(`/series/${tvdbId}/episodes/default`, { season: String(season) }) as Record<string, unknown>
-    const episodes = ((data.data as Record<string, unknown>)?.episodes as Record<string, unknown>[]) || []
+    const cacheKey = `tvdb_season_v5:${tvdbId}:${season}`
+    try {
+      const cached = localStorage.getItem(cacheKey)
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached)
+        if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
+          return data
+        }
+      }
+    } catch { /* ignore cache errors */ }
 
-    return {
+    const series = await getSeriesExtended(tvdbId)
+    const officialSeasons = getOfficialSeasons(series)
+    const targetSeason = officialSeasons.find((s) => (s.number as number) === season)
+    if (!targetSeason) throw new Error(`TVDB season ${season} not found for series ${tvdbId}`)
+
+    const seasonTvdbId = Number(targetSeason.id)
+    const episodes = await getSeasonEpisodes(seasonTvdbId)
+
+
+    const hasJapaneseText = (value: unknown) => typeof value === 'string' && /[぀-ヿ㐀-鿿]/.test(value)
+    const localizedEpisodes = await Promise.all(episodes.map(async (episode) => {
+      if (!hasJapaneseText(episode.name) && !hasJapaneseText(episode.overview)) return episode
+      const episodeId = Number(episode.id)
+      if (!episodeId) return episode
+      const translation = await tvdbFetch(`/episodes/${episodeId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
+      const english = translation?.data as Record<string, unknown> | undefined
+      return english ? { ...episode, name: english.name || episode.name, overview: english.overview || episode.overview } : episode
+    }))
+
+    const result = {
       seasonNumber: season,
-      name: `Season ${season}`,
-      episodes: episodes.map((e) => ({
-        id: String(e.id),
-        episodeNumber: e.number as number,
-        seasonNumber: season,
-        name: e.name as string,
-        overview: e.overview as string,
-        airDate: e.aired as string,
-        runtime: e.runtime as number,
-        still: e.image as string | undefined,
-        rating: undefined,
-        voteCount: undefined,
-      })),
+      name: (targetSeason.name as string) || `Season ${season}`,
+      episodes: localizedEpisodes
+        .filter((e) => {
+          // If the episode has an explicit seasonNumber that differs from the
+          // requested season, it doesn't belong here — TVDB sometimes nests
+          // episodes from later seasons inside the Season 1 object.
+          const origSeason = typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined
+          if (origSeason != null && origSeason !== season) {
+            console.log('[tvdb.getSeason] Filtering cross-season ep:', {
+              id: e.id, name: e.name, origSeason, requestedSeason: season,
+            })
+            return false
+          }
+          return true
+        })
+        .map((e) => ({
+          id: String(e.id),
+          episodeNumber: Number(e.number ?? e.airedEpisodeNumber),
+          seasonNumber: season,
+          name: e.name as string,
+          overview: e.overview as string,
+          airDate: e.aired as string,
+          runtime: e.runtime as number,
+          still: e.image as string | undefined,
+          rating: undefined,
+          voteCount: undefined,
+          debugSource: 'tvdb',
+          debugResolverStep: 'tvdbProvider.getSeason',
+          debugOriginalSeasonNumber: typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined,
+          debugOriginalEpisodeNumber: typeof (e.number ?? e.airedEpisodeNumber) === 'number' ? (e.number ?? e.airedEpisodeNumber) as number : undefined,
+          debugOriginalAbsoluteNumber: typeof e.absoluteNumber === 'number' ? e.absoluteNumber : undefined,
+        }))
+        .sort((a, b) => a.episodeNumber - b.episodeNumber),
     }
+
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify({ data: result, timestamp: Date.now() }))
+    } catch { /* ignore storage full */ }
+
+    return result
   },
 
   async getEpisode(showId: string, season: number, episode: number): Promise<EpisodeDetails> {

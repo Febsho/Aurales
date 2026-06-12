@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Simkl local credentials (NEVER commit)
+src/config/simkl.local.ts
+.env
+.env.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
