@@ -223,8 +223,8 @@ export default function SearchPage() {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://github.com/itsrenoria/orynt',
-          'X-Title': 'Orynt Media Player',
+          'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
+          'X-Title': 'Aurales Media Player',
         },
         body: JSON.stringify({
           model: model || 'google/gemini-2.5-flash',

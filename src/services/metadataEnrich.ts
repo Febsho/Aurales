@@ -3,16 +3,12 @@ import { tmdbProvider } from './tmdb'
 import { tvdbProvider } from './tvdb'
 import { resolveAnimeIds, lookupByTvdbId, lookupByAniListId, lookupByMalId, lookupByImdbId } from './animeLists'
 import { useAppStore } from '../stores/appStore'
+import { getTmdbApiKey } from './apiKeys'
 
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 
-function getTmdbApiKey(): string {
-  return localStorage.getItem('tmdb_api_key') || import.meta.env.VITE_TMDB_API_KEY || ''
-}
-
 async function tmdbApiFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
   const apiKey = getTmdbApiKey()
-  if (!apiKey) throw new Error('TMDB API key not configured')
   const url = new URL(`${TMDB_BASE}${path}`)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)

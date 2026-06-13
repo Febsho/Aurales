@@ -39,8 +39,8 @@ export default function App() {
     }
     setDiscordActivity({
       details: 'Browsing',
-      largeImage: 'orynt_logo',
-      largeText: 'Orynt',
+      largeImage: 'aurales_logo',
+      largeText: 'Aurales',
       activityType: 3,
     }).catch(() => {})
     return () => { clearDiscordActivity().catch(() => {}) }

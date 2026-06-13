@@ -36,13 +36,19 @@ export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): A
 export function normalizeShow(details: ShowDetails, input: AddonMediaInput, kind: MediaKind): AppMediaItem {
   const tvdbId = numberId(details.tvdbId ?? input.tvdbId)
   const tmdbId = numberId(details.tmdbId ?? input.tmdbId)
+  const isAnime = kind === 'anime'
   const seasons: AppSeason[] = (details.seasons || []).map((season) => ({
-    id: `${tvdbId ? `tvdb_${tvdbId}` : `media_${details.id}`}_s${season.seasonNumber}`,
+    id: `${tvdbId ? `tvdb_${tvdbId}` : tmdbId ? `tmdb_${tmdbId}` : `media_${details.id}`}_s${season.seasonNumber}`,
     seasonNumber: season.seasonNumber, title: season.name, overview: season.overview, poster: season.poster,
     episodeCount: season.episodeCount || 0, episodes: [], airDate: season.airDate,
   }))
+  const id = tvdbId
+    ? `app_tvdb_${tvdbId}`
+    : tmdbId
+    ? `app_tmdb_tv_${tmdbId}`
+    : `app_show_${details.imdbId || input.id}`
   return {
-    id: tvdbId ? `app_tvdb_${tvdbId}` : tmdbId ? `app_tmdb_tv_${tmdbId}` : `app_show_${details.imdbId || input.id}`,
+    id,
     type: kind, title: details.title, originalTitle: details.originalTitle, year: details.year,
     overview: details.overview, poster: details.poster, backdrop: details.backdrop, logo: details.logo,
     genres: details.genres || [], rating: details.rating, ageRating: details.certification,

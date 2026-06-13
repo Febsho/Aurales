@@ -1,6 +1,7 @@
 import type { SearchResult } from '../types'
 import type { PlaybackItem } from './simkl/playback'
 import { resolveAnimeIds, mapAniListEpisodeToTvdb } from './animeLists'
+import { getTmdbApiKey } from './apiKeys'
 
 const API_URL = 'https://graphql.anilist.co'
 const TOKEN_KEY = 'anilist_token'
@@ -8,6 +9,10 @@ const ACCOUNT_KEY = 'anilist_account'
 
 const entriesCache: Map<string, { data: AniEntry[]; timestamp: number }> = new Map()
 const mediaIdCache: Map<number, number> = new Map()
+const progressCache = new Map<number, { data: AniListProgress | null; timestamp: number }>()
+const progressPending = new Map<number, Promise<AniListProgress | null>>()
+let trackedProgressCache: { data: AniListProgress[]; timestamp: number } | null = null
+let trackedProgressPending: Promise<AniListProgress[]> | null = null
 
 export type AniListStatus = 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'PAUSED' | 'DROPPED' | 'REPEATING'
 
@@ -52,6 +57,12 @@ interface AniEntry {
   status?: AniListStatus
   updatedAt?: number
   media?: AniMedia
+}
+
+export interface AniListProgress {
+  mediaId: number
+  progress: number
+  status?: AniListStatus
 }
 
 export const ANILIST_LIST_SOURCES: { id: string; label: string; layout: 'poster' | 'landscape' }[] = [
@@ -182,6 +193,56 @@ export async function isInAniListList(anilistId?: number | string, malId?: numbe
   return Boolean(data.MediaList?.id)
 }
 
+export async function getAniListProgress(anilistId?: number | string, malId?: number | string): Promise<AniListProgress | null> {
+  if (!isAniListConnected()) return null
+  const mediaId = await resolveAniListMediaId({ anilistId, malId })
+  if (!mediaId) return null
+  const cached = progressCache.get(mediaId)
+  if (cached && Date.now() - cached.timestamp < 30_000) return cached.data
+  const existing = progressPending.get(mediaId)
+  if (existing) return existing
+
+  const request = anilistRequest<{ MediaList?: { mediaId?: number; progress?: number; status?: AniListStatus } }>(`
+      query GetProgress($mediaId: Int) {
+        MediaList(mediaId: $mediaId) { mediaId progress status }
+      }
+    `, { mediaId })
+    .then((data) => data.MediaList ? {
+      mediaId: data.MediaList.mediaId || mediaId,
+      progress: Math.max(0, Number(data.MediaList.progress) || 0),
+      status: data.MediaList.status,
+    } : null)
+    .then((data) => {
+      progressCache.set(mediaId, { data, timestamp: Date.now() })
+      return data
+    })
+    .finally(() => progressPending.delete(mediaId))
+
+  progressPending.set(mediaId, request)
+  return request
+}
+
+export async function getAniListTrackedProgress(): Promise<AniListProgress[]> {
+  if (!isAniListConnected()) return []
+  if (trackedProgressCache && Date.now() - trackedProgressCache.timestamp < 30_000) return trackedProgressCache.data
+  if (trackedProgressPending) return trackedProgressPending
+
+  trackedProgressPending = (async () => {
+    const viewer = getStoredAniListAccount() || await fetchAniListViewer()
+    const statuses: AniListStatus[] = ['CURRENT', 'COMPLETED', 'PAUSED', 'DROPPED', 'REPEATING']
+    const groups = await Promise.all(statuses.map((status) => getAniListEntries(viewer.name, status)))
+    const items = groups.flatMap((entries) => entries.map((entry) => ({
+      mediaId: entry.media?.id || 0,
+      progress: Math.max(0, Number(entry.progress) || 0),
+      status: entry.status,
+    }))).filter((entry) => entry.mediaId > 0)
+    trackedProgressCache = { data: items, timestamp: Date.now() }
+    return items
+  })().finally(() => { trackedProgressPending = null })
+
+  return trackedProgressPending
+}
+
 export async function saveAniListProgress(item: PlaybackItem, progressRatio: number): Promise<void> {
   if (!isAniListConnected()) return
   const mediaId = await resolveAniListMediaId(item)
@@ -197,6 +258,8 @@ export async function saveAniListProgress(item: PlaybackItem, progressRatio: num
     }
   `, { mediaId, progress: episode, status })
   entriesCache.clear()
+  progressCache.delete(mediaId)
+  trackedProgressCache = null
 }
 
 export async function getAniListContinueWatching(): Promise<AniListContinueItem[]> {
@@ -240,7 +303,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
     let poster: string | undefined
     let backdrop: string | undefined
     if (tmdbId) {
-      const tmdbApiKey = localStorage.getItem('tmdb_api_key') || ''
+      const tmdbApiKey = getTmdbApiKey()
       if (tmdbApiKey) {
         try {
           const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${tmdbApiKey}`)
@@ -310,8 +373,6 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
   let imdbId: string | undefined
   let tmdbId: number | undefined
   let tvdbId: number | undefined
-  let tmdbPoster: string | undefined
-  let tmdbBackdrop: string | undefined
   try {
     const mapped = await resolveAnimeIds({ anilistId: media.id, malId: media.idMal })
     if (mapped?.tvdbId) {
@@ -320,23 +381,10 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
       tvdbId = mapped.tvdbId
     }
     if (mapped?.imdbId) imdbId = mapped.imdbId
-    if (mapped?.tmdbId) {
-      tmdbId = mapped.tmdbId
-      const tmdbApiKey = localStorage.getItem('tmdb_api_key') || ''
-      if (tmdbApiKey) {
-        try {
-          const res = await fetch(`https://api.themoviedb.org/3/tv/${mapped.tmdbId}?api_key=${tmdbApiKey}`)
-          if (res.ok) {
-            const tmdbData = await res.json()
-            if (tmdbData.poster_path) tmdbPoster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
-            if (tmdbData.backdrop_path) tmdbBackdrop = `https://image.tmdb.org/t/p/w1280${tmdbData.backdrop_path}`
-          }
-        } catch { /* ignore */ }
-      }
-    }
+    if (mapped?.tmdbId) tmdbId = mapped.tmdbId
   } catch { /* ignore */ }
 
-  const anilistPoster = media.coverImage?.extraLarge || media.coverImage?.large
+  const anilistPoster = media.coverImage?.large || media.coverImage?.extraLarge
   const anilistBackdrop = media.bannerImage
 
   return {
@@ -344,8 +392,8 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     title: mediaTitle(media),
     type: 'series',
     year: media.seasonYear,
-    poster: tmdbPoster || anilistPoster,
-    backdrop: tmdbBackdrop || anilistBackdrop,
+    poster: anilistPoster,
+    backdrop: anilistBackdrop,
     provider,
     imdbId,
     tmdbId,

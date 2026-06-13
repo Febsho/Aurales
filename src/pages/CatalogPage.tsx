@@ -119,7 +119,7 @@ export default function CatalogPage() {
       }
     }
 
-    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'anilist') {
+    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
       let cancelled = false
       getProviderListItems(row)
         .then((results) => {

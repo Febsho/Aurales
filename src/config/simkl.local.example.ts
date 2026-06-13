@@ -6,7 +6,7 @@
  * 3. Never commit simkl.local.ts.
  *
  * For production builds, set VITE_SIMKL_CLIENT_ID.
- * Orynt uses Simkl's PIN flow, so no client secret or redirect URI is needed.
+ * Aurales uses Simkl's PIN flow, so no client secret or redirect URI is needed.
  */
 export const SIMKL_CONFIG = {
   clientId: "PASTE_SIMKL_CLIENT_ID_HERE",

@@ -428,7 +428,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const handlePlay = async (stream: AddonStream, index: number) => {
     const url = getPlayableUrl(stream)
     if (!url) {
-      setPlayError('This stream is torrent-only. Orynt can only play direct HTTP/HLS/DASH streams in the embedded player right now.')
+      setPlayError('This stream is torrent-only. Aurales can only play direct HTTP/HLS/DASH streams in the embedded player right now.')
       return
     }
 

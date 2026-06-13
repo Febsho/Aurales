@@ -13,7 +13,7 @@ export interface AnimeSeasonMappingOptions {
 const DEFAULT_OPTIONS: AnimeSeasonMappingOptions = {
   hideUnairedSeasons: true,
   hideUnairedEpisodes: true,
-  includeSpecials: true,
+  includeSpecials: false,
   today: new Date().toISOString().slice(0, 10),
 }
 
@@ -167,7 +167,7 @@ export async function mapTvdbSeasons(
     }
 
     const hasAnyAired = episodes.some((e) => e.isReleased)
-    if (opts.hideUnairedSeasons && !hasAnyAired && episodes.length === 0) continue
+    if (opts.hideUnairedSeasons && !hasAnyAired) continue
 
     const seasonAirDate = episodes[0]?.airDate || season.airDate
     const seasonReleased = hasAnyAired || isAired(seasonAirDate, opts.today)

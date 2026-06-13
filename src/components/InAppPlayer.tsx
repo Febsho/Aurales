@@ -88,8 +88,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${openrouterApiKey}`,
-          'HTTP-Referer': 'https://github.com/itsrenoria/orynt',
-          'X-Title': 'Orynt Media Player',
+          'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
+          'X-Title': 'Aurales Media Player',
         },
         body: JSON.stringify({
           model: openrouterModel || 'google/gemini-2.5-flash',

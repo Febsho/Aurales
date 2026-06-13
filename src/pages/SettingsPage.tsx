@@ -586,7 +586,7 @@ export default function SettingsPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `orynt_settings_backup_${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `aurales_settings_backup_${new Date().toISOString().slice(0, 10)}.json`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -624,7 +624,7 @@ export default function SettingsPage() {
     let clearedCount = 0
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i)
-      if (key && (key.startsWith('tmdb_backdrop_') || key.includes('backdrop'))) {
+      if (key && (key.startsWith('tmdb_backdrop_') || key.startsWith('tmdb_card_metadata_') || key.startsWith('tmdb_tvdb_id_') || key.startsWith('tvdb_card_metadata_') || key.startsWith('orynt_provider_list:') || key.includes('backdrop'))) {
         localStorage.removeItem(key)
         clearedCount++
       }
@@ -1101,7 +1101,7 @@ export default function SettingsPage() {
                       <div>
                         <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
                         <p className="text-xs text-white/40 leading-relaxed">
-                          Orynt opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Orynt will connect automatically.
+                          Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1191,7 +1191,7 @@ export default function SettingsPage() {
                       ) : (
                         <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
                           <p className="text-sm text-yellow-200">
-                            This executable was built without Orynt Trakt app credentials, so Trakt requires manual app credentials for now.
+                            This executable was built without Aurales Trakt app credentials, so Trakt requires manual app credentials for now.
                           </p>
                         </div>
                       )}
@@ -1262,7 +1262,7 @@ export default function SettingsPage() {
                               className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
                             />
                             <p className="text-xs text-white/35 mt-1.5">
-                              To remove this requirement for users, build Orynt with `VITE_TRAKT_CLIENT_ID` and `VITE_TRAKT_CLIENT_SECRET`.
+                              To remove this requirement for users, build Aurales with `VITE_TRAKT_CLIENT_ID` and `VITE_TRAKT_CLIENT_SECRET`.
                             </p>
                           </div>
                         </div>
@@ -1493,21 +1493,21 @@ export default function SettingsPage() {
 
               {/* Metadata Providers */}
               <SettingSection title="Metadata Providers" description="API keys for movie and show detail pages.">
-                <SettingRow label="TMDB API Key" description="Get a free key at themoviedb.org/settings/api">
+                <SettingRow label="TMDB API Key" description="Optional. Leave empty to use the app's built-in TMDB key.">
                   <input
                     type="text"
                     value={store.tmdbApiKey}
                     onChange={(e) => store.setTmdbApiKey(e.target.value)}
-                    placeholder="Enter TMDB API key"
+                    placeholder="Using built-in app key"
                     className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
                   />
                 </SettingRow>
-                <SettingRow label="TVDB API Key" description="Get one at thetvdb.com/api-information">
+                <SettingRow label="TVDB API Key" description="Optional. Leave empty to use the app's built-in TVDB key.">
                   <input
                     type="text"
                     value={store.tvdbApiKey}
                     onChange={(e) => store.setTvdbApiKey(e.target.value)}
-                    placeholder="Enter TVDB API key"
+                    placeholder="Using built-in app key"
                     className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
                   />
                 </SettingRow>
@@ -1665,7 +1665,7 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Startup Page */}
-              <SettingSection title="Startup Page" description="Which page Orynt lands on at launch.">
+              <SettingSection title="Startup Page" description="Which page Aurales lands on at launch.">
                 <SettingRow label="Default start page">
                   <select
                     value={store.defaultStartPage}
@@ -1845,8 +1845,8 @@ export default function SettingsPage() {
           {activeTab === 'metadata' && (
             <>
               <h3 className="text-sm font-bold text-amber-400/80 mb-3">Metadata Ownership</h3>
-              <SettingSection description="Addons provide streams and catalogs. Orynt resolves and displays clean metadata itself.">
-                <SettingRow label="App-managed metadata" description="Use Orynt providers as the authority for titles, artwork, descriptions, IDs, and media type.">
+              <SettingSection description="Addons provide streams and catalogs. Aurales resolves and displays clean metadata itself.">
+                <SettingRow label="App-managed metadata" description="Use Aurales providers as the authority for titles, artwork, descriptions, IDs, and media type.">
                   <SettingToggle checked={store.appManagedMetadata} onChange={store.setAppManagedMetadata} />
                 </SettingRow>
                 <SettingRow label="Use addon metadata fallback" description="Only display addon metadata when app provider lookup fails.">
@@ -1891,9 +1891,6 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 </SettingRow>
-                <SettingRow label="Enable fallback" description="Primary applies to all fields. Fallback fills gaps in order.">
-                  <SettingToggle checked={store.movieMetadataFallback} onChange={(v) => store.setMovieMetadataFallback(v)} />
-                </SettingRow>
               </SettingSection>
 
               {/* Series */}
@@ -1916,9 +1913,6 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 </SettingRow>
-                <SettingRow label="Enable fallback" description="Primary applies to all fields. Fallback fills gaps in order.">
-                  <SettingToggle checked={store.seriesMetadataFallback} onChange={(v) => store.setSeriesMetadataFallback(v)} />
-                </SettingRow>
               </SettingSection>
 
               {/* Anime */}
@@ -1940,9 +1934,6 @@ export default function SettingsPage() {
                       </button>
                     ))}
                   </div>
-                </SettingRow>
-                <SettingRow label="Enable fallback" description="Primary applies to all fields. Fallback fills gaps in order.">
-                  <SettingToggle checked={store.animeMetadataFallback} onChange={(v) => store.setAnimeMetadataFallback(v)} />
                 </SettingRow>
                 <SettingRow label="Hide unreleased anime seasons" description="Hide seasons where no episodes have aired yet.">
                   <SettingToggle checked={store.hideUnairedAnimeSeasons} onChange={store.setHideUnairedAnimeSeasons} />
@@ -2232,7 +2223,7 @@ export default function SettingsPage() {
                         Sync Now
                       </button>
                     </SettingRow>
-                    <SettingRow label="Sync After External Playback" description="Refresh when Orynt is reopened from an external player.">
+                    <SettingRow label="Sync After External Playback" description="Refresh when Aurales is reopened from an external player.">
                       <SettingToggle checked={true} onChange={() => {}} />
                     </SettingRow>
                   </SettingSection>
@@ -2638,7 +2629,7 @@ export default function SettingsPage() {
               <SettingSection>
                 <div className="px-6 py-4 flex items-center gap-3">
                   <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
-                  <p className="text-sm text-white/70 font-semibold">mpv is bundled with Orynt and ready for playback.</p>
+                  <p className="text-sm text-white/70 font-semibold">mpv is bundled with Aurales and ready for playback.</p>
                 </div>
               </SettingSection>
 
@@ -2648,7 +2639,7 @@ export default function SettingsPage() {
               >
                 <SettingRow
                   label="Isolated Playback Mode"
-                  description="Use this to determine whether freezes originate in mpv/the stream or in Orynt's full player integration."
+                  description="Use this to determine whether freezes originate in mpv/the stream or in Aurales' full player integration."
                 >
                   <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
                 </SettingRow>
