@@ -13,6 +13,8 @@ import StreamSelector from '../components/StreamSelector'
 import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import DetailHero from '../components/media/DetailHero'
+import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import DetailContentShell from '../components/media/DetailContentShell'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
@@ -41,15 +43,13 @@ interface LocationState {
   sourceAddonItemId?: string
 }
 
-const SERIES_DETAIL_CACHE_TTL = 10 * 60 * 1000
 interface SeriesDetailCacheEntry {
   show: ShowDetails
   selectedSeason: number | null
   episodeMap: Record<number, SeasonDetails['episodes']>
   metadataStatus: 'resolved' | 'fallback' | 'error'
-  timestamp: number
 }
-const seriesDetailCache = new Map<string, SeriesDetailCacheEntry>()
+const seriesDetailMemCache = new Map<string, { entry: SeriesDetailCacheEntry; timestamp: number }>()
 
 function animeStructureSettingsKey(): string {
   const settings = useAppStore.getState()
@@ -65,39 +65,80 @@ function animeStructureSettingsKey(): string {
 
 function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
   const settingsKey = animeStructureSettingsKey()
+  const cleanStateImdb = cleanId(state.imdbId)
+  const cleanStateTmdb = cleanId(state.tmdbId)
+  const cleanStateTvdb = cleanId(state.tvdbId)
+  const cleanStateAnilist = cleanId(state.anilistId)
+  const cleanStateMal = cleanId(state.malId)
+  const cleanIdVal = cleanId(id)
+
   return [
-    id,
-    state.imdbId,
-    state.tmdbId != null ? `tmdb:${state.tmdbId}` : undefined,
-    state.tvdbId != null ? `tvdb:${state.tvdbId}` : undefined,
-    state.anilistId != null ? `anilist:${state.anilistId}` : undefined,
-    state.malId != null ? `mal:${state.malId}` : undefined,
+    cleanIdVal,
+    cleanStateImdb,
+    cleanStateTmdb != null ? `tmdb:${cleanStateTmdb}` : undefined,
+    cleanStateTvdb != null ? `tvdb:${cleanStateTvdb}` : undefined,
+    cleanStateAnilist != null ? `anilist:${cleanStateAnilist}` : undefined,
+    cleanStateMal != null ? `mal:${cleanStateMal}` : undefined,
   ].filter((key): key is string => !!key).map((key) => `${settingsKey}:${key}`)
 }
 
-function readSeriesDetailCache(id: string | undefined, state: LocationState): SeriesDetailCacheEntry | null {
-  for (const key of seriesDetailCacheKeys(id, state)) {
-    const cached = seriesDetailCache.get(key)
-    if (cached && Date.now() - cached.timestamp < SERIES_DETAIL_CACHE_TTL) return cached
+async function readSeriesDetailCache(id: string | undefined, state: LocationState): Promise<SeriesDetailCacheEntry | null> {
+  const keys = seriesDetailCacheKeys(id, state)
+  for (const key of keys) {
+    const mem = seriesDetailMemCache.get(`detail:series:${key}`)
+    if (mem) return mem.entry
+  }
+  for (const key of keys) {
+    const result = await cacheGet<SeriesDetailCacheEntry>(`detail:series:${key}`)
+    if (result) {
+      for (const k of keys) seriesDetailMemCache.set(`detail:series:${k}`, { entry: result.data, timestamp: Date.now() })
+      return result.data
+    }
   }
   return null
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
   const settingsKey = animeStructureSettingsKey()
+  const cleanShowId = cleanId(entry.show.id)
+  const cleanShowImdb = cleanId(entry.show.imdbId)
+  const cleanShowTmdb = cleanId(entry.show.tmdbId)
+  const cleanShowTvdb = cleanId(entry.show.tvdbId)
+  const cleanShowAnilist = cleanId(entry.show.anilistId)
+  const cleanShowMal = cleanId(entry.show.malId)
+
   const keys = new Set([
     ...seriesDetailCacheKeys(id, state),
     ...[
-      entry.show.id,
-      entry.show.imdbId,
-      entry.show.tmdbId != null ? `tmdb:${entry.show.tmdbId}` : undefined,
-      entry.show.tvdbId != null ? `tvdb:${entry.show.tvdbId}` : undefined,
-      entry.show.anilistId != null ? `anilist:${entry.show.anilistId}` : undefined,
-      entry.show.malId != null ? `mal:${entry.show.malId}` : undefined,
+      cleanShowId,
+      cleanShowImdb,
+      cleanShowTmdb != null ? `tmdb:${cleanShowTmdb}` : undefined,
+      cleanShowTvdb != null ? `tvdb:${cleanShowTvdb}` : undefined,
+      cleanShowAnilist != null ? `anilist:${cleanShowAnilist}` : undefined,
+      cleanShowMal != null ? `mal:${cleanShowMal}` : undefined,
     ].filter((key): key is string => !!key).map((key) => `${settingsKey}:${key}`),
   ])
-  for (const key of keys) seriesDetailCache.set(key, entry)
+  const opts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+  for (const key of keys) {
+    seriesDetailMemCache.set(`detail:series:${key}`, { entry, timestamp: Date.now() })
+    void cacheSet(`detail:series:${key}`, entry, opts)
+  }
 }
+
+function cleanId(val: unknown): string | undefined {
+  if (val === null || val === undefined) return undefined
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>
+    const nested = obj.id ?? obj.value ?? obj.tmdbId ?? obj.tvdbId ?? obj.anilistId ?? obj.malId
+    return nested !== undefined ? cleanId(nested) : undefined
+  }
+  const str = String(val).trim()
+  if (str === '[object Object]' || str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') {
+    return undefined
+  }
+  return str
+}
+
 
 function addonMetaToShow(meta: Record<string, unknown>, id: string): ShowDetails {
   const genres = Array.isArray(meta.genres) ? meta.genres as string[] :
@@ -326,12 +367,12 @@ export default function SeriesDetailPage() {
     show?.malId ||
     state.anilistId ||
     state.malId ||
-    (id && (id.startsWith('mal-') || id.startsWith('anilist-')))
+    (id && /^(mal|anilist)[-:]/i.test(id))
   )
 
   useEffect(() => {
     async function load() {
-      const cached = readSeriesDetailCache(id, state)
+      const cached = await readSeriesDetailCache(id, state)
       if (cached) {
         setAddonMeta(null)
         setSeasonCache({})
@@ -356,13 +397,33 @@ export default function SeriesDetailPage() {
       let result: ShowDetails | null = null
       let appResult: ShowDetails | null = null
 
+      const parseId = (val: unknown, prefix: string): string | undefined => {
+        let cleaned = cleanId(val)
+        if (!cleaned) return undefined
+        if (cleaned.startsWith('app_tvdb_')) cleaned = cleaned.replace('app_tvdb_', '')
+        else if (cleaned.startsWith('app_tmdb_tv_')) cleaned = cleaned.replace('app_tmdb_tv_', '')
+        else if (cleaned.startsWith('app_show_')) cleaned = cleaned.replace('app_show_', '')
+        const hasAnyPrefix = /^[a-z_]+[-:]/i.test(cleaned)
+        if (hasAnyPrefix) {
+          const lower = cleaned.toLowerCase()
+          if (lower.startsWith(`${prefix}-`) || lower.startsWith(`${prefix}:`)) {
+            return cleaned.replace(/^[a-z_]+[-:]/i, '')
+          }
+          return undefined
+        }
+        if (prefix === 'imdb') {
+          return cleaned.startsWith('tt') ? cleaned : undefined
+        }
+        return cleaned
+      }
+
       // Collect all known IDs from route state
       const knownIds = {
-        imdbId: state.imdbId || (id?.startsWith('tt') ? id : id?.startsWith('app_show_') ? id.replace('app_show_', '') : undefined),
-        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : id?.startsWith('app_tmdb_tv_') ? id.replace('app_tmdb_tv_', '') : undefined),
-        tvdbId: state.tvdbId || (id?.startsWith('tvdb-') ? id.replace('tvdb-', '') : id?.startsWith('app_tvdb_') ? id.replace('app_tvdb_', '') : undefined),
-        malId: state.malId || (id?.startsWith('mal-') ? id.replace('mal-', '') : undefined),
-        anilistId: state.anilistId || (id?.startsWith('anilist-') ? id.replace('anilist-', '') : undefined),
+        imdbId: parseId(state.imdbId, 'imdb') || parseId(id, 'imdb'),
+        tmdbId: parseId(state.tmdbId, 'tmdb') || parseId(id, 'tmdb'),
+        tvdbId: parseId(state.tvdbId, 'tvdb') || parseId(id, 'tvdb'),
+        malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
+        anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
 
       // Early resolve anime IDs if they are AniList / MAL but we don't have TVDB ID
@@ -385,11 +446,52 @@ export default function SeriesDetailPage() {
         }
       }
 
-      const isAnimeLocal = !!(
+      let isAnimeLocal = !!(
         knownIds.anilistId ||
         knownIds.malId ||
-        (id && (id.startsWith('mal-') || id.startsWith('anilist-')))
+        (id && /^(mal|anilist)[-:]/i.test(id))
       )
+
+      if (!isAnimeLocal && knownIds.tvdbId) {
+        try {
+          const { lookupByTvdbId } = await import('../services/animeLists')
+           const matches = await lookupByTvdbId(Number(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')))
+          if (matches && matches.length > 0) {
+            isAnimeLocal = true
+            const first = matches[0]
+            if (first.anilist_id) knownIds.anilistId = String(first.anilist_id)
+            if (first.mal_id) knownIds.malId = String(first.mal_id)
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (!isAnimeLocal && knownIds.tmdbId) {
+        try {
+          const { resolveAnimeIds } = await import('../services/animeLists')
+           const resolved = await resolveAnimeIds({ tmdbId: Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) })
+          if (resolved) {
+            isAnimeLocal = true
+            if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
+            if (resolved.anilistId) knownIds.anilistId = String(resolved.anilistId)
+            if (resolved.malId) knownIds.malId = String(resolved.malId)
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (!isAnimeLocal && knownIds.imdbId) {
+        try {
+          const { lookupByImdbId } = await import('../services/animeLists')
+          const matched = await lookupByImdbId(knownIds.imdbId)
+          if (matched) {
+            isAnimeLocal = true
+            if (matched.anilist_id) knownIds.anilistId = String(matched.anilist_id)
+            if (matched.mal_id) knownIds.malId = String(matched.mal_id)
+            if (matched.tvdb_id) knownIds.tvdbId = String(matched.tvdb_id)
+            const resolvedTmdb = matched.themoviedb_id ? (typeof matched.themoviedb_id === 'object' ? ((matched.themoviedb_id as any).tv ?? (matched.themoviedb_id as any).movie) : matched.themoviedb_id) : undefined
+            if (resolvedTmdb) knownIds.tmdbId = String(resolvedTmdb)
+          }
+        } catch { /* ignore */ }
+      }
 
       if (state.sourceAddonId && state.sourceAddonItemId) {
         const normalized = await resolveAppMetadata({
@@ -493,7 +595,7 @@ export default function SeriesDetailPage() {
         // Always resolve via anime-lists for anime — its TVDB mapping is
         // curated and more reliable than TMDB's external-ID linkage.
         let tvdbId: string | undefined
-        let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace('tmdb-', '') : undefined
+        let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
@@ -509,7 +611,7 @@ export default function SeriesDetailPage() {
           if (resolved?.malId) knownIds.malId = knownIds.malId || String(resolved.malId)
         } catch { /* continue */ }
         if (!tvdbId) {
-          tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace('tvdb-', '') : undefined
+          tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
         }
 
         // Resolve TMDB ID if missing (needed for artwork)
@@ -636,8 +738,8 @@ export default function SeriesDetailPage() {
               // Only take artwork and supplementary data from TMDB, never seasons
               appResult = {
                 ...appResult,
-                poster: tmdbData.poster || appResult.poster,
-                backdrop: tmdbData.backdrop || appResult.backdrop,
+                poster: appResult.poster || tmdbData.poster,
+                backdrop: appResult.backdrop || tmdbData.backdrop,
                 logo: tmdbData.logo || appResult.logo,
                 overview: appResult.overview || tmdbData.overview,
                 rating: tmdbData.rating || appResult.rating,
@@ -672,7 +774,7 @@ export default function SeriesDetailPage() {
         // Non-anime: TMDB first (existing flow)
 
         // Resolve TMDB ID if we don't have one
-        let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace('tmdb-', '') : undefined
+        let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
         if (!tmdbId && knownIds.imdbId) {
           try {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
@@ -692,7 +794,7 @@ export default function SeriesDetailPage() {
         if (appResult) {
           isAnimeLate = !!(
             (appResult.imdbId && await import('../services/animeLists').then(m => m.lookupByImdbId(appResult!.imdbId!)).then(e => !!e).catch(() => false)) ||
-            (appResult.tvdbId && await import('../services/animeLists').then(m => m.lookupByTvdbId(Number(String(appResult!.tvdbId).replace('tvdb-', '')))).then(e => e.length > 0).catch(() => false))
+             (appResult.tvdbId && await import('../services/animeLists').then(m => m.lookupByTvdbId(Number(String(appResult!.tvdbId).replace(/^[a-z_]+[-:]/i, '')))).then(e => e.length > 0).catch(() => false))
           )
 
           if (isAnimeLate) {
@@ -711,7 +813,7 @@ export default function SeriesDetailPage() {
               if (resolved?.malId) appResult = { ...appResult, malId: appResult.malId || resolved.malId }
             } catch { /* continue */ }
             if (!tvdbId) {
-              tvdbId = appResult.tvdbId ? String(appResult.tvdbId).replace('tvdb-', '') : undefined
+               tvdbId = appResult.tvdbId ? String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
             }
             if (tvdbId) {
               try {
@@ -783,6 +885,8 @@ export default function SeriesDetailPage() {
                     numberOfEpisodes: tvdbData.numberOfEpisodes || appResult.numberOfEpisodes,
                     tvdbId: tvdbId,
                     cast: appResult.cast.length > 0 ? appResult.cast : tvdbData.cast,
+                    poster: tvdbData.poster || appResult.poster,
+                    backdrop: tvdbData.backdrop || appResult.backdrop,
                   }
                 }
               } catch { /* continue */ }
@@ -801,7 +905,7 @@ export default function SeriesDetailPage() {
         // If no TMDB data, try TVDB directly
         if (!appResult && knownIds.tvdbId) {
           try {
-            appResult = await tvdbProvider.getShow(`tvdb-${String(knownIds.tvdbId).replace('tvdb-', '')}`)
+             appResult = await tvdbProvider.getShow(`tvdb-${String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')}`)
             appResult = { ...appResult, id: id || appResult.id, malId: knownIds.malId, anilistId: knownIds.anilistId }
           } catch { /* continue */ }
         }
@@ -810,10 +914,18 @@ export default function SeriesDetailPage() {
       // Use app result if available, otherwise keep addon/placeholder
       const finalResult = appResult || result || (placeholder ? placeholder : { ...MOCK_SHOW, id: id || 'mock-show-1' })
 
-      const finalTvdbId = finalResult.tvdbId ? String(finalResult.tvdbId).replace('tvdb-', '') : undefined
-      const finalTmdbId = finalResult.tmdbId ? String(finalResult.tmdbId).replace('tmdb-', '') : undefined
+      const cleanTvdb = cleanId(finalResult.tvdbId)
+      const cleanTmdb = cleanId(finalResult.tmdbId)
+       const finalTvdbId = cleanTvdb ? String(cleanTvdb).replace(/^[a-z_]+[-:]/i, '') : undefined
+      const finalTmdbId = cleanTmdb ? String(cleanTmdb).replace(/^[a-z_]+[-:]/i, '') : undefined
       const finalImdbId = finalResult.imdbId
       const isAnime = isAnimeEarly || isAnimeLate
+
+      // Preserving AniList artwork if it exists in route state
+      if (finalResult && (finalResult.anilistId || finalResult.malId || isAnime)) {
+        if (state.poster) finalResult.poster = state.poster
+        if (state.backdrop) finalResult.backdrop = state.backdrop
+      }
 
       // Anime uses TVDB as canonical ID; regular shows use TMDB
       const targetId = isAnime
@@ -872,10 +984,9 @@ export default function SeriesDetailPage() {
         selectedSeason: nextSelectedSeason,
         episodeMap: tvdbMappedEpisodesRef.current,
         metadataStatus: status,
-        timestamp: Date.now(),
       })
 
-      if (id && (id.startsWith('anilist-') || id.startsWith('mal-')) && finalArt.id && finalArt.id !== id) {
+      if (id && finalArt.id && finalArt.id !== id) {
         console.log('[SeriesDetailPage] Normalizing URL route ID to:', finalArt.id)
         navigate(`/series/${finalArt.id}`, { replace: true, state })
       }
@@ -916,8 +1027,8 @@ export default function SeriesDetailPage() {
       episodes: data.episodes.map((episode) => applyEpisodeArt(episode, { ...show, season: seasonNum })),
     })
 
-    const tmdbId = show.tmdbId ? String(show.tmdbId).replace('tmdb-', '') : (id.startsWith('tmdb-') ? id.replace('tmdb-', '') : null)
-    const tvdbId = show.tvdbId ? String(show.tvdbId).replace('tvdb-', '') : (id.startsWith('tvdb-') ? id.replace('tvdb-', '') : null)
+    const tmdbId = show.tmdbId ? String(show.tmdbId).replace(/^[a-z_]+[-:]/i, '') : (id && /^(?:tmdb)[-:]/i.test(id) ? id.replace(/^[a-z_]+[-:]/i, '') : null)
+    const tvdbId = show.tvdbId ? String(show.tvdbId).replace(/^[a-z_]+[-:]/i, '') : (id && /^(?:tvdb)[-:]/i.test(id) ? id.replace(/^[a-z_]+[-:]/i, '') : null)
 
     const tryTmdb = async (): Promise<SeasonDetails | null> => {
       if (!tmdbId) return null
@@ -1356,7 +1467,7 @@ export default function SeriesDetailPage() {
   }
 
   const streamId = show.imdbId || state.sourceAddonItemId || id || ''
-  const streamTmdbId = show.tmdbId ? Number(show.tmdbId) : (id?.startsWith('tmdb-') ? Number(id.replace('tmdb-', '')) : undefined)
+  const streamTmdbId = show.tmdbId ? Number(show.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
   const showIds = [show.id, show.imdbId, String(show.tmdbId || '')].filter(Boolean)
   const resumeProgress = [...watchedProgress.values()]
     .filter((progress) => !progress.completed && progress.season != null && progress.episode != null)
@@ -1507,8 +1618,8 @@ export default function SeriesDetailPage() {
                     year: show.year,
                     anilistId: show.anilistId ? Number(show.anilistId) : undefined,
                     malId: show.malId ? Number(show.malId) : undefined,
-                    tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace('tvdb-', '')) : undefined,
-                    tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace('tmdb-', '')) : undefined,
+                    tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
+                    tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
                     imdbId: show.imdbId,
                     matchedTvdbSeriesName: show.title,
                     seasons: seasonsWithEps as any,

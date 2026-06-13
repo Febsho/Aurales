@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react'
+import React, { useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
@@ -14,7 +14,7 @@ interface MediaRowProps {
   headerRightControls?: React.ReactNode
 }
 
-export default function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOverride = true, headerLeftControls, headerRightControls }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOverride = true, headerLeftControls, headerRightControls }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const posterSize = useAppStore((s) => s.posterSize)
@@ -132,3 +132,5 @@ export default function MediaRow({ title, items, layout = 'poster', showAllPath,
     </div>
   )
 }
+
+export default React.memo(MediaRow)

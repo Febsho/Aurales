@@ -18,6 +18,8 @@ import MarkWatchedButton from '../components/MarkWatchedButton'
 import { applyMovieArt, applySearchResultArt } from '../services/artwork'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { isWatchedFromProviders } from '../services/watchedStatus'
+import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 
 interface LocationState {
   poster?: string
@@ -78,7 +80,20 @@ function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetai
     anilistId: getMetaId(meta, 'anilist', 'anilist_id', 'anilistId'),
     provider: 'addon',
   }
+}function cleanId(val: unknown): string | undefined {
+  if (val === null || val === undefined) return undefined
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>
+    const nested = obj.id ?? obj.value ?? obj.tmdbId ?? obj.tvdbId ?? obj.anilistId ?? obj.malId
+    return nested !== undefined ? cleanId(nested) : undefined
+  }
+  const str = String(val).trim()
+  if (str === '[object Object]' || str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') {
+    return undefined
+  }
+  return str
 }
+
 
 function appMediaToMovie(item: AppMediaItem): MovieDetails {
   return {
@@ -138,17 +153,49 @@ export default function MovieDetailPage() {
 
   useEffect(() => {
     async function load() {
-      setLoading(true)
       setMalRating(null)
+
+      const movieCacheKey = id ? `detail:movie:${id}` : null
+      if (movieCacheKey) {
+        const cached = await cacheGet<MovieDetails>(movieCacheKey)
+        if (cached) {
+          setMovie(cached.data)
+          setLoading(false)
+          if (!cached.stale) return
+        }
+      }
+
+      if (loading) setLoading(true)
       let result: MovieDetails | null = null
 
-      // Collect known IDs
+      const parseId = (val: unknown, prefix: string): string | undefined => {
+        let cleaned = cleanId(val)
+        if (!cleaned) return undefined
+        if (cleaned.startsWith('app_tvdb_')) cleaned = cleaned.replace('app_tvdb_', '')
+        else if (cleaned.startsWith('app_tmdb_movie_')) cleaned = cleaned.replace('app_tmdb_movie_', '')
+        else if (cleaned.startsWith('app_tmdb_')) cleaned = cleaned.replace('app_tmdb_', '')
+        else if (cleaned.startsWith('app_movie_')) cleaned = cleaned.replace('app_movie_', '')
+        const hasAnyPrefix = /^[a-z_]+[-:]/i.test(cleaned)
+        if (hasAnyPrefix) {
+          const lower = cleaned.toLowerCase()
+          if (lower.startsWith(`${prefix}-`) || lower.startsWith(`${prefix}:`)) {
+            return cleaned.replace(/^[a-z_]+[-:]/i, '')
+          }
+          return undefined
+        }
+        if (prefix === 'imdb') {
+          return cleaned.startsWith('tt') ? cleaned : undefined
+        }
+        return cleaned
+      }
+
+      // Collect all known IDs from route state
       const knownIds = {
-        imdbId: state.imdbId || (id?.startsWith('tt') ? id : id?.startsWith('app_movie_') ? id.replace('app_movie_', '') : undefined),
-        tmdbId: state.tmdbId || (id?.startsWith('tmdb-') ? id.replace('tmdb-', '') : id?.startsWith('app_tmdb_movie_') ? id.replace('app_tmdb_movie_', '') : id?.startsWith('app_tmdb_') ? id.replace('app_tmdb_', '') : undefined),
-        tvdbId: state.tvdbId || (id?.startsWith('tvdb-') ? id.replace('tvdb-', '') : id?.startsWith('app_tvdb_') ? id.replace('app_tvdb_', '') : undefined),
-        malId: state.malId || (id?.startsWith('mal-') ? id.replace('mal-', '') : undefined),
-        anilistId: state.anilistId || (id?.startsWith('anilist-') ? id.replace('anilist-', '') : undefined),
+        imdbId: parseId(state.imdbId, 'imdb') || parseId(id, 'imdb'),
+        tmdbId: parseId(state.tmdbId, 'tmdb') || parseId(id, 'tmdb'),
+        tvdbId: parseId(state.tvdbId, 'tvdb') || parseId(id, 'tvdb'),
+        malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
+        anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
 
       // Early resolve anime IDs if they are AniList / MAL but we don't have TMDB ID
@@ -241,7 +288,7 @@ export default function MovieDetailPage() {
       }
 
       // Fetch REAL metadata from TMDB
-      let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace('tmdb-', '') : undefined
+      let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
       if (!tmdbId && knownIds.imdbId) {
         try {
           const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
@@ -265,6 +312,12 @@ export default function MovieDetailPage() {
 
       // Resolve IMDb if missing
       const finalResult = appResult || result || { ...MOCK_HERO_MOVIE, id: id || 'mock-1' }
+
+      // Preserving AniList artwork if it exists in route state
+      if (finalResult && (finalResult.anilistId || finalResult.malId || (id && /^(mal|anilist)[-:]/i.test(id)))) {
+        if (state.poster) finalResult.poster = state.poster
+        if (state.backdrop) finalResult.backdrop = state.backdrop
+      }
       if (!finalResult.imdbId && finalResult.tmdbId) {
         try {
           const { resolveImdbId } = await import('../services/metadataEnrich')
@@ -273,7 +326,8 @@ export default function MovieDetailPage() {
         } catch { /* continue */ }
       }
 
-      const finalTmdbId = finalResult.tmdbId ? String(finalResult.tmdbId).replace('tmdb-', '') : undefined
+      const cleanTmdb = cleanId(finalResult.tmdbId)
+      const finalTmdbId = cleanTmdb ? String(cleanTmdb).replace(/^[a-z_]+[-:]/i, '') : undefined
       const finalImdbId = finalResult.imdbId
       
       const targetId = finalTmdbId
@@ -288,7 +342,11 @@ export default function MovieDetailPage() {
       setMovie(artApplied)
       setLoading(false)
 
-      if (id && (id.startsWith('anilist-') || id.startsWith('mal-')) && artApplied.id && artApplied.id !== id) {
+      const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+      if (movieCacheKey) void cacheSet(movieCacheKey, artApplied, cacheOpts)
+      if (artApplied.id && artApplied.id !== id) void cacheSet(`detail:movie:${artApplied.id}`, artApplied, cacheOpts)
+
+      if (id && artApplied.id && artApplied.id !== id) {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
         navigate(`/movie/${artApplied.id}`, { replace: true, state })
       }
@@ -360,7 +418,7 @@ export default function MovieDetailPage() {
   }
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''
-  const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id?.startsWith('tmdb-') ? Number(id.replace('tmdb-', '')) : undefined)
+  const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
 
   return (
     <div className="pb-12">

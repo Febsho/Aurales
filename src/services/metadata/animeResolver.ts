@@ -212,8 +212,8 @@ export async function resolveAnimeMetadata(
   if (ids.tmdbId) {
     const tmdb = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
     if (tmdb) {
-      normalized.poster = tmdb.poster || normalized.poster
-      normalized.backdrop = tmdb.backdrop || normalized.backdrop
+      normalized.poster = normalized.poster || tmdb.poster
+      normalized.backdrop = normalized.backdrop || tmdb.backdrop
       normalized.logo = tmdb.logo || normalized.logo
       normalized.overview = normalized.overview || tmdb.overview
     }

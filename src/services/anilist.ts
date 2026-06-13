@@ -310,7 +310,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
           if (res.ok) {
             const tmdbData = await res.json()
             if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
-            if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/w1280${tmdbData.backdrop_path}`
+            if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
           }
         } catch { /* ignore */ }
       }
@@ -384,7 +384,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     if (mapped?.tmdbId) tmdbId = mapped.tmdbId
   } catch { /* ignore */ }
 
-  const anilistPoster = media.coverImage?.large || media.coverImage?.extraLarge
+  const anilistPoster = media.coverImage?.extraLarge || media.coverImage?.large
   const anilistBackdrop = media.bannerImage
 
   return {

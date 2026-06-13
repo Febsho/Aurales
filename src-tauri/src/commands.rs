@@ -2028,6 +2028,147 @@ pub async fn exchange_anilist_token(
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?
 }
 
+// ─── Cache Entries ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CacheEntry {
+    pub key: String,
+    pub value: String,
+    pub category: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[tauri::command]
+pub fn cache_entry_set(
+    key: String,
+    value: String,
+    category: String,
+    ttl_seconds: Option<i64>,
+    db: State<Database>,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let expires_at = ttl_seconds.map(|ttl| {
+        format!(
+            "{}",
+            chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::seconds(ttl))
+                .unwrap_or_else(chrono::Utc::now)
+                .format("%Y-%m-%d %H:%M:%S")
+        )
+    });
+    conn.execute(
+        "INSERT OR REPLACE INTO cache_entries (key, value, category, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+        rusqlite::params![key, value, category, expires_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cache_entry_get(key: String, db: State<Database>) -> Option<CacheEntry> {
+    let conn = db.conn.lock().ok()?;
+    conn.query_row(
+        "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
+        rusqlite::params![key],
+        |row| {
+            Ok(CacheEntry {
+                key: row.get(0)?,
+                value: row.get(1)?,
+                category: row.get(2)?,
+                created_at: row.get(3)?,
+                expires_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .ok()
+}
+
+#[tauri::command]
+pub fn cache_entry_get_many(keys: Vec<String>, db: State<Database>) -> Vec<CacheEntry> {
+    let conn = match db.conn.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut results = Vec::new();
+    for key in &keys {
+        if let Ok(entry) = conn.query_row(
+            "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
+            rusqlite::params![key],
+            |row| {
+                Ok(CacheEntry {
+                    key: row.get(0)?,
+                    value: row.get(1)?,
+                    category: row.get(2)?,
+                    created_at: row.get(3)?,
+                    expires_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        ) {
+            results.push(entry);
+        }
+    }
+    results
+}
+
+#[tauri::command]
+pub fn cache_entry_clear_category(category: String, db: State<Database>) -> Result<u64, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let count = conn
+        .execute(
+            "DELETE FROM cache_entries WHERE category = ?1",
+            rusqlite::params![category],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count as u64)
+}
+
+#[tauri::command]
+pub fn cache_entry_clear_expired(db: State<Database>) -> Result<u64, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let count = conn
+        .execute(
+            "DELETE FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            rusqlite::params![],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count as u64)
+}
+
+#[tauri::command]
+pub fn cache_entry_stats(db: State<Database>) -> Result<serde_json::Value, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cache_entries", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let expired: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT category, COUNT(*) FROM cache_entries GROUP BY category")
+        .map_err(|e| e.to_string())?;
+    let by_category: std::collections::HashMap<String, i64> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!({
+        "totalEntries": total,
+        "expiredEntries": expired,
+        "byCategory": by_category,
+    }))
+}
+
 #[tauri::command]
 pub fn get_mpv_info() -> Result<serde_json::Value, String> {
     let path = find_mpv().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "Not Found".to_string());

@@ -1,11 +1,13 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import MediaCard from '../components/MediaCard'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
+import { useCatalogStore } from '../stores/catalogStore'
 import type { SearchResult } from '../types'
 import { discoverTmdb } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
+import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 
 export default function CatalogPage() {
   const { rowId } = useParams<{ rowId: string }>()
@@ -16,7 +18,62 @@ export default function CatalogPage() {
   const [hasMore, setHasMore] = useState(false)
   const homeRows = useAppStore((s) => s.homeRows)
   const addons = useAppStore((s) => s.addons)
-  const row = homeRows.find((candidate) => candidate.id === rowId)
+  const catalogSetCache = useCatalogStore((s) => s.setCache)
+  const catalogGetCache = useCatalogStore((s) => s.getCache)
+  const pageRef = useRef(0)
+  const restoredRef = useRef(false)
+
+  const region = useAppStore((s) => s.discoveryRegion)
+  const minRating = useAppStore((s) => s.discoveryMinRating)
+  const includeAdult = useAppStore((s) => s.discoveryIncludeAdult)
+
+  const row = useMemo(() => {
+    const candidate = homeRows.find((r) => r.id === rowId)
+    if (candidate) return candidate
+
+    if (rowId?.startsWith('discover-provider-')) {
+      const parts = rowId.split('-') // ['discover', 'provider', providerName, contentType]
+      const providerName = parts[2]
+      const contentType = parts[3] as 'movie' | 'series'
+      const mapping = SERVICE_PROVIDER_MAP[providerName]
+      const selectedProviders = mapping ? mapping.ids.map(id => ({ id, name: mapping.name })) : []
+
+      return {
+        id: rowId,
+        title: `${providerName} ${contentType === 'movie' ? 'Movies' : 'Series'}`,
+        sourceType: 'discover' as const,
+        discoverConfig: {
+          source: 'TMDB' as const,
+          contentType: contentType,
+          sortBy: 'popularity.desc',
+          cacheTtl: 43200,
+          releasedOnly: true,
+          includeAdult,
+          includeGenres: [],
+          excludeGenres: [],
+          genreMatchMode: 'OR' as const,
+          originalLanguage: '',
+          releaseRegion: region,
+          people: [],
+          peopleMatchMode: 'OR' as const,
+          includeCompanies: [],
+          excludeCompanies: [],
+          companyMatchMode: 'OR' as const,
+          includeKeywords: [],
+          excludeKeywords: [],
+          keywordMatchMode: 'OR' as const,
+          watchRegion: region,
+          providerMatchMode: 'OR' as const,
+          selectedProviders,
+          voteAverageMin: minRating,
+          voteAverageMax: 10,
+          voteCountMin: 50,
+        }
+      }
+    }
+    return undefined
+  }, [rowId, homeRows, region, minRating, includeAdult])
+
   const title = searchParams.get('title') || row?.title || 'Catalog'
   const posterSize = useAppStore((s) => s.posterSize)
 
@@ -31,11 +88,44 @@ export default function CatalogPage() {
     }
   }, [posterSize])
 
+  const saveScrollPosition = useCallback(() => {
+    if (!rowId) return
+    const scrollRoot = document.querySelector('main') || document.documentElement
+    catalogSetCache(rowId, {
+      items,
+      page: pageRef.current,
+      hasMore,
+      scrollTop: scrollRoot.scrollTop,
+    })
+  }, [rowId, items, hasMore, catalogSetCache])
+
   useEffect(() => {
+    return () => { saveScrollPosition() }
+  }, [saveScrollPosition])
+
+  useEffect(() => {
+    if (!rowId) return
+    restoredRef.current = false
+
+    const cached = catalogGetCache(rowId)
+    if (cached && cached.items.length > 0) {
+      setItems(cached.items)
+      setHasMore(cached.hasMore)
+      pageRef.current = cached.page
+      setLoading(false)
+      restoredRef.current = true
+      requestAnimationFrame(() => {
+        const scrollRoot = document.querySelector('main') || document.documentElement
+        scrollRoot.scrollTop = cached.scrollTop
+      })
+      return
+    }
+
     setLoading(true)
     setLoadingMore(false)
     setHasMore(false)
     setItems([])
+    pageRef.current = 0
 
     if (!row) {
       setLoading(false)
@@ -77,6 +167,7 @@ export default function CatalogPage() {
             setHasMore(false)
           } else {
             page += 1
+            pageRef.current = page
             setHasMore(true)
           }
 
@@ -186,6 +277,7 @@ export default function CatalogPage() {
         setHasMore(false)
       } else {
         page += 1
+        pageRef.current = page
         setHasMore(true)
       }
 
@@ -219,6 +311,7 @@ export default function CatalogPage() {
       cancelled = true
       scrollRoot.removeEventListener('scroll', onScroll)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row, addons])
 
   return (

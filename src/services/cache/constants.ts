@@ -1,0 +1,29 @@
+export const CACHE_CATEGORIES = {
+  ADDON_CATALOG: 'addon_catalog',
+  PROVIDER_LIST: 'provider_list',
+  DISCOVER: 'discover',
+  TMDB_CARD: 'tmdb_card',
+  TVDB_CARD: 'tvdb_card',
+  TMDB_TVDB_ID: 'tmdb_tvdb_id',
+  WATCHED_STATUS: 'watched_status',
+  SIMKL_LIST: 'simkl_list',
+  ARTWORK: 'artwork',
+  HOME_ROW: 'home_row',
+  DETAIL_PAGE: 'detail_page',
+  TVDB_SEASON: 'tvdb_season',
+} as const
+
+export const CACHE_TTLS = {
+  ADDON_CATALOG: 3 * 60 * 60,
+  PROVIDER_LIST: 30 * 60,
+  DISCOVER: 12 * 60 * 60,
+  TMDB_CARD: 7 * 24 * 60 * 60,
+  TVDB_CARD: 7 * 24 * 60 * 60,
+  TMDB_TVDB_ID: 30 * 24 * 60 * 60,
+  WATCHED_STATUS: 15 * 60,
+  SIMKL_LIST: 15 * 60,
+  ARTWORK: 30 * 24 * 60 * 60,
+  HOME_ROW: 5 * 60,
+  DETAIL_PAGE: 10 * 60,
+  TVDB_SEASON: 24 * 60 * 60,
+} as const

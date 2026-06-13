@@ -73,7 +73,7 @@ export default function DetailHero({
       {/* Backdrop image */}
       {backdrop && !backdropError ? (
         <img
-          src={backdrop}
+          src={backdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
           alt=""
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded ? 'opacity-100' : 'opacity-0'}`}
           style={{ objectPosition: 'center 15%' }}
