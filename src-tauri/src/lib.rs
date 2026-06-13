@@ -80,6 +80,12 @@ pub fn run() {
             commands::discord_clear_activity,
             commands::discord_disconnect,
             commands::get_mpv_info,
+            commands::cache_entry_set,
+            commands::cache_entry_get,
+            commands::cache_entry_get_many,
+            commands::cache_entry_clear_category,
+            commands::cache_entry_clear_expired,
+            commands::cache_entry_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,4 @@
-import { useState, useEffect, cloneElement } from 'react'
+import { useState, useEffect, useRef, cloneElement } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import HeroSection from '../components/HeroSection'
@@ -27,23 +27,9 @@ import type { SearchResult, HomeRowConfig } from '../types'
 import type { SimklWatchlistItem } from '../services/simkl/types'
 import { discoverTmdbWithCache } from '../services/tmdb'
 import { canonicalizeCatalogItemsWithTvdb, getProviderListItems } from '../services/providerLists'
-
-const HOME_ROW_CACHE_TTL = 5 * 60 * 1000
-const homeRowCache = new Map<string, { items: SearchResult[]; timestamp: number }>()
-
-function readHomeRowCache(key: string): SearchResult[] | null {
-  const cached = homeRowCache.get(key)
-  return cached ? cached.items : null
-}
-
-function isHomeRowCacheFresh(key: string): boolean {
-  const cached = homeRowCache.get(key)
-  return !!cached && Date.now() - cached.timestamp < HOME_ROW_CACHE_TTL
-}
-
-function writeHomeRowCache(key: string, items: SearchResult[]): void {
-  homeRowCache.set(key, { items, timestamp: Date.now() })
-}
+import { cachedFetch, cacheClearExpired } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
+import { taskQueue } from '../services/cache/backgroundTaskQueue'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -169,62 +155,61 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 }
 
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `tvdb-v1:simkl:${row.providerListId || 'watchlist'}:${row.sortBy || 'default'}`
-  const cachedItems = readHomeRowCache(cacheKey)
-  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
-  const [loading, setLoading] = useState(!cachedItems)
+  const cacheKey = `home:simkl:${row.providerListId || 'watchlist'}:${row.sortBy || 'default'}`
+  const [items, setItems] = useState<SearchResult[] | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
-    let cancelled = false
+    cancelledRef.current = false
     const load = async () => {
-      if (isHomeRowCacheFresh(cacheKey)) {
-        setItems(readHomeRowCache(cacheKey) || [])
-        setError(null)
-        setLoading(false)
-        return
-      }
-      setLoading(!readHomeRowCache(cacheKey))
-      setError(null)
       try {
-        let raw: SimklWatchlistItem[] = []
-        switch (row.providerListId) {
-          case 'watching':          raw = await getSimklWatching(); break
-          case 'completed':         raw = await getSimklCompleted(); break
-          case 'anime':             raw = await getSimklAnimeWatchlist(); break
-          case 'history':           raw = await getSimklWatchedMovies(); break
-          case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
-          case 'movies-watching':   raw = await getSimklMoviesWatching(); break
-          case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
-          case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
-          case 'shows-watching':    raw = await getSimklShowsWatching(); break
-          case 'shows-completed':   raw = await getSimklShowsCompleted(); break
-          case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
-          case 'anime-watching':    raw = await getSimklAnimeWatching(); break
-          case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
-          case 'on-hold':           raw = await getSimklOnHold(); break
-          case 'dropped':           raw = await getSimklDropped(); break
-          case 'watchlist':
-          default:                  raw = await getSimklWatchlist(); break
-        }
-        if (!cancelled) {
+        const fetcher = async () => {
+          let raw: SimklWatchlistItem[] = []
+          switch (row.providerListId) {
+            case 'watching':          raw = await getSimklWatching(); break
+            case 'completed':         raw = await getSimklCompleted(); break
+            case 'anime':             raw = await getSimklAnimeWatchlist(); break
+            case 'history':           raw = await getSimklWatchedMovies(); break
+            case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
+            case 'movies-watching':   raw = await getSimklMoviesWatching(); break
+            case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
+            case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
+            case 'shows-watching':    raw = await getSimklShowsWatching(); break
+            case 'shows-completed':   raw = await getSimklShowsCompleted(); break
+            case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
+            case 'anime-watching':    raw = await getSimklAnimeWatching(); break
+            case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
+            case 'on-hold':           raw = await getSimklOnHold(); break
+            case 'dropped':           raw = await getSimklDropped(); break
+            case 'watchlist':
+            default:                  raw = await getSimklWatchlist(); break
+          }
           const results = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
           if (row.sortBy === 'alphabetical') {
             results.sort((a, b) => a.title.localeCompare(b.title))
           }
+          return results
+        }
+        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+          category: CACHE_CATEGORIES.SIMKL_LIST,
+          ttlSeconds: CACHE_TTLS.SIMKL_LIST,
+          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) setItems(fresh) },
+        })
+        if (!cancelledRef.current) {
           setItems(results)
-          writeHomeRowCache(cacheKey, results)
+          setLoading(false)
         }
       } catch (err: any) {
-        if (!cancelled) {
+        if (!cancelledRef.current) {
           setError(err?.message || 'Failed to fetch Simkl list.')
+          setLoading(false)
         }
-      } finally {
-        if (!cancelled) setLoading(false)
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelledRef.current = true }
   }, [cacheKey, row.providerListId, row.sortBy])
 
   if (loading) {
@@ -250,7 +235,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     )
   }
 
-  if (items.length === 0) {
+  if (!items || items.length === 0) {
     return (
       <MediaRowError
         title={row.title}
@@ -274,43 +259,46 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 }
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `tvdb-v1:provider:${row.sourceType}:${row.providerListId}:${row.sortBy || 'default'}`
-  const cachedItems = readHomeRowCache(cacheKey)
-  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
-  const [loading, setLoading] = useState(!cachedItems)
+  const cacheKey = `home:provider:${row.sourceType}:${row.providerListId}:${row.sortBy || 'default'}`
+  const [items, setItems] = useState<SearchResult[] | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
-    let cancelled = false
-    if (isHomeRowCacheFresh(cacheKey)) {
-      setItems(readHomeRowCache(cacheKey) || [])
-      setError(null)
-      setLoading(false)
-      return
+    cancelledRef.current = false
+    const load = async () => {
+      try {
+        const fetcher = async () => {
+          const results = await getProviderListItems(row)
+          const sorted = [...results]
+          if (row.sortBy === 'alphabetical') sorted.sort((a, b) => a.title.localeCompare(b.title))
+          return sorted
+        }
+        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+          category: CACHE_CATEGORIES.PROVIDER_LIST,
+          ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
+          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) setItems(fresh) },
+        })
+        if (!cancelledRef.current) {
+          setItems(results)
+          setLoading(false)
+        }
+      } catch (err: any) {
+        if (!cancelledRef.current) {
+          setError(err?.message || `Failed to fetch ${row.sourceType} list.`)
+          setLoading(false)
+        }
+      }
     }
-    setLoading(!readHomeRowCache(cacheKey))
-    setError(null)
-    getProviderListItems(row)
-      .then((results) => {
-        if (cancelled) return
-        const sorted = [...results]
-        if (row.sortBy === 'alphabetical') sorted.sort((a, b) => a.title.localeCompare(b.title))
-        setItems(sorted)
-        writeHomeRowCache(cacheKey, sorted)
-      })
-      .catch((err: any) => {
-        if (!cancelled) setError(err?.message || `Failed to fetch ${row.sourceType} list.`)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
+    load()
+    return () => { cancelledRef.current = true }
   }, [cacheKey, row.providerListId, row.sourceType, row.sortBy])
 
   const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
   if (loading) return <MediaRowSkeleton title={row.title} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
   if (error) return <MediaRowError title={row.title} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
-  if (items.length === 0) return <MediaRowError title={row.title} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (!items || items.length === 0) return <MediaRowError title={row.title} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
 
   return (
     <MediaRow
@@ -326,17 +314,19 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `addon:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
-  const cachedItems = readHomeRowCache(cacheKey)
-  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
-  const [loading, setLoading] = useState(!cachedItems)
+  const cacheKey = `home:addon:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
+  const [items, setItems] = useState<SearchResult[] | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const addons = useAppStore((s) => s.addons)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
-  const displayItems = isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
-    if (isMockCatalog) {
+    cancelledRef.current = false
+
+    if (isMockCatalog && row.catalogId) {
+      setItems(getMockCatalog(row.catalogId))
       setLoading(false)
       return
     }
@@ -355,32 +345,30 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
       return
     }
 
-    let cancelled = false
-    if (isHomeRowCacheFresh(cacheKey)) {
-      setItems(readHomeRowCache(cacheKey) || [])
-      setError(null)
-      setLoading(false)
-      return
+    const load = async () => {
+      try {
+        const fetcher = () => getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+          category: CACHE_CATEGORIES.ADDON_CATALOG,
+          ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) setItems(fresh) },
+        })
+        if (!cancelledRef.current) {
+          setItems(results)
+          setLoading(false)
+        }
+      } catch (err: any) {
+        if (!cancelledRef.current) {
+          setError(err?.message || 'Failed to load addon catalog.')
+          setLoading(false)
+        }
+      }
     }
-    setLoading(!readHomeRowCache(cacheKey))
-    setError(null)
-    getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
-      .then((results) => {
-        if (cancelled) return
-        setItems(results)
-        writeHomeRowCache(cacheKey, results)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err?.message || 'Failed to load addon catalog.')
-        setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
+    load()
+    return () => { cancelledRef.current = true }
   }, [cacheKey, isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
+
+  const displayItems = isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items
 
   if (loading) {
     return (
@@ -405,7 +393,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     )
   }
 
-  if (displayItems.length === 0) {
+  if (!displayItems || displayItems.length === 0) {
     return (
       <MediaRowError
         title={row.title}
@@ -435,47 +423,46 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 }
 
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `discover:${row.id}:${JSON.stringify(row.discoverConfig || {})}`
-  const cachedItems = readHomeRowCache(cacheKey)
-  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
-  const [loading, setLoading] = useState(!cachedItems)
+  const cacheKey = `home:discover:${row.id}:${JSON.stringify(row.discoverConfig || {})}`
+  const [items, setItems] = useState<SearchResult[] | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
+    cancelledRef.current = false
+
     if (!row.discoverConfig) {
       setError('Shelf is unconfigured.')
       setLoading(false)
       return
     }
 
-    let cancelled = false
-    if (isHomeRowCacheFresh(cacheKey)) {
-      setItems(readHomeRowCache(cacheKey) || [])
-      setError(null)
-      setLoading(false)
-      return
+    const load = async () => {
+      try {
+        const fetcher = async () => {
+          const results = await discoverTmdbWithCache(row.discoverConfig!, row.id)
+          const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+          return enrichSearchResultsWithAppMetadata(results)
+        }
+        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+          category: CACHE_CATEGORIES.DISCOVER,
+          ttlSeconds: CACHE_TTLS.DISCOVER,
+          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) setItems(fresh) },
+        })
+        if (!cancelledRef.current) {
+          setItems(results)
+          setLoading(false)
+        }
+      } catch (err: any) {
+        if (!cancelledRef.current) {
+          setError(err?.message || 'Failed to load discover catalog.')
+          setLoading(false)
+        }
+      }
     }
-    setLoading(!readHomeRowCache(cacheKey))
-    setError(null)
-    discoverTmdbWithCache(row.discoverConfig, row.id)
-      .then(async (results) => {
-        if (cancelled) return
-        const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-        const enriched = await enrichSearchResultsWithAppMetadata(results)
-        if (cancelled) return
-        setItems(enriched)
-        writeHomeRowCache(cacheKey, enriched)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err?.message || 'Failed to load discover catalog.')
-        setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
+    load()
+    return () => { cancelledRef.current = true }
   }, [cacheKey, row.id, row.discoverConfig])
 
   if (loading) {
@@ -501,7 +488,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     )
   }
 
-  if (items.length === 0) {
+  if (!items || items.length === 0) {
     return (
       <MediaRowError
         title={row.title}
@@ -536,27 +523,86 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
   const isMockCatalog = row.catalogId?.startsWith('mock-')
 
   useEffect(() => {
-    if (isMockCatalog && row.catalogId) {
-      setItems(getMockCatalog(row.catalogId))
-      return
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        let results: SearchResult[] = []
+
+        if (isMockCatalog && row.catalogId) {
+          results = getMockCatalog(row.catalogId)
+        } else if (row.sourceType === 'simkl') {
+          let raw: SimklWatchlistItem[] = []
+          switch (row.providerListId) {
+            case 'watching':          raw = await getSimklWatching(); break
+            case 'completed':         raw = await getSimklCompleted(); break
+            case 'anime':             raw = await getSimklAnimeWatchlist(); break
+            case 'history':           raw = await getSimklWatchedMovies(); break
+            case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
+            case 'movies-watching':   raw = await getSimklMoviesWatching(); break
+            case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
+            case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
+            case 'shows-watching':    raw = await getSimklShowsWatching(); break
+            case 'shows-completed':   raw = await getSimklShowsCompleted(); break
+            case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
+            case 'anime-watching':    raw = await getSimklAnimeWatching(); break
+            case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
+            case 'on-hold':           raw = await getSimklOnHold(); break
+            case 'dropped':           raw = await getSimklDropped(); break
+            case 'watchlist':
+            default:                  raw = await getSimklWatchlist(); break
+          }
+          results = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
+        } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+          results = await getProviderListItems(row)
+        } else if (row.sourceType === 'discover') {
+          if (row.discoverConfig) {
+            const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id)
+            const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+            results = await enrichSearchResultsWithAppMetadata(rawDiscover)
+          }
+        } else if (row.addonId) {
+          const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
+          const url = addon?.url || row.addonUrl
+          if (url && row.catalogType && row.catalogId) {
+            results = await getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
+          }
+        } else {
+          // Default mock behavior
+          const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
+          results = [...rawItems];
+        }
+
+        if (row.sortBy === 'alphabetical') {
+          results.sort((a, b) => a.title.localeCompare(b.title))
+        }
+
+        if (!cancelled) {
+          setItems(results)
+        }
+      } catch (e) {
+        console.error('[HeroCatalogSection] Failed to load catalog items:', e)
+      }
     }
 
-    if (!row.catalogType || !row.catalogId) return
-    const addon = addons.find((a) => a.manifest.id === row.addonId)
-    const url = addon?.url || row.addonUrl
-    if (!url) return
-
-    let cancelled = false
-    getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
-      .then((results) => {
-        if (!cancelled) setItems(results)
-      })
-      .catch(() => undefined)
+    load()
 
     return () => {
       cancelled = true
     }
-  }, [isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
+  }, [
+    isMockCatalog,
+    row.addonId,
+    row.addonUrl,
+    row.catalogType,
+    row.catalogId,
+    row.catalogExtra,
+    row.sourceType,
+    row.providerListId,
+    row.discoverConfig,
+    row.sortBy,
+    addons
+  ])
 
   const mockFallback: SearchResult = {
     id: MOCK_HERO_MOVIE.id,
@@ -699,6 +745,15 @@ export default function HomePage() {
   const { homeRows, reorderHomeRows } = useAppStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
+
+  useEffect(() => {
+    taskQueue.enqueue({
+      id: 'startup-cache-cleanup',
+      priority: 'idle',
+      dedupKey: 'cache-cleanup',
+      execute: async () => { await cacheClearExpired() },
+    })
+  }, [])
 
   const setIsEditing = (val: boolean) => {
     if (val) {

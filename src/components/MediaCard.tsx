@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applySearchResultArt } from '../services/artwork'
@@ -21,7 +21,26 @@ interface MediaCardProps {
   disableArtOverride?: boolean
 }
 
-export default function MediaCard({ item, layout = 'poster', disableArtOverride = false }: MediaCardProps) {
+function MediaCard({ item, layout = 'poster', disableArtOverride = false }: MediaCardProps) {
+  const cardRef = useRef<HTMLButtonElement>(null)
+  const [isVisible, setIsVisible] = useState(false)
+
+  // IntersectionObserver: only mark visible once, with 200px preload margin
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '200px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
   const [imgError, setImgError] = useState(false)
@@ -104,6 +123,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
   }, [item.id, item.imdbId, item.tmdbId, item.tvdbId, item.malId, item.anilistId, item.type, item.season, item.episode, watchedCheckmarkSources, watchProgress])
 
   useEffect(() => {
+    if (!isVisible) return
     if (layout !== 'landscape' || displayItem.backdrop) return
     const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
     if (!tmdbId) return
@@ -115,9 +135,10 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
       })
       .catch(() => undefined)
     return () => { cancelled = true }
-  }, [layout, displayItem.id, displayItem.tmdbId, displayItem.type])
+  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.type, displayItem.backdrop])
 
   useEffect(() => {
+    if (!isVisible) return
     let cancelled = false
     const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
@@ -144,7 +165,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
       })()
     }
     return () => { cancelled = true }
-  }, [layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
+  }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
 
   const landscapeBackdrop = resolvedBackdrop || displayItem.backdrop
 
@@ -155,8 +176,13 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
   }, [item, showContextMenu])
 
   const handleClick = () => {
-    addRecentlyWatched(displayItem)
+    try {
+      addRecentlyWatched(displayItem)
+    } catch (e) {
+      console.error('[MediaCard] addRecentlyWatched failed:', e, displayItem)
+    }
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
+    console.log('[MediaCard] navigating to', path, 'item:', item.id, item.title)
     navigate(path, {
       state: {
         poster: resolvedPoster || displayItem.poster,
@@ -181,6 +207,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
   if (layout === 'landscape') {
     return (
       <button
+        ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
@@ -259,6 +286,7 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
 
   return (
     <button
+      ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       className={`flex-shrink-0 group cursor-pointer focus-ring transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
@@ -330,3 +358,5 @@ export default function MediaCard({ item, layout = 'poster', disableArtOverride 
     </button>
   )
 }
+
+export default React.memo(MediaCard)

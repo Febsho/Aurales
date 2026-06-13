@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applySearchResultArt } from '../services/artwork'
@@ -7,9 +7,10 @@ import { Button } from './ui'
 
 interface HeroSectionProps {
   items: SearchResult[]
+  isSmall?: boolean
 }
 
-export default function HeroSection({ items }: HeroSectionProps) {
+function HeroSection({ items, isSmall = false }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
   const [logoError, setLogoError] = useState(false)
@@ -57,39 +58,44 @@ export default function HeroSection({ items }: HeroSectionProps) {
 
   return (
     <div
-      className="relative w-full overflow-hidden select-none group"
-      style={{ height: 'clamp(500px, 70vh, 850px)' }}
+      className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      style={isSmall ? { height: '380px' } : { height: 'clamp(550px, calc(100vh - 270px), 1200px)' }}
     >
-      {/* Backdrop slides */}
-      {displayItems.map((itm, i) => (
-        <div
-          key={`${itm.id ?? i}-${i}`}
-          className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
-          style={{ opacity: i === activeIndex ? 1 : 0, pointerEvents: 'none' }}
-        >
-          {itm.backdrop ? (
-            <img
-              src={itm.backdrop}
-              alt=""
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ objectPosition: 'center 20%' }}
-              draggable={false}
-            />
-          ) : itm.poster ? (
-            <>
+      {/* Backdrop slides — only render adjacent slides for performance */}
+      {displayItems.map((itm, i) => {
+        const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
+        if (!isAdjacentSlide) return null
+        return (
+          <div
+            key={`${itm.id ?? i}-${i}`}
+            className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
+            style={{ opacity: i === activeIndex ? 1 : 0, pointerEvents: 'none' }}
+          >
+            {itm.backdrop ? (
               <img
-                src={itm.poster}
+                src={itm.backdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
                 alt=""
-                className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
+                className="absolute inset-0 w-full h-full object-cover"
+                style={{ objectPosition: 'center 20%' }}
                 draggable={false}
+                loading={i === activeIndex ? 'eager' : 'lazy'}
               />
-              <div className="absolute inset-0 bg-black/50" />
-            </>
-          ) : (
-            <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
-          )}
-        </div>
-      ))}
+            ) : itm.poster ? (
+              <>
+                <img
+                  src={itm.poster}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
+                  draggable={false}
+                />
+                <div className="absolute inset-0 bg-black/50" />
+              </>
+            ) : (
+              <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+            )}
+          </div>
+        )
+      })}
 
       {/* Cinematic gradients — heavier bottom fade */}
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
@@ -100,7 +106,7 @@ export default function HeroSection({ items }: HeroSectionProps) {
         <>
           <button
             onClick={() => goTo(activeIndex - 1)}
-            className="absolute left-6 top-1/2 -translate-y-1/2 z-20 w-11 h-11 rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer"
+            className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
             aria-label="Previous"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -109,7 +115,7 @@ export default function HeroSection({ items }: HeroSectionProps) {
           </button>
           <button
             onClick={() => goTo(activeIndex + 1)}
-            className="absolute right-6 top-1/2 -translate-y-1/2 z-20 w-11 h-11 rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer"
+            className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
             aria-label="Next"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -119,10 +125,10 @@ export default function HeroSection({ items }: HeroSectionProps) {
         </>
       )}
 
-      {/* Content — bottom-left, generous padding for sidebar clearance */}
-      <div className="absolute bottom-0 left-0 right-0 z-10 px-10 pb-12">
+      {/* Content — bottom-left */}
+      <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-12'}`}>
         {/* Meta badges */}
-        <div className="flex items-center gap-2.5 mb-3">
+        <div className={`flex items-center gap-2.5 ${isSmall ? 'mb-2' : 'mb-3'}`}>
           {item.type && (
             <span className="px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-[0.15em] bg-white/10 text-white/80 border border-white/10">
               {item.type}
@@ -140,17 +146,17 @@ export default function HeroSection({ items }: HeroSectionProps) {
         </div>
 
         {/* Title */}
-        <div className="mb-4 min-h-[60px] flex items-end">
+        <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-4 min-h-[60px]'} flex items-end`}>
           {item.logo && !logoError ? (
             <img
               src={item.logo}
               alt={item.title}
-              className="max-h-[110px] md:max-h-[140px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+              className={`${isSmall ? 'max-h-[65px]' : 'max-h-[110px] md:max-h-[140px]'} max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
               onError={() => setLogoError(true)}
               draggable={false}
             />
           ) : (
-            <h1 className="text-6xl font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl">
+            <h1 className={`${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
               {item.title}
             </h1>
           )}
@@ -161,12 +167,12 @@ export default function HeroSection({ items }: HeroSectionProps) {
           imdbId={item.imdbId}
           tmdbId={item.tmdbId}
           tvdbId={item.tvdbId}
-          className="mb-4"
+          className={isSmall ? 'mb-2.5' : 'mb-4'}
         />
 
         {/* Overview */}
         {item.overview && (
-          <p className="text-[15px] text-white/55 line-clamp-2 mb-6 leading-relaxed max-w-xl">
+          <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-4' : 'text-[15px] line-clamp-2 mb-6'}`}>
             {item.overview}
           </p>
         )}
@@ -175,7 +181,7 @@ export default function HeroSection({ items }: HeroSectionProps) {
         <div className="flex items-center gap-3">
           <Button
             variant="white"
-            size="lg"
+            size={isSmall ? 'md' : 'lg'}
             onClick={nav}
             icon={
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -185,7 +191,7 @@ export default function HeroSection({ items }: HeroSectionProps) {
           >
             Play
           </Button>
-          <Button variant="glass" size="lg" onClick={nav}>
+          <Button variant="glass" size={isSmall ? 'md' : 'lg'} onClick={nav}>
             More Info
           </Button>
 
@@ -211,3 +217,5 @@ export default function HeroSection({ items }: HeroSectionProps) {
     </div>
   )
 }
+
+export default React.memo(HeroSection)

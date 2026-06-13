@@ -2,7 +2,17 @@ import type { MovieDetails, SearchResult, ShowDetails } from '../../types'
 import type { AddonMediaInput, AnimeTitleLanguage, AppMediaItem, AppSeason, MediaKind } from './types'
 
 const numberId = (value: unknown): number | undefined => {
-  const parsed = Number(String(value ?? '').replace(/^[a-z]+-/i, ''))
+  if (value === null || value === undefined) return undefined
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const nested = obj.id ?? obj.value ?? obj.tmdbId ?? obj.tvdbId ?? obj.anilistId ?? obj.malId
+    return nested !== undefined ? numberId(nested) : undefined
+  }
+  const str = String(value).trim()
+  if (str === '[object Object]' || str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') {
+    return undefined
+  }
+  const parsed = Number(str.replace(/^[a-z]+-/i, ''))
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 

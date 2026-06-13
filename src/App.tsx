@@ -1,19 +1,20 @@
-import { useEffect } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import Layout from './components/Layout'
-import HomePage from './pages/HomePage'
-import SearchPage from './pages/SearchPage'
-import MovieDetailPage from './pages/MovieDetailPage'
-import SeriesDetailPage from './pages/SeriesDetailPage'
-import SettingsPage from './pages/SettingsPage'
-import DeveloperPage from './pages/DeveloperPage'
-import CatalogPage from './pages/CatalogPage'
-import HomeEditorPage from './pages/HomeEditorPage'
-import CollectionsPage from './pages/CollectionsPage'
-import DiscoverPage from './pages/DiscoverPage'
 import { useAppStore } from './stores/appStore'
 import { syncAddonsFromStore } from './services/addons'
 import { setDiscordActivity, clearDiscordActivity } from './services/discord'
+
+const HomePage = lazy(() => import('./pages/HomePage'))
+const SearchPage = lazy(() => import('./pages/SearchPage'))
+const MovieDetailPage = lazy(() => import('./pages/MovieDetailPage'))
+const SeriesDetailPage = lazy(() => import('./pages/SeriesDetailPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const DeveloperPage = lazy(() => import('./pages/DeveloperPage'))
+const CatalogPage = lazy(() => import('./pages/CatalogPage'))
+const HomeEditorPage = lazy(() => import('./pages/HomeEditorPage'))
+const CollectionsPage = lazy(() => import('./pages/CollectionsPage'))
+const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 
 export default function App() {
   const addons = useAppStore((s) => s.addons)
@@ -68,19 +69,21 @@ export default function App() {
   }, [location.pathname, defaultStartPage, navigate])
 
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/movie/:id" element={<MovieDetailPage />} />
-        <Route path="/series/:id" element={<SeriesDetailPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/developer" element={<DeveloperPage />} />
-        <Route path="/discover" element={<DiscoverPage />} />
-        <Route path="/catalog/:rowId" element={<CatalogPage />} />
-        <Route path="/home-editor" element={<HomeEditorPage />} />
-        <Route path="/collections" element={<CollectionsPage />} />
-      </Route>
-    </Routes>
+    <Suspense fallback={<div className="flex items-center justify-center h-screen bg-black" />}>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/movie/:id" element={<MovieDetailPage />} />
+          <Route path="/series/:id" element={<SeriesDetailPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/developer" element={<DeveloperPage />} />
+          <Route path="/discover" element={<DiscoverPage />} />
+          <Route path="/catalog/:rowId" element={<CatalogPage />} />
+          <Route path="/home-editor" element={<HomeEditorPage />} />
+          <Route path="/collections" element={<CollectionsPage />} />
+        </Route>
+      </Routes>
+    </Suspense>
   )
 }
