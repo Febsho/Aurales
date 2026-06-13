@@ -3,7 +3,8 @@ import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatch
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
-import { getAniListWatched } from './anilist'
+import { getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } from './anilist'
+import { mapTvdbEpisodeToAniList } from './animeLists'
 
 export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
 
@@ -17,6 +18,7 @@ export interface WatchedLookupItem {
   anilistId?: string | number
   season?: number
   episode?: number
+  absoluteEpisode?: number
   isAnime?: boolean
   appSeasonEpCounts?: { season: number; count: number }[]
 }
@@ -25,11 +27,15 @@ interface WatchedCache {
   trakt?: { at: number; movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
   simkl?: { at: number; items: SimklWatchlistItem[] }
   pmdb?: { at: number; items: PMDBWatchedItem[] }
-  anilist?: { at: number; items: any[] }
+  anilist?: never
 }
 
-const CACHE_TTL = 5 * 60 * 1000
+const CACHE_TTL = 2 * 60 * 1000
+const PMDB_PERSISTENT_CACHE_KEY = 'pmdb_watched_status_cache_v2'
 const cache: WatchedCache = {}
+let traktPending: Promise<NonNullable<WatchedCache['trakt']>> | null = null
+let simklPending: Promise<NonNullable<WatchedCache['simkl']>> | null = null
+let pmdbPending: Promise<{ at: number; items: PMDBWatchedItem[] }> | null = null
 
 export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
   return {
@@ -92,12 +98,34 @@ export async function isWatchedFromProviders(
 async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   if (item.type !== 'series') return false
   try {
-    const data = await getAniListCache()
-    return data.items.some((entry) => {
-      const media = entry.media
-      if (!media) return false
-      return sameNumber(item.anilistId, media.id) || sameNumber(item.malId, media.idMal)
-    })
+    if (item.episode == null) {
+      const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
+      if (!mediaId) return false
+      const entries = await getAniListTrackedProgress()
+      return entries.some((entry) => entry.mediaId === mediaId && entry.progress > 0)
+    }
+
+    let anilistId = item.anilistId
+    let progressEpisode = item.absoluteEpisode ?? item.episode
+
+    if (item.tvdbId != null && item.season != null && item.episode != null) {
+      const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
+      if (Number.isFinite(tvdbId)) {
+        const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
+        if (mapped) {
+          anilistId = mapped.anilistId
+          progressEpisode = mapped.absoluteEpisode
+        }
+      }
+    }
+
+    const entry = await getAniListProgress(
+      anilistId != null ? Number(anilistId) : undefined,
+      item.malId != null ? Number(item.malId) : undefined,
+    )
+    if (!entry) return false
+    if (item.episode == null) return entry.progress > 0
+    return progressEpisode != null && entry.progress >= progressEpisode
   } catch {
     return false
   }
@@ -167,8 +195,11 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
       if (!matchesFlatIds(item, entry)) return false
       if (item.type === 'movie') return true
       if (item.season == null || item.episode == null) return true
-      if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return true
-      return entry.watchedEpisodes.some((episode) => episode.season === item.season && episode.episode === item.episode)
+      if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return false
+      return entry.watchedEpisodes.some((episode) =>
+        (episode.season === item.season && episode.episode === item.episode) ||
+        (item.isAnime && item.absoluteEpisode != null && episode.season === 1 && episode.episode === item.absoluteEpisode)
+      )
     })
   } catch {
     return false
@@ -184,7 +215,10 @@ async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
       if (!sameNumber(item.tmdbId, entry.tmdb_id)) return false
       if (item.type === 'movie') return true
       if (item.season == null || item.episode == null) return true
-      return entry.season === item.season && entry.episode === item.episode
+      return (
+        (entry.season === item.season && entry.episode === item.episode) ||
+        (item.isAnime && item.absoluteEpisode != null && entry.season === 1 && entry.episode === item.absoluteEpisode)
+      )
     })
   } catch {
     return false
@@ -194,33 +228,54 @@ async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
 async function getTraktCache() {
   const now = Date.now()
   if (cache.trakt && now - cache.trakt.at < CACHE_TTL) return cache.trakt
-  const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
-  cache.trakt = { at: now, movies, shows }
-  return cache.trakt
+  if (!traktPending) {
+    traktPending = Promise.all([getWatchedMovies(), getWatchedShows()])
+      .then(([movies, shows]) => {
+        cache.trakt = { at: Date.now(), movies, shows }
+        return cache.trakt
+      })
+      .finally(() => { traktPending = null })
+  }
+  return traktPending
 }
 
 async function getSimklCache() {
   const now = Date.now()
   if (cache.simkl && now - cache.simkl.at < CACHE_TTL) return cache.simkl
-  const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
-  cache.simkl = { at: now, items: [...movies, ...episodes] }
-  return cache.simkl
+  if (!simklPending) {
+    simklPending = Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
+      .then(([movies, episodes]) => {
+        cache.simkl = { at: Date.now(), items: [...movies, ...episodes] }
+        return cache.simkl
+      })
+      .finally(() => { simklPending = null })
+  }
+  return simklPending
 }
 
 async function getPmdbCache() {
   const now = Date.now()
   if (cache.pmdb && now - cache.pmdb.at < CACHE_TTL) return cache.pmdb
-  const items = await getPMDBWatched()
-  cache.pmdb = { at: now, items }
-  return cache.pmdb
-}
-
-async function getAniListCache() {
-  const now = Date.now()
-  if (cache.anilist && now - cache.anilist.at < CACHE_TTL) return cache.anilist
-  const items = await getAniListWatched()
-  cache.anilist = { at: now, items }
-  return cache.anilist
+  if (!cache.pmdb) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(PMDB_PERSISTENT_CACHE_KEY) || 'null') as { at?: number; items?: PMDBWatchedItem[] } | null
+      if (stored && Array.isArray(stored.items)) cache.pmdb = { at: Number(stored.at) || 0, items: stored.items }
+    } catch { /* ignore invalid cache */ }
+  }
+  if (cache.pmdb && now - cache.pmdb.at < CACHE_TTL) return cache.pmdb
+  if (!pmdbPending) {
+    pmdbPending = getPMDBWatched().then((items) => {
+      const next = { at: Date.now(), items }
+      cache.pmdb = next
+      try { localStorage.setItem(PMDB_PERSISTENT_CACHE_KEY, JSON.stringify(next)) } catch { /* memory cache still works */ }
+      return next
+    }).finally(() => { pmdbPending = null })
+  }
+  if (cache.pmdb?.items.length) {
+    void pmdbPending
+    return cache.pmdb
+  }
+  return pmdbPending
 }
 
 function normalizedIds(item: WatchedLookupItem): string[] {
@@ -238,11 +293,12 @@ function matchesIds(item: WatchedLookupItem, ids?: Record<string, unknown>): boo
   )
 }
 
-function matchesFlatIds(item: WatchedLookupItem, ids: { imdbId?: unknown; tmdbId?: unknown; tvdbId?: unknown }): boolean {
+function matchesFlatIds(item: WatchedLookupItem, ids: { imdbId?: unknown; tmdbId?: unknown; tvdbId?: unknown; malId?: unknown }): boolean {
   return (
     sameString(item.imdbId, ids.imdbId) ||
     sameNumber(item.tmdbId, ids.tmdbId) ||
-    sameNumber(item.tvdbId, ids.tvdbId)
+    sameNumber(item.tvdbId, ids.tvdbId) ||
+    sameNumber(item.malId, ids.malId)
   )
 }
 

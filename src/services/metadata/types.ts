@@ -111,6 +111,8 @@ export interface AppMediaItem {
   sourceMetadataProvider: 'tmdb' | 'tvdb' | 'anilist' | 'fallback_addon'
   sourceAddonId?: string
   sourceAddonItemId?: string
+  animeResolverVersion?: number
+  animeSettingsSignature?: string
   updatedAt: string
 }
 

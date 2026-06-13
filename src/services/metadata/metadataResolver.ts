@@ -9,11 +9,22 @@ import type { AddonMediaInput, AppMediaItem } from './types'
 import type { SearchResult } from '../../types'
 
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
-const ANIME_RESOLVER_VERSION = 5
-const ANIME_VERSION_KEY = 'orynt_anime_resolver_version'
+const ANIME_RESOLVER_VERSION = 6
+
+function animeSettingsSignature(): string {
+  const settings = useAppStore.getState()
+  return [
+    settings.hideUnairedAnimeSeasons,
+    settings.hideUnairedAnimeEpisodes,
+    settings.includeAnimeSpecials,
+    settings.useGenericAnimeSeasonLabels,
+    settings.avoidJapaneseSeasonNames,
+    settings.preferTvdbAnimeSeasons,
+  ].map(Number).join('')
+}
 
 const pending = new Map<string, Promise<AppMediaItem>>()
-const cacheKey = (input: AddonMediaInput) => `${input.addonId}:${input.id || input.imdbId || input.tmdbId || input.tvdbId || input.title}`
+const cacheKey = (input: AddonMediaInput) => `${animeSettingsSignature()}:${input.addonId}:${input.id || input.imdbId || input.tmdbId || input.tvdbId || input.title}`
 
 export async function getAppMetadataByIds(ids: {
   id?: string
@@ -137,9 +148,9 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
         const parsed = JSON.parse(cached) as AppMediaItem
         // Invalidate stale anime cache if resolver version has changed
         if (parsed.type === 'anime') {
-          const cachedVersion = parseInt(localStorage.getItem(ANIME_VERSION_KEY) || '0', 10)
-          if (cachedVersion < ANIME_RESOLVER_VERSION) {
-            console.log('[metadata] Anime cache stale (version', cachedVersion, '< ', ANIME_RESOLVER_VERSION, '), re-resolving:', input.id)
+          const activeSettings = animeSettingsSignature()
+          if (parsed.animeResolverVersion !== ANIME_RESOLVER_VERSION || parsed.animeSettingsSignature !== activeSettings) {
+            console.log('[metadata] Anime cache stale, re-resolving:', input.id)
             await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
           } else {
             return parsed
@@ -183,8 +194,8 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
       item = addonFallback({ ...input, ...ids }, kind)
     }
     if (item && item.type === 'anime') {
-      localStorage.setItem(ANIME_VERSION_KEY, String(ANIME_RESOLVER_VERSION))
-
+      item.animeResolverVersion = ANIME_RESOLVER_VERSION
+      item.animeSettingsSignature = animeSettingsSignature()
     }
     await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
       addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
@@ -201,7 +212,6 @@ export async function clearAppMetadataCache(): Promise<void> {
 
 export async function clearAnimeMetadataCache(): Promise<void> {
   pending.clear()
-  localStorage.removeItem(ANIME_VERSION_KEY)
   // Clear all TVDB season caches from localStorage
   const keysToRemove: string[] = []
   for (let i = 0; i < localStorage.length; i++) {

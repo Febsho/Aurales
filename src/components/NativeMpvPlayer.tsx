@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
+import { getTmdbApiKey } from '../services/apiKeys'
 import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -143,8 +144,7 @@ async function fetchNextEpisodeFromTmdb(
   season: number,
   episode: number
 ): Promise<NextEpInfo | null> {
-  const apiKey = localStorage.getItem('tmdb_api_key') || ''
-  if (!apiKey) return null
+  const apiKey = getTmdbApiKey()
 
   const tryFetch = async (s: number, e: number): Promise<NextEpInfo | null> => {
     try {
@@ -423,7 +423,7 @@ function IsolatedNativeMpvPlayer({ url, title, startTime, onClose, onPickAnother
       <div className="absolute inset-0 flex items-center justify-center px-8 text-center">
         <div>
           <p className="text-lg font-semibold">Isolated playback is running in a separate mpv window.</p>
-          <p className="mt-2 text-sm text-white/55">Use mpv's native controls. Orynt IPC and window hooks are disabled.</p>
+          <p className="mt-2 text-sm text-white/55">Use mpv's native controls. Aurales IPC and window hooks are disabled.</p>
           <p className="mt-4 text-xs text-white/35">Hardware decoding: {hwdecMode}</p>
         </div>
       </div>
@@ -787,8 +787,8 @@ function FullNativeMpvPlayer({
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${openrouterApiKey}`,
-            'HTTP-Referer': 'https://github.com/itsrenoria/orynt',
-            'X-Title': 'Orynt Media Player',
+            'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
+            'X-Title': 'Aurales Media Player',
           },
           body: JSON.stringify({
             model: openrouterModel || 'google/gemini-2.5-flash',
@@ -1211,8 +1211,8 @@ function FullNativeMpvPlayer({
     setDiscordActivity({
       details,
       state,
-      largeImage: posterUrl || 'orynt_logo',
-      largeText: title || 'Orynt',
+      largeImage: posterUrl || 'aurales_logo',
+      largeText: title || 'Aurales',
       smallImage: paused ? 'paused' : 'playing',
       smallText: paused ? 'Paused' : 'Playing',
       startTimestamp: startTs,
@@ -1240,8 +1240,8 @@ function FullNativeMpvPlayer({
         state: isEpisodic
           ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0}`
           : playbackItem?.mediaType === 'movie' ? 'Watching' : undefined,
-        largeImage: posterUrl || 'orynt_logo',
-        largeText: title || 'Orynt',
+        largeImage: posterUrl || 'aurales_logo',
+        largeText: title || 'Aurales',
         smallImage: 'playing',
         smallText: 'Playing',
         startTimestamp: nowSec - Math.floor(cur),

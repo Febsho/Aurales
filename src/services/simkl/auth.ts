@@ -90,13 +90,13 @@ export async function startSimklLogin(): Promise<SimklAccount> {
   return completeSimklLogin('')
 }
 
-/** @deprecated Orynt now uses the Simkl PIN flow, not OAuth callbacks. */
+/** @deprecated Aurales now uses the Simkl PIN flow, not OAuth callbacks. */
 export async function handleSimklCallback(code: string): Promise<void> {
   const account = await completeSimklLogin(code)
   saveSimklAccount(account)
 }
 
-/** @deprecated Orynt now uses the Simkl PIN flow, not authorization-code exchange. */
+/** @deprecated Aurales now uses the Simkl PIN flow, not authorization-code exchange. */
 export async function exchangeSimklCodeForToken(code: string): Promise<SimklToken> {
   if (isSimklMockMode()) return mockToken()
   const config = await getSimklConfig()
@@ -202,7 +202,7 @@ export function getSimklConnectionStatus(): SimklConnectionStatus {
 async function fetchSimklAccount(accessToken: string, clientId: string): Promise<SimklAccount> {
   const params = new URLSearchParams({
     client_id: clientId,
-    'app-name': 'Orynt',
+    'app-name': 'Aurales',
     'app-version': '0.1.0',
   })
   const res = await fetch(`${SIMKL_API_BASE}/users/settings?${params.toString()}`, {

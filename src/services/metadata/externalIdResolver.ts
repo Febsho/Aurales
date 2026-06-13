@@ -1,5 +1,6 @@
 import { resolveAnimeIds } from '../animeLists'
 import { resolveImdbId, tmdbFindByExternalId } from '../metadataEnrich'
+import { getTvdbIdFromTmdb } from '../tmdb'
 import type { AddonMediaInput, MediaKind, ResolvedExternalIds } from './types'
 
 export async function resolveExternalIds(input: AddonMediaInput, kind: MediaKind): Promise<ResolvedExternalIds> {
@@ -14,6 +15,9 @@ export async function resolveExternalIds(input: AddonMediaInput, kind: MediaKind
       ids.anilistId ||= anime.anilistId
       ids.malId ||= anime.malId
     }
+  }
+  if (kind !== 'movie' && !ids.tvdbId && ids.tmdbId) {
+    ids.tvdbId = await getTvdbIdFromTmdb(ids.tmdbId).catch(() => undefined)
   }
   if (!ids.imdbId && (ids.tmdbId || ids.tvdbId)) {
     ids.imdbId = await resolveImdbId({ tmdbId: ids.tmdbId, tvdbId: ids.tvdbId, anilistId: ids.anilistId, malId: ids.malId }, kind === 'movie' ? 'movie' : 'series').catch(() => null) || undefined

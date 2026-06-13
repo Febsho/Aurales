@@ -43,7 +43,7 @@ import {
 } from '../services/tmdb'
 import { MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { ANILIST_LIST_SOURCES } from '../services/anilist'
-import { getAvailablePmdbListSources, getAvailableTraktListSources, getProviderListItems, PMDB_LIST_SOURCES, TRAKT_LIST_SOURCES } from '../services/providerLists'
+import { canonicalizeCatalogItemsWithTvdb, getAvailablePmdbListSources, getAvailablePmdbPickSources, getAvailableTraktListSources, getProviderListItems, PMDB_LIST_SOURCES, TRAKT_LIST_SOURCES } from '../services/providerLists'
 import {
   DndContext,
   closestCenter,
@@ -84,7 +84,7 @@ const ANILIST_WIDGET_LISTS = ANILIST_LIST_SOURCES.map((list) => ({ id: list.id, 
 // ── Poster fetching ────────────────────────────────────────────────────────────
 
 async function fetchSimklPosters(listId: string): Promise<string[]> {
-  let items: { poster?: string | null }[] = []
+  let items: import('../services/simkl/types').SimklWatchlistItem[] = []
   switch (listId) {
     case 'watching':         items = await getSimklWatching(); break
     case 'plantowatch':
@@ -104,7 +104,20 @@ async function fetchSimklPosters(listId: string): Promise<string[]> {
     case 'shows-completed':  items = await getSimklShowsCompleted(); break
     default:                 items = await getSimklWatchlist()
   }
-  return items
+  const canonical = await canonicalizeCatalogItemsWithTvdb(items.map((item) => ({
+    id: item.tvdbId ? `tvdb-${item.tvdbId}` : item.imdbId || (item.tmdbId ? `tmdb-${item.tmdbId}` : item.id),
+    title: item.title,
+    type: item.type === 'movie' ? 'movie' as const : 'series' as const,
+    year: item.year,
+    poster: item.poster,
+    backdrop: item.backdrop,
+    provider: 'simkl',
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId,
+    tvdbId: item.tvdbId,
+    malId: item.malId,
+  })))
+  return canonical
     .slice(0, 4)
     .map((i) => i.poster || '')
     .filter(Boolean)
@@ -158,7 +171,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
           return
         }
 
-        if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'anilist') && row.providerListId) {
+        if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') && row.providerListId) {
           const items = await getProviderListItems(row)
           total = items.length
           urls = items.slice(0, 4).map((i) => i.poster || i.backdrop || '').filter(Boolean)
@@ -236,6 +249,7 @@ function shelfSourceLabel(row: HomeRowConfig): string {
   if (row.sourceType === 'trakt') return 'Trakt'
   if (row.sourceType === 'anilist') return 'AniList'
   if (row.sourceType === 'pmdb') return 'PMDB'
+  if (row.sourceType === 'pmdb-picks') return 'PMDB Picks'
   if (row.sourceType === 'discover') return 'Discover'
   if (row.addonId) return 'Addon'
   return 'Catalog'
@@ -257,6 +271,7 @@ function sourceColor(row: HomeRowConfig): string {
   if (row.sourceType === 'trakt') return 'bg-red-500/15 text-red-400'
   if (row.sourceType === 'anilist') return 'bg-sky-500/15 text-sky-400'
   if (row.sourceType === 'pmdb') return 'bg-purple-500/15 text-purple-300'
+  if (row.sourceType === 'pmdb-picks') return 'bg-fuchsia-500/15 text-fuchsia-300'
   if (row.sourceType === 'discover') return 'bg-amber-500/15 text-amber-400'
   if (row.layout === 'continue') return 'bg-accent/15 text-accent'
   return 'bg-white/[0.06] text-white/50'
@@ -461,15 +476,15 @@ function ProviderListPickerSection({
   onClose,
 }: {
   title: string
-  service: 'anilist' | 'trakt' | 'pmdb'
+  service: 'anilist' | 'trakt' | 'pmdb' | 'pmdb-picks'
   lists: { id: string; label: string; type: 'poster' | 'landscape' }[]
   isAlreadyAdded: (key: string) => boolean
   onAdd: (row: Omit<HomeRowConfig, 'id' | 'order'>) => void
   onClose: () => void
 }) {
-  const label = service === 'anilist' ? 'AniList' : service === 'pmdb' ? 'PMDB' : 'Trakt'
-  const borderColor = service === 'anilist' ? 'border-l-[#3b82f6]' : service === 'pmdb' ? 'border-l-[#a855f7]' : 'border-l-[#ef4444]'
-  const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#3b82f6]' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#a855f7]' : 'bg-[#ef4444]/15 text-[#ef4444]'
+  const label = service === 'anilist' ? 'AniList' : service === 'pmdb' ? 'PMDB' : service === 'pmdb-picks' ? 'PMDB Picks' : 'Trakt'
+  const borderColor = service === 'anilist' ? 'border-l-[#3b82f6]' : service === 'pmdb' ? 'border-l-[#a855f7]' : service === 'pmdb-picks' ? 'border-l-[#d946ef]' : 'border-l-[#ef4444]'
+  const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#3b82f6]' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#a855f7]' : service === 'pmdb-picks' ? 'bg-[#d946ef]/15 text-[#d946ef]' : 'bg-[#ef4444]/15 text-[#ef4444]'
   return (
     <div className="space-y-1.5">
       {lists.map((list) => {
@@ -488,22 +503,24 @@ function ProviderListPickerSection({
               })
               onClose()
             }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${borderColor} transition-colors text-left ${
-              added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+            className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${borderColor} transition-all text-left ${
+              added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
             }`}
           >
-            <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${badgeBg}`}>
-              <span className="text-[10px] font-black">{label[0]}</span>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${badgeBg}`}>
+              <span className="text-[11px] font-black">{label[0]}</span>
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-              <p className="text-[10px] text-white/25">{list.type} layout</p>
+              <p className="text-[10px] text-white/25 mt-0.5">{list.type} layout</p>
             </div>
-            {added && (
-              <div className="flex items-center gap-1 flex-shrink-0">
+            {added ? (
+              <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                 <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
               </div>
+            ) : (
+              <svg className="w-4 h-4 text-white/15 group-hover:text-white/30 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
             )}
           </button>
         )
@@ -532,7 +549,7 @@ function AddWidgetOverlay({
   const [mode, setMode] = useState<'preset' | 'discover'>('preset')
   const [search, setSearch] = useState('')
   const [editLayout, setEditLayout] = useState<'poster' | 'landscape' | 'list' | 'continue' | 'hero'>('poster')
-  const [selectedSourceFilter, setSelectedSourceFilter] = useState<'all' | 'builtin' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb'>('all')
+  const [selectedSourceFilter, setSelectedSourceFilter] = useState<'all' | 'builtin' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks'>('all')
   const [discoverTab, setDiscoverTab] = useState<'setup' | 'filters' | 'streaming' | 'people' | 'ranges'>('setup')
 
   // ─── Standard Presets State ───
@@ -551,7 +568,7 @@ function AddWidgetOverlay({
 
   const isAlreadyAdded = useCallback((key: string) =>
     homeRows.some((r) => {
-      if (r.sourceType === 'simkl' || r.sourceType === 'trakt' || r.sourceType === 'pmdb' || r.sourceType === 'anilist') return `${r.sourceType}:${r.providerListId}` === key
+      if (r.sourceType === 'simkl' || r.sourceType === 'trakt' || r.sourceType === 'pmdb' || r.sourceType === 'pmdb-picks' || r.sourceType === 'anilist') return `${r.sourceType}:${r.providerListId}` === key
       return `${r.addonId}::${r.catalogType}::${r.catalogId}` === key
     }), [homeRows])
 
@@ -561,6 +578,7 @@ function AddWidgetOverlay({
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const [traktLists, setTraktLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(TRAKT_LIST_SOURCES)
   const [pmdbLists, setPmdbLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(PMDB_LIST_SOURCES)
+  const [pmdbPicks, setPmdbPicks] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
 
   useEffect(() => {
     if (traktConnected) getAvailableTraktListSources().then(setTraktLists).catch(() => setTraktLists(TRAKT_LIST_SOURCES))
@@ -568,6 +586,11 @@ function AddWidgetOverlay({
 
   useEffect(() => {
     if (pmdbApiKey) getAvailablePmdbListSources().then(setPmdbLists).catch(() => setPmdbLists(PMDB_LIST_SOURCES))
+  }, [pmdbApiKey])
+
+  useEffect(() => {
+    if (pmdbApiKey) getAvailablePmdbPickSources().then(setPmdbPicks).catch(() => setPmdbPicks([]))
+    else setPmdbPicks([])
   }, [pmdbApiKey])
 
   const filteredPmdbAddonCatalogs = useMemo(() => {
@@ -637,6 +660,12 @@ function AddWidgetOverlay({
     const q = search.toLowerCase()
     return pmdbLists.filter((l) => l.label.toLowerCase().includes(q))
   }, [search, pmdbLists])
+
+  const filteredPmdbPicks = useMemo(() => {
+    if (!search) return pmdbPicks
+    const q = search.toLowerCase()
+    return pmdbPicks.filter((pick) => pick.label.toLowerCase().includes(q))
+  }, [search, pmdbPicks])
 
   // ─── Build Your Catalog (Discover) Form State ───
   const [catalogName, setCatalogName] = useState('')
@@ -1128,6 +1157,7 @@ function AddWidgetOverlay({
     trakt: { bg: 'bg-[#ef4444]/15', text: 'text-[#ef4444]', border: 'border-l-[#ef4444]', dot: 'bg-[#ef4444]' },
     anilist: { bg: 'bg-[#3b82f6]/15', text: 'text-[#3b82f6]', border: 'border-l-[#3b82f6]', dot: 'bg-[#3b82f6]' },
     pmdb: { bg: 'bg-[#a855f7]/15', text: 'text-[#a855f7]', border: 'border-l-[#a855f7]', dot: 'bg-[#a855f7]' },
+    'pmdb-picks': { bg: 'bg-[#d946ef]/15', text: 'text-[#d946ef]', border: 'border-l-[#d946ef]', dot: 'bg-[#d946ef]' },
     builtin: { bg: 'bg-accent/15', text: 'text-accent', border: 'border-l-accent', dot: 'bg-accent' },
     addons: { bg: 'bg-orange-500/15', text: 'text-orange-400', border: 'border-l-orange-400', dot: 'bg-orange-400' },
   }
@@ -1173,33 +1203,45 @@ function AddWidgetOverlay({
   const styledInput = "w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/40 transition-colors"
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" onClick={onClose}>
       <div
-        className={`bg-[#0a0b0e] border border-white/[0.06] rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl transition-all duration-300 max-h-[85vh] ${
-          mode === 'discover' ? 'max-w-4xl' : 'max-w-2xl'
+        className={`bg-[#0c0d12] border border-white/[0.08] rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl shadow-black/50 transition-all duration-300 h-[min(800px,calc(100dvh-2rem))] ${
+          mode === 'discover' ? 'max-w-4xl' : 'max-w-3xl'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Accent line */}
+        <div className="h-px bg-gradient-to-r from-accent/0 via-accent/50 to-accent/0" />
+
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] bg-white/[0.01]">
-          <div>
-            <h2 className="text-base font-bold text-white tracking-tight">
-              {editingRow
-                ? editingRow.sourceType === 'discover'
-                  ? 'Edit Custom Catalog'
-                  : 'Edit Shelf Settings'
-                : 'Add to Home'}
-            </h2>
-            <p className="text-[11px] text-white/30 mt-0.5">
-              {editingRow
-                ? editingRow.sourceType === 'discover'
-                  ? 'Modify your discover catalog filters'
-                  : 'Rename or change layout'
-                : 'Browse catalogs or build a custom discover shelf'}
-            </p>
+        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.06] flex-shrink-0">
+          <div className="flex items-center gap-3.5">
+            <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/10 flex items-center justify-center flex-shrink-0">
+              {editingRow ? (
+                <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+              ) : (
+                <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
+              )}
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white tracking-tight">
+                {editingRow
+                  ? editingRow.sourceType === 'discover'
+                    ? 'Edit Custom Catalog'
+                    : 'Edit Shelf Settings'
+                  : 'Add to Home'}
+              </h2>
+              <p className="text-xs text-white/30 mt-0.5">
+                {editingRow
+                  ? editingRow.sourceType === 'discover'
+                    ? 'Modify your discover catalog filters'
+                    : 'Rename or change layout'
+                  : 'Browse catalogs or build a custom discover shelf'}
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-all text-white/30 hover:text-white/60 hover:rotate-90 duration-200 cursor-pointer">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
@@ -1207,21 +1249,27 @@ function AddWidgetOverlay({
 
         {/* Navigation Tabs */}
         {!editingRow && (
-          <div className="flex border-b border-white/[0.06] px-6 bg-white/[0.01]">
+          <div className="flex gap-2 px-5 sm:px-6 py-2.5 border-b border-white/[0.06] flex-shrink-0">
             <button
               onClick={() => setMode('preset')}
-              className={`px-4 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer ${
-                mode === 'preset' ? 'border-accent text-accent' : 'border-transparent text-white/30 hover:text-white/60'
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                mode === 'preset'
+                  ? 'bg-accent/15 text-accent border border-accent/20'
+                  : 'text-white/35 hover:bg-white/[0.04] hover:text-white/55 border border-transparent'
               }`}
             >
-              Add Standard Shelf
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+              Standard Shelf
             </button>
             <button
               onClick={() => setMode('discover')}
-              className={`px-4 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer ${
-                mode === 'discover' ? 'border-accent text-accent' : 'border-transparent text-white/30 hover:text-white/60'
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                mode === 'discover'
+                  ? 'bg-accent/15 text-accent border border-accent/20'
+                  : 'text-white/35 hover:bg-white/[0.04] hover:text-white/55 border border-transparent'
               }`}
             >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
               Build Your Catalog
             </button>
           </div>
@@ -1230,31 +1278,44 @@ function AddWidgetOverlay({
         {editingRow && editingRow.sourceType !== 'discover' ? (
           /* Simple Edit Form for standard shelf */
           <>
-            <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5" style={{ scrollbarWidth: 'thin' }}>
-              <div>
-                <label className="block text-[11px] text-white/40 mb-1.5 font-medium uppercase tracking-wider">Catalog Name</label>
-                <input
-                  value={catalogName}
-                  onChange={(e) => setCatalogName(e.target.value)}
-                  placeholder="Catalog Name"
-                  className={styledInput}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-white/40 mb-1.5 font-medium uppercase tracking-wider">Layout Style</label>
-                <select
-                  value={editLayout}
-                  onChange={(e) => setEditLayout(e.target.value as any)}
-                  className={styledSelect}
-                >
-                  <option value="poster" className="bg-[#0a0b0e]">Poster Carousel</option>
-                  <option value="landscape" className="bg-[#0a0b0e]">Landscape Carousel</option>
-                  <option value="list" className="bg-[#0a0b0e]">Compact List</option>
-                </select>
+            <div className="flex-1 overflow-y-auto px-6 py-8 space-y-6" style={{ scrollbarWidth: 'thin' }}>
+              <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
+                <div>
+                  <label className="block text-[11px] text-white/40 mb-2 font-medium uppercase tracking-wider">Catalog Name</label>
+                  <input
+                    value={catalogName}
+                    onChange={(e) => setCatalogName(e.target.value)}
+                    placeholder="Catalog Name"
+                    className={styledInput}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-white/40 mb-2 font-medium uppercase tracking-wider">Layout Style</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { value: 'poster', label: 'Poster', icon: 'M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z' },
+                      { value: 'landscape', label: 'Landscape', icon: 'M2 6h20v12H2z' },
+                      { value: 'list', label: 'Compact', icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setEditLayout(opt.value)}
+                        className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all cursor-pointer ${
+                          editLayout === opt.value
+                            ? 'bg-accent/15 border-accent/25 text-accent'
+                            : 'bg-white/[0.02] border-white/[0.06] text-white/30 hover:bg-white/[0.04] hover:text-white/50'
+                        }`}
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d={opt.icon} /></svg>
+                        <span className="text-[11px] font-semibold">{opt.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="px-6 py-4 border-t border-white/[0.06] bg-white/[0.01] flex items-center justify-end gap-3">
+            <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-end gap-3">
               <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer">
                 Cancel
               </button>
@@ -1271,6 +1332,7 @@ function AddWidgetOverlay({
             const showAniList = selectedSourceFilter === 'all' || selectedSourceFilter === 'anilist'
             const showTrakt = selectedSourceFilter === 'all' || selectedSourceFilter === 'trakt'
             const showPmdb = selectedSourceFilter === 'all' || selectedSourceFilter === 'pmdb'
+            const showPmdbPicks = selectedSourceFilter === 'all' || selectedSourceFilter === 'pmdb-picks'
 
             const builtinCount = (showBuiltin && (!search || 'continue watching'.includes(search.toLowerCase()))) ? 1 : 0
             const pmdbAddonCatalogsCount = (showPmdb || showAddons) ? filteredPmdbAddonCatalogs.length : 0
@@ -1279,43 +1341,51 @@ function AddWidgetOverlay({
             const aniListListsCount = (showAniList && anilistConnected) ? filteredAniListLists.length : 0
             const traktListsCount = (showTrakt && traktConnected) ? filteredTraktLists.length : 0
             const pmdbListsCount = (showPmdb && !!pmdbApiKey) ? filteredPmdbLists.length : 0
+            const pmdbPicksCount = (showPmdbPicks && !!pmdbApiKey) ? filteredPmdbPicks.length : 0
 
-            const totalVisible = builtinCount + pmdbAddonCatalogsCount + otherAddonCatalogsCount + simklListsCount + aniListListsCount + traktListsCount + pmdbListsCount
+            const totalVisible = builtinCount + pmdbAddonCatalogsCount + otherAddonCatalogsCount + simklListsCount + aniListListsCount + traktListsCount + pmdbListsCount + pmdbPicksCount
 
-            // Disconnected empty state helper
             const DisconnectedCard = ({ source, letter, name, desc }: { source: string; letter: string; name: string; desc: string }) => {
               const c = sourceColors[source] || sourceColors.builtin
               return (
-                <div className="flex flex-col items-center justify-center text-center py-10 px-6">
-                  <div className={`w-14 h-14 rounded-2xl ${c.bg} flex items-center justify-center mb-4`}>
-                    <span className={`text-xl font-black ${c.text}`}>{letter}</span>
+                <div className="flex flex-col items-center justify-center text-center py-14 px-8">
+                  <div className={`w-16 h-16 rounded-2xl ${c.bg} border border-white/[0.04] flex items-center justify-center mb-5`}>
+                    <span className={`text-2xl font-black ${c.text}`}>{letter}</span>
                   </div>
-                  <h4 className="text-sm font-semibold text-white mb-1">{name} not connected</h4>
-                  <p className="text-xs text-white/30 max-w-xs leading-relaxed">{desc}</p>
+                  <h4 className="text-sm font-semibold text-white mb-2">{name} not connected</h4>
+                  <p className="text-xs text-white/25 max-w-xs leading-relaxed">{desc}</p>
+                  <div className="mt-4 px-4 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-[11px] text-white/30 font-medium">
+                    Go to Settings &rarr; Accounts
+                  </div>
                 </div>
               )
             }
 
             return (
-              <>
+              <div className="flex-1 flex flex-col min-h-0">
                 {/* Search */}
-                <div className="px-6 py-3 border-b border-white/[0.06]">
+                <div className="px-5 sm:px-6 py-3 border-b border-white/[0.06] flex-shrink-0">
                   <div className="relative">
-                    <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/25" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                       <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                     </svg>
                     <input
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                       placeholder="Search catalogs and lists..."
-                      className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/30 transition-colors"
+                      className="w-full bg-white/[0.04] border border-white/[0.06] rounded-xl pl-10 pr-10 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/30 focus:bg-white/[0.05] transition-all"
                       autoFocus
                     />
+                    {search && (
+                      <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md bg-white/[0.08] hover:bg-white/[0.12] flex items-center justify-center text-white/30 hover:text-white/60 transition-all cursor-pointer">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {/* Source Filter Pills */}
-                <div className="px-6 py-2.5 border-b border-white/[0.06] flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+                {/* Source selector */}
+                <div className="px-5 sm:px-6 py-3 border-b border-white/[0.06] grid grid-cols-2 sm:grid-cols-4 gap-2 flex-shrink-0 bg-white/[0.01]">
                   {([
                     { id: 'all' as const, label: 'All', color: null, connected: undefined },
                     { id: 'builtin' as const, label: 'Built-in', color: sourceColors.builtin, connected: undefined },
@@ -1324,31 +1394,40 @@ function AddWidgetOverlay({
                     { id: 'trakt' as const, label: 'Trakt', color: sourceColors.trakt, connected: traktConnected },
                     { id: 'anilist' as const, label: 'AniList', color: sourceColors.anilist, connected: anilistConnected },
                     { id: 'pmdb' as const, label: 'PMDB', color: sourceColors.pmdb, connected: !!pmdbApiKey },
+                    { id: 'pmdb-picks' as const, label: 'PMDB Picks', color: sourceColors['pmdb-picks'], connected: !!pmdbApiKey },
                   ]).map((filter) => {
                     const active = selectedSourceFilter === filter.id
+                    const activeBg = filter.color ? `${filter.color.bg} ${filter.color.text}` : 'bg-accent/15 text-accent'
+                    const activeBorder = filter.color
+                      ? filter.id === 'simkl' ? 'border-[#0ea5e9]/25'
+                        : filter.id === 'trakt' ? 'border-[#ef4444]/25'
+                        : filter.id === 'anilist' ? 'border-[#3b82f6]/25'
+                        : filter.id === 'pmdb' ? 'border-[#a855f7]/25'
+                        : filter.id === 'pmdb-picks' ? 'border-[#d946ef]/25'
+                        : filter.id === 'addons' ? 'border-orange-400/25'
+                        : 'border-accent/20'
+                      : 'border-accent/20'
                     return (
                       <button
                         key={filter.id}
                         onClick={() => setSelectedSourceFilter(filter.id)}
-                        className={`h-8 flex items-center gap-1.5 px-3.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-shrink-0 ${
+                        className={`h-9 min-w-0 flex items-center justify-center gap-2 px-3 rounded-lg text-[11px] font-bold transition-all cursor-pointer border ${
                           active
-                            ? filter.color
-                              ? `${filter.color.bg} ${filter.color.text} border border-current/20`
-                              : 'bg-accent/15 text-accent border border-accent/20'
-                            : 'bg-white/[0.03] text-white/40 hover:bg-white/[0.06] hover:text-white/60 border border-transparent'
+                            ? `${activeBg} ${activeBorder}`
+                            : 'bg-white/[0.03] text-white/35 hover:bg-white/[0.06] hover:text-white/55 border-white/[0.04]'
                         }`}
                       >
                         {filter.connected !== undefined && (
-                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${filter.connected ? (filter.color?.dot || 'bg-emerald-400') : 'bg-white/20'}`} />
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${filter.connected ? (filter.color?.dot || 'bg-emerald-400') : 'bg-white/15'}`} />
                         )}
-                        {filter.label}
+                        <span className="truncate">{filter.label}</span>
                       </button>
                     )
                   })}
                 </div>
 
                 {/* Catalog List */}
-                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5" style={{ scrollbarWidth: 'thin' }}>
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-6 py-4 space-y-5" style={{ scrollbarWidth: 'thin', scrollbarGutter: 'stable' }}>
 
                   {/* Not-connected empty states -- shown only when that specific filter is selected */}
                   {selectedSourceFilter === 'simkl' && !simklConnected && (
@@ -1362,6 +1441,9 @@ function AddWidgetOverlay({
                   )}
                   {selectedSourceFilter === 'pmdb' && !pmdbApiKey && (
                     <DisconnectedCard source="pmdb" letter="P" name="PMDB" desc="Enter your PublicMetaDB API key in Settings > Accounts to access scrobble history and synced lists." />
+                  )}
+                  {selectedSourceFilter === 'pmdb-picks' && !pmdbApiKey && (
+                    <DisconnectedCard source="pmdb-picks" letter="P" name="PMDB Picks" desc="Enter your PublicMetaDB API key in Settings > Accounts to access your personalized pick catalogs." />
                   )}
                   {selectedSourceFilter === 'addons' && addons.length === 0 && (
                     <div className="flex flex-col items-center justify-center text-center py-10 px-6">
@@ -1378,9 +1460,9 @@ function AddWidgetOverlay({
                   {/* Built-in Section */}
                   {showBuiltin && builtinCount > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.builtin.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Built-in</h3>
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.builtin.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Built-in</h3>
                       </div>
                       {(() => {
                         const added = homeRows.some((r) => r.layout === 'continue')
@@ -1391,22 +1473,24 @@ function AddWidgetOverlay({
                               onAdd({ title: 'Continue Watching', layout: 'continue', enabled: true, sourceType: 'local' })
                               onClose()
                             }}
-                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.builtin.border} transition-colors text-left ${
-                              added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+                            className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.builtin.border} transition-all text-left ${
+                              added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
                             }`}
                           >
-                            <div className={`w-7 h-7 rounded-lg ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
-                              <svg className="w-3.5 h-3.5 text-accent" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                            <div className={`w-8 h-8 rounded-lg ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
+                              <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-white/80">Continue Watching</p>
-                              <p className="text-[10px] text-white/25">Resume where you left off</p>
+                              <p className="text-[10px] text-white/25 mt-0.5">Resume where you left off</p>
                             </div>
-                            {added && (
-                              <div className="flex items-center gap-1 flex-shrink-0">
+                            {added ? (
+                              <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                 <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
                               </div>
+                            ) : (
+                              <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
                             )}
                           </button>
                         )
@@ -1418,11 +1502,11 @@ function AddWidgetOverlay({
                   {(showPmdb || showAddons) && filteredPmdbAddonCatalogs.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.pmdb.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">PMDB Catalogs</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredPmdbAddonCatalogs.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.pmdb.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Catalogs</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbAddonCatalogs.length}</span>
                       </div>
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         {filteredPmdbAddonCatalogs.map((cat) => {
                           const key = `${cat.addonId}::${cat.catalogType}::${cat.catalogId}`
                           const added = isAlreadyAdded(key)
@@ -1443,26 +1527,28 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.pmdb.border} transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.pmdb.border} transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
                               }`}
                             >
-                              <div className={`w-7 h-7 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
-                                <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                              <div className={`w-8 h-8 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-[11px] font-black ${sourceColors.pmdb.text}`}>P</span>
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="text-[10px] text-white/20">{cat.addonName}</span>
+                                  <span className="text-[10px] text-white/25">{cat.addonName}</span>
                                   <span className="text-[10px] text-white/10">·</span>
-                                  <span className="text-[10px] text-white/20">{cat.catalogType}</span>
+                                  <span className="text-[10px] text-white/25">{cat.catalogType}</span>
                                 </div>
                               </div>
-                              {added && (
-                                <div className="flex items-center gap-1 flex-shrink-0">
+                              {added ? (
+                                <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                  <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
                                 </div>
+                              ) : (
+                                <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
                               )}
                             </button>
                           )
@@ -1475,11 +1561,11 @@ function AddWidgetOverlay({
                   {showAddons && filteredOtherAddonCatalogs.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.addons.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Addon Catalogs</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredOtherAddonCatalogs.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.addons.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Addon Catalogs</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredOtherAddonCatalogs.length}</span>
                       </div>
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         {filteredOtherAddonCatalogs.map((cat) => {
                           const key = `${cat.addonId}::${cat.catalogType}::${cat.catalogId}`
                           const added = isAlreadyAdded(key)
@@ -1500,28 +1586,30 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.addons.border} transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.addons.border} transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
                               }`}
                             >
-                              <div className={`w-7 h-7 rounded-lg ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
-                                <svg className="w-3.5 h-3.5 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                              <div className={`w-8 h-8 rounded-lg ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
+                                <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                                   <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                                 </svg>
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="text-[10px] text-white/20">{cat.addonName}</span>
+                                  <span className="text-[10px] text-white/25">{cat.addonName}</span>
                                   <span className="text-[10px] text-white/10">·</span>
-                                  <span className="text-[10px] text-white/20">{cat.catalogType}</span>
+                                  <span className="text-[10px] text-white/25">{cat.catalogType}</span>
                                 </div>
                               </div>
-                              {added && (
-                                <div className="flex items-center gap-1 flex-shrink-0">
+                              {added ? (
+                                <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                  <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
                                 </div>
+                              ) : (
+                                <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
                               )}
                             </button>
                           )
@@ -1534,11 +1622,11 @@ function AddWidgetOverlay({
                   {showSimkl && simklConnected && filteredSimklLists.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.simkl.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Simkl Lists</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredSimklLists.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.simkl.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Simkl Lists</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredSimklLists.length}</span>
                       </div>
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         {filteredSimklLists.map((list) => {
                           const added = isAlreadyAdded(`simkl:${list.id}`)
                           return (
@@ -1555,22 +1643,24 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-l-2 ${sourceColors.simkl.border} transition-colors text-left ${
-                                added ? 'bg-white/[0.02] opacity-40 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.simkl.border} transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
                               }`}
                             >
-                              <div className={`w-7 h-7 rounded-lg ${sourceColors.simkl.bg} flex items-center justify-center flex-shrink-0`}>
-                                <span className={`text-[10px] font-black ${sourceColors.simkl.text}`}>S</span>
+                              <div className={`w-8 h-8 rounded-lg ${sourceColors.simkl.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-[11px] font-black ${sourceColors.simkl.text}`}>S</span>
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-                                <p className="text-[10px] text-white/20">{list.type} layout</p>
+                                <p className="text-[10px] text-white/25 mt-0.5">{list.type} layout</p>
                               </div>
-                              {added && (
-                                <div className="flex items-center gap-1 flex-shrink-0">
+                              {added ? (
+                                <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/70 font-medium">Added</span>
+                                  <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
                                 </div>
+                              ) : (
+                                <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
                               )}
                             </button>
                           )
@@ -1583,9 +1673,9 @@ function AddWidgetOverlay({
                   {showAniList && anilistConnected && filteredAniListLists.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.anilist.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">AniList Lists</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredAniListLists.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.anilist.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">AniList Lists</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredAniListLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="AniList Lists"
@@ -1602,9 +1692,9 @@ function AddWidgetOverlay({
                   {showTrakt && traktConnected && filteredTraktLists.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.trakt.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Trakt Lists</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredTraktLists.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.trakt.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Trakt Lists</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredTraktLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="Trakt Lists"
@@ -1621,9 +1711,9 @@ function AddWidgetOverlay({
                   {showPmdb && !!pmdbApiKey && filteredPmdbLists.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1 h-4 rounded-full ${sourceColors.pmdb.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">PMDB Lists</h3>
-                        <span className="text-[10px] text-white/15 font-medium">{filteredPmdbLists.length}</span>
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.pmdb.dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Lists</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="PMDB Lists"
@@ -1636,54 +1726,86 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
+                  {/* PMDB Picks */}
+                  {showPmdbPicks && !!pmdbApiKey && filteredPmdbPicks.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-1.5 h-5 rounded-full ${sourceColors['pmdb-picks'].dot}`} />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Picks</h3>
+                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbPicks.length}</span>
+                      </div>
+                      <ProviderListPickerSection
+                        title="PMDB Picks"
+                        service="pmdb-picks"
+                        lists={filteredPmdbPicks.map((pick) => ({ id: pick.id, label: pick.label, type: pick.layout }))}
+                        isAlreadyAdded={isAlreadyAdded}
+                        onAdd={onAdd}
+                        onClose={onClose}
+                      />
+                    </div>
+                  )}
+
                   {/* Search empty state */}
                   {totalVisible === 0 && search && (
-                    <div className="flex flex-col items-center justify-center text-center py-12">
-                      <svg className="w-10 h-10 text-white/10 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                      </svg>
-                      <p className="text-sm text-white/25">No results for &ldquo;{search}&rdquo;</p>
+                    <div className="flex flex-col items-center justify-center text-center py-16">
+                      <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
+                        <svg className="w-6 h-6 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                      </div>
+                      <p className="text-sm text-white/30 font-medium">No results for &ldquo;{search}&rdquo;</p>
+                      <p className="text-xs text-white/15 mt-1">Try a different search term</p>
                     </div>
                   )}
 
                   {/* Nothing connected at all */}
                   {selectedSourceFilter === 'all' && addons.length === 0 && !simklConnected && !traktConnected && !anilistConnected && !pmdbApiKey && !search && (
-                    <div className="flex flex-col items-center justify-center text-center py-12">
-                      <svg className="w-10 h-10 text-white/8 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-                        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-                      </svg>
-                      <p className="text-sm text-white/25 mb-1">No services connected</p>
-                      <p className="text-[11px] text-white/15">Install addons or connect accounts in Settings</p>
+                    <div className="flex flex-col items-center justify-center text-center py-16">
+                      <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-5">
+                        <svg className="w-7 h-7 text-white/10" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                          <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+                          <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+                        </svg>
+                      </div>
+                      <p className="text-sm text-white/30 font-medium mb-1">No services connected</p>
+                      <p className="text-xs text-white/15 leading-relaxed max-w-xs">Install addons or connect accounts in Settings to start adding shelves</p>
                     </div>
                   )}
                 </div>
-              </>
+              </div>
             )
           })()
         ) : (
           /* Custom Discover Catalog Builder Form */
           <div className="flex-1 flex flex-col min-h-0">
             {/* Discover Sub-tabs */}
-            <div className="px-6 py-2.5 border-b border-white/[0.06] flex gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+            <div className="px-6 py-3 border-b border-white/[0.06] flex gap-1 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
               {([
-                { id: 'setup' as const, label: 'Setup', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' },
-                { id: 'filters' as const, label: 'Filters' },
-                { id: 'streaming' as const, label: 'Streaming' },
-                { id: 'people' as const, label: 'People & Tags' },
-                { id: 'ranges' as const, label: 'Date & Rating' },
-              ]).map((tab) => {
+                { id: 'setup' as const, label: 'Setup', step: 1 },
+                { id: 'filters' as const, label: 'Genres & Language', step: 2 },
+                { id: 'streaming' as const, label: 'Streaming', step: 3 },
+                { id: 'people' as const, label: 'People & Tags', step: 4 },
+                { id: 'ranges' as const, label: 'Date & Rating', step: 5 },
+              ]).map((tab, i, arr) => {
                 const active = discoverTab === tab.id
+                const tabOrder = ['setup', 'filters', 'streaming', 'people', 'ranges']
+                const currentIdx = tabOrder.indexOf(discoverTab)
+                const completed = tabOrder.indexOf(tab.id) < currentIdx
                 return (
                   <button
                     key={tab.id}
                     onClick={() => setDiscoverTab(tab.id)}
-                    className={`h-8 flex items-center gap-1.5 px-3.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-shrink-0 ${
+                    className={`h-9 flex items-center gap-2 px-4 rounded-xl text-xs font-bold transition-all cursor-pointer flex-shrink-0 border ${
                       active
-                        ? 'bg-accent/15 text-accent border border-accent/20'
-                        : 'bg-white/[0.03] text-white/35 hover:bg-white/[0.06] hover:text-white/55 border border-transparent'
+                        ? 'bg-accent/15 text-accent border-accent/20'
+                        : completed
+                          ? 'bg-white/[0.04] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                          : 'bg-white/[0.02] text-white/30 hover:bg-white/[0.05] hover:text-white/50 border-transparent'
                     }`}
                   >
+                    <span className={`w-5 h-5 rounded-md text-[10px] font-black flex items-center justify-center flex-shrink-0 ${
+                      active ? 'bg-accent/25 text-accent' : completed ? 'bg-white/[0.06] text-white/30' : 'bg-white/[0.04] text-white/20'
+                    }`}>{tab.step}</span>
                     {tab.label}
                   </button>
                 )
@@ -1696,7 +1818,10 @@ function AddWidgetOverlay({
               {discoverTab === 'setup' && (
                 <div className="space-y-5">
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Catalog Setup</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><circle cx="12" cy="12" r="3" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Catalog Setup</h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
                         <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Name</label>
@@ -1758,7 +1883,10 @@ function AddWidgetOverlay({
               {discoverTab === 'filters' && (
                 <div className="space-y-5">
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Genres & Language</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Genres & Language</h3>
+                    </div>
 
                     {/* Genre Include/Exclude */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1853,7 +1981,10 @@ function AddWidgetOverlay({
               {discoverTab === 'streaming' && (
                 <div className="space-y-5">
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Streaming & Region</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Streaming & Region</h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Watch Region</label>
@@ -1960,7 +2091,10 @@ function AddWidgetOverlay({
               {discoverTab === 'people' && (
                 <div className="space-y-5">
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">People</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">People</h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4">
                       <div className="relative">
                         <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Search People</label>
@@ -1994,7 +2128,10 @@ function AddWidgetOverlay({
                   {/* Companies */}
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Companies</h3>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-6 h-6 rounded-md bg-accent/10 flex items-center justify-center"><svg className="w-3 h-3 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg></div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Companies</h3>
+                      </div>
                       <MatchModeToggle value={companyMatchMode} onChange={setCompanyMatchMode} name="company" />
                     </div>
                     <div className="relative">
@@ -2044,7 +2181,10 @@ function AddWidgetOverlay({
                   {/* Keywords */}
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Keywords</h3>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-6 h-6 rounded-md bg-accent/10 flex items-center justify-center"><svg className="w-3 h-3 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg></div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Keywords</h3>
+                      </div>
                       <MatchModeToggle value={keywordMatchMode} onChange={setKeywordMatchMode} name="keyword" />
                     </div>
                     <div className="relative">
@@ -2098,7 +2238,10 @@ function AddWidgetOverlay({
                 <div className="space-y-5">
                   {/* Rating & Runtime */}
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Rating & Runtime</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Rating & Runtime</h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div>
                         <label className="block text-[11px] text-white/40 mb-2 font-medium">Vote Average: {voteAverageMin} - {voteAverageMax}</label>
@@ -2127,7 +2270,10 @@ function AddWidgetOverlay({
 
                   {/* Release Date */}
                   <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Release Date</h3>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg></div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Release Date</h3>
+                    </div>
                     <div>
                       <label className="block text-[10px] text-white/25 mb-2 uppercase tracking-wider font-semibold">Quick Presets</label>
                       <div className="flex flex-wrap gap-1.5">
@@ -2164,16 +2310,21 @@ function AddWidgetOverlay({
               )}
 
               {/* ── Preview Section (always visible) ── */}
-              <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-4">
+              <div className="bg-gradient-to-b from-accent/[0.04] to-white/[0.02] border border-accent/10 p-5 rounded-xl space-y-4">
                 <div className="flex justify-between items-center">
-                  <div>
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Preview</h3>
-                    <p className="text-[10px] text-white/25 mt-0.5">{Object.keys(livePreview).length - 3} active filters</p>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center flex-shrink-0">
+                      <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Preview</h3>
+                      <p className="text-[10px] text-white/30 mt-0.5">{Object.keys(livePreview).length - 3} active filters</p>
+                    </div>
                   </div>
                   <button
                     onClick={runPreview}
                     disabled={previewLoading}
-                    className="px-5 py-2 bg-white/[0.05] hover:bg-white/[0.08] text-white/70 border border-white/[0.08] text-xs font-semibold rounded-lg transition-all cursor-pointer disabled:opacity-30 flex items-center gap-2"
+                    className="px-5 py-2.5 bg-accent/15 hover:bg-accent/25 text-accent border border-accent/20 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-30 flex items-center gap-2"
                   >
                     {previewLoading ? (
                       <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
@@ -2184,24 +2335,33 @@ function AddWidgetOverlay({
                   </button>
                 </div>
 
-                <div className="bg-black/30 border border-white/[0.04] rounded-lg p-3 text-[10px] font-mono text-white/40 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
-                  {JSON.stringify(livePreview, null, 0)}
-                </div>
+                <details className="group">
+                  <summary className="text-[10px] text-white/25 font-medium cursor-pointer hover:text-white/40 transition-colors flex items-center gap-1.5 select-none">
+                    <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                    Raw Query Parameters
+                  </summary>
+                  <div className="mt-2 bg-black/30 border border-white/[0.04] rounded-lg p-3 text-[10px] font-mono text-white/35 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+                    {JSON.stringify(livePreview, null, 2)}
+                  </div>
+                </details>
 
                 {previewItems.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="text-[10px] font-bold text-white/30 uppercase tracking-wider">Matching Titles ({previewItems.length})</h4>
-                    <div className="flex gap-2.5 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-[10px] font-bold text-white/35 uppercase tracking-wider">Matching Titles</h4>
+                      <span className="text-[10px] text-accent/70 bg-accent/10 px-2 py-0.5 rounded-md font-bold">{previewItems.length}</span>
+                    </div>
+                    <div className="flex gap-3 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
                       {previewItems.map((item) => (
-                        <div key={item.id} className="w-[72px] flex-shrink-0 flex flex-col items-center group">
+                        <div key={item.id} className="w-20 flex-shrink-0 flex flex-col items-center group">
                           {item.poster ? (
-                            <img src={item.poster} className="w-full aspect-[2/3] object-cover rounded-lg border border-white/[0.06] group-hover:border-white/15 transition-colors" alt="" />
+                            <img src={item.poster} className="w-full aspect-[2/3] object-cover rounded-lg border border-white/[0.06] group-hover:border-accent/30 group-hover:shadow-lg group-hover:shadow-accent/5 transition-all" alt="" />
                           ) : (
                             <div className="w-full aspect-[2/3] bg-white/[0.04] border border-white/[0.06] rounded-lg flex items-center justify-center text-[8px] text-white/15 text-center px-1">
                               {item.title}
                             </div>
                           )}
-                          <span className="text-[9px] text-white/30 truncate w-full text-center mt-1.5">{item.title}</span>
+                          <span className="text-[9px] text-white/30 group-hover:text-white/50 truncate w-full text-center mt-1.5 transition-colors">{item.title}</span>
                         </div>
                       ))}
                     </div>
@@ -2211,19 +2371,22 @@ function AddWidgetOverlay({
             </div>
 
             {/* Footer */}
-            <div className="px-6 py-4 border-t border-white/[0.06] bg-white/[0.01] flex items-center justify-end gap-3">
-              <button
-                onClick={() => { if (editingRow) onClose(); else setMode('preset') }}
-                className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveDiscover}
-                className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg shadow-accent/10 transition-all cursor-pointer"
-              >
-                {editingRow ? 'Save Changes' : 'Save Catalog'}
-              </button>
+            <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between">
+              <p className="text-[10px] text-white/20">{catalogName ? `"${catalogName}"` : 'Untitled catalog'} &middot; {source} &middot; {contentType === 'movie' ? 'Movies' : 'TV Shows'}</p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => { if (editingRow) onClose(); else setMode('preset') }}
+                  className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveDiscover}
+                  className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg shadow-accent/10 transition-all cursor-pointer"
+                >
+                  {editingRow ? 'Save Changes' : 'Save Catalog'}
+                </button>
+              </div>
             </div>
           </div>
         )}

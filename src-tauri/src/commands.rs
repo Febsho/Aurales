@@ -775,7 +775,7 @@ pub fn launch_mpv(
         }
     }
 
-    Err("Failed to launch mpv: bundled mpv executable was not found next to Orynt. Reinstall with the NSIS setup exe or copy mpv.exe beside orynt-app.exe.".to_string())
+    Err("Failed to launch mpv: bundled mpv executable was not found next to Aurales. Reinstall with the NSIS setup exe or copy mpv.exe beside aurales-app.exe.".to_string())
 }
 
 fn mpv_candidates() -> Vec<PathBuf> {
@@ -1049,7 +1049,7 @@ pub fn select_local_video_file() -> Option<String> {
 fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| "Main Orynt window was not found.".to_string())?;
+        .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
     let hwnd = main
         .hwnd()
         .map_err(|e| format!("Failed to get main window handle: {}", e))?;
@@ -1079,7 +1079,7 @@ fn launch_mpv_with_window(
     })?;
 
     let ipc_path = format!(
-        r"\\.\pipe\orynt-mpv-{}-{}",
+        r"\\.\pipe\aurales-mpv-{}-{}",
         std::process::id(),
         MPV_PIPE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     );
@@ -1589,8 +1589,8 @@ pub async fn openrouter_chat(api_key: String, request_body: serde_json::Value) -
         let response = ureq::post("https://openrouter.ai/api/v1/chat/completions")
             .set("Authorization", &format!("Bearer {api_key}"))
             .set("Content-Type", "application/json")
-            .set("HTTP-Referer", "https://github.com/itsrenoria/orynt")
-            .set("X-Title", "Orynt Media Player")
+            .set("HTTP-Referer", "https://github.com/itsrenoria/aurales")
+            .set("X-Title", "Aurales Media Player")
             .send_json(request_body)
             .map_err(|error| read_ureq_error("OpenRouter", error))?;
         response
@@ -1637,7 +1637,7 @@ pub async fn download_subtitle(url: String, file_name: String) -> Result<String,
         if bytes.is_empty() {
             return Err("Subtitle provider returned an empty file.".to_string());
         }
-        let dir = std::env::temp_dir().join("orynt-subtitles");
+        let dir = std::env::temp_dir().join("aurales-subtitles");
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
         let path = dir.join(format!(
@@ -1668,7 +1668,7 @@ pub async fn write_temp_subtitle(content: String, extension: String) -> Result<S
         } else {
             extension.as_str()
         };
-        let dir = std::env::temp_dir().join("orynt-subtitles");
+        let dir = std::env::temp_dir().join("aurales-subtitles");
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
         let path = dir.join(format!(
@@ -1685,12 +1685,12 @@ pub async fn write_temp_subtitle(content: String, extension: String) -> Result<S
 }
 
 fn validate_subtitle_cache_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let cache_dir = std::env::temp_dir().join("orynt-subtitles");
+    let cache_dir = std::env::temp_dir().join("aurales-subtitles");
     let candidate = std::path::PathBuf::from(path);
     if candidate.parent() == Some(cache_dir.as_path()) {
         Ok(candidate)
     } else {
-        Err("Subtitle file is outside Orynt's temporary cache.".to_string())
+        Err("Subtitle file is outside Aurales' temporary cache.".to_string())
     }
 }
 
@@ -1848,10 +1848,10 @@ pub async fn start_simkl_callback_server() -> Result<String, String> {
 
     // Respond with a friendly page so the user knows they can close the tab.
     let html = concat!(
-        "<html><head><meta charset=\"utf-8\"><title>Orynt</title></head>",
+        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
         "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
         "<h2>Connected to Simkl!</h2>",
-        "<p>You can close this tab and return to Orynt.</p>",
+        "<p>You can close this tab and return to Aurales.</p>",
         "</body></html>",
     );
     let response = format!(
@@ -1971,10 +1971,10 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
 
     // Respond with a friendly page so the user knows they can close the tab.
     let html = concat!(
-        "<html><head><meta charset=\"utf-8\"><title>Orynt</title></head>",
+        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
         "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
         "<h2>Connected to AniList!</h2>",
-        "<p>You can close this tab and return to Orynt.</p>",
+        "<p>You can close this tab and return to Aurales.</p>",
         "</body></html>",
     );
     let response = format!(

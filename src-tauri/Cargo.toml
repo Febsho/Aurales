@@ -1,12 +1,12 @@
 [package]
-name = "orynt-app"
+name = "aurales-app"
 version = "0.1.0"
-description = "Orynt - A modern streaming catalog app"
+description = "Aurales - A modern streaming catalog app"
 authors = ["you"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.77.2"
-default-run = "orynt-app"
+default-run = "aurales-app"
 
 [lib]
 name = "app_lib"

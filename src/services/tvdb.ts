@@ -1,21 +1,32 @@
 import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonDetails, EpisodeDetails } from '../types'
+import { getTvdbApiKey } from './apiKeys'
 
 const BASE_URL = 'https://api4.thetvdb.com/v4'
 
 let cachedToken: string | null = null
+let cachedTokenApiKey = ''
 
 // Cache full series extended data so getSeason can extract episodes directly
 const seriesDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
 const SERIES_CACHE_TTL = 30 * 60 * 1000 // 30 min
+const CARD_CACHE_PREFIX = 'tvdb_card_metadata_v1'
+const CARD_CACHE_TTL = 7 * 24 * 60 * 60 * 1000
+const cardMetadataCache = new Map<string, TvdbCardMetadata>()
+const pendingCardMetadata = new Map<string, Promise<TvdbCardMetadata | null>>()
 
-function getApiKey(): string {
-  return localStorage.getItem('tvdb_api_key') || import.meta.env.VITE_TVDB_API_KEY || ''
+export interface TvdbCardMetadata {
+  title: string
+  year?: number
+  overview?: string
+  poster?: string
+  backdrop?: string
+  genres?: string[]
 }
 
 async function getToken(): Promise<string> {
-  if (cachedToken) return cachedToken
-  const apiKey = getApiKey()
-  if (!apiKey) throw new Error('TVDB API key not configured')
+  const apiKey = getTvdbApiKey()
+  if (cachedToken && cachedTokenApiKey === apiKey) return cachedToken
+  cachedToken = null
   const res = await fetch(`${BASE_URL}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -24,6 +35,7 @@ async function getToken(): Promise<string> {
   if (!res.ok) throw new Error(`TVDB auth error: ${res.status}`)
   const data = await res.json()
   cachedToken = data.data.token
+  cachedTokenApiKey = apiKey
   return cachedToken!
 }
 
@@ -37,6 +49,7 @@ async function tvdbFetch(path: string, params: Record<string, string> = {}): Pro
   if (!res.ok) {
     if (res.status === 401) {
       cachedToken = null
+      cachedTokenApiKey = ''
       return tvdbFetch(path, params)
     }
     throw new Error(`TVDB error: ${res.status}`)
@@ -255,4 +268,40 @@ export const tvdbProvider: MetadataProvider = {
     if (!ep) throw new Error('Episode not found')
     return ep
   },
+}
+
+export async function getTvdbCardMetadata(tvdbId: string | number): Promise<TvdbCardMetadata | null> {
+  const id = String(tvdbId).replace('tvdb-', '')
+  if (!id) return null
+  const cached = cardMetadataCache.get(id)
+  if (cached) return cached
+  try {
+    const persistent = JSON.parse(localStorage.getItem(`${CARD_CACHE_PREFIX}:${id}`) || 'null')
+    if (persistent && Date.now() - Number(persistent.timestamp) < CARD_CACHE_TTL) {
+      cardMetadataCache.set(id, persistent.data)
+      return persistent.data
+    }
+  } catch { /* ignore invalid cache */ }
+  const existing = pendingCardMetadata.get(id)
+  if (existing) return existing
+
+  const request = tvdbProvider.getShow(`tvdb-${id}`)
+    .then((show) => {
+      const data: TvdbCardMetadata = {
+        title: show.title,
+        year: show.year,
+        overview: show.overview,
+        poster: show.poster,
+        backdrop: show.backdrop,
+        genres: show.genres,
+      }
+      cardMetadataCache.set(id, data)
+      try { localStorage.setItem(`${CARD_CACHE_PREFIX}:${id}`, JSON.stringify({ data, timestamp: Date.now() })) } catch { /* memory cache remains */ }
+      return data
+    })
+    .catch(() => null)
+    .finally(() => pendingCardMetadata.delete(id))
+
+  pendingCardMetadata.set(id, request)
+  return request
 }

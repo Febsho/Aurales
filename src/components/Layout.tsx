@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import Sidebar from './Sidebar'
 import { useAppStore } from '../stores/appStore'
 
@@ -10,6 +10,12 @@ export default function Layout() {
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
+
+  useLayoutEffect(() => {
+    if (!location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
+    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  }, [location.pathname])
 
   const goBack = () => {
     const historyIndex = typeof window.history.state?.idx === 'number'
@@ -141,7 +147,7 @@ export default function Layout() {
           </header>
         )}
 
-        <main className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${isHeroPage ? '' : ''}`}>
+        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${isHeroPage ? '' : ''}`}>
           <Outlet />
         </main>
       </div>

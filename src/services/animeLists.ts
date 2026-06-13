@@ -13,10 +13,39 @@ interface AnimeMapping {
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
 const DATA_URL =
   'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json'
+const PERSISTENT_CACHE = 'orynt-anime-lists-v1'
+const CACHE_TIMESTAMP_HEADER = 'x-orynt-cached-at'
 
 let cachedData: AnimeMapping[] | null = null
 let cacheTimestamp = 0
 let activePromise: Promise<AnimeMapping[]> | null = null
+
+async function readPersistentCache(): Promise<{ data: AnimeMapping[]; timestamp: number } | null> {
+  if (typeof caches === 'undefined') return null
+  try {
+    const cache = await caches.open(PERSISTENT_CACHE)
+    const response = await cache.match(DATA_URL)
+    if (!response) return null
+    const data = await response.json() as AnimeMapping[]
+    const timestamp = Number(response.headers.get(CACHE_TIMESTAMP_HEADER)) || 0
+    return Array.isArray(data) ? { data, timestamp } : null
+  } catch {
+    return null
+  }
+}
+
+async function writePersistentCache(data: AnimeMapping[]): Promise<void> {
+  if (typeof caches === 'undefined') return
+  try {
+    const cache = await caches.open(PERSISTENT_CACHE)
+    await cache.put(DATA_URL, new Response(JSON.stringify(data), {
+      headers: {
+        'Content-Type': 'application/json',
+        [CACHE_TIMESTAMP_HEADER]: String(Date.now()),
+      },
+    }))
+  } catch { /* memory cache still works */ }
+}
 
 export function loadAnimeLists(): Promise<AnimeMapping[]> {
   if (cachedData && Date.now() - cacheTimestamp < CACHE_DURATION_MS) {
@@ -27,16 +56,28 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
   }
 
   activePromise = (async () => {
+    const persistent = await readPersistentCache()
+    if (persistent && Date.now() - persistent.timestamp < CACHE_DURATION_MS) {
+      cachedData = persistent.data
+      cacheTimestamp = persistent.timestamp
+      return persistent.data
+    }
+
     try {
       const response = await fetch(DATA_URL)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data: AnimeMapping[] = await response.json()
       cachedData = data
       cacheTimestamp = Date.now()
+      void writePersistentCache(data)
       console.log(`[anime-lists] loaded ${data.length} mappings`)
       return data
     } catch (e) {
       console.warn('[anime-lists] fetch failed:', e)
+      if (persistent) {
+        cachedData = persistent.data
+        cacheTimestamp = persistent.timestamp
+      }
       return cachedData ?? []
     } finally {
       activePromise = null
