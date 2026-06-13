@@ -2,8 +2,8 @@ interface AnimeMapping {
   anidb_id?: number
   anilist_id?: number
   mal_id?: number
-  thetvdb_id?: number
-  themoviedb_id?: number
+  tvdb_id?: number
+  themoviedb_id?: number | { tv?: number; movie?: number }
   imdb_id?: string
   tvdb_season?: number
   tvdb_epoffset?: number
@@ -99,12 +99,27 @@ export async function lookupByMalId(malId: number): Promise<AnimeMapping[]> {
 
 export async function lookupByTvdbId(tvdbId: number): Promise<AnimeMapping[]> {
   const data = await loadAnimeLists()
-  return data.filter((e) => e.thetvdb_id === tvdbId)
+  return data.filter((e) => e.tvdb_id === tvdbId)
 }
 
 export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | undefined> {
   const data = await loadAnimeLists()
   return data.find((e) => e.imdb_id === imdbId)
+}
+
+function extractTmdbId(val: unknown): number | undefined {
+  if (val === null || val === undefined) return undefined
+  if (typeof val === 'number') return val
+  if (typeof val === 'string') {
+    const parsed = parseInt(val, 10)
+    return isNaN(parsed) ? undefined : parsed
+  }
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>
+    const possible = obj.tv ?? obj.movie ?? obj.id ?? obj.value
+    if (possible !== undefined) return extractTmdbId(possible)
+  }
+  return undefined
 }
 
 async function fetchYunaMoeIds(known: {
@@ -122,11 +137,8 @@ async function fetchYunaMoeIds(known: {
 } | null> {
   try {
     let queryParam = ''
-    if (known.anilistId != null) queryParam = `anilist=${known.anilistId}`
-    else if (known.malId != null) queryParam = `mal=${known.malId}`
-    else if (known.tvdbId != null) queryParam = `thetvdb=${known.tvdbId}`
-    else if (known.tmdbId != null) queryParam = `themoviedb=${known.tmdbId}`
-    else if (known.imdbId != null) queryParam = `imdb=${known.imdbId}`
+    if (known.anilistId != null) queryParam = `source=anilist&id=${known.anilistId}`
+    else if (known.malId != null) queryParam = `source=myanimelist&id=${known.malId}`
 
     if (!queryParam) return null
 
@@ -135,10 +147,10 @@ async function fetchYunaMoeIds(known: {
       const match = await res.json() as any
       return {
         anilistId: match.anilist ? Number(match.anilist) : undefined,
-        malId: match.mal ? Number(match.mal) : undefined,
-        tvdbId: match.thetvdb ? Number(match.thetvdb) : undefined,
-        tmdbId: match.themoviedb ? Number(match.themoviedb) : undefined,
-        imdbId: match.imdb || undefined,
+        malId: match.myanimelist ? Number(match.myanimelist) : undefined,
+        tvdbId: undefined,
+        tmdbId: undefined,
+        imdbId: undefined,
       }
     }
   } catch (e) {
@@ -173,10 +185,13 @@ export async function resolveAnimeIds(known: {
     match = data.find((e) => e.mal_id === known.malId)
   }
   if (!match && known.tvdbId != null) {
-    match = data.find((e) => e.thetvdb_id === known.tvdbId)
+    match = data.find((e) => e.tvdb_id === known.tvdbId)
   }
   if (!match && known.tmdbId != null) {
-    match = data.find((e) => e.themoviedb_id === known.tmdbId)
+    match = data.find((e) => {
+      const tid = extractTmdbId(e.themoviedb_id)
+      return tid != null && tid === known.tmdbId
+    })
   }
   if (!match && known.imdbId != null) {
     match = data.find((e) => e.imdb_id === known.imdbId)
@@ -186,8 +201,8 @@ export async function resolveAnimeIds(known: {
     return {
       anilistId: match.anilist_id,
       malId: match.mal_id,
-      tvdbId: match.thetvdb_id,
-      tmdbId: match.themoviedb_id,
+      tvdbId: match.tvdb_id,
+      tmdbId: extractTmdbId(match.themoviedb_id),
       imdbId: match.imdb_id,
       tvdbSeason: match.tvdb_season,
       tvdbEpOffset: match.tvdb_epoffset,
@@ -196,7 +211,27 @@ export async function resolveAnimeIds(known: {
 
   // Fallback to online API lookup
   const online = await fetchYunaMoeIds(known)
-  if (online) return online
+  if (online) {
+    let secondMatch: AnimeMapping | undefined
+    if (online.anilistId != null) {
+      secondMatch = data.find((e) => e.anilist_id === online.anilistId)
+    }
+    if (!secondMatch && online.malId != null) {
+      secondMatch = data.find((e) => e.mal_id === online.malId)
+    }
+    if (secondMatch) {
+      return {
+        anilistId: secondMatch.anilist_id || online.anilistId,
+        malId: secondMatch.mal_id || online.malId,
+        tvdbId: secondMatch.tvdb_id || online.tvdbId,
+        tmdbId: extractTmdbId(secondMatch.themoviedb_id) || online.tmdbId,
+        imdbId: secondMatch.imdb_id || online.imdbId,
+        tvdbSeason: secondMatch.tvdb_season,
+        tvdbEpOffset: secondMatch.tvdb_epoffset,
+      }
+    }
+    return online
+  }
 
   return null
 }
@@ -209,7 +244,7 @@ export async function mapAniListEpisodeToTvdb(
   if (entries.length === 0) return null
 
   const sorted = entries
-    .filter((e) => e.tvdb_season != null && e.tvdb_epoffset != null && e.thetvdb_id != null)
+    .filter((e) => e.tvdb_season != null && e.tvdb_epoffset != null && e.tvdb_id != null)
     .sort((a, b) => (a.tvdb_epoffset ?? 0) - (b.tvdb_epoffset ?? 0))
 
   if (sorted.length === 0) return null
@@ -226,7 +261,7 @@ export async function mapAniListEpisodeToTvdb(
   return {
     season: matched.tvdb_season!,
     episode: absoluteEpisode - (matched.tvdb_epoffset ?? 0),
-    tvdbId: matched.thetvdb_id!,
+    tvdbId: matched.tvdb_id!,
   }
 }
 
@@ -238,7 +273,7 @@ export async function mapTvdbEpisodeToAniList(
   const data = await loadAnimeLists()
 
   const entry = data.find(
-    (e) => e.thetvdb_id === tvdbId && e.tvdb_season === season && e.anilist_id != null
+    (e) => e.tvdb_id === tvdbId && e.tvdb_season === season && e.anilist_id != null
   )
 
   if (!entry) return null

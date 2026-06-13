@@ -14,32 +14,12 @@ import {
 import { getTvdbIdFromTmdb, tmdbProvider } from './tmdb'
 import { getTvdbCardMetadata } from './tvdb'
 import { resolveAnimeIds } from './animeLists'
-
-const PROVIDER_LIST_CACHE_TTL = 15 * 60 * 1000
-const providerListCache = new Map<string, { items: SearchResult[]; timestamp: number }>()
-const providerListPending = new Map<string, Promise<SearchResult[]>>()
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 function providerListCacheKey(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): string {
   const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : ''
-  return `tvdb-v1:${row.sourceType || 'unknown'}:${account}:${row.providerListId || ''}`
-}
-
-function readPersistentProviderList(key: string): { items: SearchResult[]; timestamp: number } | null {
-  if (!key.includes(':anilist:')) return null
-  try {
-    const cached = JSON.parse(localStorage.getItem(`orynt_provider_list:${key}`) || 'null')
-    if (cached && Array.isArray(cached.items) && Date.now() - Number(cached.timestamp) < PROVIDER_LIST_CACHE_TTL) return cached
-  } catch { /* ignore invalid cache */ }
-  return null
-}
-
-function cacheProviderList(key: string, items: SearchResult[]): SearchResult[] {
-  const entry = { items, timestamp: Date.now() }
-  providerListCache.set(key, entry)
-  if (key.includes(':anilist:')) {
-    try { localStorage.setItem(`orynt_provider_list:${key}`, JSON.stringify(entry)) } catch { /* memory cache remains available */ }
-  }
-  return items
+  return `provider:${row.sourceType || 'unknown'}:${account}:${row.providerListId || ''}`
 }
 
 export const TRAKT_LIST_SOURCES = [
@@ -55,19 +35,10 @@ export const PMDB_LIST_SOURCES = [
 
 export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
   const key = providerListCacheKey(row)
-  const memoryCached = providerListCache.get(key)
-  if (memoryCached && Date.now() - memoryCached.timestamp < PROVIDER_LIST_CACHE_TTL) return memoryCached.items
-  const persistentCached = readPersistentProviderList(key)
-  if (persistentCached) {
-    providerListCache.set(key, persistentCached)
-    return persistentCached.items
-  }
-  const existing = providerListPending.get(key)
-  if (existing) return existing
-
-  const request = loadProviderListItems(row).finally(() => providerListPending.delete(key))
-  providerListPending.set(key, request)
-  return request
+  return cachedFetch<SearchResult[]>(key, () => loadProviderListItems(row), {
+    category: CACHE_CATEGORIES.PROVIDER_LIST,
+    ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
+  })
 }
 
 async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
@@ -92,19 +63,20 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         if (aid) seenAnilistId.add(aid)
         return true
       })
-      const canonical = await canonicalizeCatalogItemsWithTvdb(deduplicated)
-      return cacheProviderList(providerListCacheKey(row), canonical)
+      return canonicalizeCatalogItemsWithTvdb(deduplicated, { preservePictures: false })
     }
 
     const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
     const enriched = await enrichSearchResultsWithAppMetadata(items)
-    const canonical = await canonicalizeCatalogItemsWithTvdb(enriched)
-    return cacheProviderList(providerListCacheKey(row), canonical)
+    return canonicalizeCatalogItemsWithTvdb(enriched)
   }
   return []
 }
 
-export async function canonicalizeCatalogItemsWithTvdb(items: SearchResult[]): Promise<SearchResult[]> {
+export async function canonicalizeCatalogItemsWithTvdb(
+  items: SearchResult[],
+  options?: { preservePictures?: boolean }
+): Promise<SearchResult[]> {
   const results = [...items]
   let cursor = 0
   const workers = Array.from({ length: Math.min(4, items.length) }, async () => {
@@ -133,8 +105,8 @@ export async function canonicalizeCatalogItemsWithTvdb(items: SearchResult[]): P
         title: tvdb?.title || item.title,
         year: tvdb?.year || item.year,
         overview: tvdb?.overview || item.overview,
-        poster: tvdb?.poster || item.poster,
-        backdrop: tvdb?.backdrop || item.backdrop,
+        poster: options?.preservePictures ? item.poster : (tvdb?.poster || item.poster),
+        backdrop: options?.preservePictures ? item.backdrop : (tvdb?.backdrop || item.backdrop),
         genres: tvdb?.genres?.length ? tvdb.genres : item.genres,
         provider: 'tvdb',
         tvdbId,
@@ -242,7 +214,7 @@ function pmdbPickItemToSearchResult(item: PMDBPickItem): SearchResult {
     type,
     year: item.year ? Number(item.year) || undefined : undefined,
     poster: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w780${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/original${item.backdrop_path}` : undefined,
     overview: item.overview,
     rating: item.vote_average,
     genreIds: item.genre_ids,

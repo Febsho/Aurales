@@ -33,6 +33,8 @@ import {
 } from '../services/streamRegexFilters'
 import type { TraktDeviceCode } from '../types'
 import NativeMpvPlayer from '../components/NativeMpvPlayer'
+import { cacheStats, cacheClearCategory, cacheClearExpired } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -170,6 +172,62 @@ function SearchEngineSelect({ value, onChange, options }: { value: string; onCha
         <option key={opt.id} value={opt.id}>{opt.name}</option>
       ))}
     </select>
+  )
+}
+
+function CacheManagementSection() {
+  const [stats, setStats] = useState<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> } | null>(null)
+
+  useEffect(() => { cacheStats().then(setStats) }, [])
+
+  const handleClearCategory = async (category: string) => {
+    const cleared = await cacheClearCategory(category)
+    alert(`Cleared ${cleared} entries from ${category}`)
+    cacheStats().then(setStats)
+  }
+
+  const handleClearExpired = async () => {
+    const cleared = await cacheClearExpired()
+    alert(`Cleared ${cleared} expired entries`)
+    cacheStats().then(setStats)
+  }
+
+  const categoryLabels: Record<string, string> = {
+    [CACHE_CATEGORIES.ADDON_CATALOG]: 'Addon Catalogs',
+    [CACHE_CATEGORIES.PROVIDER_LIST]: 'Provider Lists',
+    [CACHE_CATEGORIES.DISCOVER]: 'Discover',
+    [CACHE_CATEGORIES.TMDB_CARD]: 'TMDB Cards',
+    [CACHE_CATEGORIES.TVDB_CARD]: 'TVDB Cards',
+    [CACHE_CATEGORIES.TMDB_TVDB_ID]: 'TMDB→TVDB IDs',
+    [CACHE_CATEGORIES.WATCHED_STATUS]: 'Watch Status',
+    [CACHE_CATEGORIES.SIMKL_LIST]: 'Simkl Lists',
+    [CACHE_CATEGORIES.ARTWORK]: 'Artwork',
+    [CACHE_CATEGORIES.HOME_ROW]: 'Home Rows',
+    [CACHE_CATEGORIES.DETAIL_PAGE]: 'Detail Pages',
+    [CACHE_CATEGORIES.TVDB_SEASON]: 'Season Data',
+  }
+
+  return (
+    <SettingSection title="Performance & Cache" description="SQLite-backed cache for instant page loads.">
+      {stats && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs text-muted">{stats.totalEntries} cached entries ({stats.expiredEntries} expired)</span>
+            <button onClick={handleClearExpired} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-lg text-xs font-bold cursor-pointer">
+              Clear Expired
+            </button>
+          </div>
+          {Object.entries(stats.byCategory).filter(([, count]) => count > 0).map(([cat, count]) => (
+            <div key={cat} className="flex items-center justify-between px-1 py-1">
+              <span className="text-xs text-white/70">{categoryLabels[cat] || cat} ({count})</span>
+              <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-[10px] font-bold cursor-pointer">
+                Clear
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </SettingSection>
   )
 }
 
@@ -2951,6 +3009,9 @@ export default function SettingsPage() {
                   </button>
                 </SettingRow>
               </SettingSection>
+
+              {/* Cache Management */}
+              <CacheManagementSection />
 
               {/* Factory Reset */}
               <SettingSection title="Danger Zone" description="Irreversible actions. Proceed with caution.">

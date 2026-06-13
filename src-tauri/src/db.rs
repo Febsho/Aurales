@@ -144,6 +144,18 @@ impl Database {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS cache_entries (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cache_entries_category ON cache_entries(category);
+            CREATE INDEX IF NOT EXISTS idx_cache_entries_expires ON cache_entries(expires_at);
+
             CREATE INDEX IF NOT EXISTS idx_anime_season_map_media ON anime_season_mappings(local_media_id);
             CREATE INDEX IF NOT EXISTS idx_anime_ep_map_media ON anime_episode_mappings(local_media_id);
             CREATE INDEX IF NOT EXISTS idx_anime_override_media ON anime_mapping_overrides(local_media_id);

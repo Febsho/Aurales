@@ -1,15 +1,10 @@
 import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonDetails, EpisodeDetails, CastMember, Video, DiscoverConfig } from '../types'
 import { getTmdbApiKey } from './apiKeys'
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
-const LANDSCAPE_CACHE_PREFIX = 'tmdb_landscape_backdrop'
-const CARD_METADATA_CACHE_PREFIX = 'tmdb_card_metadata_v1'
-const CARD_METADATA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000
-const TVDB_ID_CACHE_PREFIX = 'tmdb_tvdb_id_v1'
-const cardMetadataCache = new Map<string, { poster?: string; backdrop?: string; genre?: string }>()
-const pendingCardMetadata = new Map<string, Promise<{ poster?: string; backdrop?: string; genre?: string }>>()
-const pendingTvdbIds = new Map<string, Promise<number | undefined>>()
 
 async function tmdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
   const apiKey = getTmdbApiKey()
@@ -23,27 +18,19 @@ async function tmdbFetch(path: string, params: Record<string, string> = {}): Pro
 }
 
 export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number | undefined> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const id = String(tmdbId).replace('tmdb-', '')
   if (!id) return undefined
-  const cacheKey = `${TVDB_ID_CACHE_PREFIX}:${id}`
-  const cached = localStorage.getItem(cacheKey)
-  if (cached) return cached === 'none' ? undefined : Number(cached) || undefined
-  const existing = pendingTvdbIds.get(id)
-  if (existing) return existing
 
-  const request = (async () => {
+  const result = await cachedFetch<number | null>(`tmdb_tvdb_id:${id}`, async () => {
     try {
       const data = await tmdbFetch(`/tv/${id}/external_ids`) as Record<string, unknown>
-      const tvdbId = Number(data.tvdb_id) || undefined
-      localStorage.setItem(cacheKey, tvdbId ? String(tvdbId) : 'none')
-      return tvdbId
+      return Number(data.tvdb_id) || null
     } catch {
-      return undefined
+      return null
     }
-  })().finally(() => pendingTvdbIds.delete(id))
-
-  pendingTvdbIds.set(id, request)
-  return request
+  }, { category: CACHE_CATEGORIES.TMDB_TVDB_ID, ttlSeconds: CACHE_TTLS.TMDB_TVDB_ID })
+  return result ?? undefined
 }
 
 function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
@@ -59,7 +46,7 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
   const selected = backdrops[0]
-  return selected ? `${IMG_BASE}/w780${selected.file_path}` : undefined
+  return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
@@ -80,61 +67,40 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
 }
 
 export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const mediaType = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace('tmdb-', '')
   if (!id) return undefined
-  const cacheKey = `${LANDSCAPE_CACHE_PREFIX}:${mediaType}:${id}`
-  const cached = localStorage.getItem(cacheKey)
-  if (cached) return cached === 'none' ? undefined : cached
 
-  try {
-    const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,null' }) as Record<string, unknown>
-    const backdrop = pickBestBackdrop(images)
-    localStorage.setItem(cacheKey, backdrop || 'none')
-    return backdrop
-  } catch {
-    localStorage.setItem(cacheKey, 'none')
-    return undefined
-  }
+  const result = await cachedFetch<string | null>(`tmdb_backdrop:${mediaType}:${id}`, async () => {
+    try {
+      const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'xx,null,en' }) as Record<string, unknown>
+      return pickBestBackdrop(images) || null
+    } catch {
+      return null
+    }
+  }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
+  return result ?? undefined
 }
 
 export async function getTmdbCardMetadata(
   type: 'movie' | 'series' | 'show' | 'anime',
   tmdbId: string | number,
 ): Promise<{ poster?: string; backdrop?: string; genre?: string }> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return {}
   const mediaType = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace('tmdb-', '')
   if (!id) return {}
-  const key = `${mediaType}:${id}`
-  const cached = cardMetadataCache.get(key)
-  if (cached) return cached
-  try {
-    const persistent = JSON.parse(localStorage.getItem(`${CARD_METADATA_CACHE_PREFIX}:${key}`) || 'null')
-    if (persistent && Date.now() - Number(persistent.timestamp) < CARD_METADATA_CACHE_TTL) {
-      cardMetadataCache.set(key, persistent.data)
-      return persistent.data
-    }
-  } catch { /* ignore invalid cache */ }
-  const pending = pendingCardMetadata.get(key)
-  if (pending) return pending
 
-  const request = (async () => {
+  return cachedFetch<{ poster?: string; backdrop?: string; genre?: string }>(`tmdb_card:${mediaType}:${id}`, async () => {
     const details = await tmdbFetch(`/${mediaType}/${id}`) as Record<string, unknown>
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
-    const result = {
+    return {
       poster: details.poster_path ? `${IMG_BASE}/w342${details.poster_path}` : undefined,
       backdrop: details.backdrop_path ? `${IMG_BASE}/w780${details.backdrop_path}` : undefined,
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
-    cardMetadataCache.set(key, result)
-    try {
-      localStorage.setItem(`${CARD_METADATA_CACHE_PREFIX}:${key}`, JSON.stringify({ data: result, timestamp: Date.now() }))
-    } catch { /* memory cache remains available */ }
-    return result
-  })().finally(() => pendingCardMetadata.delete(key))
-
-  pendingCardMetadata.set(key, request)
-  return request
+  }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
 }
 
 function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'): SearchResult {
@@ -185,7 +151,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/movie/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/movie/${tmdbId}/images`, { include_image_language: 'en,null' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/movie/${tmdbId}/images`, { include_image_language: 'xx,null,en' }) as Promise<Record<string, unknown>>,
     ])
 
     const cast = ((credits.cast as Record<string, unknown>[]) || []).slice(0, 20).map((c): CastMember => ({
@@ -255,7 +221,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/tv/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/tv/${tmdbId}/images`, { include_image_language: 'en,null' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/tv/${tmdbId}/images`, { include_image_language: 'xx,null,en' }) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/external_ids`) as Promise<Record<string, unknown>>,
     ])
 
@@ -326,44 +292,30 @@ export const tmdbProvider: MetadataProvider = {
 
   async getSeason(showId: string, season: number): Promise<SeasonDetails> {
     const tmdbId = showId.replace('tmdb-', '')
-    const cacheKey = `tmdb_season:${tmdbId}:${season}`
-    try {
-      const cached = localStorage.getItem(cacheKey)
-      if (cached) {
-        const { data, timestamp } = JSON.parse(cached)
-        if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
-          return data
-        }
+
+    return cachedFetch<SeasonDetails>(`tmdb_season:${tmdbId}:${season}`, async () => {
+      const data = await tmdbFetch(`/tv/${tmdbId}/season/${season}`) as Record<string, unknown>
+      const episodes = ((data.episodes as Record<string, unknown>[]) || []).map((e) => ({
+        id: String(e.id),
+        episodeNumber: e.episode_number as number,
+        seasonNumber: e.season_number as number,
+        name: e.name as string,
+        overview: e.overview as string,
+        airDate: e.air_date as string,
+        runtime: e.runtime as number,
+        still: e.still_path ? `${IMG_BASE}/original${e.still_path}` : undefined,
+        rating: e.vote_average as number,
+        voteCount: e.vote_count as number,
+      }))
+
+      return {
+        seasonNumber: data.season_number as number,
+        name: data.name as string,
+        overview: data.overview as string,
+        poster: (data.poster_path as string) ? `${IMG_BASE}/w342${data.poster_path}` : undefined,
+        episodes,
       }
-    } catch { /* ignore cache errors */ }
-
-    const data = await tmdbFetch(`/tv/${tmdbId}/season/${season}`) as Record<string, unknown>
-    const episodes = ((data.episodes as Record<string, unknown>[]) || []).map((e) => ({
-      id: String(e.id),
-      episodeNumber: e.episode_number as number,
-      seasonNumber: e.season_number as number,
-      name: e.name as string,
-      overview: e.overview as string,
-      airDate: e.air_date as string,
-      runtime: e.runtime as number,
-      still: e.still_path ? `${IMG_BASE}/original${e.still_path}` : undefined,
-      rating: e.vote_average as number,
-      voteCount: e.vote_count as number,
-    }))
-
-    const result = {
-      seasonNumber: data.season_number as number,
-      name: data.name as string,
-      overview: data.overview as string,
-      poster: (data.poster_path as string) ? `${IMG_BASE}/w342${data.poster_path}` : undefined,
-      episodes,
-    }
-
-    try {
-      localStorage.setItem(cacheKey, JSON.stringify({ data: result, timestamp: Date.now() }))
-    } catch { /* ignore storage full */ }
-
-    return result
+    }, { category: CACHE_CATEGORIES.TVDB_SEASON, ttlSeconds: CACHE_TTLS.TVDB_SEASON })
   },
 
   async getEpisode(showId: string, season: number, episode: number): Promise<EpisodeDetails> {
@@ -598,34 +550,16 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<Se
   return items
 }
 
-const discoverCache = new Map<string, { items: SearchResult[]; timestamp: number }>()
-
 export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: string, forceRefresh = false): Promise<SearchResult[]> {
-  const cacheKey = rowId || JSON.stringify(config)
-  const ttlMs = (config.cacheTtl || 43200) * 1000
+  const cacheKey = `discover:${rowId || JSON.stringify(config)}`
+  const ttlSeconds = config.cacheTtl || CACHE_TTLS.DISCOVER
 
-  if (!forceRefresh) {
-    const cached = discoverCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < ttlMs) {
-      return cached.items
-    }
-    const lsCached = localStorage.getItem(`discover_cache:${cacheKey}`)
-    if (lsCached) {
-      try {
-        const { items, timestamp } = JSON.parse(lsCached)
-        if (Date.now() - timestamp < ttlMs) {
-          discoverCache.set(cacheKey, { items, timestamp })
-          return items
-        }
-      } catch { /* ignore */ }
-    }
+  if (forceRefresh) {
+    return discoverTmdb(config)
   }
 
-  const items = await discoverTmdb(config)
-  const cacheEntry = { items, timestamp: Date.now() }
-  discoverCache.set(cacheKey, cacheEntry)
-  try {
-    localStorage.setItem(`discover_cache:${cacheKey}`, JSON.stringify(cacheEntry))
-  } catch { /* ignore quota exceed */ }
-  return items
+  return cachedFetch<SearchResult[]>(cacheKey, () => discoverTmdb(config), {
+    category: CACHE_CATEGORIES.DISCOVER,
+    ttlSeconds,
+  })
 }

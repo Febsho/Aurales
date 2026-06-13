@@ -5,6 +5,8 @@ import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
 import { getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
 
@@ -23,19 +25,9 @@ export interface WatchedLookupItem {
   appSeasonEpCounts?: { season: number; count: number }[]
 }
 
-interface WatchedCache {
-  trakt?: { at: number; movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
-  simkl?: { at: number; items: SimklWatchlistItem[] }
-  pmdb?: { at: number; items: PMDBWatchedItem[] }
-  anilist?: never
-}
-
-const CACHE_TTL = 2 * 60 * 1000
-const PMDB_PERSISTENT_CACHE_KEY = 'pmdb_watched_status_cache_v2'
-const cache: WatchedCache = {}
-let traktPending: Promise<NonNullable<WatchedCache['trakt']>> | null = null
-let simklPending: Promise<NonNullable<WatchedCache['simkl']>> | null = null
-let pmdbPending: Promise<{ at: number; items: PMDBWatchedItem[] }> | null = null
+interface TraktCacheData { movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
+interface SimklCacheData { items: SimklWatchlistItem[] }
+interface PmdbCacheData { items: PMDBWatchedItem[] }
 
 export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
   return {
@@ -225,57 +217,25 @@ async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
   }
 }
 
-async function getTraktCache() {
-  const now = Date.now()
-  if (cache.trakt && now - cache.trakt.at < CACHE_TTL) return cache.trakt
-  if (!traktPending) {
-    traktPending = Promise.all([getWatchedMovies(), getWatchedShows()])
-      .then(([movies, shows]) => {
-        cache.trakt = { at: Date.now(), movies, shows }
-        return cache.trakt
-      })
-      .finally(() => { traktPending = null })
-  }
-  return traktPending
+async function getTraktCache(): Promise<TraktCacheData> {
+  return cachedFetch<TraktCacheData>('watched:trakt', async () => {
+    const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
+    return { movies, shows }
+  }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
 }
 
-async function getSimklCache() {
-  const now = Date.now()
-  if (cache.simkl && now - cache.simkl.at < CACHE_TTL) return cache.simkl
-  if (!simklPending) {
-    simklPending = Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
-      .then(([movies, episodes]) => {
-        cache.simkl = { at: Date.now(), items: [...movies, ...episodes] }
-        return cache.simkl
-      })
-      .finally(() => { simklPending = null })
-  }
-  return simklPending
+async function getSimklCache(): Promise<SimklCacheData> {
+  return cachedFetch<SimklCacheData>('watched:simkl', async () => {
+    const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
+    return { items: [...movies, ...episodes] }
+  }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
 }
 
-async function getPmdbCache() {
-  const now = Date.now()
-  if (cache.pmdb && now - cache.pmdb.at < CACHE_TTL) return cache.pmdb
-  if (!cache.pmdb) {
-    try {
-      const stored = JSON.parse(localStorage.getItem(PMDB_PERSISTENT_CACHE_KEY) || 'null') as { at?: number; items?: PMDBWatchedItem[] } | null
-      if (stored && Array.isArray(stored.items)) cache.pmdb = { at: Number(stored.at) || 0, items: stored.items }
-    } catch { /* ignore invalid cache */ }
-  }
-  if (cache.pmdb && now - cache.pmdb.at < CACHE_TTL) return cache.pmdb
-  if (!pmdbPending) {
-    pmdbPending = getPMDBWatched().then((items) => {
-      const next = { at: Date.now(), items }
-      cache.pmdb = next
-      try { localStorage.setItem(PMDB_PERSISTENT_CACHE_KEY, JSON.stringify(next)) } catch { /* memory cache still works */ }
-      return next
-    }).finally(() => { pmdbPending = null })
-  }
-  if (cache.pmdb?.items.length) {
-    void pmdbPending
-    return cache.pmdb
-  }
-  return pmdbPending
+async function getPmdbCache(): Promise<PmdbCacheData> {
+  return cachedFetch<PmdbCacheData>('watched:pmdb', async () => {
+    const items = await getPMDBWatched()
+    return { items }
+  }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
 }
 
 function normalizedIds(item: WatchedLookupItem): string[] {
