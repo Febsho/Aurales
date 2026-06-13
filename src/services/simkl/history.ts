@@ -24,8 +24,27 @@ export async function getSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
     return toHistoryItems(MOCK_WATCHLIST.filter((i) => !!i.show && i.status === 'completed'))
   }
   try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/completed?extended=full&date_from=1970-01-01')
-    return toHistoryItems(data ?? [])
+    const statuses = ['watching', 'completed', 'hold', 'dropped']
+    const responses = await Promise.all(
+      statuses.flatMap((status) => (['shows', 'anime'] as const).map((type) =>
+        simklRequest<SimklApiItem[]>(
+          `/sync/all-items/${type}/${status}?extended=full&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
+        ).catch(() => [])
+      ))
+    )
+    const merged = new Map<string, SimklWatchlistItem>()
+    for (const item of responses.flatMap((data) => toHistoryItems(data ?? []))) {
+      const key = `${item.type}:${item.simklId || item.imdbId || item.tvdbId || item.id}`
+      const existing = merged.get(key)
+      if (!existing) {
+        merged.set(key, item)
+        continue
+      }
+      const episodes = [...(existing.watchedEpisodes || []), ...(item.watchedEpisodes || [])]
+      const uniqueEpisodes = new Map(episodes.map((episode) => [`${episode.season}:${episode.episode}`, episode]))
+      merged.set(key, { ...existing, watchedEpisodes: [...uniqueEpisodes.values()] })
+    }
+    return [...merged.values()]
   } catch { return [] }
 }
 

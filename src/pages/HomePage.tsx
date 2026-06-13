@@ -26,7 +26,24 @@ import { getSimklWatchedMovies } from '../services/simkl/history'
 import type { SearchResult, HomeRowConfig } from '../types'
 import type { SimklWatchlistItem } from '../services/simkl/types'
 import { discoverTmdbWithCache } from '../services/tmdb'
-import { getProviderListItems } from '../services/providerLists'
+import { canonicalizeCatalogItemsWithTvdb, getProviderListItems } from '../services/providerLists'
+
+const HOME_ROW_CACHE_TTL = 5 * 60 * 1000
+const homeRowCache = new Map<string, { items: SearchResult[]; timestamp: number }>()
+
+function readHomeRowCache(key: string): SearchResult[] | null {
+  const cached = homeRowCache.get(key)
+  return cached ? cached.items : null
+}
+
+function isHomeRowCacheFresh(key: string): boolean {
+  const cached = homeRowCache.get(key)
+  return !!cached && Date.now() - cached.timestamp < HOME_ROW_CACHE_TTL
+}
+
+function writeHomeRowCache(key: string, items: SearchResult[]): void {
+  homeRowCache.set(key, { items, timestamp: Date.now() })
+}
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -79,9 +96,9 @@ function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; option
 
 function simklItemToSearchResult(item: SimklWatchlistItem): SearchResult {
   return {
-    id: item.imdbId || item.tmdbId?.toString() || item.simklId?.toString() || item.id,
+    id: item.tvdbId ? `tvdb-${item.tvdbId}` : item.imdbId || (item.tmdbId ? `tmdb-${item.tmdbId}` : item.simklId?.toString() || item.id),
     title: item.title,
-    type: item.type === 'show' ? 'series' : 'movie',
+    type: item.type === 'movie' ? 'movie' : 'series',
     year: item.year,
     poster: item.poster,
     backdrop: item.backdrop,
@@ -152,14 +169,22 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 }
 
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const [items, setItems] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `tvdb-v1:simkl:${row.providerListId || 'watchlist'}:${row.sortBy || 'default'}`
+  const cachedItems = readHomeRowCache(cacheKey)
+  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
+  const [loading, setLoading] = useState(!cachedItems)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      setLoading(true)
+      if (isHomeRowCacheFresh(cacheKey)) {
+        setItems(readHomeRowCache(cacheKey) || [])
+        setError(null)
+        setLoading(false)
+        return
+      }
+      setLoading(!readHomeRowCache(cacheKey))
       setError(null)
       try {
         let raw: SimklWatchlistItem[] = []
@@ -183,11 +208,12 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
           default:                  raw = await getSimklWatchlist(); break
         }
         if (!cancelled) {
-          const results = raw.map(simklItemToSearchResult)
+          const results = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
           if (row.sortBy === 'alphabetical') {
             results.sort((a, b) => a.title.localeCompare(b.title))
           }
           setItems(results)
+          writeHomeRowCache(cacheKey, results)
         }
       } catch (err: any) {
         if (!cancelled) {
@@ -199,7 +225,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     }
     load()
     return () => { cancelled = true }
-  }, [row.providerListId, row.sortBy])
+  }, [cacheKey, row.providerListId, row.sortBy])
 
   if (loading) {
     return (
@@ -248,13 +274,21 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 }
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const [items, setItems] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `tvdb-v1:provider:${row.sourceType}:${row.providerListId}:${row.sortBy || 'default'}`
+  const cachedItems = readHomeRowCache(cacheKey)
+  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
+  const [loading, setLoading] = useState(!cachedItems)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    if (isHomeRowCacheFresh(cacheKey)) {
+      setItems(readHomeRowCache(cacheKey) || [])
+      setError(null)
+      setLoading(false)
+      return
+    }
+    setLoading(!readHomeRowCache(cacheKey))
     setError(null)
     getProviderListItems(row)
       .then((results) => {
@@ -262,6 +296,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
         const sorted = [...results]
         if (row.sortBy === 'alphabetical') sorted.sort((a, b) => a.title.localeCompare(b.title))
         setItems(sorted)
+        writeHomeRowCache(cacheKey, sorted)
       })
       .catch((err: any) => {
         if (!cancelled) setError(err?.message || `Failed to fetch ${row.sourceType} list.`)
@@ -270,7 +305,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [row.providerListId, row.sourceType, row.sortBy])
+  }, [cacheKey, row.providerListId, row.sourceType, row.sortBy])
 
   const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
   if (loading) return <MediaRowSkeleton title={row.title} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
@@ -291,8 +326,10 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const [items, setItems] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `addon:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
+  const cachedItems = readHomeRowCache(cacheKey)
+  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
+  const [loading, setLoading] = useState(!cachedItems)
   const [error, setError] = useState<string | null>(null)
   const addons = useAppStore((s) => s.addons)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
@@ -319,12 +356,19 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     }
 
     let cancelled = false
-    setLoading(true)
+    if (isHomeRowCacheFresh(cacheKey)) {
+      setItems(readHomeRowCache(cacheKey) || [])
+      setError(null)
+      setLoading(false)
+      return
+    }
+    setLoading(!readHomeRowCache(cacheKey))
     setError(null)
     getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
       .then((results) => {
         if (cancelled) return
         setItems(results)
+        writeHomeRowCache(cacheKey, results)
         setLoading(false)
       })
       .catch((err) => {
@@ -336,7 +380,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     return () => {
       cancelled = true
     }
-  }, [isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
+  }, [cacheKey, isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
 
   if (loading) {
     return (
@@ -391,8 +435,10 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 }
 
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const [items, setItems] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `discover:${row.id}:${JSON.stringify(row.discoverConfig || {})}`
+  const cachedItems = readHomeRowCache(cacheKey)
+  const [items, setItems] = useState<SearchResult[]>(cachedItems || [])
+  const [loading, setLoading] = useState(!cachedItems)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -403,7 +449,13 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     }
 
     let cancelled = false
-    setLoading(true)
+    if (isHomeRowCacheFresh(cacheKey)) {
+      setItems(readHomeRowCache(cacheKey) || [])
+      setError(null)
+      setLoading(false)
+      return
+    }
+    setLoading(!readHomeRowCache(cacheKey))
     setError(null)
     discoverTmdbWithCache(row.discoverConfig, row.id)
       .then(async (results) => {
@@ -412,6 +464,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
         const enriched = await enrichSearchResultsWithAppMetadata(results)
         if (cancelled) return
         setItems(enriched)
+        writeHomeRowCache(cacheKey, enriched)
         setLoading(false)
       })
       .catch((err) => {
@@ -423,7 +476,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     return () => {
       cancelled = true
     }
-  }, [row.id, row.discoverConfig])
+  }, [cacheKey, row.id, row.discoverConfig])
 
   if (loading) {
     return (
@@ -700,7 +753,7 @@ export default function HomePage() {
           rowEl = <ContinueWatchingRow key={row.id} row={row} />;
         } else if (row.sourceType === 'simkl') {
           rowEl = <SimklRow key={row.id} row={row} />;
-        } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'anilist') {
+        } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
           rowEl = <ProviderListRow key={row.id} row={row} />;
         } else if (row.sourceType === 'discover') {
           rowEl = <DiscoverRow key={row.id} row={row} />;

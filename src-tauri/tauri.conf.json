@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Orynt",
+  "productName": "Aurales",
   "version": "0.1.0",
   "identifier": "com.orynt.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Orynt",
+        "title": "Aurales",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -49,6 +49,6 @@
       }
     },
     "shortDescription": "A modern streaming catalog app",
-    "longDescription": "Orynt is a modern desktop streaming catalog app with TMDB/TVDB metadata, Trakt sync, Stremio addon support, and mpv playback."
+    "longDescription": "Aurales is a modern desktop streaming catalog app with TMDB/TVDB metadata, Trakt sync, Stremio addon support, and mpv playback."
   }
 }

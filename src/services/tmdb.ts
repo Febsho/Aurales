@@ -1,16 +1,18 @@
 import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonDetails, EpisodeDetails, CastMember, Video, DiscoverConfig } from '../types'
+import { getTmdbApiKey } from './apiKeys'
 
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
 const LANDSCAPE_CACHE_PREFIX = 'tmdb_landscape_backdrop'
-
-function getApiKey(): string {
-  return localStorage.getItem('tmdb_api_key') || import.meta.env.VITE_TMDB_API_KEY || ''
-}
+const CARD_METADATA_CACHE_PREFIX = 'tmdb_card_metadata_v1'
+const CARD_METADATA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000
+const TVDB_ID_CACHE_PREFIX = 'tmdb_tvdb_id_v1'
+const cardMetadataCache = new Map<string, { poster?: string; backdrop?: string; genre?: string }>()
+const pendingCardMetadata = new Map<string, Promise<{ poster?: string; backdrop?: string; genre?: string }>>()
+const pendingTvdbIds = new Map<string, Promise<number | undefined>>()
 
 async function tmdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
-  const apiKey = getApiKey()
-  if (!apiKey) throw new Error('TMDB API key not configured')
+  const apiKey = getTmdbApiKey()
   const url = new URL(`${BASE_URL}${path}`)
   url.searchParams.set('api_key', apiKey)
   if (!('language' in params)) url.searchParams.set('language', 'en-US')
@@ -18,6 +20,30 @@ async function tmdbFetch(path: string, params: Record<string, string> = {}): Pro
   const res = await fetch(url.toString())
   if (!res.ok) throw new Error(`TMDB error: ${res.status}`)
   return res.json()
+}
+
+export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number | undefined> {
+  const id = String(tmdbId).replace('tmdb-', '')
+  if (!id) return undefined
+  const cacheKey = `${TVDB_ID_CACHE_PREFIX}:${id}`
+  const cached = localStorage.getItem(cacheKey)
+  if (cached) return cached === 'none' ? undefined : Number(cached) || undefined
+  const existing = pendingTvdbIds.get(id)
+  if (existing) return existing
+
+  const request = (async () => {
+    try {
+      const data = await tmdbFetch(`/tv/${id}/external_ids`) as Record<string, unknown>
+      const tvdbId = Number(data.tvdb_id) || undefined
+      localStorage.setItem(cacheKey, tvdbId ? String(tvdbId) : 'none')
+      return tvdbId
+    } catch {
+      return undefined
+    }
+  })().finally(() => pendingTvdbIds.delete(id))
+
+  pendingTvdbIds.set(id, request)
+  return request
 }
 
 function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
@@ -33,7 +59,7 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
   const selected = backdrops[0]
-  return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
+  return selected ? `${IMG_BASE}/w780${selected.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
@@ -72,14 +98,53 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
   }
 }
 
+export async function getTmdbCardMetadata(
+  type: 'movie' | 'series' | 'show' | 'anime',
+  tmdbId: string | number,
+): Promise<{ poster?: string; backdrop?: string; genre?: string }> {
+  const mediaType = type === 'movie' ? 'movie' : 'tv'
+  const id = String(tmdbId).replace('tmdb-', '')
+  if (!id) return {}
+  const key = `${mediaType}:${id}`
+  const cached = cardMetadataCache.get(key)
+  if (cached) return cached
+  try {
+    const persistent = JSON.parse(localStorage.getItem(`${CARD_METADATA_CACHE_PREFIX}:${key}`) || 'null')
+    if (persistent && Date.now() - Number(persistent.timestamp) < CARD_METADATA_CACHE_TTL) {
+      cardMetadataCache.set(key, persistent.data)
+      return persistent.data
+    }
+  } catch { /* ignore invalid cache */ }
+  const pending = pendingCardMetadata.get(key)
+  if (pending) return pending
+
+  const request = (async () => {
+    const details = await tmdbFetch(`/${mediaType}/${id}`) as Record<string, unknown>
+    const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
+    const result = {
+      poster: details.poster_path ? `${IMG_BASE}/w342${details.poster_path}` : undefined,
+      backdrop: details.backdrop_path ? `${IMG_BASE}/w780${details.backdrop_path}` : undefined,
+      genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
+    }
+    cardMetadataCache.set(key, result)
+    try {
+      localStorage.setItem(`${CARD_METADATA_CACHE_PREFIX}:${key}`, JSON.stringify({ data: result, timestamp: Date.now() }))
+    } catch { /* memory cache remains available */ }
+    return result
+  })().finally(() => pendingCardMetadata.delete(key))
+
+  pendingCardMetadata.set(key, request)
+  return request
+}
+
 function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'): SearchResult {
   return {
     id: `tmdb-${item.id}`,
     title: (item.title || item.name) as string,
     type,
     year: ((item.release_date || item.first_air_date) as string)?.slice(0, 4) ? parseInt(((item.release_date || item.first_air_date) as string).slice(0, 4)) : undefined,
-    poster: item.poster_path ? `${IMG_BASE}/w780${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
+    poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/w780${item.backdrop_path}` : undefined,
     overview: item.overview as string,
     rating: item.vote_average as number,
     provider: 'tmdb',

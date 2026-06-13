@@ -123,6 +123,7 @@ export interface EpisodeDetails {
   debugOriginalSeasonNumber?: number
   debugOriginalEpisodeNumber?: number
   debugOriginalAbsoluteNumber?: number
+  absoluteEpisodeNumber?: number
 }
 
 export interface CastMember {
@@ -272,7 +273,7 @@ export interface HomeRowConfig {
   enabled: boolean
   order: number
   /** Determines which data source drives this row */
-  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'anilist'
+  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'anilist'
   /** Provider-specific list key, for example Simkl/Trakt/PMDB/AniList status or list id */
   providerListId?: string
   sortBy?: 'default' | 'alphabetical'

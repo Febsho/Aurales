@@ -50,9 +50,9 @@ export default function Sidebar() {
       <div className="flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-accent/20 flex items-center justify-center flex-shrink-0">
-            <span className="text-accent font-black text-sm">O</span>
+            <span className="text-accent font-black text-sm">A</span>
           </div>
-          <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Orynt</span>
+          <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
         </div>
         <button
           onClick={toggle}
@@ -106,7 +106,7 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div className="p-3 border-t border-white/[0.04]">
-        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Orynt v0.1.0</div>
+        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v0.1.0</div>
       </div>
     </aside>
     </>

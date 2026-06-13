@@ -62,21 +62,41 @@ export default function DetailContentShell({
 
       window.requestAnimationFrame(animate)
     }
+    let consecutiveUpDelta = 0
     const handleWheel = (event: WheelEvent) => {
-      if (event.shiftKey || (event.target as HTMLElement | null)?.closest('.episode-scroll')) return
+      if (event.shiftKey) return
       const sectionTop = section.offsetTop
       const currentTop = scrollContainer.scrollTop
+      const isOverHorizontalScroller = (event.target as HTMLElement | null)?.closest('.episode-scroll, .season-scroll')
 
       if (locked) {
         event.preventDefault()
         return
       }
+
+      // Snap down: at hero, scroll down → jump to content
       if (event.deltaY > 20 && currentTop <= 4) {
         event.preventDefault()
+        consecutiveUpDelta = 0
         transitionTo(sectionTop)
-      } else if (event.deltaY < -20 && Math.abs(currentTop - sectionTop) <= 6) {
-        event.preventDefault()
-        transitionTo(0)
+        return
+      }
+
+      // Snap up: in the content zone, scroll up → jump to hero
+      // Accumulate upward scroll intent so a single flick doesn't trigger it,
+      // but consecutive scroll-up events do. Resets on any downward scroll.
+      if (event.deltaY > 0) {
+        consecutiveUpDelta = 0
+        return
+      }
+
+      if (event.deltaY < -5 && currentTop > 0 && currentTop <= sectionTop + 200) {
+        consecutiveUpDelta += Math.abs(event.deltaY)
+        if (consecutiveUpDelta >= 60) {
+          if (!isOverHorizontalScroller) event.preventDefault()
+          consecutiveUpDelta = 0
+          transitionTo(0)
+        }
       }
     }
 

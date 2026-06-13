@@ -68,7 +68,7 @@ export async function simklRequest<T = unknown>(
 
   const urlParams = new URLSearchParams()
   urlParams.set('client_id', clientId)
-  urlParams.set('app-name', 'Orynt')
+  urlParams.set('app-name', 'Aurales')
   urlParams.set('app-version', '0.1.0')
 
   let finalPath = path

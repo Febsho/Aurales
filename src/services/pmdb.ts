@@ -8,6 +8,7 @@
  */
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
+import { getTmdbApiKey } from './apiKeys'
 
 const BASE_URL = 'https://publicmetadb.com/api/external'
 
@@ -161,18 +162,20 @@ function normalizeResumePoint(raw: unknown): PMDBResumePoint | null {
 function normalizeWatchedItem(raw: unknown): PMDBWatchedItem | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
-  const ids = (r.ids ?? (r.media as any)?.ids ?? {}) as Record<string, unknown>
+  const media = (r.media ?? r.item ?? {}) as Record<string, unknown>
+  const ids = (r.ids ?? media.ids ?? {}) as Record<string, unknown>
+  const episodeData = r.episode && typeof r.episode === 'object' ? r.episode as Record<string, unknown> : null
 
-  const tmdbId = toNumber(r.tmdb_id ?? r.tmdbId ?? r.tmdb ?? ids.tmdb ?? (r.media as any)?.tmdb_id)
-  const mediaType = normalizeMediaType(r.media_type ?? r.mediaType ?? r.type ?? (r.media as any)?.media_type)
+  const tmdbId = toNumber(r.tmdb_id ?? r.tmdbId ?? r.tmdb ?? ids.tmdb ?? media.tmdb_id ?? media.tmdbId)
+  const mediaType = normalizeMediaType(r.media_type ?? r.mediaType ?? r.type ?? media.media_type ?? media.mediaType ?? media.type)
   if (!tmdbId || !mediaType) return null
 
   return {
     id: String(r.id ?? `${mediaType}-${tmdbId}-${r.season ?? ''}-${r.episode ?? ''}`),
     tmdb_id: tmdbId,
     media_type: mediaType,
-    season: toNumber(r.season),
-    episode: toNumber(r.episode),
+    season: toNumber(r.season ?? r.season_number ?? r.seasonNumber ?? episodeData?.season ?? episodeData?.season_number ?? episodeData?.seasonNumber),
+    episode: toNumber(episodeData?.number ?? episodeData?.episode ?? episodeData?.episode_number ?? episodeData?.episodeNumber ?? r.episode),
     watched_at: (r.watched_at ?? r.watchedAt ?? r.last_watched_at) as string | undefined,
   }
 }
@@ -226,7 +229,7 @@ export async function lookupTmdbId(
 ): Promise<{ tmdbId: number; mediaType: 'movie' | 'tv' } | null> {
   // 1. Try TMDB /find directly (imdb IDs, no PMDB key needed)
   if (idType === 'imdb') {
-    const tmdbKey = localStorage.getItem('tmdb_api_key') || ''
+    const tmdbKey = getTmdbApiKey()
     if (tmdbKey) {
       try {
         const res = await fetch(
@@ -365,16 +368,31 @@ export async function scrobblePMDB(
 export async function getPMDBWatched(): Promise<PMDBWatchedItem[]> {
   if (!useAppStore.getState().pmdbApiKey) return []
   try {
-    const items: PMDBWatchedItem[] = []
     const perPage = 500
-    for (let page = 1; page <= 20; page++) {
-      const result = await pmdbFetch('GET', `/watched?perPage=${perPage}&page=${page}`)
-      if (!result.ok) { console.warn('[PMDB] GET /watched failed:', result.status); break }
-      const rawItems = pickArrayPayload(result.data)
-      items.push(...rawItems.map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null))
-      const d = result.data as Record<string, unknown> | null
-      const total = toNumber((d?.meta as any)?.total ?? d?.total)
-      if (rawItems.length < perPage || (total != null && items.length >= total)) break
+    const first = await pmdbFetch('GET', `/watched?perPage=${perPage}&page=1`)
+    if (!first.ok) return []
+    const firstRaw = pickArrayPayload(first.data)
+    const items = firstRaw.map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null)
+    const firstData = first.data as Record<string, unknown> | null
+    const meta = firstData?.meta as Record<string, unknown> | undefined
+    const total = toNumber(meta?.total ?? firstData?.total)
+    const reportedPages = toNumber(meta?.totalPages ?? meta?.total_pages ?? firstData?.totalPages ?? firstData?.total_pages)
+    const reportedPerPage = toNumber(meta?.perPage ?? meta?.per_page ?? firstData?.perPage ?? firstData?.per_page)
+    const effectivePerPage = reportedPerPage || firstRaw.length || perPage
+    const totalPages = reportedPages != null
+      ? Math.min(20, reportedPages)
+      : total != null
+      ? Math.min(20, Math.ceil(total / effectivePerPage))
+      : (firstRaw.length < perPage ? 1 : 20)
+
+    if (totalPages > 1) {
+      const remaining = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, index) => pmdbFetch('GET', `/watched?perPage=${perPage}&page=${index + 2}`))
+      )
+      for (const result of remaining) {
+        if (!result.ok) continue
+        items.push(...pickArrayPayload(result.data).map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null))
+      }
     }
     return items
   } catch (e) {
@@ -439,6 +457,68 @@ export interface PMDBListItem {
   tmdb_id: number
   media_type: 'movie' | 'tv'
   added_at: string
+}
+
+export interface PMDBPickCatalog {
+  id: string
+  slug: string
+  name: string
+  description?: string
+  seed_type: string
+  seed_params: Record<string, unknown>
+  filters: Record<string, unknown>
+  weights: Record<string, unknown>
+  exclude_watched: boolean
+  exclude_watchlist: boolean
+  created?: string
+  updated?: string
+}
+
+export interface PMDBPickItem {
+  tmdb_id: number
+  media_type: 'movie' | 'tv'
+  title: string
+  poster_path?: string | null
+  backdrop_path?: string | null
+  year?: string
+  overview?: string
+  genre_ids?: number[]
+  vote_average?: number
+  vote_count?: number
+  popularity?: number
+  original_language?: string
+  score?: number
+  reasons?: string[]
+}
+
+export async function getPMDBPickCatalogs(): Promise<PMDBPickCatalog[]> {
+  if (!useAppStore.getState().pmdbApiKey) return []
+  const result = await pmdbFetch('GET', '/catalogs')
+  if (!result.ok) return []
+  return pickArrayPayload(result.data) as PMDBPickCatalog[]
+}
+
+export async function getPMDBPickItems(catalogId: string): Promise<PMDBPickItem[]> {
+  if (!useAppStore.getState().pmdbApiKey || !catalogId) return []
+
+  const path = `/catalogs/${encodeURIComponent(catalogId)}/items`
+  const first = await pmdbFetch('GET', `${path}?page=1`)
+  if (!first.ok) return []
+
+  const firstData = first.data as { items?: PMDBPickItem[]; totalPages?: number }
+  const items = Array.isArray(firstData?.items) ? firstData.items : []
+  const totalPages = Math.min(5, Math.max(1, Number(firstData?.totalPages) || 1))
+  if (totalPages === 1) return items
+
+  const remaining = await Promise.all(
+    Array.from({ length: totalPages - 1 }, (_, index) => pmdbFetch('GET', `${path}?page=${index + 2}`))
+  )
+  for (const result of remaining) {
+    if (!result.ok) continue
+    const data = result.data as { items?: PMDBPickItem[] }
+    if (Array.isArray(data?.items)) items.push(...data.items)
+  }
+  return items
 }
 
 export async function getPMDBLists(): Promise<PMDBList[]> {

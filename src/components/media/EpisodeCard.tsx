@@ -11,6 +11,7 @@ interface EpisodeCardProps {
   watched?: boolean
   progress?: number
   onPlay?: () => void
+  onContextMenu?: (e: React.MouseEvent) => void
   className?: string
 }
 
@@ -24,6 +25,7 @@ export default function EpisodeCard({
   watched,
   progress,
   onPlay,
+  onContextMenu,
   className = '',
 }: EpisodeCardProps) {
   const [imgError, setImgError] = useState(false)
@@ -31,6 +33,7 @@ export default function EpisodeCard({
   return (
     <button
       onClick={onPlay}
+      onContextMenu={onContextMenu}
       className={[
         'w-full flex gap-4 p-3 rounded-xl',
         'bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.04] hover:border-white/[0.10]',

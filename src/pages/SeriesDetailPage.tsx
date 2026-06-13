@@ -18,6 +18,7 @@ import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import { applyEpisodeArt, applySearchResultArt, applyShowArt } from '../services/artwork'
 import { isWatchedFromProviders } from '../services/watchedStatus'
+import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
@@ -38,6 +39,64 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+}
+
+const SERIES_DETAIL_CACHE_TTL = 10 * 60 * 1000
+interface SeriesDetailCacheEntry {
+  show: ShowDetails
+  selectedSeason: number | null
+  episodeMap: Record<number, SeasonDetails['episodes']>
+  metadataStatus: 'resolved' | 'fallback' | 'error'
+  timestamp: number
+}
+const seriesDetailCache = new Map<string, SeriesDetailCacheEntry>()
+
+function animeStructureSettingsKey(): string {
+  const settings = useAppStore.getState()
+  return [
+    settings.hideUnairedAnimeSeasons,
+    settings.hideUnairedAnimeEpisodes,
+    settings.includeAnimeSpecials,
+    settings.useGenericAnimeSeasonLabels,
+    settings.avoidJapaneseSeasonNames,
+    settings.preferTvdbAnimeSeasons,
+  ].map(Number).join('')
+}
+
+function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
+  const settingsKey = animeStructureSettingsKey()
+  return [
+    id,
+    state.imdbId,
+    state.tmdbId != null ? `tmdb:${state.tmdbId}` : undefined,
+    state.tvdbId != null ? `tvdb:${state.tvdbId}` : undefined,
+    state.anilistId != null ? `anilist:${state.anilistId}` : undefined,
+    state.malId != null ? `mal:${state.malId}` : undefined,
+  ].filter((key): key is string => !!key).map((key) => `${settingsKey}:${key}`)
+}
+
+function readSeriesDetailCache(id: string | undefined, state: LocationState): SeriesDetailCacheEntry | null {
+  for (const key of seriesDetailCacheKeys(id, state)) {
+    const cached = seriesDetailCache.get(key)
+    if (cached && Date.now() - cached.timestamp < SERIES_DETAIL_CACHE_TTL) return cached
+  }
+  return null
+}
+
+function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
+  const settingsKey = animeStructureSettingsKey()
+  const keys = new Set([
+    ...seriesDetailCacheKeys(id, state),
+    ...[
+      entry.show.id,
+      entry.show.imdbId,
+      entry.show.tmdbId != null ? `tmdb:${entry.show.tmdbId}` : undefined,
+      entry.show.tvdbId != null ? `tvdb:${entry.show.tvdbId}` : undefined,
+      entry.show.anilistId != null ? `anilist:${entry.show.anilistId}` : undefined,
+      entry.show.malId != null ? `mal:${entry.show.malId}` : undefined,
+    ].filter((key): key is string => !!key).map((key) => `${settingsKey}:${key}`),
+  ])
+  for (const key of keys) seriesDetailCache.set(key, entry)
 }
 
 function addonMetaToShow(meta: Record<string, unknown>, id: string): ShowDetails {
@@ -156,17 +215,22 @@ function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number, i
   }
 }
 
-function processSeasons(seasons: ShowDetails['seasons']): ShowDetails['seasons'] {
+function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowDetails['seasons'] {
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const cutoff = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())
+  const settings = useAppStore.getState()
 
   const hasEpisodeCounts = seasons.some((s) => s.episodeCount > 0)
 
   return seasons
     .filter((s) => {
-      if (hasEpisodeCounts && s.episodeCount === 0) return false
-      if (s.airDate) {
+      if (isAnime && !settings.includeAnimeSpecials && s.seasonNumber === 0) return false
+      if (isAnime && settings.hideUnairedAnimeSeasons) {
+        if (s.airDate && s.airDate.slice(0, 10) > today) return false
+      }
+      if ((!isAnime || settings.hideUnairedAnimeSeasons) && hasEpisodeCounts && s.episodeCount === 0) return false
+      if (s.airDate && (!isAnime || settings.hideUnairedAnimeSeasons)) {
         const airDate = new Date(s.airDate)
         if (airDate > cutoff) return false
         if (s.airDate.slice(0, 10) > today && s.episodeCount === 0) return false
@@ -250,6 +314,7 @@ export default function SeriesDetailPage() {
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  const showCtxMenu = useContextMenu((s) => s.show)
   const blurSpoilers = useAppStore((s) => s.blurSpoilers)
   const blurThumbnails = useAppStore((s) => s.blurThumbnails)
   const blurTitles = useAppStore((s) => s.blurTitles)
@@ -266,6 +331,20 @@ export default function SeriesDetailPage() {
 
   useEffect(() => {
     async function load() {
+      const cached = readSeriesDetailCache(id, state)
+      if (cached) {
+        setAddonMeta(null)
+        setSeasonCache({})
+        setMalRating(null)
+        fetchedSeasonRef.current = null
+        setShow(cached.show)
+        setSelectedSeason(cached.selectedSeason)
+        tvdbMappedEpisodesRef.current = cached.episodeMap
+        setMetadataStatus(cached.metadataStatus)
+        setLoading(false)
+        return
+      }
+
       setLoading(true)
       setMetadataStatus('resolving')
       setAddonMeta(null)
@@ -396,7 +475,7 @@ export default function SeriesDetailPage() {
       } : null
 
       if (placeholder) {
-        const art = applyShowArt({ ...placeholder, seasons: processSeasons(placeholder.seasons) })
+        const art = applyShowArt({ ...placeholder, seasons: processSeasons(placeholder.seasons, isAnimeLocal) })
         setShow(art)
         if (!isAnimeLocal) {
           if (art.seasons.length > 0) setSelectedSeason(art.seasons[0].seasonNumber)
@@ -406,6 +485,7 @@ export default function SeriesDetailPage() {
 
       // Early anime detection — route to TVDB first for anime
       const isAnimeEarly = !!(knownIds.anilistId || knownIds.malId)
+      let isAnimeLate = false
 
       if (isAnimeEarly) {
         console.log('[SeriesDetailPage] Anime detected early, using TVDB-first flow')
@@ -513,6 +593,7 @@ export default function SeriesDetailPage() {
                     voteCount: undefined,
                     debugSource: ep.debugSource || 'tvdb',
                     debugResolverStep: ep.debugResolverStep || 'tvdbSeasonMapper.mapTvdbSeasons',
+                    absoluteEpisodeNumber: ep.absoluteEpisodeNumber,
                   }))
                 }
               }
@@ -609,9 +690,10 @@ export default function SeriesDetailPage() {
 
         // Detect anime late (via anime-lists) and apply TVDB override
         if (appResult) {
-          const isAnimeLate =
+          isAnimeLate = !!(
             (appResult.imdbId && await import('../services/animeLists').then(m => m.lookupByImdbId(appResult!.imdbId!)).then(e => !!e).catch(() => false)) ||
             (appResult.tvdbId && await import('../services/animeLists').then(m => m.lookupByTvdbId(Number(String(appResult!.tvdbId).replace('tvdb-', '')))).then(e => e.length > 0).catch(() => false))
+          )
 
           if (isAnimeLate) {
             console.log('[SeriesDetailPage] Late anime detection — applying TVDB season override')
@@ -675,6 +757,7 @@ export default function SeriesDetailPage() {
                         voteCount: undefined,
                         debugSource: ep.debugSource || 'tvdb',
                         debugResolverStep: ep.debugResolverStep || 'tvdbSeasonMapper.mapTvdbSeasons',
+                        absoluteEpisodeNumber: ep.absoluteEpisodeNumber,
                       }))
                     }
                   }
@@ -730,17 +813,15 @@ export default function SeriesDetailPage() {
       const finalTvdbId = finalResult.tvdbId ? String(finalResult.tvdbId).replace('tvdb-', '') : undefined
       const finalTmdbId = finalResult.tmdbId ? String(finalResult.tmdbId).replace('tmdb-', '') : undefined
       const finalImdbId = finalResult.imdbId
-      
-      const targetId = finalTvdbId
-        ? `app_tvdb_${finalTvdbId}`
-        : finalTmdbId
-        ? `app_tmdb_tv_${finalTmdbId}`
-        : finalImdbId
-        ? `app_show_${finalImdbId}`
-        : finalResult.id || id || 'unknown'
+      const isAnime = isAnimeEarly || isAnimeLate
+
+      // Anime uses TVDB as canonical ID; regular shows use TMDB
+      const targetId = isAnime
+        ? (finalTvdbId ? `app_tvdb_${finalTvdbId}` : finalTmdbId ? `app_tmdb_tv_${finalTmdbId}` : finalImdbId ? `app_show_${finalImdbId}` : finalResult.id || id || 'unknown')
+        : (finalTmdbId ? `app_tmdb_tv_${finalTmdbId}` : finalTvdbId ? `app_tvdb_${finalTvdbId}` : finalImdbId ? `app_show_${finalImdbId}` : finalResult.id || id || 'unknown')
 
       finalResult.id = targetId
-      finalResult.seasons = processSeasons(finalResult.seasons)
+      finalResult.seasons = processSeasons(finalResult.seasons, isAnime)
       const artApplied = applyShowArt(finalResult)
 
       // Resolve IMDb ID if still missing (needed for posters/ratings)
@@ -767,9 +848,10 @@ export default function SeriesDetailPage() {
 
       setSeasonCache({})
       setShow(finalArt)
+      const firstNormalSeason = finalArt.seasons.find(s => s.seasonNumber > 0)
+      const nextSelectedSeason = firstNormalSeason?.seasonNumber ?? finalArt.seasons[0]?.seasonNumber ?? null
       if (finalArt.seasons.length > 0) {
-        const firstNormalSeason = finalArt.seasons.find(s => s.seasonNumber > 0)
-        setSelectedSeason(firstNormalSeason?.seasonNumber ?? finalArt.seasons[0].seasonNumber)
+        setSelectedSeason(nextSelectedSeason)
       } else {
         setSelectedSeason(null)
       }
@@ -784,6 +866,14 @@ export default function SeriesDetailPage() {
       }
       setMetadataStatus(status)
       setLoading(false)
+
+      writeSeriesDetailCache(id, state, {
+        show: finalArt,
+        selectedSeason: nextSelectedSeason,
+        episodeMap: tvdbMappedEpisodesRef.current,
+        metadataStatus: status,
+        timestamp: Date.now(),
+      })
 
       if (id && (id.startsWith('anilist-') || id.startsWith('mal-')) && finalArt.id && finalArt.id !== id) {
         console.log('[SeriesDetailPage] Normalizing URL route ID to:', finalArt.id)
@@ -1084,6 +1174,7 @@ export default function SeriesDetailPage() {
           tvdbId: show.tvdbId ?? episode.tvdbId,
           season: episode.seasonNumber,
           episode: episode.episodeNumber,
+          absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
           isAnime,
           appSeasonEpCounts: isAnime ? show.seasons
             .filter((s) => s.seasonNumber > 0)
@@ -1458,6 +1549,12 @@ export default function SeriesDetailPage() {
                 key={season.seasonNumber}
                 data-season={season.seasonNumber}
                 onClick={() => selectSeason(season.seasonNumber)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, provider: 'tmdb' }
+                  const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
+                  showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
+                }}
                 className={[
                   'flex-shrink-0 px-6 py-3 rounded-xl text-base font-semibold transition-all duration-300 cursor-pointer focus-ring',
                   selectedSeason === season.seasonNumber
@@ -1507,6 +1604,13 @@ export default function SeriesDetailPage() {
                     tabIndex={0}
                     onClick={() => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handlePlayEpisode(ep.seasonNumber, ep.episodeNumber) } }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      if (!show) return
+                      const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, provider: 'tmdb' }
+                      const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
+                      showCtxMenu(e.clientX, e.clientY, { kind: 'episode', item: searchResult, episode: ep, seasonNumber: ep.seasonNumber, showImdbId: show.imdbId, appSeasonCounts })
+                    }}
                     className="episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer"
                   >
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated shadow-xl mb-3 ring-1 ring-white/10 group-hover:ring-accent/50 transition-all">
