@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { getLogs, clearLogs, subscribeLogs, logEvent } from '../services/diagnostics'
 import { useAppStore } from '../stores/appStore'
+import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { launchEmbeddedPlayer } from '../services/player'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 
@@ -32,6 +33,7 @@ export default function DeveloperPage() {
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const store = useAppStore()
+  const wtStore = useWatchTogetherStore()
 
   // Fetch MPV Path and Candidates info from backend
   useEffect(() => {
@@ -321,6 +323,100 @@ export default function DeveloperPage() {
               ) : (
                 <div className="h-24 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/30 text-xs italic">
                   No video playback is currently active
+                </div>
+              )}
+            </div>
+
+            {/* Watch Together Debug */}
+            <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
+              <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">Watch Together Debug</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      const report = {
+                        room: wtStore.currentRoom ? {
+                          id: wtStore.currentRoom.id,
+                          code: wtStore.currentRoom.code,
+                          hostUserId: wtStore.currentRoom.hostUserId,
+                          selectedMedia: wtStore.currentRoom.selectedMedia?.title,
+                          selectedEpisode: wtStore.currentRoom.selectedEpisode ? `S${wtStore.currentRoom.selectedEpisode.seasonNumber}E${wtStore.currentRoom.selectedEpisode.episodeNumber}` : null,
+                          playbackStatus: wtStore.currentRoom.playback.status,
+                          playbackTime: wtStore.currentRoom.playback.currentTime,
+                          participantCount: wtStore.currentRoom.participants.length,
+                          participants: wtStore.currentRoom.participants.map(p => ({ id: p.id, name: p.name, status: p.status, isReady: p.isReady, isHost: p.isHost })),
+                        } : null,
+                        userId: wtStore.currentUserId,
+                        isHost: wtStore.isHost,
+                        connectionStatus: wtStore.connectionStatus,
+                        lastEvents: wtStore.debugLog.slice(-20),
+                      }
+                      navigator.clipboard.writeText(JSON.stringify(report, null, 2))
+                    }}
+                    className="text-xs font-semibold text-accent hover:text-accent-hover transition-colors cursor-pointer"
+                  >
+                    Copy Debug Report
+                  </button>
+                  <button
+                    onClick={() => wtStore.clearDebugLog()}
+                    className="text-xs font-semibold text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+                  >
+                    Clear Log
+                  </button>
+                </div>
+              </div>
+
+              {wtStore.currentRoom ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Room ID</span>
+                    <span className="text-xs font-mono text-white/70 break-all">{wtStore.currentRoom.id.slice(0, 12)}...</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Room Code</span>
+                    <span className="text-base font-bold text-accent">{wtStore.currentRoom.code}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Connection</span>
+                    <span className="text-base font-bold capitalize">{wtStore.connectionStatus}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Role</span>
+                    <span className="text-base font-bold">{wtStore.isHost ? 'Host' : 'Guest'}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Participants</span>
+                    <span className="text-base font-bold">{wtStore.currentRoom.participants.length}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Playback</span>
+                    <span className="text-base font-bold capitalize">{wtStore.currentRoom.playback.status}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Media</span>
+                    <span className="text-xs font-medium text-white/70 truncate block">{wtStore.currentRoom.selectedMedia?.title || 'None'}</span>
+                  </div>
+                  <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Time</span>
+                    <span className="text-base font-bold">{Math.floor(wtStore.currentRoom.playback.currentTime)}s</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-16 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/30 text-xs italic">
+                  No Watch Together room active
+                </div>
+              )}
+
+              {/* Recent WS Events */}
+              {wtStore.debugLog.length > 0 && (
+                <div className="bg-[#060608] rounded-xl border border-white/5 font-mono text-[11px] p-3 max-h-48 overflow-y-auto space-y-1 select-text">
+                  {wtStore.debugLog.slice(-50).map((entry, idx) => (
+                    <div key={idx} className="leading-relaxed hover:bg-white/[0.02] px-1 rounded transition-colors">
+                      <span className="text-white/20 mr-2">{new Date(entry.timestamp).toISOString().split('T')[1].slice(0, 8)}</span>
+                      <span className={entry.direction === 'out' ? 'text-blue-300' : 'text-orange-300'}>{entry.direction === 'out' ? '→' : '←'}</span>
+                      <span className="text-white/60 ml-1.5">{entry.event}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

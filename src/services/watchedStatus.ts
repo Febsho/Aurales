@@ -7,6 +7,7 @@ import { getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } 
 import { mapTvdbEpisodeToAniList } from './animeLists'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
 
 export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
 
@@ -100,13 +101,29 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     let anilistId = item.anilistId
     let progressEpisode = item.absoluteEpisode ?? item.episode
 
+    // Try animeApi mapping first
     if (item.tvdbId != null && item.season != null && item.episode != null) {
       const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
       if (Number.isFinite(tvdbId)) {
-        const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
-        if (mapped) {
-          anilistId = mapped.anilistId
-          progressEpisode = mapped.absoluteEpisode
+        try {
+          const apiMapping = await mapEpisodeToProviders({
+            localMediaId: item.id,
+            tvdbSeriesId: tvdbId,
+            tvdbSeasonNumber: item.season,
+            tvdbEpisodeNumber: item.episode,
+          })
+          if (apiMapping?.anilist && isConfidenceSufficient(apiMapping)) {
+            anilistId = apiMapping.anilist.mediaId
+            progressEpisode = apiMapping.anilist.episodeNumber ?? progressEpisode
+          }
+        } catch { /* fall through to animeLists */ }
+
+        if (anilistId === item.anilistId) {
+          const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
+          if (mapped) {
+            anilistId = mapped.anilistId
+            progressEpisode = mapped.absoluteEpisode
+          }
         }
       }
     }

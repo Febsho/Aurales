@@ -59,13 +59,14 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
       const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
       const anilistId = item.anilistId ? Number(item.anilistId) : undefined
       
-      const cached = await getAppMetadataByIds({
+      const raw = await getAppMetadataByIds({
         id: item.id,
         imdbId: item.imdbId,
         tmdbId,
         tvdbId,
         anilistId,
       })
+      const cached = raw?.sourceMetadataProvider === 'fallback_addon' ? null : raw
       return { item, cached }
     })
   )
@@ -83,6 +84,7 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
         index,
         input: {
           addonId: item.sourceAddonId || item.provider || 'tmdb',
+          addonType: item.type,
           id: item.sourceAddonItemId || item.id,
           title: item.title,
           year: item.year,
@@ -102,14 +104,14 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
         uncachedInputs.map(x => x.input),
         4
       )
-      // Map resolved items back to their respective lookup positions using ID matching
       resolvedList.forEach((resolvedItem) => {
         if (!resolvedItem) return
+        if (resolvedItem.sourceMetadataProvider === 'fallback_addon') return
         const matched = cacheLookupResults.find(({ item }) => {
           const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
           const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
           const anilistId = item.anilistId ? Number(item.anilistId) : undefined
-          
+
           return (
             (resolvedItem.imdbId && resolvedItem.imdbId === item.imdbId) ||
             (resolvedItem.tmdbId && resolvedItem.tmdbId === tmdbId) ||
@@ -146,8 +148,9 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
       const cached = await invoke<string | null>('get_app_metadata_for_addon', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => null)
       if (cached) {
         const parsed = JSON.parse(cached) as AppMediaItem
-        // Invalidate stale anime cache if resolver version has changed
-        if (parsed.type === 'anime') {
+        if (parsed.sourceMetadataProvider === 'fallback_addon') {
+          await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
+        } else if (parsed.type === 'anime') {
           const activeSettings = animeSettingsSignature()
           if (parsed.animeResolverVersion !== ANIME_RESOLVER_VERSION || parsed.animeSettingsSignature !== activeSettings) {
             console.log('[metadata] Anime cache stale, re-resolving:', input.id)
@@ -197,8 +200,10 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
       item.animeResolverVersion = ANIME_RESOLVER_VERSION
       item.animeSettingsSignature = animeSettingsSignature()
     }
-    await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
-      addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
+    if (item.sourceMetadataProvider !== 'fallback_addon') {
+      await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
+        addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
+    }
     return item
   })().finally(() => pending.delete(key))
   pending.set(key, task)
@@ -208,6 +213,13 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
 export async function clearAppMetadataCache(): Promise<void> {
   pending.clear()
   await invoke('clear_app_metadata')
+  const { cacheClearCategory } = await import('../cache/sqliteCache')
+  await Promise.all([
+    cacheClearCategory('addon_catalog'),
+    cacheClearCategory('provider_list'),
+    cacheClearCategory('simkl_list'),
+    cacheClearCategory('anime_mapping'),
+  ])
 }
 
 export async function clearAnimeMetadataCache(): Promise<void> {

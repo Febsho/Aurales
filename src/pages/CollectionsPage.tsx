@@ -2489,11 +2489,7 @@ export default function CollectionsPage() {
                       key={row.id}
                       row={row}
                       addons={addons}
-                      onRemove={() => {
-                        if (confirm(`Remove "${row.title}" from your home screen?`)) {
-                          removeHomeRow(row.id)
-                        }
-                      }}
+                      onRemove={() => removeHomeRow(row.id)}
                       onEdit={() => {
                         setEditingRow(row)
                         setAddOverlay(true)

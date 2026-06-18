@@ -186,7 +186,9 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
             case 'watchlist':
             default:                  raw = await getSimklWatchlist(); break
           }
-          const results = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
+          const canonicalized = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
+          const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+          const results = await enrichSearchResultsWithAppMetadata(canonicalized)
           if (row.sortBy === 'alphabetical') {
             results.sort((a, b) => a.title.localeCompare(b.title))
           }
@@ -271,9 +273,8 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
       try {
         const fetcher = async () => {
           const results = await getProviderListItems(row)
-          const sorted = [...results]
-          if (row.sortBy === 'alphabetical') sorted.sort((a, b) => a.title.localeCompare(b.title))
-          return sorted
+          if (row.sortBy === 'alphabetical') results.sort((a, b) => a.title.localeCompare(b.title))
+          return results
         }
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.PROVIDER_LIST,
@@ -347,7 +348,9 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
     const load = async () => {
       try {
-        const fetcher = () => getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+        const fetcher = async () => {
+          return getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+        }
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
@@ -687,12 +690,14 @@ function UnconfiguredShelf({
 interface SortableRowContainerProps {
   row: HomeRowConfig
   isEditing: boolean
+  onRemove: (id: string) => void
   children: React.ReactNode
 }
 
 function SortableRowContainer({
   row,
   isEditing,
+  onRemove,
   children,
 }: SortableRowContainerProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id })
@@ -719,6 +724,18 @@ function SortableRowContainer({
     </button>
   )
 
+  const headerRightControls = (
+    <button
+      onClick={(e) => { e.stopPropagation(); onRemove(row.id) }}
+      className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer flex-shrink-0"
+      title="Remove shelf"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+      </svg>
+    </button>
+  )
+
   return (
     <div
       ref={setNodeRef}
@@ -727,7 +744,7 @@ function SortableRowContainer({
     >
       {cloneElement(children as React.ReactElement<any>, {
         headerLeftControls,
-        headerRightControls: null,
+        headerRightControls,
       })}
     </div>
   )
@@ -742,7 +759,7 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
 ];
 
 export default function HomePage() {
-  const { homeRows, reorderHomeRows } = useAppStore();
+  const { homeRows, reorderHomeRows, removeHomeRow } = useAppStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
 
@@ -837,6 +854,7 @@ export default function HomePage() {
             key={row.id}
             row={row}
             isEditing={isEditing}
+            onRemove={removeHomeRow}
           >
             {rowEl}
           </SortableRowContainer>

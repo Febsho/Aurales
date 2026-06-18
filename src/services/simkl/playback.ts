@@ -23,6 +23,7 @@ import {
   buildSimklAnimeScrobble,
 } from './scrobble'
 import type { SimklScrobbleIds, SimklPlaybackProgressItem } from './types'
+import { mapEpisodeToProviders, isConfidenceSufficient } from '../anime-mapping'
 
 const THROTTLE_MS = 20_000
 let _lastScrobbleCall = 0
@@ -134,6 +135,22 @@ async function buildPayload(item: PlaybackItem, progressPct: number) {
   const meta = { title: item.title, year: item.year }
 
   if (item.mediaType === 'anime') {
+    if (item.tvdbId && item.localId && item.season != null && item.episode != null) {
+      try {
+        const mapping = await mapEpisodeToProviders({
+          localMediaId: item.localId,
+          tvdbSeriesId: item.tvdbId,
+          tvdbSeasonNumber: item.season,
+          tvdbEpisodeNumber: item.episode,
+        })
+        if (mapping?.simkl && isConfidenceSufficient(mapping)) {
+          const mappedIds: SimklScrobbleIds = { ...ids }
+          if (mapping.simkl.id) mappedIds.simkl = mapping.simkl.id
+          const epNum = mapping.simkl.episodeNumber ?? item.episode
+          return buildSimklAnimeScrobble(mappedIds, epNum, progressPct, meta)
+        }
+      } catch { /* fall through */ }
+    }
     return buildSimklAnimeScrobble(ids, item.episode ?? 1, progressPct, meta)
   }
 
