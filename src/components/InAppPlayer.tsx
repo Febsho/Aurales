@@ -10,8 +10,18 @@ import {
   scrobbleStop as traktScrobbleStop,
   buildMovieScrobble,
   buildEpisodeScrobble,
+  buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { useWatchTogetherStore } from '../stores/watchTogetherStore'
+import {
+  play as wtPlay,
+  pause as wtPause,
+  seek as wtSeek,
+  sendBuffering as wtSendBuffering,
+  sendSyncState as wtSendSyncState,
+} from '../services/watch-together/wsClient'
+import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 
 interface InAppPlayerProps {
   url: string
@@ -260,6 +270,74 @@ IMPORTANT RULES:
     }
   }, [subtitles])
 
+  // ── Watch Together sync ───────────────────────────────────────────────────
+  const wtIgnoreNextEvent = useRef(false)
+
+  useEffect(() => {
+    const wtState = useWatchTogetherStore.getState()
+    if (!wtState.currentRoom) return
+
+    resetDriftState()
+
+    const onSyncRequest = (e: Event) => {
+      const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
+      const video = videoRef.current
+      if (!video) return
+
+      const { driftThreshold } = useWatchTogetherStore.getState()
+      const { shouldSeek, targetTime } = shouldCorrectDrift(
+        video.currentTime,
+        { currentTime: time, isPlaying, lastUpdatedAt: Date.now() },
+        driftThreshold,
+        3000,
+      )
+
+      if (shouldSeek) {
+        wtIgnoreNextEvent.current = true
+        video.currentTime = targetTime
+        markCorrectionApplied()
+      }
+
+      if (isPlaying && video.paused) {
+        wtIgnoreNextEvent.current = true
+        video.play().catch(() => {})
+      } else if (!isPlaying && !video.paused) {
+        wtIgnoreNextEvent.current = true
+        video.pause()
+      }
+    }
+
+    window.addEventListener('wt:sync_request', onSyncRequest)
+    return () => {
+      window.removeEventListener('wt:sync_request', onSyncRequest)
+      resetDriftState()
+    }
+  }, [])
+
+  const wtSendPlay = () => {
+    const video = videoRef.current
+    const wt = useWatchTogetherStore.getState()
+    if (!video || !wt.currentRoom) return
+    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    wtPlay(video.currentTime)
+  }
+
+  const wtSendPause = () => {
+    const video = videoRef.current
+    const wt = useWatchTogetherStore.getState()
+    if (!video || !wt.currentRoom) return
+    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    wtPause(video.currentTime)
+  }
+
+  const wtSendSeek = () => {
+    const video = videoRef.current
+    const wt = useWatchTogetherStore.getState()
+    if (!video || !wt.currentRoom) return
+    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    wtSeek(video.currentTime)
+  }
+
   const refreshAudioTracks = () => {
     const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean; id?: string; label?: string; language?: string }> }) | null
     const tracks = video?.audioTracks
@@ -400,6 +478,7 @@ IMPORTANT RULES:
     if (!video) return
     video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds))
     showControlsTemporarily()
+    wtSendSeek()
   }
 
   const seekTo = (value: string) => {
@@ -407,6 +486,7 @@ IMPORTANT RULES:
     if (!video) return
     video.currentTime = Number(value)
     showControlsTemporarily()
+    wtSendSeek()
   }
 
   const changeVolume = (value: string) => {
@@ -461,15 +541,15 @@ IMPORTANT RULES:
         preload="auto"
         playsInline
         autoPlay
-        onPlay={() => { setPaused(false); showControlsTemporarily() }}
-        onPause={() => { setPaused(true); setControlsVisible(true) }}
-        onWaiting={() => setLoading(true)}
+        onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
+        onPause={() => { setPaused(true); setControlsVisible(true); wtSendPause() }}
+        onWaiting={() => { setLoading(true); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
           setLoading(false)
           const video = videoRef.current
           if (video?.paused) video.play().catch(() => setPaused(true))
         }}
-        onPlaying={() => { setLoading(false); setPaused(false) }}
+        onPlaying={() => { setLoading(false); setPaused(false); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0) }}
         onTimeUpdate={(event) => handleTimeUpdate(event.currentTarget.currentTime, event.currentTarget.duration || 0)}
         onLoadedMetadata={(event) => {
           setDuration(event.currentTarget.duration || 0)
