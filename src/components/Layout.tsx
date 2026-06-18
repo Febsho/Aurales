@@ -2,9 +2,13 @@ import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import Sidebar from './Sidebar'
 import { useAppStore } from '../stores/appStore'
+import { useWatchTogetherStore } from '../stores/watchTogetherStore'
+import WatchTogetherPanel from './watch-together/WatchTogetherPanel'
 
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
+  const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
+  const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
@@ -147,10 +151,12 @@ export default function Layout() {
           </header>
         )}
 
-        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${isHeroPage ? '' : ''}`}>
+        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${isHeroPage ? '' : ''} ${roomPanelOpen ? 'mr-[380px]' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
           <Outlet />
         </main>
       </div>
+
+      <WatchTogetherPanel open={roomPanelOpen} onClose={() => setRoomPanelOpen(false)} />
     </div>
   )
 }

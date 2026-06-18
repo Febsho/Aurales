@@ -25,6 +25,8 @@ tauri-plugin-shell = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
-windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 ureq = { version = "2.10", features = ["json"] }
 rfd = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

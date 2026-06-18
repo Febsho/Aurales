@@ -162,7 +162,11 @@ export async function getAddonCatalog(
       anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
       rawAddonMeta: meta,
     })))
-    const bySourceId = new Map(resolved.map((item) => [item.sourceAddonItemId, item]))
+    const bySourceId = new Map(
+      resolved
+        .filter((item) => item.sourceMetadataProvider !== 'fallback_addon')
+        .map((item) => [item.sourceAddonItemId, item])
+    )
     return previews.map((preview) => {
       const item = bySourceId.get(preview.sourceAddonItemId)
       return item ? appMediaToSearchResult(item, addonUrl) : preview

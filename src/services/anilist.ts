@@ -2,6 +2,8 @@ import type { SearchResult } from '../types'
 import type { PlaybackItem } from './simkl/playback'
 import { resolveAnimeIds, mapAniListEpisodeToTvdb } from './animeLists'
 import { getTmdbApiKey } from './apiKeys'
+import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
+import type { TvdbEpisodeMappingInput } from './anime-mapping'
 
 const API_URL = 'https://graphql.anilist.co'
 const TOKEN_KEY = 'anilist_token'
@@ -260,6 +262,47 @@ export async function saveAniListProgress(item: PlaybackItem, progressRatio: num
   entriesCache.clear()
   progressCache.delete(mediaId)
   trackedProgressCache = null
+}
+
+export async function saveAniListProgressMapped(
+  item: PlaybackItem,
+  progressRatio: number,
+): Promise<void> {
+  if (!isAniListConnected()) return
+
+  if (item.tvdbId && item.localId && item.season != null && item.episode != null) {
+    try {
+      const epInput: TvdbEpisodeMappingInput = {
+        localMediaId: item.localId,
+        tvdbSeriesId: item.tvdbId,
+        tvdbSeasonNumber: item.season,
+        tvdbEpisodeNumber: item.episode,
+      }
+      const mapping = await mapEpisodeToProviders(epInput)
+      if (mapping?.anilist && isConfidenceSufficient(mapping)) {
+        const mediaId = mapping.anilist.mediaId
+        const episode = mapping.anilist.episodeNumber
+        if (mediaId && episode) {
+          const media = await getAniListMedia(mediaId)
+          const totalEpisodes = media?.episodes ?? 0
+          const status: AniListStatus = totalEpisodes > 0 && (episode >= totalEpisodes || progressRatio >= 0.9) ? 'COMPLETED' : 'CURRENT'
+          await anilistRequest(`
+            mutation SaveProgress($mediaId: Int, $progress: Int, $status: MediaListStatus) {
+              SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) { id }
+            }
+          `, { mediaId, progress: episode, status })
+          entriesCache.clear()
+          progressCache.delete(mediaId)
+          trackedProgressCache = null
+          return
+        }
+      }
+    } catch (e) {
+      console.warn('[anilist] animeApi mapped save failed, falling back:', e)
+    }
+  }
+
+  return saveAniListProgress(item, progressRatio)
 }
 
 export async function getAniListContinueWatching(): Promise<AniListContinueItem[]> {

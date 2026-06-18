@@ -11,6 +11,7 @@ export const CACHE_CATEGORIES = {
   HOME_ROW: 'home_row',
   DETAIL_PAGE: 'detail_page',
   TVDB_SEASON: 'tvdb_season',
+  ANIME_MAPPING: 'anime_mapping',
 } as const
 
 export const CACHE_TTLS = {
@@ -26,4 +27,6 @@ export const CACHE_TTLS = {
   HOME_ROW: 5 * 60,
   DETAIL_PAGE: 10 * 60,
   TVDB_SEASON: 24 * 60 * 60,
+  ANIME_MAPPING_FINISHED: 14 * 24 * 60 * 60,
+  ANIME_MAPPING_AIRING: 12 * 60 * 60,
 } as const
