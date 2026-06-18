@@ -18,6 +18,7 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import DetailContentShell from '../components/media/DetailContentShell'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
+import StartInRoomButton from '../components/watch-together/StartInRoomButton'
 import { applyEpisodeArt, applySearchResultArt, applyShowArt } from '../services/artwork'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
@@ -373,7 +374,7 @@ export default function SeriesDetailPage() {
   useEffect(() => {
     async function load() {
       const cached = await readSeriesDetailCache(id, state)
-      if (cached) {
+      if (cached && cached.show.seasons.length > 0) {
         setAddonMeta(null)
         setSeasonCache({})
         setMalRating(null)
@@ -414,6 +415,7 @@ export default function SeriesDetailPage() {
         if (prefix === 'imdb') {
           return cleaned.startsWith('tt') ? cleaned : undefined
         }
+        if (cleaned.startsWith('tt')) return undefined
         return cleaned
       }
 
@@ -503,10 +505,10 @@ export default function SeriesDetailPage() {
         if (normalized && normalized.sourceMetadataProvider !== 'fallback_addon') {
           result = appMediaToShow(normalized)
           knownIds.imdbId ||= normalized.imdbId
-          knownIds.tmdbId ||= normalized.tmdbId
-          knownIds.tvdbId ||= normalized.tvdbId
-          knownIds.anilistId ||= normalized.anilistId
-          knownIds.malId ||= normalized.malId
+          if (normalized.tmdbId != null) knownIds.tmdbId ||= String(normalized.tmdbId)
+          if (normalized.tvdbId != null) knownIds.tvdbId ||= String(normalized.tvdbId)
+          if (normalized.anilistId != null) knownIds.anilistId ||= String(normalized.anilistId)
+          if (normalized.malId != null) knownIds.malId ||= String(normalized.malId)
         }
       }
 
@@ -519,10 +521,10 @@ export default function SeriesDetailPage() {
               setAddonMeta(meta)
               const parsed = addonMetaToShow(meta, id || '')
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
-              if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || parsed.tmdbId
-              if (parsed.tvdbId) knownIds.tvdbId = knownIds.tvdbId || parsed.tvdbId
-              if (parsed.malId) knownIds.malId = knownIds.malId || parsed.malId
-              if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || parsed.anilistId
+              if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || String(parsed.tmdbId)
+              if (parsed.tvdbId) knownIds.tvdbId = knownIds.tvdbId || String(parsed.tvdbId)
+              if (parsed.malId) knownIds.malId = knownIds.malId || String(parsed.malId)
+              if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || String(parsed.anilistId)
               return parsed
             }
           } catch { /* continue */ }
@@ -1595,6 +1597,21 @@ export default function SeriesDetailPage() {
               onUnmarked={() => {
                 setWatchedEpisodes(new Set())
                 removeWatchProgress([show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : ''])
+              }}
+            />
+            <StartInRoomButton
+              media={{
+                id: show.id,
+                type: 'series',
+                title: show.title,
+                year: show.year,
+                poster: show.poster,
+                backdrop: show.backdrop,
+                overview: show.overview,
+                imdbId: show.imdbId,
+                tmdbId: show.tmdbId ? Number(show.tmdbId) : undefined,
+                tvdbId: show.tvdbId ? Number(show.tvdbId) : undefined,
+                anilistId: show.anilistId ? Number(show.anilistId) : undefined,
               }}
             />
             {isAnime && (

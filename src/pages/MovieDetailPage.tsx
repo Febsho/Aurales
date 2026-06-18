@@ -15,6 +15,7 @@ import DetailHero from '../components/media/DetailHero'
 import DetailContentShell from '../components/media/DetailContentShell'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
+import StartInRoomButton from '../components/watch-together/StartInRoomButton'
 import { applyMovieArt, applySearchResultArt } from '../services/artwork'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { isWatchedFromProviders } from '../services/watchedStatus'
@@ -186,6 +187,7 @@ export default function MovieDetailPage() {
         if (prefix === 'imdb') {
           return cleaned.startsWith('tt') ? cleaned : undefined
         }
+        if (cleaned.startsWith('tt')) return undefined
         return cleaned
       }
 
@@ -228,8 +230,8 @@ export default function MovieDetailPage() {
         if (normalized && normalized.sourceMetadataProvider !== 'fallback_addon') {
           result = appMediaToMovie(normalized)
           knownIds.imdbId ||= normalized.imdbId
-          knownIds.tmdbId ||= normalized.tmdbId
-          knownIds.tvdbId ||= normalized.tvdbId
+          if (normalized.tmdbId != null) knownIds.tmdbId ||= String(normalized.tmdbId)
+          if (normalized.tvdbId != null) knownIds.tvdbId ||= String(normalized.tvdbId)
         }
       }
 
@@ -241,9 +243,9 @@ export default function MovieDetailPage() {
             if (meta) {
               const parsed = addonMetaToMovie(meta, id || '')
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
-              if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || parsed.tmdbId
-              if (parsed.malId) knownIds.malId = knownIds.malId || parsed.malId
-              if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || parsed.anilistId
+              if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || String(parsed.tmdbId)
+              if (parsed.malId) knownIds.malId = knownIds.malId || String(parsed.malId)
+              if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || String(parsed.anilistId)
               return parsed
             }
           } catch { /* continue */ }
@@ -510,6 +512,21 @@ export default function MovieDetailPage() {
               onUnmarked={() => {
                 setMovieWatched(false)
                 removeWatchProgress([movie.id, movie.imdbId || '', String(movie.tmdbId || ''), movie.tmdbId ? `tmdb-${movie.tmdbId}` : ''])
+              }}
+            />
+            <StartInRoomButton
+              media={{
+                id: movie.id,
+                type: 'movie',
+                title: movie.title,
+                year: movie.year,
+                poster: movie.poster,
+                backdrop: movie.backdrop,
+                overview: movie.overview,
+                imdbId: movie.imdbId,
+                tmdbId: movie.tmdbId ? Number(movie.tmdbId) : undefined,
+                tvdbId: movie.tvdbId ? Number(movie.tvdbId) : undefined,
+                anilistId: movie.anilistId ? Number(movie.anilistId) : undefined,
               }}
             />
           </div>

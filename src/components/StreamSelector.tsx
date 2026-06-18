@@ -4,6 +4,7 @@ import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
 import { getAddonStreams, getAddonSubtitles, getStreamAddons } from '../services/addons'
 import NativeMpvPlayer from './NativeMpvPlayer'
+import InAppPlayer from './InAppPlayer'
 import type { PlaybackItem } from '../services/simkl/playback'
 import {
   cssColorFromFilterColor,
@@ -11,6 +12,10 @@ import {
   matchStreamRegexFilters,
   type MatchedStreamRegexFilter,
 } from '../services/streamRegexFilters'
+import { useWatchTogetherStore } from '../stores/watchTogetherStore'
+import { selectStream as wtSelectStream } from '../services/watch-together/wsClient'
+import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
+import type { RoomStream } from '../services/watch-together/types'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -436,6 +441,21 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     setPlayError('')
     setPlayback({ url, stream })
     setPlayingIndex(null)
+
+    const wtState = useWatchTogetherStore.getState()
+    if (wtState.isHost && wtState.currentRoom) {
+      const quality = stream.name?.match(/\b(4k|2160p|1080p|720p|480p)\b/i)?.[0] ?? undefined
+      const roomStream: RoomStream = {
+        addonId: stream.addonId,
+        name: stream.addonName,
+        title: stream.title,
+        quality,
+        infoHash: stream.infoHash,
+        fileIdx: stream.fileIdx,
+        streamFingerprint: createStreamFingerprint(stream),
+      }
+      wtSelectStream(roomStream)
+    }
   }
 
   const displayTitle = seasonEpisode
@@ -458,11 +478,11 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       episode: seasonEpisode?.episode,
     }
 
-    // Render via portal directly into document.body so it lives OUTSIDE
-    // #root. NativeMpvPlayer then hides #root so the page doesn't bleed
-    // through the transparent WebView2 layer — only mpv video shows through.
+    const isWindows = navigator.platform.startsWith('Win')
+    const PlayerComponent = isWindows ? NativeMpvPlayer : InAppPlayer
+
     return createPortal(
-      <NativeMpvPlayer
+      <PlayerComponent
         url={playback.url}
         title={title}
         subtitle={seasonEpisode ? `From S${seasonEpisode.season} · E${seasonEpisode.episode}` : undefined}

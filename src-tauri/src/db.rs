@@ -113,8 +113,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_app_seasons_media ON app_seasons(local_media_id);
             CREATE INDEX IF NOT EXISTS idx_media_cache_updated ON app_media(updated_at);
             CREATE INDEX IF NOT EXISTS idx_watch_progress_media ON watch_progress(media_id);
-            CREATE INDEX IF NOT EXISTS idx_provider_watchlist_provider ON provider_watchlist_items(provider);
-
             CREATE TABLE IF NOT EXISTS anime_season_mappings (
                 id TEXT PRIMARY KEY, local_media_id TEXT NOT NULL, season_number INTEGER NOT NULL,
                 tvdb_id INTEGER, tvdb_series_id INTEGER, tvdb_season_number INTEGER,
@@ -211,6 +209,8 @@ impl Database {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE INDEX IF NOT EXISTS idx_provider_watchlist_provider ON provider_watchlist_items(provider);
+
             CREATE TABLE IF NOT EXISTS provider_mappings (
                 id TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -226,6 +226,75 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS anime_api_mappings (
+                id TEXT PRIMARY KEY,
+                local_media_id TEXT NOT NULL,
+                tvdb_id INTEGER,
+                tmdb_id INTEGER,
+                anilist_id INTEGER,
+                mal_id INTEGER,
+                simkl_id INTEGER,
+                trakt_id INTEGER,
+                kitsu_id TEXT,
+                anidb_id INTEGER,
+                anime_planet_id TEXT,
+                confidence REAL,
+                source TEXT,
+                raw_json TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS anime_api_episode_mappings (
+                id TEXT PRIMARY KEY,
+                local_media_id TEXT NOT NULL,
+                tvdb_series_id INTEGER,
+                tvdb_season_number INTEGER,
+                tvdb_episode_number INTEGER,
+                tvdb_episode_id INTEGER,
+                absolute_episode_number INTEGER,
+                anilist_id INTEGER,
+                anilist_episode_number INTEGER,
+                mal_id INTEGER,
+                mal_episode_number INTEGER,
+                simkl_id INTEGER,
+                simkl_episode_number INTEGER,
+                simkl_season_number INTEGER,
+                trakt_id INTEGER,
+                trakt_slug TEXT,
+                trakt_season_number INTEGER,
+                trakt_episode_number INTEGER,
+                tmdb_id INTEGER,
+                tmdb_season_number INTEGER,
+                tmdb_episode_number INTEGER,
+                confidence REAL,
+                raw_json TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_anime_api_map_local ON anime_api_mappings(local_media_id);
+            CREATE INDEX IF NOT EXISTS idx_anime_api_map_tvdb ON anime_api_mappings(tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_anime_api_map_anilist ON anime_api_mappings(anilist_id);
+            CREATE INDEX IF NOT EXISTS idx_anime_api_ep_map_series ON anime_api_episode_mappings(tvdb_series_id, tvdb_season_number, tvdb_episode_number);
+
+            CREATE TABLE IF NOT EXISTS anime_provider_overrides (
+                id TEXT PRIMARY KEY,
+                local_media_id TEXT NOT NULL,
+                season_number INTEGER,
+                episode_number INTEGER,
+                provider TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_season_number INTEGER,
+                provider_episode_number INTEGER,
+                episode_offset INTEGER,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_anime_prov_override_media ON anime_provider_overrides(local_media_id);
 
             CREATE TABLE IF NOT EXISTS sync_items (
                 id TEXT PRIMARY KEY,

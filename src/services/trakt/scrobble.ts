@@ -1,9 +1,10 @@
 import { traktFetch } from './auth'
+import { mapEpisodeToProviders, isConfidenceSufficient } from '../anime-mapping'
 
 interface ScrobblePayload {
-  movie?: { ids: { imdb?: string; tmdb?: number } }
+  movie?: { ids: { imdb?: string; tmdb?: number; trakt?: number } }
   episode?: { ids: { imdb?: string; tmdb?: number }; season: number; number: number }
-  show?: { ids: { imdb?: string; tmdb?: number } }
+  show?: { ids: { imdb?: string; tmdb?: number; trakt?: number } }
   progress: number
 }
 
@@ -46,4 +47,35 @@ export function buildEpisodeScrobble(
     episode: { ids: {}, season, number: episode },
     progress: Math.round(progress * 100) / 100,
   }
+}
+
+export async function buildMappedEpisodeScrobble(
+  showImdbId: string,
+  season: number,
+  episode: number,
+  progress: number,
+  animeMapping?: { localMediaId: string; tvdbId: number },
+): Promise<ScrobblePayload> {
+  if (animeMapping) {
+    try {
+      const mapping = await mapEpisodeToProviders({
+        localMediaId: animeMapping.localMediaId,
+        tvdbSeriesId: animeMapping.tvdbId,
+        tvdbSeasonNumber: season,
+        tvdbEpisodeNumber: episode,
+      })
+      if (mapping?.trakt && isConfidenceSufficient(mapping)) {
+        return {
+          show: { ids: { imdb: showImdbId, trakt: mapping.trakt.id } },
+          episode: {
+            ids: {},
+            season: mapping.trakt.seasonNumber ?? season,
+            number: mapping.trakt.episodeNumber ?? episode,
+          },
+          progress: Math.round(progress * 100) / 100,
+        }
+      }
+    } catch { /* fall through */ }
+  }
+  return buildEpisodeScrobble(showImdbId, season, episode, progress)
 }

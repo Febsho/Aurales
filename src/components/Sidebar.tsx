@@ -1,6 +1,8 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
+import CreateRoomButton from './watch-together/CreateRoomButton'
+import JoinRoomModal from './watch-together/JoinRoomModal'
 
 const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
@@ -15,6 +17,7 @@ export default function Sidebar() {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
+  const [joinModalOpen, setJoinModalOpen] = useState(false)
   const location = useLocation()
 
   // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
@@ -104,10 +107,31 @@ export default function Sidebar() {
         })}
       </nav>
 
+      {/* Watch Together */}
+      <div className="px-2 pb-1 flex flex-col gap-0.5">
+        <CreateRoomButton />
+        <button
+          onClick={() => setJoinModalOpen(true)}
+          className="flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5 w-full text-white/50 hover:text-white hover:bg-white/[0.06]"
+        >
+          <svg
+            className="w-[18px] h-[18px] flex-shrink-0 text-white/50 group-hover:text-white transition-colors duration-200"
+            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round"
+          >
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <polyline points="10 17 15 12 10 7" />
+            <line x1="15" y1="12" x2="3" y2="12" />
+          </svg>
+          <span className="text-[13px] font-medium tracking-wide whitespace-nowrap">Join Room</span>
+        </button>
+      </div>
+
       {/* Footer */}
       <div className="p-3 border-t border-white/[0.04]">
         <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v0.1.0</div>
       </div>
+
+      <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
     </aside>
     </>
   )

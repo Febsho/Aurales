@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   getDeviceCode,
   pollForToken,
@@ -315,7 +316,8 @@ function SearchSettingsSection() {
 
 export default function SettingsPage() {
   const store = useAppStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface'>('accounts')
+  const wtStore = useWatchTogetherStore()
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
   const [progressSubPage, setProgressSubPage] = useState<'main' | 'local' | 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'anime'>('main')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
@@ -939,6 +941,18 @@ export default function SettingsPage() {
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v3.059a1.875 1.875 0 01-.5 1.25l-3.937 4.135a3 3 0 00-.813 2.106v2.106a3 3 0 01-.738 1.986l-2.22 2.58a.6.6 0 01-1.052-.4v-6.272a3 3 0 00-.813-2.106L3.92 9.083a1.875 1.875 0 01-.5-1.25V4.774c0-.54.384-1.006.917-1.096A50.06 50.06 0 0112 3z" />
+            </svg>
+          )
+        },
+        {
+          id: 'watch-together',
+          label: 'Watch Together',
+          description: 'Server URL, nickname, sync, and room control defaults.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
             </svg>
           )
         },
@@ -1922,7 +1936,7 @@ export default function SettingsPage() {
                   </select>
                 </SettingRow>
                 <SettingRow label="Clear app metadata cache" description="Remove normalized metadata and addon-to-media mappings.">
-                  <button onClick={() => clearAppMetadataCache().then(() => alert('App metadata cache cleared.')).catch((error) => alert(`Could not clear metadata cache: ${error}`))} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Clear Cache</button>
+                  <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Clear Cache</button>
                 </SettingRow>
                 <SettingRow label="Re-resolve all metadata" description="Clear normalized records. Visible catalogs will resolve again as they load.">
                   <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Re-resolve</button>
@@ -2960,6 +2974,90 @@ export default function SettingsPage() {
               <p className="text-xs text-white/25 leading-relaxed px-1">
                 Scrobble, resume, watched checkmarks, and sync provider settings are under Progress & Sync.
               </p>
+            </>
+          )}
+
+          {/* ═══════════════════════════════════════════════
+              WATCH TOGETHER TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'watch-together' && (
+            <>
+              <SettingSection title="Server" description="WebSocket server for Watch Together rooms.">
+                <SettingRow label="Server URL" description="WebSocket URL of the Watch Together server.">
+                  <input
+                    type="text"
+                    value={wtStore.serverUrl}
+                    onChange={(e) => wtStore.setServerUrl(e.target.value)}
+                    placeholder="ws://localhost:9876"
+                    className="w-64 bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/20"
+                  />
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="Profile" description="Your default identity when joining rooms.">
+                <SettingRow label="Default nickname" description="Pre-filled when creating or joining a room.">
+                  <input
+                    type="text"
+                    value={wtStore.defaultNickname}
+                    onChange={(e) => wtStore.setDefaultNickname(e.target.value)}
+                    placeholder="Your name..."
+                    className="w-48 bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/20"
+                  />
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="Room Defaults" description="Default settings for new rooms you create.">
+                <SettingRow label="Default control mode" description="Who can control playback in rooms you host.">
+                  <select
+                    value={wtStore.defaultControlMode}
+                    onChange={(e) => wtStore.setDefaultControlMode(e.target.value as 'host_only' | 'everyone')}
+                    className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
+                  >
+                    <option value="host_only">Host only</option>
+                    <option value="everyone">Everyone can control</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Require ready check" description="Wait for all participants before starting playback.">
+                  <SettingToggle checked={wtStore.requireReadyCheck} onChange={(v) => wtStore.setRequireReadyCheck(v)} />
+                </SettingRow>
+                <SettingRow label="Show chat" description="Display the chat panel in rooms.">
+                  <SettingToggle checked={wtStore.showChat} onChange={(v) => wtStore.setShowChat(v)} />
+                </SettingRow>
+                <SettingRow label="Auto-copy invite link" description="Copy the room invite link when creating a room.">
+                  <SettingToggle checked={wtStore.autoCopyInvite} onChange={(v) => wtStore.setAutoCopyInvite(v)} />
+                </SettingRow>
+                <SettingRow label="Allow different streams" description="Let guests use a different stream source than the host.">
+                  <SettingToggle checked={wtStore.allowGuestDifferentStream} onChange={(v) => wtStore.setAllowGuestDifferentStream(v)} />
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="Playback Sync" description="Fine-tune how playback synchronization works.">
+                <SettingRow label="Drift correction threshold" description="Seconds of drift before forcing a seek correction.">
+                  <select
+                    value={wtStore.driftThreshold}
+                    onChange={(e) => wtStore.setDriftThreshold(Number(e.target.value))}
+                    className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
+                  >
+                    <option value={1}>1 second</option>
+                    <option value={2}>2 seconds</option>
+                    <option value={3}>3 seconds</option>
+                    <option value={5}>5 seconds</option>
+                    <option value={10}>10 seconds</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Sync interval" description="How often the host broadcasts its playback position.">
+                  <select
+                    value={wtStore.syncInterval}
+                    onChange={(e) => wtStore.setSyncInterval(Number(e.target.value))}
+                    className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
+                  >
+                    <option value={3}>3 seconds</option>
+                    <option value={5}>5 seconds</option>
+                    <option value={10}>10 seconds</option>
+                    <option value={15}>15 seconds</option>
+                  </select>
+                </SettingRow>
+              </SettingSection>
             </>
           )}
 
