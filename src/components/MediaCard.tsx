@@ -4,7 +4,7 @@ import type { SearchResult } from '../types'
 import { applySearchResultArt } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { useAppStore } from '../stores/appStore'
-import { getLocalWatchedStatus, isWatchedFromProviders, searchResultToLookup } from '../services/watchedStatus'
+import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
 
 const TMDB_GENRES: Record<number, string> = {
@@ -48,12 +48,49 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
-  const [providerWatched, setProviderWatched] = useState(false)
-  const watchProgress = useAppStore((s) => s.watchProgress)
-  const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  const providerWatched = useWatchedCacheStore((s) => {
+    const keys = s.watchedKeys
+    if (item.imdbId && keys.has(`imdb:${item.imdbId}`)) return true
+    if (item.tmdbId && keys.has(`tmdb:${item.tmdbId}`)) return true
+    if (item.tvdbId && keys.has(`tvdb:${String(item.tvdbId).replace('tvdb-', '')}`)) return true
+    if (item.malId && keys.has(`mal:${item.malId}`)) return true
+    if (item.anilistId && keys.has(`anilist:${item.anilistId}`)) return true
+    return false
+  })
   const posterSize = useAppStore((s) => s.posterSize)
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
+
+  // Targeted selectors — only re-render this card when ITS progress changes
+  const localCompleted = useAppStore((s) => {
+    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
+    for (const id of ids) {
+      if (s.watchProgress.get(id)?.completed) return true
+    }
+    if (item.type === 'series' && item.season != null && item.episode != null) {
+      for (const id of ids) {
+        if (s.watchProgress.get(`${id}:${item.season}:${item.episode}`)?.completed) return true
+      }
+    }
+    for (const [, p] of s.watchProgress.entries()) {
+      if (!p.completed) continue
+      const mediaStr = String(p.mediaId || '')
+      const imdbStr = String(p.imdbId || '')
+      if (ids.includes(mediaStr) || ids.includes(imdbStr)) return true
+    }
+    return false
+  })
+
+  const progressPct = useAppStore((s) => {
+    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
+    for (const id of ids) {
+      const direct = s.watchProgress.get(id)
+      if (direct && !direct.completed && direct.durationSeconds > 0) {
+        return (direct.progressSeconds / direct.durationSeconds) * 100
+      }
+    }
+    return null
+  })
 
   const ratingStr = useMemo(() => {
     if (!displayItem.rating) return null
@@ -83,44 +120,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
     }
   }, [layout, posterSize])
 
-  // Derive watched state from local progress
-  const { localCompleted, progressPct } = useMemo(() => {
-    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
-    // Check direct movie/show match
-    for (const id of ids) {
-      const direct = watchProgress.get(id)
-      if (direct?.completed) return { localCompleted: true, progressPct: 100 }
-      if (direct && direct.durationSeconds > 0) {
-        return { localCompleted: false, progressPct: (direct.progressSeconds / direct.durationSeconds) * 100 }
-      }
-    }
-    // Check episode entries (series): look for mediaId match
-    let hasAnyProgress = false
-    let hasCompleted = false
-    for (const [, p] of watchProgress.entries()) {
-      if (ids.includes(p.mediaId)) {
-        hasAnyProgress = true
-        if (p.completed) hasCompleted = true
-      }
-    }
-    if (hasCompleted) return { localCompleted: true, progressPct: 100 }
-    if (hasAnyProgress) return { localCompleted: false, progressPct: null }
-    return { localCompleted: false, progressPct: null }
-  }, [watchProgress, item.id, item.imdbId])
   const isCompleted = localCompleted || providerWatched
-
-  useEffect(() => {
-    let cancelled = false
-    const lookup = searchResultToLookup(item)
-    if (watchedCheckmarkSources.length === 1 && watchedCheckmarkSources[0] === 'local') {
-      setProviderWatched(getLocalWatchedStatus(lookup, watchProgress))
-      return () => { cancelled = true }
-    }
-    isWatchedFromProviders(lookup, watchedCheckmarkSources, watchProgress)
-      .then((watched) => { if (!cancelled) setProviderWatched(watched) })
-      .catch(() => { if (!cancelled) setProviderWatched(false) })
-    return () => { cancelled = true }
-  }, [item.id, item.imdbId, item.tmdbId, item.tvdbId, item.malId, item.anilistId, item.type, item.season, item.episode, watchedCheckmarkSources, watchProgress])
 
   useEffect(() => {
     if (!isVisible) return
