@@ -1,6 +1,7 @@
 import { useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import Layout from './components/Layout'
+import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
 import { syncAddonsFromStore } from './services/addons'
 import { setDiscordActivity, clearDiscordActivity } from './services/discord'
@@ -69,21 +70,23 @@ export default function App() {
   }, [location.pathname, defaultStartPage, navigate])
 
   return (
-    <Suspense fallback={<div className="flex items-center justify-center h-screen bg-black" />}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/movie/:id" element={<MovieDetailPage />} />
-          <Route path="/series/:id" element={<SeriesDetailPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/developer" element={<DeveloperPage />} />
-          <Route path="/discover" element={<DiscoverPage />} />
-          <Route path="/catalog/:rowId" element={<CatalogPage />} />
-          <Route path="/home-editor" element={<HomeEditorPage />} />
-          <Route path="/collections" element={<CollectionsPage />} />
-        </Route>
-      </Routes>
-    </Suspense>
+    <ErrorBoundary label="App">
+      <Suspense fallback={<div className="flex items-center justify-center h-screen bg-black" />}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/movie/:id" element={<MovieDetailPage />} />
+            <Route path="/series/:id" element={<SeriesDetailPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/developer" element={<DeveloperPage />} />
+            <Route path="/discover" element={<DiscoverPage />} />
+            <Route path="/catalog/:rowId" element={<CatalogPage />} />
+            <Route path="/home-editor" element={<HomeEditorPage />} />
+            <Route path="/collections" element={<CollectionsPage />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   )
 }

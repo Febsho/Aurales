@@ -1,9 +1,10 @@
 import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import Sidebar from './Sidebar'
 import { useAppStore } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import WatchTogetherPanel from './watch-together/WatchTogetherPanel'
+import WatchTogetherAutoPlayer from './watch-together/WatchTogetherAutoPlayer'
 
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
@@ -21,17 +22,17 @@ export default function Layout() {
     mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
   }, [location.pathname])
 
-  const goBack = () => {
+  const goBack = useCallback(() => {
     const historyIndex = typeof window.history.state?.idx === 'number'
       ? window.history.state.idx
       : window.history.length - 1
 
     if (historyIndex > 0) {
       navigate(-1)
-    } else if (location.pathname !== '/') {
+    } else {
       navigate('/')
     }
-  }
+  }, [navigate])
 
   useEffect(() => {
     const q = searchParams.get('q') || ''
@@ -59,7 +60,7 @@ export default function Layout() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [location.pathname])
+  }, [goBack])
 
   useEffect(() => {
     const handleMouseBack = (event: MouseEvent) => {
@@ -70,7 +71,7 @@ export default function Layout() {
 
     window.addEventListener('mouseup', handleMouseBack)
     return () => window.removeEventListener('mouseup', handleMouseBack)
-  }, [location.pathname])
+  }, [goBack])
 
   const handleInputChange = (val: string) => {
     setQuery(val)
@@ -157,6 +158,7 @@ export default function Layout() {
       </div>
 
       <WatchTogetherPanel open={roomPanelOpen} onClose={() => setRoomPanelOpen(false)} />
+      <WatchTogetherAutoPlayer />
     </div>
   )
 }
