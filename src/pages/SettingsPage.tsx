@@ -290,24 +290,11 @@ function SearchSettingsSection() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="AI-Powered Search" description="Use AI to interpret natural language queries and find media using descriptive phrases instead of exact titles.">
-        <SettingRow label="OpenRouter API Key" description="A Gemini or OpenRouter API key is required to enable AI search. Add your key here.">
-          <input
-            type="password"
-            value={store.openrouterApiKey}
-            onChange={(e) => store.setOpenrouterApiKey(e.target.value)}
-            placeholder="sk-or-..."
-            className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25"
-          />
-        </SettingRow>
-        <SettingRow label="AI Model" description="OpenRouter model ID for AI search suggestions.">
-          <input
-            type="text"
-            value={store.openrouterModel}
-            onChange={(e) => store.setOpenrouterModel(e.target.value)}
-            placeholder="google/gemini-2.5-flash"
-            className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25"
-          />
+      <SettingSection title="AI-Powered Search" description="Configure the AI model in the Accounts tab under OpenRouter.">
+        <SettingRow label="Status" description="AI search uses your OpenRouter API key to interpret natural language queries.">
+          <span className={`text-xs font-semibold ${store.openrouterApiKey ? 'text-green-400' : 'text-white/30'}`}>
+            {store.openrouterApiKey ? `Active — ${store.openrouterModel || 'default model'}` : 'Not configured'}
+          </span>
         </SettingRow>
       </SettingSection>
     </>
@@ -318,7 +305,6 @@ export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
-  const [progressSubPage, setProgressSubPage] = useState<'main' | 'local' | 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'anime'>('main')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
@@ -474,7 +460,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const hasBrokenAvatar = store.simklAccount &&
-      (!store.simklAccount.avatar || !store.simklAccount.avatar.includes('wsrv.nl/?url=https://'))
+      (!store.simklAccount.avatar || !store.simklAccount.avatar.includes('wsrv.nl/?url=https://simkl.in'))
 
     if (store.simklConnected && (!store.simklAccount || hasBrokenAvatar)) {
       import('../services/simkl/auth').then(({ getStoredSimklToken, finaliseSimklLogin }) => {
@@ -1002,7 +988,7 @@ export default function SettingsPage() {
                 return (
                   <button
                     key={item.id}
-                    onClick={() => { setActiveTab(item.id as any); if (item.id === 'progress') setProgressSubPage('main') }}
+                    onClick={() => { setActiveTab(item.id as any) }}
                     className={`w-full flex items-center gap-2.5 px-3 py-[7px] text-[13px] font-medium rounded-lg transition-all cursor-pointer text-left ${
                       active
                         ? 'bg-white/[0.08] text-white'
@@ -1130,8 +1116,8 @@ export default function SettingsPage() {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
                         <div className="flex items-center gap-3">
-                          {simklStatus.account?.avatar ? (
-                            <img src={simklStatus.account.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
+                          {(simklStatus.account?.avatar || store.simklAccount?.avatar) ? (
+                            <img src={simklStatus.account?.avatar || store.simklAccount?.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-[#2ecc71]/20 flex items-center justify-center text-[#2ecc71] text-sm font-bold">
                               {(simklStatus.account?.username ?? store.simklAccount?.username ?? 'S')[0].toUpperCase()}
@@ -1938,9 +1924,6 @@ export default function SettingsPage() {
                 <SettingRow label="Clear app metadata cache" description="Remove normalized metadata and addon-to-media mappings.">
                   <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Clear Cache</button>
                 </SettingRow>
-                <SettingRow label="Re-resolve all metadata" description="Clear normalized records. Visible catalogs will resolve again as they load.">
-                  <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Re-resolve</button>
-                </SettingRow>
               </SettingSection>
 
               {/* Movies */}
@@ -2039,47 +2022,6 @@ export default function SettingsPage() {
                 <p className="text-xs text-white/40 mt-2 px-1">Anime is displayed like normal shows using TVDB seasons and episodes. Addon metadata is ignored for anime display — addons are only used for streams and IDs.</p>
               </SettingSection>
 
-              {/* Spoiler Protection */}
-              <SettingSection title="Spoiler Protection">
-                <SettingRow label="Enable Spoiler Protection" description="Blur content for unwatched episodes to avoid spoilers.">
-                  <SettingToggle checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Community Ratings */}
-              <h3 className="text-sm font-bold text-amber-400/80 mt-8 mb-3">Community Ratings</h3>
-              <SettingSection>
-                <SettingRow label="Enable community ratings" description="Show ratings from external services on detail pages.">
-                  <SettingToggle checked={store.enableCommunityRatings} onChange={(v) => store.setEnableCommunityRatings(v)} />
-                </SettingRow>
-                {store.enableCommunityRatings && (
-                  <>
-                    {[
-                      { id: 'imdb', label: 'IMDb' },
-                      { id: 'rottentomatoes', label: 'Rotten Tomatoes' },
-                      { id: 'tomatoesaudience', label: 'RT Audience' },
-                      { id: 'metacritic', label: 'Metacritic' },
-                      { id: 'tmdb', label: 'TMDb' },
-                      { id: 'trakt', label: 'Trakt' },
-                      { id: 'letterboxd', label: 'Letterboxd' },
-                      { id: 'myanimelist', label: 'MyAnimeList' },
-                    ].map((prov) => {
-                      const enabled = store.visibleHeroRatings.includes(prov.id)
-                      return (
-                        <SettingRow key={prov.id} label={prov.label}>
-                          <SettingToggle
-                            checked={enabled}
-                            onChange={(v) => {
-                              if (!v) store.setVisibleHeroRatings(store.visibleHeroRatings.filter((x) => x !== prov.id))
-                              else store.setVisibleHeroRatings([...store.visibleHeroRatings, prov.id])
-                            }}
-                          />
-                        </SettingRow>
-                      )
-                    })}
-                  </>
-                )}
-              </SettingSection>
             </>
           )}
 
@@ -2095,372 +2037,278 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'progress' && (
             <>
-              {progressSubPage === 'main' && (
-                <>
-                  <SettingSection title="Continue Watching" description="Configure progress tracking sources and display.">
-                    {/* Continue Watching Source Selector */}
-                    <div className="px-6 py-4">
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Source</label>
-                      <div className="flex gap-1.5 bg-white/[0.03] rounded-xl p-1 border border-white/[0.06]">
-                        {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => (
-                          <button
-                            key={src}
-                            onClick={() => store.setContinueWatchingSource(src)}
-                            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all capitalize cursor-pointer ${
-                              store.continueWatchingSource === src
-                                ? 'bg-accent/15 text-accent border border-accent/20 font-bold'
-                                : 'text-white/40 hover:text-white border border-transparent'
-                            }`}
-                          >
-                            <span className="inline-flex items-center justify-center gap-1.5">
-                              <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                              {src === 'pmdb' ? 'PMDB' : src}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                      <p className="text-[11px] text-white/30 mt-1.5">Choose where Continue Watching is saved on this device.</p>
-                    </div>
-
-                    <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
+              {/* ─── Global Settings ─── */}
+              <SettingSection title="Continue Watching" description="Configure progress tracking sources and display.">
+                <div className="px-6 py-4">
+                  <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Source</label>
+                  <div className="flex gap-1.5 bg-white/[0.03] rounded-xl p-1 border border-white/[0.06]">
+                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => (
                       <button
-                        onClick={() => {
-                          const current = store.continueWatchingLimit
-                          const next = current === 5 ? 10 : current === 10 ? 20 : current === 20 ? 50 : 5
-                          store.setContinueWatchingLimit(next)
-                        }}
-                        className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-sm text-white font-semibold cursor-pointer hover:bg-white/[0.08] transition-colors"
+                        key={src}
+                        onClick={() => store.setContinueWatchingSource(src)}
+                        className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all capitalize cursor-pointer ${
+                          store.continueWatchingSource === src
+                            ? 'bg-accent/15 text-accent border border-accent/20 font-bold'
+                            : 'text-white/40 hover:text-white border border-transparent'
+                        }`}
                       >
-                        {store.continueWatchingLimit} items
+                        <span className="inline-flex items-center justify-center gap-1.5">
+                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
+                          {src === 'pmdb' ? 'PMDB' : src === 'anilist' ? 'AniList' : src}
+                        </span>
                       </button>
-                    </SettingRow>
-
-                    {/* Watched Checkmark Sources */}
-                    <div className="px-6 py-4">
-                      <div className="mb-3">
-                        <span className="text-sm text-white">Watched Checkmarks</span>
-                        <p className="text-[12px] text-white/35 mt-0.5">Choose which providers mark movies and episodes as watched.</p>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                        {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => {
-                          const enabled = store.watchedCheckmarkSources.includes(src)
-                          return (
-                            <button
-                              key={src}
-                              onClick={() => {
-                                const next = enabled
-                                  ? store.watchedCheckmarkSources.filter((s) => s !== src)
-                                  : [...store.watchedCheckmarkSources, src]
-                                store.setWatchedCheckmarkSources(next.length ? next : ['local'])
-                              }}
-                              className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                                enabled ? 'bg-accent/15 border-accent/25 text-accent' : 'bg-white/5 border-white/5 text-white/40 hover:text-white'
-                              }`}
-                            >
-                              {enabled && (
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                                  <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                                </svg>
-                              )}
-                              <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                              {src === 'pmdb' ? 'PMDB' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-
-                    <SettingRow label="Watchlist Button" description="Bookmark button target next to Play.">
-                      <select
-                        value={store.watchlistButtonTarget}
-                        onChange={(e) => store.setWatchlistButtonTarget(e.target.value as any)}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                      >
-                        <option value="local">Local</option>
-                        <option value="trakt">Trakt</option>
-                        <option value="simkl">Simkl</option>
-                        <option value="pmdb">PMDB</option>
-                        <option value="anilist">AniList (anime only)</option>
-                      </select>
-                    </SettingRow>
-                  </SettingSection>
-
-                  {/* Services Group */}
-                  <SettingSection title="Services">
-                    {[
-                      { id: 'local' as const, label: 'Local Progress', detail: 'Export, copy', icon: <svg className="w-4.5 h-4.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /><path d="M6 21h12M12 17v4" /></svg> },
-                      { id: 'trakt' as const, label: 'Trakt', detail: 'Sync settings', icon: <ServiceIcon service="trakt" /> },
-                      { id: 'simkl' as const, label: 'Simkl', detail: 'Scrobble & sync', icon: <ServiceIcon service="simkl" /> },
-                      { id: 'anilist' as const, label: 'AniList', detail: 'Sync settings', icon: <ServiceIcon service="anilist" /> },
-                      { id: 'pmdb' as const, label: 'PublicMetaDB', detail: 'Resume & sync', icon: <ServiceIcon service="pmdb" /> },
-                    ].map((svc) => (
-                      <div
-                        key={svc.id}
-                        onClick={() => setProgressSubPage(svc.id)}
-                        className="flex items-center justify-between px-6 py-4 hover:bg-white/[0.02] transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-3">
-                          {svc.icon}
-                          <span className="text-sm font-semibold text-white">{svc.label}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-white/30">
-                          <span>{svc.detail}</span>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>
-                      </div>
                     ))}
-                  </SettingSection>
-
-                  {/* Anime */}
-                  <SettingSection title="Anime">
-                    <div
-                      onClick={() => setProgressSubPage('anime')}
-                      className="flex items-center justify-between px-6 py-4 hover:bg-white/[0.02] transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-center gap-3">
-                        <svg className="w-4.5 h-4.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
-                        </svg>
-                        <span className="text-sm font-semibold text-white">Anime Tracking</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-xs text-white/30">
-                        <span>Provider selection</span>
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </div>
-                    </div>
-                  </SettingSection>
-                </>
-              )}
-
-              {/* Back button for sub-pages */}
-              {progressSubPage !== 'main' && (
-                <div className="flex items-center gap-3 mb-2 -mt-2">
-                  <button
-                    onClick={() => setProgressSubPage('main')}
-                    className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors cursor-pointer"
-                  >
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                      <path d="M15 19l-7-7 7-7" />
-                    </svg>
-                  </button>
-                  <h2 className="text-lg font-bold text-white capitalize">
-                    {progressSubPage === 'pmdb' ? 'PublicMetaDB' : progressSubPage === 'anime' ? 'Anime Tracking' : progressSubPage === 'simkl' ? 'Simkl' : progressSubPage}
-                  </h2>
+                  </div>
+                  <p className="text-[11px] text-white/30 mt-1.5">Choose where Continue Watching is saved on this device.</p>
                 </div>
-              )}
 
-              {/* Local Progress */}
-              {progressSubPage === 'local' && (
-                <SettingSection title="Local Progress" description="Manage your local device play history.">
-                  <SettingRow label="Copy Local Progress Cache" description="Copy all local play records as JSON to the clipboard.">
-                    <button
-                      onClick={() => {
-                        const raw = localStorage.getItem('orynt_watch_progress') || '{}'
-                        navigator.clipboard.writeText(raw)
-                      }}
-                      className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold border border-white/[0.06] cursor-pointer"
-                    >
-                      Copy to Clipboard
-                    </button>
-                  </SettingRow>
-                </SettingSection>
-              )}
+                <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
+                  <button
+                    onClick={() => {
+                      const current = store.continueWatchingLimit
+                      const next = current === 5 ? 10 : current === 10 ? 20 : current === 20 ? 50 : 5
+                      store.setContinueWatchingLimit(next)
+                    }}
+                    className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-sm text-white font-semibold cursor-pointer hover:bg-white/[0.08] transition-colors"
+                  >
+                    {store.continueWatchingLimit} items
+                  </button>
+                </SettingRow>
 
-              {/* Trakt Settings */}
-              {progressSubPage === 'trakt' && (
-                <>
-                  <SettingSection title="Trakt Scrobbling">
-                    <SettingRow label="Scrobble Playback" description="Send watching progress to Trakt while using the built-in player.">
-                      <SettingToggle checked={store.scrobbleTrakt} onChange={(v) => store.setScrobbleTrakt(v)} />
-                    </SettingRow>
-                  </SettingSection>
-
-                  <SettingSection title="Sync">
-                    <SettingRow label="Sync Frequency">
-                      <select
-                        value={store.pmdbSyncFrequency}
-                        onChange={(e) => store.setPmdBSyncFrequency(e.target.value)}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                      >
-                        <option value="every_minute">Every Minute</option>
-                        <option value="every_5">Every 5 Minutes</option>
-                        <option value="manual">Manual Only</option>
-                      </select>
-                    </SettingRow>
-                    <SettingRow label="Keep Syncing in Foreground" description="Refresh at the chosen interval while the app is in the foreground.">
-                      <SettingToggle checked={true} onChange={() => {}} />
-                    </SettingRow>
-                    <SettingRow label="Sync Now">
-                      <button className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold cursor-pointer">
-                        Sync Now
-                      </button>
-                    </SettingRow>
-                    <SettingRow label="Sync After External Playback" description="Refresh when Aurales is reopened from an external player.">
-                      <SettingToggle checked={true} onChange={() => {}} />
-                    </SettingRow>
-                  </SettingSection>
-
-                  <SettingSection title="Export">
-                    <SettingRow label="Copy to Clipboard">
-                      <button onClick={() => alert('Copied cache to clipboard')} className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold cursor-pointer">
-                        Copy
-                      </button>
-                    </SettingRow>
-                  </SettingSection>
-
-                  <SettingSection title="Danger Zone">
-                    <SettingRow label="Clear Trakt Continue Watching Cache" description="Remove all cached Trakt data.">
-                      <DangerButton onClick={() => alert('Trakt Cache Cleared.')}>Clear Cache</DangerButton>
-                    </SettingRow>
-                  </SettingSection>
-                </>
-              )}
-
-              {/* Simkl Settings */}
-              {progressSubPage === 'simkl' && (
-                <>
-                  <SettingSection title="Simkl Scrobbling">
-                    <SettingRow label="Scrobble Playback" description="Send start, pause, and stop events to Simkl.">
-                      <SettingToggle checked={store.scrobbleSimkl} onChange={(v) => store.setScrobbleSimkl(v)} />
-                    </SettingRow>
-                  </SettingSection>
-
-                  <SettingSection title="Sync">
-                    <SettingRow label="Sync Now" description="Pull Simkl watching, completed, anime, and watchlist data.">
-                      <div className="flex items-center gap-2">
-                        {simklLastSync && <span className="text-xs text-white/30">Last: {new Date(simklLastSync).toLocaleString()}</span>}
+                <div className="px-6 py-4">
+                  <div className="mb-3">
+                    <span className="text-sm text-white">Watched Checkmarks</span>
+                    <p className="text-[12px] text-white/35 mt-0.5">Choose which providers mark movies and episodes as watched.</p>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => {
+                      const enabled = store.watchedCheckmarkSources.includes(src)
+                      return (
                         <button
-                          onClick={handleSimklSync}
-                          disabled={simklLoading || !(simklStatus.connected || store.simklConnected)}
-                          className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                          key={src}
+                          onClick={() => {
+                            const next = enabled
+                              ? store.watchedCheckmarkSources.filter((s) => s !== src)
+                              : [...store.watchedCheckmarkSources, src]
+                            store.setWatchedCheckmarkSources(next.length ? next : ['local'])
+                          }}
+                          className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                            enabled ? 'bg-accent/15 border-accent/25 text-accent' : 'bg-white/5 border-white/5 text-white/40 hover:text-white'
+                          }`}
                         >
-                          {simklLoading ? 'Syncing...' : 'Sync Now'}
+                          {enabled && (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          )}
+                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
+                          {src === 'pmdb' ? 'PMDB' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
                         </button>
-                      </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <SettingRow label="Watchlist Button" description="Bookmark button target next to Play.">
+                  <select
+                    value={store.watchlistButtonTarget}
+                    onChange={(e) => store.setWatchlistButtonTarget(e.target.value as any)}
+                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
+                  >
+                    <option value="local">Local</option>
+                    <option value="trakt">Trakt</option>
+                    <option value="simkl">Simkl</option>
+                    <option value="pmdb">PMDB</option>
+                    <option value="anilist">AniList (anime only)</option>
+                  </select>
+                </SettingRow>
+              </SettingSection>
+
+              {/* ─── Anime Tracking ─── */}
+              <SettingSection title="Anime Tracking" description="Choose your anime progress provider and watched source.">
+                <SettingRow label="Provider" description="Where anime watch progress is tracked.">
+                  <select
+                    value={store.animeTrackingProvider}
+                    onChange={(e) => store.setAnimeTrackingProvider(e.target.value as any)}
+                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
+                  >
+                    <option value="anilist">AniList</option>
+                    <option value="simkl">Simkl</option>
+                    <option value="trakt">Trakt</option>
+                    <option value="local">Local Only</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Show Watched From" description="Which service displays watched checkmarks in episode lists.">
+                  <select
+                    value={store.animeShowWatchedFrom}
+                    onChange={(e) => store.setAnimeShowWatchedFrom(e.target.value as any)}
+                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
+                  >
+                    <option value="all">All Sources</option>
+                    <option value="provider">Current Provider Only</option>
+                  </select>
+                </SettingRow>
+              </SettingSection>
+
+              {/* ─── Per-Service Settings ─── */}
+              {([
+                {
+                  id: 'local' as const,
+                  label: 'Local',
+                  scrobbleKey: null,
+                  scrobbleValue: false,
+                  setScrobble: null,
+                  saveResumeValue: false,
+                  setSaveResume: null,
+                  syncFreqValue: null,
+                  setSyncFreq: null,
+                  syncAction: null,
+                  syncLoading: false,
+                  lastSync: null,
+                  exportAction: () => {
+                    const raw = localStorage.getItem('orynt_watch_progress') || '{}'
+                    navigator.clipboard.writeText(raw)
+                  },
+                  clearAction: null,
+                },
+                {
+                  id: 'trakt' as const,
+                  label: 'Trakt',
+                  scrobbleKey: 'trakt',
+                  scrobbleValue: store.scrobbleTrakt,
+                  setScrobble: store.setScrobbleTrakt,
+                  saveResumeValue: store.traktSaveResumePosition,
+                  setSaveResume: store.setTraktSaveResumePosition,
+                  syncFreqValue: store.traktSyncFrequency,
+                  setSyncFreq: store.setTraktSyncFrequency,
+                  syncAction: null,
+                  syncLoading: false,
+                  lastSync: null,
+                  exportAction: null,
+                  clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
+                },
+                {
+                  id: 'simkl' as const,
+                  label: 'Simkl',
+                  scrobbleKey: 'simkl',
+                  scrobbleValue: store.scrobbleSimkl,
+                  setScrobble: store.setScrobbleSimkl,
+                  saveResumeValue: store.simklSaveResumePosition,
+                  setSaveResume: store.setSimklSaveResumePosition,
+                  syncFreqValue: store.simklSyncFrequency,
+                  setSyncFreq: store.setSimklSyncFrequency,
+                  syncAction: (simklStatus.connected || store.simklConnected) ? handleSimklSync : null,
+                  syncLoading: simklLoading,
+                  lastSync: simklLastSync ? new Date(simklLastSync).toLocaleString() : null,
+                  exportAction: null,
+                  clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.SIMKL_LIST) },
+                },
+                {
+                  id: 'anilist' as const,
+                  label: 'AniList',
+                  scrobbleKey: 'anilist',
+                  scrobbleValue: store.scrobbleAnilist,
+                  setScrobble: store.setScrobbleAnilist,
+                  saveResumeValue: false,
+                  setSaveResume: null,
+                  syncFreqValue: store.anilistSyncFrequency,
+                  setSyncFreq: store.setAnilistSyncFrequency,
+                  syncAction: store.anilistConnected ? syncAniListNow : null,
+                  syncLoading: anilistLoading,
+                  lastSync: null,
+                  exportAction: null,
+                  clearAction: null,
+                },
+                {
+                  id: 'pmdb' as const,
+                  label: 'PublicMetaDB',
+                  scrobbleKey: 'pmdb',
+                  scrobbleValue: store.scrobblePmdb,
+                  setScrobble: store.setScrobblePmdb,
+                  saveResumeValue: store.pmdbSaveResumePosition,
+                  setSaveResume: store.setPmdBSaveResumePosition,
+                  syncFreqValue: store.pmdbSyncFrequency,
+                  setSyncFreq: store.setPmdBSyncFrequency,
+                  syncAction: () => { store.setPmdBLastSyncTime(new Date().toLocaleString()) },
+                  syncLoading: false,
+                  lastSync: store.pmdbLastSyncTime || null,
+                  exportAction: null,
+                  clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
+                },
+              ]).map((svc) => (
+                <SettingSection key={svc.id} title={svc.label} description={svc.id === 'local' ? 'Progress stored on this device.' : undefined}>
+                  <div className="flex items-center gap-3 px-6 pt-4 pb-2">
+                    <ServiceIcon service={svc.id} className="w-5 h-5" />
+                    <span className="text-sm font-bold text-white">{svc.label}</span>
+                  </div>
+
+                  {svc.setScrobble && (
+                    <SettingRow label="Scrobble Playback" description="Send watching progress during playback.">
+                      <SettingToggle checked={svc.scrobbleValue} onChange={svc.setScrobble} />
                     </SettingRow>
-                  </SettingSection>
-                  {simklError && (
-                    <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
-                      {simklError}
-                    </p>
                   )}
-                </>
-              )}
 
-              {/* AniList Settings */}
-              {progressSubPage === 'anilist' && (
-                <SettingSection title="AniList Settings" description="Anime Continue Watching, list rows, and episode progress.">
-                  <SettingRow label="Scrobble Episode Progress" description="Updates AniList progress to the current episode while playing.">
-                    <SettingToggle checked={store.scrobbleAnilist} onChange={(v) => store.setScrobbleAnilist(v)} />
-                  </SettingRow>
-                </SettingSection>
-              )}
-
-              {/* PMDB Settings */}
-              {progressSubPage === 'pmdb' && (
-                <>
-                  <SettingSection title="PMDB Scrobbling">
-                    <SettingRow label="Scrobble Watch History" description="Mark movies and episodes as watched when playback completes.">
-                      <SettingToggle checked={store.scrobblePmdb} onChange={(v) => store.setScrobblePmdb(v)} />
+                  {svc.setSaveResume && (
+                    <SettingRow label="Save Resume Position" description="Save playback position on pause and stop.">
+                      <SettingToggle checked={svc.saveResumeValue} onChange={svc.setSaveResume} />
                     </SettingRow>
-                    <SettingRow label="Save Resume Position" description="Sends playback position to PMDB on pause and stop.">
-                      <SettingToggle checked={store.pmdbSaveResumePosition} onChange={(v) => store.setPmdBSaveResumePosition(v)} />
-                    </SettingRow>
-                  </SettingSection>
+                  )}
 
-                  <SettingSection title="Sync">
-                    <SettingRow label="Sync Frequency">
+                  {svc.setSyncFreq && svc.syncFreqValue !== null && (
+                    <SettingRow label="Sync Frequency" description="How often to pull data in the background.">
                       <select
-                        value={store.pmdbSyncFrequency}
-                        onChange={(e) => store.setPmdBSyncFrequency(e.target.value)}
+                        value={svc.syncFreqValue}
+                        onChange={(e) => svc.setSyncFreq!(e.target.value)}
                         className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
                       >
                         <option value="every_minute">Every Minute</option>
                         <option value="every_5">Every 5 Minutes</option>
+                        <option value="every_15">Every 15 Minutes</option>
                         <option value="manual">Manual Only</option>
                       </select>
                     </SettingRow>
-                    <SettingRow label="Sync Now">
-                      <div className="flex items-center gap-2">
-                        {store.pmdbLastSyncTime && <span className="text-xs text-white/30">Last: {store.pmdbLastSyncTime}</span>}
-                        <button
-                          onClick={() => { store.setPmdBLastSyncTime('Just now'); alert('PublicMetaDB synced successfully.') }}
-                          className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold cursor-pointer"
-                        >
-                          Sync Now
-                        </button>
-                      </div>
-                    </SettingRow>
-                  </SettingSection>
+                  )}
 
-                  <SettingSection title="Danger Zone">
-                    <SettingRow label="Clear PMDB Continue Watching Cache" description="Remove all cached PMDB data.">
-                      <DangerButton onClick={() => alert('PMDB Cache Cleared.')}>Clear Cache</DangerButton>
+                  {(svc.syncAction || svc.lastSync) && (
+                    <SettingRow label="Sync Now" description={svc.lastSync ? `Last: ${svc.lastSync}` : undefined}>
+                      <button
+                        onClick={() => svc.syncAction?.()}
+                        disabled={svc.syncLoading || !svc.syncAction}
+                        className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                      >
+                        {svc.syncLoading ? 'Syncing...' : 'Sync Now'}
+                      </button>
                     </SettingRow>
-                  </SettingSection>
-                </>
+                  )}
+
+                  {svc.exportAction && (
+                    <SettingRow label="Export Data" description="Copy cached data to clipboard.">
+                      <button
+                        onClick={svc.exportAction}
+                        className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                      >
+                        Copy to Clipboard
+                      </button>
+                    </SettingRow>
+                  )}
+
+                  {svc.clearAction && (
+                    <SettingRow label="Clear Cache" description="Remove all cached data for this service.">
+                      <DangerButton onClick={svc.clearAction}>Clear Cache</DangerButton>
+                    </SettingRow>
+                  )}
+                </SettingSection>
+              ))}
+
+              {simklError && (
+                <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
+                  {simklError}
+                </p>
               )}
-
-              {/* Anime Tracking */}
-              {progressSubPage === 'anime' && (
-                <>
-                  <SettingSection title="Anime Tracking">
-                    <SettingRow label="Provider" description="Choose where to track your anime watch progress.">
-                      <select
-                        value={store.animeTrackingProvider}
-                        onChange={(e) => store.setAnimeTrackingProvider(e.target.value as any)}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                      >
-                        <option value="anilist">AniList</option>
-                        <option value="simkl">Simkl</option>
-                        <option value="trakt">Trakt</option>
-                        <option value="local">Local Only</option>
-                      </select>
-                    </SettingRow>
-                    <SettingRow label="Show Watched From" description="Which service displays watched checkmarks in episode lists.">
-                      <select
-                        value={store.animeShowWatchedFrom}
-                        onChange={(e) => store.setAnimeShowWatchedFrom(e.target.value as any)}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                      >
-                        <option value="all">All Sources</option>
-                        <option value="provider">Current Provider Only</option>
-                      </select>
-                    </SettingRow>
-                  </SettingSection>
-
-                  <SettingSection title="About Providers">
-                    <div className="px-6 py-4 space-y-4">
-                      <div className="flex items-start gap-3">
-                        <svg className="w-4 h-4 text-white/30 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <rect x="5" y="2" width="14" height="20" rx="2" /><line x1="12" y1="18" x2="12.01" y2="18" />
-                        </svg>
-                        <div>
-                          <p className="text-sm font-semibold text-white">Local Only</p>
-                          <p className="text-xs text-white/35 mt-0.5">Progress is stored only on this device and not synced anywhere.</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-3">
-                        <svg className="w-4 h-4 text-white/30 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <polygon points="12 2 2 7 12 12 22 7 12 2" /><polygon points="2 17 12 22 22 17" /><polygon points="2 12 12 17 22 12" />
-                        </svg>
-                        <div>
-                          <p className="text-sm font-semibold text-white">Trakt</p>
-                          <p className="text-xs text-white/35 mt-0.5">Progress syncs to Trakt using TVDB episode numbers. Best for mixed media libraries.</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-3">
-                        <svg className="w-4 h-4 text-white/30 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                        </svg>
-                        <div>
-                          <p className="text-sm font-semibold text-white">AniList</p>
-                          <p className="text-xs text-white/35 mt-0.5">Progress syncs directly to AniList using native episode numbers. Best for anime-focused experience.</p>
-                        </div>
-                      </div>
-                    </div>
-                  </SettingSection>
-                </>
+              {anilistMessage && (
+                <p className={`text-xs px-1 ${anilistMessage.includes('failed') ? 'text-red-400' : 'text-white/40'}`}>
+                  {anilistMessage}
+                </p>
               )}
             </>
           )}
@@ -2780,10 +2628,9 @@ export default function SettingsPage() {
                   >
                     <option value="auto">Auto-detect (Recommended)</option>
                     <option value="no">Disabled (Software)</option>
-                    <option value="d3d11va">Direct3D 11 (d3d11va)</option>
+                    <option value="videotoolbox">macOS (VideoToolbox)</option>
                     <option value="nvdec">NVIDIA (nvdec)</option>
                     <option value="vaapi">Intel/AMD Linux (vaapi)</option>
-                    <option value="videotoolbox">macOS (videotoolbox)</option>
                   </select>
                 </SettingRow>
               </SettingSection>
@@ -2906,9 +2753,6 @@ export default function SettingsPage() {
                 <SettingRow label="Translate subtitles" description="Create and prefer an AI-translated track on playback.">
                   <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
                 </SettingRow>
-                <SettingRow label="Translation engine">
-                  <span className="text-sm text-white/55">OpenRouter</span>
-                </SettingRow>
                 <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
                   <select
                     value={store.subtitleTranslationLang}
@@ -2924,9 +2768,6 @@ export default function SettingsPage() {
                       <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
                     ))}
                   </select>
-                </SettingRow>
-                <SettingRow label="Model">
-                  <span className="text-sm text-white/55 break-all">{store.openrouterModel}</span>
                 </SettingRow>
                 <SettingRow label="Cues Ahead" description="Number of subtitle cues to pre-translate.">
                   <select

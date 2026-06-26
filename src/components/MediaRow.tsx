@@ -48,7 +48,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
     scrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' })
   }
 
-  if (items.length === 0) return null
+  const visibleItems = items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)
+
+  if (visibleItems.length === 0) return null
 
   if (layout === 'list') {
     return (
@@ -63,7 +65,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
           </div>
         </div>
         <div className="space-y-2">
-          {items.map((item) => (
+          {visibleItems.map((item) => (
             <MediaCard key={item.id} item={item} layout="landscape" />
           ))}
         </div>
@@ -105,7 +107,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
         className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pb-2 scrollbar-none"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {items.map((item) => (
+        {visibleItems.map((item) => (
           <MediaCard
             key={item.id}
             item={item}
