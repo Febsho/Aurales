@@ -44,6 +44,7 @@ pub fn run() {
             commands::save_app_metadata,
             commands::get_app_metadata_for_addon,
             commands::get_app_metadata_by_ids,
+            commands::get_app_metadata_by_ids_batch,
             commands::delete_app_metadata,
             commands::hard_reset_anime_metadata,
             commands::clear_app_metadata,

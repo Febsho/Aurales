@@ -670,6 +670,65 @@ pub fn get_app_metadata_by_ids(
     None
 }
 
+#[tauri::command]
+pub fn get_app_metadata_by_ids_batch(
+    items: Vec<serde_json::Value>,
+    db: State<Database>,
+) -> Vec<Option<String>> {
+    let conn = db.conn.lock().unwrap();
+    items.iter().map(|item| {
+        let id = item.get("id").and_then(|v| v.as_str());
+        let imdb_id = item.get("imdbId").and_then(|v| v.as_str());
+        let tmdb_id = item.get("tmdbId").and_then(|v| v.as_i64());
+        let tvdb_id = item.get("tvdbId").and_then(|v| v.as_i64());
+        let anilist_id = item.get("anilistId").and_then(|v| v.as_i64());
+
+        if let Some(id_str) = id {
+            if let Ok(json) = conn.query_row(
+                "SELECT raw_json FROM app_media WHERE id = ?1",
+                [id_str],
+                |row| row.get::<_, String>(0)
+            ) { return Some(json); }
+        }
+        if let Some(imdb) = imdb_id {
+            if !imdb.is_empty() {
+                if let Ok(json) = conn.query_row(
+                    "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
+                    [imdb],
+                    |row| row.get::<_, String>(0)
+                ) { return Some(json); }
+            }
+        }
+        if let Some(tmdb) = tmdb_id {
+            if tmdb > 0 {
+                if let Ok(json) = conn.query_row(
+                    "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
+                    [tmdb],
+                    |row| row.get::<_, String>(0)
+                ) { return Some(json); }
+            }
+        }
+        if let Some(tvdb) = tvdb_id {
+            if tvdb > 0 {
+                if let Ok(json) = conn.query_row(
+                    "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
+                    [tvdb],
+                    |row| row.get::<_, String>(0)
+                ) { return Some(json); }
+            }
+        }
+        if let Some(anilist) = anilist_id {
+            if anilist > 0 {
+                if let Ok(json) = conn.query_row(
+                    "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
+                    [anilist],
+                    |row| row.get::<_, String>(0)
+                ) { return Some(json); }
+            }
+        }
+        None
+    }).collect()
+}
 
 #[tauri::command]
 pub fn delete_app_metadata(

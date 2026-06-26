@@ -26,6 +26,33 @@ function animeSettingsSignature(): string {
 const pending = new Map<string, Promise<AppMediaItem>>()
 const cacheKey = (input: AddonMediaInput) => `${animeSettingsSignature()}:${input.addonId}:${input.id || input.imdbId || input.tmdbId || input.tvdbId || input.title}`
 
+const metadataMemCache = new Map<string, { item: AppMediaItem; ts: number }>()
+const MEM_CACHE_TTL = 5 * 60 * 1000
+
+function memCacheKey(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }): string {
+  return `${ids.id || ''}|${ids.imdbId || ''}|${ids.tmdbId || 0}|${ids.tvdbId || 0}|${ids.anilistId || 0}`
+}
+
+function memCacheGet(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }): AppMediaItem | null {
+  const key = memCacheKey(ids)
+  const entry = metadataMemCache.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.ts > MEM_CACHE_TTL) {
+    metadataMemCache.delete(key)
+    return null
+  }
+  return entry.item
+}
+
+function memCacheSet(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }, item: AppMediaItem): void {
+  const key = memCacheKey(ids)
+  metadataMemCache.set(key, { item, ts: Date.now() })
+  if (metadataMemCache.size > 500) {
+    const oldest = metadataMemCache.keys().next().value
+    if (oldest) metadataMemCache.delete(oldest)
+  }
+}
+
 export async function getAppMetadataByIds(ids: {
   id?: string
   imdbId?: string
@@ -48,28 +75,63 @@ export async function getAppMetadataByIds(ids: {
   }
 }
 
+export async function getAppMetadataByIdsBatch(items: {
+  id?: string
+  imdbId?: string
+  tmdbId?: number
+  tvdbId?: number
+  anilistId?: number
+}[]): Promise<(AppMediaItem | null)[]> {
+  if (items.length === 0) return []
+  try {
+    const results = await invoke<(string | null)[]>('get_app_metadata_by_ids_batch', { items })
+    return results.map((raw) => raw ? JSON.parse(raw) as AppMediaItem : null)
+  } catch (e) {
+    console.error('[metadata] getAppMetadataByIdsBatch error:', e)
+    return items.map(() => null)
+  }
+}
+
 export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]): Promise<SearchResult[]> {
   const settings = useAppStore.getState()
   if (!settings.appManagedMetadata) return items
 
-  // 1. Try to fetch cached versions for all items from DB in parallel first
-  const cacheLookupResults = await Promise.all(
-    items.map(async (item) => {
-      const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
-      const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
-      const anilistId = item.anilistId ? Number(item.anilistId) : undefined
-      
-      const raw = await getAppMetadataByIds({
-        id: item.id,
-        imdbId: item.imdbId,
-        tmdbId,
-        tvdbId,
-        anilistId,
-      })
-      const cached = raw?.sourceMetadataProvider === 'fallback_addon' ? null : raw
-      return { item, cached }
+  // 1. Check in-memory cache first, then batch-fetch remaining from DB
+  const memResults: (AppMediaItem | null)[] = items.map((item) => {
+    const ids = {
+      id: item.id,
+      imdbId: item.imdbId,
+      tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined,
+      tvdbId: item.tvdbId ? Number(item.tvdbId) : undefined,
+      anilistId: item.anilistId ? Number(item.anilistId) : undefined,
+    }
+    return memCacheGet(ids)
+  })
+
+  const needsDbLookup = memResults.map((r, i) => r === null ? i : -1).filter((i) => i >= 0)
+
+  let dbResults: (AppMediaItem | null)[] = memResults.slice()
+  if (needsDbLookup.length > 0) {
+    const batchInput = needsDbLookup.map((i) => ({
+      id: items[i].id,
+      imdbId: items[i].imdbId,
+      tmdbId: items[i].tmdbId ? Number(items[i].tmdbId) : undefined,
+      tvdbId: items[i].tvdbId ? Number(items[i].tvdbId) : undefined,
+      anilistId: items[i].anilistId ? Number(items[i].anilistId) : undefined,
+    }))
+    const fetched = await getAppMetadataByIdsBatch(batchInput)
+    needsDbLookup.forEach((origIdx, batchIdx) => {
+      const item = fetched[batchIdx]
+      dbResults[origIdx] = item
+      if (item) memCacheSet(batchInput[batchIdx], item)
     })
-  )
+  }
+
+  const cacheLookupResults = items.map((item, i) => {
+    const raw = dbResults[i]
+    const cached = raw?.sourceMetadataProvider === 'fallback_addon' ? null : raw
+    return { item, cached }
+  })
 
   // 2. Identify items that are NOT cached and need to be resolved
   const uncachedInputs: { input: AddonMediaInput; index: number }[] = []
@@ -102,7 +164,7 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
     try {
       const resolvedList = await resolveMetadataBatch(
         uncachedInputs.map(x => x.input),
-        4
+        6
       )
       resolvedList.forEach((resolvedItem) => {
         if (!resolvedItem) return
@@ -212,6 +274,7 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
 
 export async function clearAppMetadataCache(): Promise<void> {
   pending.clear()
+  metadataMemCache.clear()
   await invoke('clear_app_metadata')
   const { cacheClearCategory } = await import('../cache/sqliteCache')
   await Promise.all([
@@ -224,6 +287,7 @@ export async function clearAppMetadataCache(): Promise<void> {
 
 export async function clearAnimeMetadataCache(): Promise<void> {
   pending.clear()
+  metadataMemCache.clear()
   // Clear all TVDB season caches from localStorage
   const keysToRemove: string[] = []
   for (let i = 0; i < localStorage.length; i++) {

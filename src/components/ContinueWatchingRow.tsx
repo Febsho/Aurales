@@ -317,7 +317,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         }
 
         if (!cancelled) {
-          setItems(list.slice(0, continueWatchingLimit))
+          setItems(list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit))
         }
       } catch (err: any) {
         if (!cancelled) {

@@ -24,6 +24,8 @@ import { isWatchedFromProviders } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
+import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
+import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 
 interface LocationState {
@@ -772,6 +774,33 @@ export default function SeriesDetailPage() {
             anilistId: appResult.anilistId || knownIds.anilistId,
           }
         }
+
+        // Persist anime mapping so future loads skip re-resolution
+        const localMediaId = appResult?.id || id || ''
+        if (localMediaId) {
+          const mapping: AnimeMappingResult = {
+            localMediaId,
+            tvdbId: tvdbId ? Number(tvdbId) : undefined,
+            tmdbId: tmdbId ? Number(tmdbId) : undefined,
+            anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
+            malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+            seasons: (appResult?.seasons || []).map((s, idx) => ({
+              localMediaId,
+              seasonNumber: s.seasonNumber,
+              anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
+              malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+              tvdbSeriesId: tvdbId ? Number(tvdbId) : undefined,
+              tvdbSeasonNumber: s.seasonNumber,
+              tmdbId: tmdbId ? Number(tmdbId) : undefined,
+              title: s.name,
+              episodeCount: s.episodeCount,
+            })),
+            confidence: 0.9,
+            source: 'animeApi',
+            updatedAt: new Date().toISOString(),
+          }
+          saveAnimeMapping(mapping).catch(() => {})
+        }
       } else {
         // Non-anime: TMDB first (existing flow)
 
@@ -901,6 +930,37 @@ export default function SeriesDetailPage() {
             id: id || appResult.id,
             malId: appResult.malId || knownIds.malId,
             anilistId: appResult.anilistId || knownIds.anilistId,
+          }
+
+          // Persist late-detected anime mapping
+          if (isAnimeLate) {
+            const lateTvdb = appResult.tvdbId ? Number(String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined
+            const lateTmdb = tmdbId ? Number(tmdbId) : undefined
+            const lateLocalId = appResult.id || id || ''
+            if (lateLocalId) {
+              const lateMapping: AnimeMappingResult = {
+                localMediaId: lateLocalId,
+                tvdbId: lateTvdb,
+                tmdbId: lateTmdb,
+                anilistId: appResult.anilistId ? Number(appResult.anilistId) : undefined,
+                malId: appResult.malId ? Number(appResult.malId) : undefined,
+                seasons: (appResult.seasons || []).map((s) => ({
+                  localMediaId: lateLocalId,
+                  seasonNumber: s.seasonNumber,
+                  tvdbSeriesId: lateTvdb,
+                  tvdbSeasonNumber: s.seasonNumber,
+                  tmdbId: lateTmdb,
+                  anilistId: appResult!.anilistId ? Number(appResult!.anilistId) : undefined,
+                  malId: appResult!.malId ? Number(appResult!.malId) : undefined,
+                  title: s.name,
+                  episodeCount: s.episodeCount,
+                })),
+                confidence: 0.8,
+                source: 'animeApi',
+                updatedAt: new Date().toISOString(),
+              }
+              saveAnimeMapping(lateMapping).catch(() => {})
+            }
           }
         }
 
