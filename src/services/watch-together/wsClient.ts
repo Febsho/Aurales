@@ -145,6 +145,27 @@ export async function createRoom(name: string): Promise<void> {
     name,
     createRoom: true,
   })
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('Room creation timed out'))
+    }, 10_000)
+    const unsub = useWatchTogetherStore.subscribe((state, prev) => {
+      if (state.currentRoom && !prev.currentRoom) {
+        cleanup()
+        resolve()
+      }
+      const newErrors = state.errors.length - (prev.errors?.length ?? 0)
+      if (newErrors > 0) {
+        cleanup()
+        reject(new Error(state.errors[state.errors.length - 1]))
+      }
+    })
+    function cleanup() {
+      clearTimeout(timeout)
+      unsub()
+    }
+  })
 }
 
 export async function joinRoom(code: string, name: string): Promise<void> {
@@ -156,6 +177,27 @@ export async function joinRoom(code: string, name: string): Promise<void> {
     type: 'ROOM_JOIN',
     roomId: code,
     name,
+  })
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('Join timed out — room may not exist'))
+    }, 10_000)
+    const unsub = useWatchTogetherStore.subscribe((state, prev) => {
+      if (state.currentRoom && !prev.currentRoom) {
+        cleanup()
+        resolve()
+      }
+      const newErrors = state.errors.length - (prev.errors?.length ?? 0)
+      if (newErrors > 0) {
+        cleanup()
+        reject(new Error(state.errors[state.errors.length - 1]))
+      }
+    })
+    function cleanup() {
+      clearTimeout(timeout)
+      unsub()
+    }
   })
 }
 
