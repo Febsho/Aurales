@@ -5,8 +5,6 @@ import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
 
-const DEFAULT_SERVER_URL = 'ws://localhost:9876'
-
 interface JoinRoomModalProps {
   open: boolean
   onClose: () => void
@@ -15,6 +13,9 @@ interface JoinRoomModalProps {
 export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
   const connectionStatus = useWatchTogetherStore((s) => s.connectionStatus)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
+  const serverUrl = useWatchTogetherStore((s) => s.serverUrl)
+  const defaultNickname = useWatchTogetherStore((s) => s.defaultNickname)
+  const setDefaultNickname = useWatchTogetherStore((s) => s.setDefaultNickname)
   const [roomCode, setRoomCode] = useState('')
   const [nickname, setNickname] = useState('')
   const [loading, setLoading] = useState(false)
@@ -24,11 +25,11 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
   useEffect(() => {
     if (open) {
       setRoomCode('')
-      setNickname(localStorage.getItem('aurales_wt_nickname') || '')
+      setNickname(defaultNickname)
       setError('')
       setTimeout(() => codeInputRef.current?.focus(), 100)
     }
-  }, [open])
+  }, [open, defaultNickname])
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
@@ -49,15 +50,19 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
     setError('')
     try {
       if (connectionStatus === 'disconnected') {
-        const serverUrl = localStorage.getItem('aurales_wt_server') || DEFAULT_SERVER_URL
         await wsClient.connect(serverUrl)
       }
-      localStorage.setItem('aurales_wt_nickname', trimmedName)
+      setDefaultNickname(trimmedName)
       await wsClient.joinRoom(roomCode, trimmedName)
       onClose()
       setRoomPanelOpen(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to join room')
+      const msg = err instanceof Error ? err.message : 'Failed to join room'
+      if (msg.includes('timed out') || msg.includes('Failed to connect')) {
+        setError(`Cannot reach server at ${serverUrl}. Make sure the Watch Together server is running.`)
+      } else {
+        setError(msg)
+      }
     } finally {
       setLoading(false)
     }
