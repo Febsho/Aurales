@@ -53,6 +53,21 @@ export async function cacheSet(key: string, value: unknown, options: CacheOption
   }
 }
 
+export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, CacheResult<T>>> {
+  if (keys.length === 0) return new Map()
+  try {
+    const entries = await invoke<RawCacheEntry[]>('cache_entry_get_many', { keys })
+    const map = new Map<string, CacheResult<T>>()
+    for (const entry of entries) {
+      const data = JSON.parse(entry.value) as T
+      map.set(entry.key, { data, stale: isExpired(entry), age: ageMs(entry) })
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
 export async function cacheDelete(key: string): Promise<void> {
   try {
     await invoke('cache_entry_set', { key })
