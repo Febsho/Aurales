@@ -96,26 +96,26 @@ export default function Layout() {
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
       <div className={`relative flex flex-col min-h-0 h-full ${sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
-        <button
-          type="button"
-          onClick={goBack}
-          disabled={location.pathname === '/' && window.history.length <= 1}
-          className={[
-            'absolute top-4 left-4 z-50',
-            'w-11 h-11 rounded-full flex items-center justify-center',
-            'bg-black/45 hover:bg-black/70 backdrop-blur-xl',
-            'border border-white/15 hover:border-white/30',
-            'text-white/75 hover:text-white shadow-lg',
-            'transition-all duration-200 cursor-pointer focus-ring',
-            'disabled:opacity-30 disabled:cursor-default disabled:hover:bg-black/45',
-          ].join(' ')}
-          title="Go back (Alt+Left)"
-          aria-label="Go back"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
-            <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        {location.pathname !== '/' && (
+          <button
+            type="button"
+            onClick={goBack}
+            className={[
+              'absolute top-4 left-4 z-50',
+              'w-11 h-11 rounded-full flex items-center justify-center',
+              'bg-black/45 hover:bg-black/70 backdrop-blur-xl',
+              'border border-white/15 hover:border-white/30',
+              'text-white/75 hover:text-white shadow-lg',
+              'transition-all duration-200 cursor-pointer focus-ring',
+            ].join(' ')}
+            title="Go back (Alt+Left)"
+            aria-label="Go back"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
+              <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
         {/* Search bar — top-right on hero pages */}
         {!isHeroPage && (
           <header className="relative h-14 flex items-center justify-center px-6 z-20 flex-shrink-0">
