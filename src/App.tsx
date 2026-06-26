@@ -5,6 +5,7 @@ import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
 import { syncAddonsFromStore } from './services/addons'
 import { setDiscordActivity, clearDiscordActivity } from './services/discord'
+import { startWatchedCacheSync, stopWatchedCacheSync } from './services/watchedCacheSync'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -25,6 +26,7 @@ export default function App() {
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
 
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
 
   const navigate = useNavigate()
   const location = useLocation()
@@ -32,6 +34,11 @@ export default function App() {
   useEffect(() => {
     syncAddonsFromStore(addons)
   }, [addons])
+
+  useEffect(() => {
+    startWatchedCacheSync(watchedCheckmarkSources)
+    return () => stopWatchedCacheSync()
+  }, [watchedCheckmarkSources])
 
   // Discord idle presence — set "Browsing" when no player is active
   useEffect(() => {
