@@ -1158,11 +1158,12 @@ fn launch_mpv_with_window(
 
     let mut child = Command::new(&mpv)
         .args(&args)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to launch embedded mpv at {}: {}", mpv.display(), e))?;
     let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
     let normal_session = format!("embedded-{}", child.id());
 
     player_debug_log(format!(
@@ -1178,6 +1179,16 @@ fn launch_mpv_with_window(
             use std::io::BufRead;
             for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
                 player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
+            }
+        });
+    }
+
+    if let Some(stdout) = stdout {
+        let stdout_session = normal_session.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
             }
         });
     }
