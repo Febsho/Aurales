@@ -87,6 +87,11 @@ interface AppState {
   pmdbSaveResumePosition: boolean
   pmdbSyncFrequency: string
   pmdbLastSyncTime: string
+  traktSaveResumePosition: boolean
+  traktSyncFrequency: string
+  simklSaveResumePosition: boolean
+  simklSyncFrequency: string
+  anilistSyncFrequency: string
   introdbApiKey: string
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
   animeShowWatchedFrom: 'all' | 'provider'
@@ -99,6 +104,11 @@ interface AppState {
   setPmdBSaveResumePosition: (val: boolean) => void
   setPmdBSyncFrequency: (freq: string) => void
   setPmdBLastSyncTime: (time: string) => void
+  setTraktSaveResumePosition: (val: boolean) => void
+  setTraktSyncFrequency: (freq: string) => void
+  setSimklSaveResumePosition: (val: boolean) => void
+  setSimklSyncFrequency: (freq: string) => void
+  setAnilistSyncFrequency: (freq: string) => void
   setIntrodbApiKey: (key: string) => void
   setAnimeTrackingProvider: (prov: 'anilist' | 'simkl' | 'trakt' | 'local') => void
   setAnimeShowWatchedFrom: (watchedFrom: 'all' | 'provider') => void
@@ -523,6 +533,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   pmdbSyncFrequency: localStorage.getItem('pmdb_sync_freq') || 'every_minute',
   pmdbLastSyncTime: localStorage.getItem('pmdb_last_sync') || '',
+  traktSaveResumePosition: localStorage.getItem('trakt_save_resume') !== 'false',
+  traktSyncFrequency: localStorage.getItem('trakt_sync_freq') || 'every_5',
+  simklSaveResumePosition: localStorage.getItem('simkl_save_resume') !== 'false',
+  simklSyncFrequency: localStorage.getItem('simkl_sync_freq') || 'every_5',
+  anilistSyncFrequency: localStorage.getItem('anilist_sync_freq') || 'every_5',
   introdbApiKey: localStorage.getItem('introdb_api_key') || '',
   animeTrackingProvider: (localStorage.getItem('anime_tracking_provider') || 'anilist') as 'anilist' | 'simkl' | 'trakt' | 'local',
   animeShowWatchedFrom: (localStorage.getItem('anime_show_watched') || 'all') as 'all' | 'provider',
@@ -572,6 +587,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
   setPmdBSyncFrequency: (freq) => { localStorage.setItem('pmdb_sync_freq', freq); set({ pmdbSyncFrequency: freq }) },
   setPmdBLastSyncTime: (time) => { localStorage.setItem('pmdb_last_sync', time); set({ pmdbLastSyncTime: time }) },
+  setTraktSaveResumePosition: (val) => { localStorage.setItem('trakt_save_resume', String(val)); set({ traktSaveResumePosition: val }) },
+  setTraktSyncFrequency: (freq) => { localStorage.setItem('trakt_sync_freq', freq); set({ traktSyncFrequency: freq }) },
+  setSimklSaveResumePosition: (val) => { localStorage.setItem('simkl_save_resume', String(val)); set({ simklSaveResumePosition: val }) },
+  setSimklSyncFrequency: (freq) => { localStorage.setItem('simkl_sync_freq', freq); set({ simklSyncFrequency: freq }) },
+  setAnilistSyncFrequency: (freq) => { localStorage.setItem('anilist_sync_freq', freq); set({ anilistSyncFrequency: freq }) },
   setIntrodbApiKey: (key) => { localStorage.setItem('introdb_api_key', key); set({ introdbApiKey: key }) },
   setAnimeTrackingProvider: (prov) => { localStorage.setItem('anime_tracking_provider', prov); set({ animeTrackingProvider: prov }) },
   setAnimeShowWatchedFrom: (watchedFrom) => { localStorage.setItem('anime_show_watched', watchedFrom); set({ animeShowWatchedFrom: watchedFrom }) },
