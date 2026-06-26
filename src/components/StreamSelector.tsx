@@ -13,7 +13,7 @@ import {
   type MatchedStreamRegexFilter,
 } from '../services/streamRegexFilters'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
-import { selectStream as wtSelectStream } from '../services/watch-together/wsClient'
+import { selectStream as wtSelectStream, play as wtPlay } from '../services/watch-together/wsClient'
 import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
 import type { RoomStream } from '../services/watch-together/types'
 
@@ -455,6 +455,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         streamFingerprint: createStreamFingerprint(stream),
       }
       wtSelectStream(roomStream)
+      wtPlay(startTime ?? 0)
     }
   }
 
@@ -478,8 +479,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       episode: seasonEpisode?.episode,
     }
 
-    const isWindows = navigator.platform.startsWith('Win')
-    const PlayerComponent = isWindows ? NativeMpvPlayer : InAppPlayer
+    const isTauri = !!(window as any).__TAURI_INTERNALS__
+    const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer
 
     return createPortal(
       <PlayerComponent

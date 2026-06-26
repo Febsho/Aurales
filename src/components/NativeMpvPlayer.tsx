@@ -1199,13 +1199,21 @@ function FullNativeMpvPlayer({
       if (cancelled) return
       setPlayerRunning(running)
 
-      if (!running && Date.now() - startedAt > 1500) {
+      if (!running && Date.now() - startedAt > 3000) {
+        await new Promise((r) => setTimeout(r, 500))
         const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
         const reversed = [...logs].reverse()
-        const detail = reversed.find((line) => line.includes('[MPV STDERR]'))
+        const stderrLines = reversed.filter((line) => line.includes('[MPV STDERR]'))
+        const detail = stderrLines[0]
           ?? reversed.find((line) => line.includes('[MPV OUTPUT]'))
           ?? reversed.find((line) => line.includes('[PLAYER EXIT]'))
-        setError(detail ? detail.replace(/^.*?\] /, '') : 'The stream closed before video playback started.')
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+        const cleanDetail = detail?.replace(/^.*?\] /, '')
+        const fallback = `The stream closed before video playback started (after ${elapsed}s, ${logs.length} log lines).`
+        setError(cleanDetail || fallback)
+        if (stderrLines.length > 0) {
+          console.error('[MPV CRASH]', stderrLines.map((l) => l.replace(/^.*?\] /, '')).join('\n'))
+        }
         clearInterval(interval)
       } else if (Date.now() - startedAt > 30000) {
         setError('The stream did not provide a playable video frame within 30 seconds.')

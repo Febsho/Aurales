@@ -5,12 +5,13 @@ import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
 
-const DEFAULT_SERVER_URL = 'ws://localhost:9876'
-
 export default function CreateRoomButton() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const connectionStatus = useWatchTogetherStore((s) => s.connectionStatus)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
+  const serverUrl = useWatchTogetherStore((s) => s.serverUrl)
+  const defaultNickname = useWatchTogetherStore((s) => s.defaultNickname)
+  const setDefaultNickname = useWatchTogetherStore((s) => s.setDefaultNickname)
   const [showModal, setShowModal] = useState(false)
   const [nickname, setNickname] = useState('')
   const [loading, setLoading] = useState(false)
@@ -18,13 +19,10 @@ export default function CreateRoomButton() {
 
   const handleClick = () => {
     if (currentRoom) {
-      // Already in a room — just open the panel
       setRoomPanelOpen(true)
       return
     }
-    // Pre-fill nickname from localStorage if available
-    const saved = localStorage.getItem('aurales_wt_nickname') || ''
-    setNickname(saved)
+    setNickname(defaultNickname)
     setError('')
     setShowModal(true)
   }
@@ -39,15 +37,19 @@ export default function CreateRoomButton() {
     setError('')
     try {
       if (connectionStatus === 'disconnected') {
-        const serverUrl = localStorage.getItem('aurales_wt_server') || DEFAULT_SERVER_URL
         await wsClient.connect(serverUrl)
       }
-      localStorage.setItem('aurales_wt_nickname', trimmed)
+      setDefaultNickname(trimmed)
       await wsClient.createRoom(trimmed)
       setShowModal(false)
       setRoomPanelOpen(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create room')
+      const msg = err instanceof Error ? err.message : 'Failed to create room'
+      if (msg.includes('timed out') || msg.includes('Failed to connect')) {
+        setError(`Cannot reach server at ${serverUrl}. Make sure the Watch Together server is running.`)
+      } else {
+        setError(msg)
+      }
     } finally {
       setLoading(false)
     }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, cloneElement } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
+import ErrorBoundary from '../components/ui/ErrorBoundary'
 import HeroSection from '../components/HeroSection'
 import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
@@ -524,64 +525,79 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
   const [items, setItems] = useState<SearchResult[]>([])
   const addons = useAppStore((s) => s.addons)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
+  const cancelledRef = useRef(false)
+
+  const cacheKey = `home:hero:${row.sourceType || 'addon'}:${row.addonId || ''}:${row.catalogId || ''}:${row.providerListId || ''}`
 
   useEffect(() => {
-    let cancelled = false
+    cancelledRef.current = false
 
     const load = async () => {
       try {
-        let results: SearchResult[] = []
-
         if (isMockCatalog && row.catalogId) {
-          results = getMockCatalog(row.catalogId)
-        } else if (row.sourceType === 'simkl') {
-          let raw: SimklWatchlistItem[] = []
-          switch (row.providerListId) {
-            case 'watching':          raw = await getSimklWatching(); break
-            case 'completed':         raw = await getSimklCompleted(); break
-            case 'anime':             raw = await getSimklAnimeWatchlist(); break
-            case 'history':           raw = await getSimklWatchedMovies(); break
-            case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
-            case 'movies-watching':   raw = await getSimklMoviesWatching(); break
-            case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
-            case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
-            case 'shows-watching':    raw = await getSimklShowsWatching(); break
-            case 'shows-completed':   raw = await getSimklShowsCompleted(); break
-            case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
-            case 'anime-watching':    raw = await getSimklAnimeWatching(); break
-            case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
-            case 'on-hold':           raw = await getSimklOnHold(); break
-            case 'dropped':           raw = await getSimklDropped(); break
-            case 'watchlist':
-            default:                  raw = await getSimklWatchlist(); break
-          }
-          results = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
-        } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
-          results = await getProviderListItems(row)
-        } else if (row.sourceType === 'discover') {
-          if (row.discoverConfig) {
-            const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id)
-            const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-            results = await enrichSearchResultsWithAppMetadata(rawDiscover)
-          }
-        } else if (row.addonId) {
-          const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
-          const url = addon?.url || row.addonUrl
-          if (url && row.catalogType && row.catalogId) {
-            results = await getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
-          }
-        } else {
-          // Default mock behavior
-          const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
-          results = [...rawItems];
+          setItems(getMockCatalog(row.catalogId))
+          return
         }
 
-        if (row.sortBy === 'alphabetical') {
-          results.sort((a, b) => a.title.localeCompare(b.title))
+        const fetcher = async (): Promise<SearchResult[]> => {
+          if (row.sourceType === 'simkl') {
+            let raw: SimklWatchlistItem[] = []
+            switch (row.providerListId) {
+              case 'watching':          raw = await getSimklWatching(); break
+              case 'completed':         raw = await getSimklCompleted(); break
+              case 'anime':             raw = await getSimklAnimeWatchlist(); break
+              case 'history':           raw = await getSimklWatchedMovies(); break
+              case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
+              case 'movies-watching':   raw = await getSimklMoviesWatching(); break
+              case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
+              case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
+              case 'shows-watching':    raw = await getSimklShowsWatching(); break
+              case 'shows-completed':   raw = await getSimklShowsCompleted(); break
+              case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
+              case 'anime-watching':    raw = await getSimklAnimeWatching(); break
+              case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
+              case 'on-hold':           raw = await getSimklOnHold(); break
+              case 'dropped':           raw = await getSimklDropped(); break
+              case 'watchlist':
+              default:                  raw = await getSimklWatchlist(); break
+            }
+            return canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
+          } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+            return getProviderListItems(row)
+          } else if (row.sourceType === 'discover') {
+            if (row.discoverConfig) {
+              const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id)
+              const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+              return enrichSearchResultsWithAppMetadata(rawDiscover)
+            }
+            return []
+          } else if (row.addonId) {
+            const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
+            const url = addon?.url || row.addonUrl
+            if (url && row.catalogType && row.catalogId) {
+              return getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
+            }
+            return []
+          } else {
+            const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
+            return [...rawItems];
+          }
         }
 
-        if (!cancelled) {
-          setItems(results)
+        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+          category: CACHE_CATEGORIES.ADDON_CATALOG,
+          ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+          onStaleRefreshed: (fresh) => {
+            if (!cancelledRef.current) {
+              const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
+              setItems(sorted)
+            }
+          },
+        })
+
+        if (!cancelledRef.current) {
+          const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
+          setItems(sorted)
         }
       } catch (e) {
         console.error('[HeroCatalogSection] Failed to load catalog items:', e)
@@ -589,11 +605,9 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
     }
 
     load()
-
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelledRef.current = true }
   }, [
+    cacheKey,
     isMockCatalog,
     row.addonId,
     row.addonUrl,
@@ -750,6 +764,83 @@ function SortableRowContainer({
   )
 }
 
+// ── Staggered row renderer ─────────────────────────────────────────────────
+
+function buildRowElement(row: HomeRowConfig): React.ReactNode {
+  if (row.layout === 'continue') {
+    return <ContinueWatchingRow key={row.id} row={row} />;
+  } else if (row.sourceType === 'simkl') {
+    return <SimklRow key={row.id} row={row} />;
+  } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+    return <ProviderListRow key={row.id} row={row} />;
+  } else if (row.sourceType === 'discover') {
+    return <DiscoverRow key={row.id} row={row} />;
+  } else if (row.addonId && row.addonId !== 'com.example.mockaddon') {
+    return <AddonCatalogRow key={row.id} row={row} />;
+  } else {
+    const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
+    const sortedItems = [...rawItems];
+    if (row.sortBy === 'alphabetical') {
+      sortedItems.sort((a, b) => a.title.localeCompare(b.title));
+    }
+    return (
+      <MediaRow
+        key={row.id}
+        title={`${row.title} (${sortedItems.length})`}
+        items={sortedItems}
+        layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+        showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      />
+    );
+  }
+}
+
+const STAGGER_BATCH = 3;
+const STAGGER_DELAY = 80;
+
+function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void }) {
+  const [visibleCount, setVisibleCount] = useState(STAGGER_BATCH)
+
+  useEffect(() => {
+    if (visibleCount >= rows.length) return
+    const timer = setTimeout(() => {
+      setVisibleCount((c) => Math.min(c + STAGGER_BATCH, rows.length))
+    }, STAGGER_DELAY)
+    return () => clearTimeout(timer)
+  }, [visibleCount, rows.length])
+
+  useEffect(() => {
+    setVisibleCount(STAGGER_BATCH)
+  }, [rows.length])
+
+  return (
+    <div className="space-y-4">
+      {rows.slice(0, visibleCount).map((row) => (
+        <ErrorBoundary key={row.id} label={row.title}>
+          <SortableRowContainer
+            row={row}
+            isEditing={isEditing}
+            onRemove={onRemove}
+          >
+            {buildRowElement(row)}
+          </SortableRowContainer>
+        </ErrorBoundary>
+      ))}
+      {visibleCount < rows.length && (
+        <div className="space-y-4">
+          {rows.slice(visibleCount).map((row) => (
+            <MediaRowSkeleton
+              key={row.id}
+              title={row.title}
+              layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Home Page Component ────────────────────────────────────────────────
 const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
   { value: 'poster', label: 'Poster Carousel' },
@@ -817,50 +908,7 @@ export default function HomePage() {
   };
 
   const shelvesContent = (
-    <div className="space-y-4">
-      {activeRows.map((row) => {
-        let rowEl = null;
-
-        if (row.layout === 'continue') {
-          rowEl = <ContinueWatchingRow key={row.id} row={row} />;
-        } else if (row.sourceType === 'simkl') {
-          rowEl = <SimklRow key={row.id} row={row} />;
-        } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
-          rowEl = <ProviderListRow key={row.id} row={row} />;
-        } else if (row.sourceType === 'discover') {
-          rowEl = <DiscoverRow key={row.id} row={row} />;
-        } else if (row.addonId && row.addonId !== 'com.example.mockaddon') {
-          rowEl = <AddonCatalogRow key={row.id} row={row} />;
-        } else {
-          const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
-          const sortedItems = [...rawItems];
-          if (row.sortBy === 'alphabetical') {
-            sortedItems.sort((a, b) => a.title.localeCompare(b.title));
-          }
-
-          rowEl = (
-            <MediaRow
-              key={row.id}
-              title={`${row.title} (${sortedItems.length})`}
-              items={sortedItems}
-              layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
-              showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
-            />
-          );
-        }
-
-        return (
-          <SortableRowContainer
-            key={row.id}
-            row={row}
-            isEditing={isEditing}
-            onRemove={removeHomeRow}
-          >
-            {rowEl}
-          </SortableRowContainer>
-        );
-      })}
-    </div>
+    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} />
   );
 
   return (
