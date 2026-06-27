@@ -177,7 +177,7 @@ export default function CatalogPage() {
               return merged.filter((item, idx, self) => self.findIndex(i => i.id === item.id) === idx)
             })
           }
-        } catch {
+        } catch (_) {
           canLoadMore = false
           setHasMore(false)
         } finally {

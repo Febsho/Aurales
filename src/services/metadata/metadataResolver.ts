@@ -252,7 +252,7 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
             item.rating = val
           }
         }
-      } catch { /* ignore */ }
+      } catch (_) { /* ignore */ }
     }
     if (!item) {
       if (!settings.useAddonMetadataFallback) throw new Error('No app metadata match')

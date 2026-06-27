@@ -256,7 +256,7 @@ function loadPersistedAddons(): InstalledAddon[] {
   try {
     const raw = localStorage.getItem('orynt_addons')
     if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return []
 }
 
@@ -267,8 +267,13 @@ function persistAddons(addons: InstalledAddon[]): void {
 function loadPersistedHomeRows(): HomeRowConfig[] | null {
   try {
     const raw = localStorage.getItem('orynt_home_rows')
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+    if (raw) {
+      const rows = JSON.parse(raw) as HomeRowConfig[]
+      const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
+      if (sanitized.length !== rows.length) persistHomeRows(sanitized)
+      return sanitized
+    }
+  } catch (_) { /* ignore */ }
   return null
 }
 
@@ -283,7 +288,7 @@ function loadPersistedWatchProgress(): Map<string, WatchProgress> {
       const parsed = JSON.parse(raw)
       return new Map(Object.entries(parsed))
     }
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return new Map()
 }
 
@@ -291,14 +296,14 @@ function persistWatchProgress(map: Map<string, WatchProgress>): void {
   try {
     const obj = Object.fromEntries(map.entries())
     localStorage.setItem('orynt_watch_progress', JSON.stringify(obj))
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
 }
 
 function loadPersistedPreferredSubtitles(): string[] {
   try {
     const raw = localStorage.getItem('orynt_preferred_subtitles')
     if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return ['en']
 }
 
@@ -306,7 +311,7 @@ function loadPersistedPreferredAudio(): string[] {
   try {
     const raw = localStorage.getItem('orynt_preferred_audio')
     if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return ['en', 'ja']
 }
 
@@ -314,7 +319,7 @@ function loadRecentlyViewed(): SearchResult[] {
   try {
     const raw = localStorage.getItem('orynt_recently_viewed')
     return raw ? JSON.parse(raw) as SearchResult[] : []
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -365,10 +370,7 @@ export function getLanguageCodeFromTrack(langStr?: string): string | null {
 }
 
 const DEFAULT_HOME_ROWS: HomeRowConfig[] = [
-  { id: 'hero-featured', title: 'Featured', layout: 'hero', enabled: true, order: 0 },
   { id: 'continue-watching', title: 'Continue Watching', layout: 'continue', enabled: true, order: 1, sourceType: 'local' },
-  { id: 'trending-movies', title: 'Trending Movies', addonId: 'com.example.mockaddon', catalogType: 'movie', catalogId: 'mock-movies', layout: 'poster', enabled: true, order: 2 },
-  { id: 'popular-series', title: 'Popular Series', addonId: 'com.example.mockaddon', catalogType: 'series', catalogId: 'mock-series', layout: 'landscape', enabled: true, order: 3 },
 ]
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -385,7 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('trakt_account')
       return raw ? JSON.parse(raw) as TraktAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
   setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); set({ tmdbApiKey: key }) },
   setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); set({ tvdbApiKey: key }) },
@@ -413,7 +415,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('simkl_account')
       return raw ? JSON.parse(raw) as SimklAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
   setSimklConnected: (connected) => set({ simklConnected: connected }),
   setSimklAccount: (account) => {
@@ -427,7 +429,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('anilist_account')
       return raw ? JSON.parse(raw) as AniListAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
   anilistClientId: localStorage.getItem('anilist_client_id') || '',
   anilistClientSecret: localStorage.getItem('anilist_client_secret') || '',
@@ -525,7 +527,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('orynt_watched_checkmark_sources')
       if (raw) return JSON.parse(raw) as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
-    } catch { /* ignore */ }
+    } catch (_) { /* ignore */ }
     return ['local'] as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
   })(),
   watchlistButtonTarget: (localStorage.getItem('orynt_watchlist_target') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
@@ -572,7 +574,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('orynt_visible_hero_ratings')
       if (raw) return JSON.parse(raw) as string[]
-    } catch { /* ignore */ }
+    } catch (_) { /* ignore */ }
     return ['imdb', 'rottentomatoes', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd', 'myanimelist']
   })(),
 

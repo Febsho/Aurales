@@ -184,7 +184,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
             const results = await discoverTmdbWithCache(row.discoverConfig, row.id)
             total = results.length
             urls = results.slice(0, 4).map((i) => i.poster || '').filter(Boolean)
-          } catch { /* ignore */ }
+          } catch (_) { /* ignore */ }
           if (!cancelled) { setPosters(urls); setCount(total) }
           return
         }
@@ -200,7 +200,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
         }
 
         if (!cancelled) { setPosters(urls); setCount(total) }
-      } catch {
+      } catch (_) {
         // empty mosaic is fine
       } finally {
         if (!cancelled) setLoading(false)

@@ -5,7 +5,6 @@ import ErrorBoundary from '../components/ui/ErrorBoundary'
 import HeroSection from '../components/HeroSection'
 import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
-import { MOCK_HERO_MOVIE, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
   getSimklWatchlist,
@@ -578,10 +577,8 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
               return getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
             }
             return []
-          } else {
-            const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
-            return [...rawItems];
           }
+          return []
         }
 
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
@@ -621,19 +618,8 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
     addons
   ])
 
-  const mockFallback: SearchResult = {
-    id: MOCK_HERO_MOVIE.id,
-    title: MOCK_HERO_MOVIE.title,
-    type: 'movie',
-    year: MOCK_HERO_MOVIE.year,
-    poster: MOCK_HERO_MOVIE.poster,
-    backdrop: MOCK_HERO_MOVIE.backdrop,
-    overview: MOCK_HERO_MOVIE.overview,
-    rating: MOCK_HERO_MOVIE.rating,
-    provider: 'mock',
-  }
-  const heroItems = items.length > 0 ? items : [mockFallback]
-  return <HeroSection items={heroItems} />
+  if (items.length === 0) return null
+  return <HeroSection items={items} />
 }
 
 // ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
@@ -777,22 +763,8 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
     return <DiscoverRow key={row.id} row={row} />;
   } else if (row.addonId && row.addonId !== 'com.example.mockaddon') {
     return <AddonCatalogRow key={row.id} row={row} />;
-  } else {
-    const rawItems = row.catalogId === 'mock-series' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING;
-    const sortedItems = [...rawItems];
-    if (row.sortBy === 'alphabetical') {
-      sortedItems.sort((a, b) => a.title.localeCompare(b.title));
-    }
-    return (
-      <MediaRow
-        key={row.id}
-        title={`${row.title} (${sortedItems.length})`}
-        items={sortedItems}
-        layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
-        showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
-      />
-    );
   }
+  return null
 }
 
 const STAGGER_BATCH = 3;
@@ -815,17 +787,21 @@ function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; i
 
   return (
     <div className="space-y-4">
-      {rows.slice(0, visibleCount).map((row) => (
-        <ErrorBoundary key={row.id} label={row.title}>
-          <SortableRowContainer
-            row={row}
-            isEditing={isEditing}
-            onRemove={onRemove}
-          >
-            {buildRowElement(row)}
-          </SortableRowContainer>
-        </ErrorBoundary>
-      ))}
+      {rows.slice(0, visibleCount).map((row) => {
+        const element = buildRowElement(row)
+        if (!element) return null
+        return (
+          <ErrorBoundary key={row.id} label={row.title}>
+            <SortableRowContainer
+              row={row}
+              isEditing={isEditing}
+              onRemove={onRemove}
+            >
+              {element}
+            </SortableRowContainer>
+          </ErrorBoundary>
+        )
+      })}
       {visibleCount < rows.length && (
         <div className="space-y-4">
           {rows.slice(visibleCount).map((row) => (
@@ -940,21 +916,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {heroRow ? (
-        <HeroCatalogSection row={heroRow} />
-      ) : (
-        <HeroSection items={[{
-          id: MOCK_HERO_MOVIE.id,
-          title: MOCK_HERO_MOVIE.title,
-          type: 'movie',
-          year: MOCK_HERO_MOVIE.year,
-          poster: MOCK_HERO_MOVIE.poster,
-          backdrop: MOCK_HERO_MOVIE.backdrop,
-          overview: MOCK_HERO_MOVIE.overview,
-          rating: MOCK_HERO_MOVIE.rating,
-          provider: 'mock',
-        }]} />
-      )}
+      {heroRow && <HeroCatalogSection row={heroRow} />}
 
       <div className="mt-4">
         {isEditing ? (

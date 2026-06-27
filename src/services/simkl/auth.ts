@@ -39,7 +39,7 @@ export async function getSimklConfig(): Promise<SimklConfig> {
       _configResolved = true
       return _config
     }
-  } catch {
+  } catch (_) {
     // Local config absent; fall through to env vars.
   }
 
@@ -155,7 +155,7 @@ export function getStoredSimklToken(): SimklToken | null {
     const raw = localStorage.getItem(LS_TOKEN)
     if (!raw) return null
     return JSON.parse(raw) as SimklToken
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -173,7 +173,7 @@ export function getStoredSimklAccount(): SimklAccount | null {
     const raw = localStorage.getItem(LS_ACCOUNT)
     if (!raw) return null
     return JSON.parse(raw) as SimklAccount
-  } catch {
+  } catch (_) {
     return null
   }
 }

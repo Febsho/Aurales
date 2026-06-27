@@ -18,7 +18,7 @@ function lsGet<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(LS_PREFIX + key)
     return raw !== null ? JSON.parse(raw) : fallback
-  } catch {
+  } catch (_) {
     return fallback
   }
 }
@@ -26,7 +26,7 @@ function lsGet<T>(key: string, fallback: T): T {
 function lsSet<T>(key: string, value: T): void {
   try {
     localStorage.setItem(LS_PREFIX + key, JSON.stringify(value))
-  } catch {
+  } catch (_) {
     // quota exceeded — silently ignore
   }
 }

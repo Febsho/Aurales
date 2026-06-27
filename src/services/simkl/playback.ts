@@ -47,7 +47,7 @@ export async function onSimklPlaybackStart(item: PlaybackItem, progress: number)
   try {
     const payload = await buildPayload(item, progress * 100)
     if (payload) await simklScrobbleStart(payload)
-  } catch {
+  } catch (_) {
     // Swallow — playback should not be disrupted by scrobble failures
   }
 }
@@ -63,7 +63,7 @@ export async function onSimklPlaybackPause(item: PlaybackItem, progress: number)
   try {
     const payload = await buildPayload(item, progress * 100)
     if (payload) await simklScrobblePause(payload)
-  } catch {
+  } catch (_) {
     // Swallow
   }
 }
@@ -80,7 +80,7 @@ export async function onSimklPlaybackStop(item: PlaybackItem, progress: number):
   try {
     const payload = await buildPayload(item, progress * 100)
     if (payload) await simklScrobbleStop(payload)
-  } catch {
+  } catch (_) {
     // Swallow
   }
 }
@@ -92,7 +92,7 @@ export async function getSimklPlaybackProgress(): Promise<SimklPlaybackProgressI
   if (isSimklMockMode()) return []
   try {
     return await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback') ?? []
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 /** Save/update playback progress to Simkl for cross-device resume. */
@@ -106,7 +106,7 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
         body: JSON.stringify(payload),
       })
     }
-  } catch {
+  } catch (_) {
     // Swallow
   }
 }
@@ -116,7 +116,7 @@ export async function removeSimklPlaybackProgress(id: number): Promise<void> {
   if (isSimklMockMode()) return
   try {
     await simklRequest(`/sync/playback/${id}`, { method: 'DELETE' })
-  } catch {
+  } catch (_) {
     // Swallow
   }
 }
@@ -149,7 +149,7 @@ async function buildPayload(item: PlaybackItem, progressPct: number) {
           const epNum = mapping.simkl.episodeNumber ?? item.episode
           return buildSimklAnimeScrobble(mappedIds, epNum, progressPct, meta)
         }
-      } catch { /* fall through */ }
+      } catch (_) { /* fall through */ }
     }
     return buildSimklAnimeScrobble(ids, item.episode ?? 1, progressPct, meta)
   }
@@ -184,7 +184,7 @@ async function resolveIds(item: PlaybackItem): Promise<SimklScrobbleIds> {
       if (mapping.tvdbId) ids.tvdb = mapping.tvdbId
       if (mapping.malId) ids.mal = mapping.malId
     }
-  } catch {
+  } catch (_) {
     // Mapping lookup failed — proceed with whatever we have
   }
 

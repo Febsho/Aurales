@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useContextMenu, type ProviderKey, type ProviderWatchState } from '../hooks/useContextMenu'
 import { useAppStore } from '../stores/appStore'
 import { useToast } from './ui/Toast'
 import type { SearchResult } from '../types'
 import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders } from '../services/watchedStatus'
+import { cacheClearCategory } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
 
 const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
   local: { label: 'Local', color: '#a3a3a3' },
@@ -47,19 +50,29 @@ export default function ContextMenu() {
     }
   }, [open, close])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !menuRef.current) return
-    const rect = menuRef.current.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    let ax = x
-    let ay = y
-    if (x + rect.width > vw - 8) ax = vw - rect.width - 8
-    if (y + rect.height > vh - 8) ay = vh - rect.height - 8
-    if (ax < 8) ax = 8
-    if (ay < 8) ay = 8
-    setAdjusted({ x: ax, y: ay })
-  }, [open, x, y])
+    const updatePosition = () => {
+      if (!menuRef.current) return
+      const rect = menuRef.current.getBoundingClientRect()
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      let ax = x
+      let ay = y
+      if (x + rect.width > vw - 8) ax = vw - rect.width - 8
+      if (y + rect.height > vh - 8) ay = vh - rect.height - 8
+      if (ax < 8) ax = 8
+      if (ay < 8) ay = 8
+      setAdjusted({ x: ax, y: ay })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open, x, y, providerStates.length, target?.kind])
 
   useEffect(() => {
     if (!open || !target) { setProviderStates([]); return }
@@ -130,6 +143,7 @@ export default function ContextMenu() {
       } else if (provider === 'anilist') {
         await toggleAniListWatched(target, newWatched)
       }
+      await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
       setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, watched: newWatched, loading: false } : s))
       const label = PROVIDER_META[provider].label
       toast('success', `${newWatched ? 'Marked' : 'Unmarked'} on ${label}`)
@@ -162,7 +176,19 @@ export default function ContextMenu() {
     )
 
     const failed = results.filter((r) => r.status === 'rejected').length
-    setProviderStates((prev) => prev.map((s) => s.connected ? { ...s, watched, loading: false } : s))
+    if (failed < connectedProviders.length) {
+      await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
+    }
+    const successfulProviders = new Set(
+      connectedProviders
+        .filter((_, index) => results[index]?.status === 'fulfilled')
+        .map((s) => s.provider)
+    )
+    setProviderStates((prev) => prev.map((s) =>
+      successfulProviders.has(s.provider)
+        ? { ...s, watched, loading: false }
+        : { ...s, loading: false }
+    ))
     if (failed > 0) toast('warning', `${failed} provider(s) failed`)
     else toast('success', `${watched ? 'Marked' : 'Unmarked'} on all providers`)
     close()
@@ -206,7 +232,7 @@ export default function ContextMenu() {
       ? `Season ${target.seasonNumber}`
       : item.title
 
-  return (
+  const menu = (
     <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={menuRef}
@@ -214,6 +240,8 @@ export default function ContextMenu() {
         style={{
           left: adjusted.x || x,
           top: adjusted.y || y,
+          maxHeight: 'calc(100vh - 16px)',
+          overflowY: 'auto',
           backdropFilter: 'blur(60px) saturate(200%)',
           boxShadow: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.1)',
           animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)',
@@ -336,12 +364,208 @@ export default function ContextMenu() {
       </div>
     </div>
   )
+
+  return createPortal(menu, document.body)
 }
 
 // ─── Helper functions ─────────────────────────────────────────────────────────
 
 function isAnimeItem(item: SearchResult): boolean {
-  return item.type === 'series' && !!(item.anilistId || item.malId)
+  return item.type === 'series' && !!(
+    item.isAnime ||
+    item.provider === 'anilist' ||
+    item.provider === 'mal' ||
+    /^(mal|anilist)[-:]/i.test(item.id)
+  )
+}
+
+function seasonEpToAbsolute(season: number, episode: number, seasonCounts?: { season: number; count: number }[]): number | null {
+  if (!seasonCounts?.length) return null
+  let absolute = 0
+  for (const s of seasonCounts) {
+    if (s.season >= season) break
+    absolute += s.count
+  }
+  return absolute + episode
+}
+
+function providerEpisodeForTarget(
+  item: SearchResult,
+  season: number,
+  episode: number,
+  appSeasonCounts?: { season: number; count: number }[],
+  explicitAbsolute?: number,
+): { season: number; episode: number } {
+  const absolute = explicitAbsolute ?? seasonEpToAbsolute(season, episode, appSeasonCounts)
+  return isAnimeItem(item) && absolute != null
+    ? { season: 1, episode: absolute }
+    : { season, episode }
+}
+
+function appEpisodeForTarget(season: number, episode: number): { season: number; episode: number } {
+  return { season, episode }
+}
+
+function numericId(value: unknown): number | undefined {
+  if (value == null) return undefined
+  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)-/i, ''))
+  return Number.isFinite(num) && num > 0 ? num : undefined
+}
+
+function aniListExactMarkIds(item: SearchResult): string[] {
+  const ids = [
+    item.id,
+    item.imdbId,
+    item.tmdbId,
+    item.tmdbId ? `tmdb-${numericId(item.tmdbId) ?? item.tmdbId}` : undefined,
+    item.tvdbId,
+    item.tvdbId ? `tvdb-${numericId(item.tvdbId) ?? item.tvdbId}` : undefined,
+    item.malId ? `mal-${item.malId}` : undefined,
+    item.anilistId ? `anilist-${item.anilistId}` : undefined,
+  ].filter((id): id is string | number => id != null && id !== '')
+  return [...new Set(ids.map(String))]
+}
+
+async function mapAnimeEpisodeForTarget(
+  item: SearchResult,
+  target: Extract<NonNullable<ReturnType<typeof useContextMenu.getState>['target']>, { kind: 'episode' }>,
+) {
+  if (!isAnimeItem(item)) return null
+  const tvdbSeriesId = numericId(item.tvdbId)
+  if (!tvdbSeriesId) return null
+  try {
+    const { mapEpisodeToProviders, isConfidenceSufficient } = await import('../services/anime-mapping')
+    const mapping = await mapEpisodeToProviders({
+      localMediaId: item.id,
+      tvdbSeriesId,
+      tvdbSeasonNumber: target.seasonNumber,
+      tvdbEpisodeNumber: target.episode.episodeNumber,
+      tvdbEpisodeId: numericId(target.episode.tvdbId),
+    })
+    return mapping && isConfidenceSufficient(mapping) ? mapping : null
+  } catch (_) {
+    return null
+  }
+}
+
+async function resolveAniListEpisodeForTarget(
+  item: SearchResult,
+  target: Extract<NonNullable<ReturnType<typeof useContextMenu.getState>['target']>, { kind: 'episode' }>,
+): Promise<{ anilistId?: number | string; malId?: number | string; episode: number }> {
+  const absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
+  const providerEpisode = providerEpisodeForTarget(item, target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts, absoluteEpisode)
+  const mapping = await mapAnimeEpisodeForTarget(item, target)
+  if (mapping?.anilist?.mediaId && mapping.anilist.episodeNumber) {
+    return {
+      anilistId: mapping.anilist.mediaId,
+      malId: mapping.mal?.id ?? item.malId,
+      episode: mapping.anilist.episodeNumber,
+    }
+  }
+  if (mapping?.mal?.id && mapping.mal.episodeNumber) {
+    return {
+      anilistId: item.anilistId,
+      malId: mapping.mal.id,
+      episode: mapping.mal.episodeNumber,
+    }
+  }
+
+  const tvdbSeriesId = numericId(item.tvdbId)
+  if (isAnimeItem(item) && tvdbSeriesId) {
+    try {
+      const { mapTvdbEpisodeToAnimeProviders } = await import('../services/animeLists')
+      const mapped = await mapTvdbEpisodeToAnimeProviders(tvdbSeriesId, target.seasonNumber, target.episode.episodeNumber)
+      if ((mapped?.anilistId || mapped?.malId) && mapped.episode) {
+        return {
+          anilistId: mapped.anilistId ?? item.anilistId,
+          malId: mapped.malId ?? item.malId,
+          episode: mapped.episode,
+        }
+      }
+    } catch (_) {
+      // Fall back below.
+    }
+  }
+
+  return {
+    anilistId: item.anilistId,
+    malId: item.malId,
+    episode: providerEpisode.episode,
+  }
+}
+
+async function mapAnimeProvidersForTarget(
+  item: SearchResult,
+  target: Extract<NonNullable<ReturnType<typeof useContextMenu.getState>['target']>, { kind: 'episode' }>,
+) {
+  const tvdbSeriesId = numericId(item.tvdbId)
+  if (!isAnimeItem(item) || !tvdbSeriesId) return null
+  try {
+    const { mapTvdbEpisodeToAnimeProviders } = await import('../services/animeLists')
+    const result = await mapTvdbEpisodeToAnimeProviders(tvdbSeriesId, target.seasonNumber, target.episode.episodeNumber)
+    if (result) return result
+  } catch (_) { /* fall through */ }
+  try {
+    const { mapEpisodeToProviders, isConfidenceSufficient } = await import('../services/anime-mapping')
+    const apiMapping = await mapEpisodeToProviders({
+      localMediaId: item.id,
+      tvdbSeriesId,
+      tvdbSeasonNumber: target.seasonNumber,
+      tvdbEpisodeNumber: target.episode.episodeNumber,
+    })
+    if (apiMapping && isConfidenceSufficient(apiMapping)) {
+      return {
+        anilistId: apiMapping.anilist?.mediaId,
+        malId: apiMapping.mal?.id,
+        simklId: apiMapping.simkl?.id,
+        traktId: apiMapping.trakt?.id,
+        tmdbId: apiMapping.tmdb?.id,
+        episode: apiMapping.simkl?.episodeNumber ?? apiMapping.trakt?.episodeNumber ?? target.episode.episodeNumber,
+        season: apiMapping.trakt?.seasonNumber ?? target.seasonNumber,
+      }
+    }
+  } catch (_) { /* fall through */ }
+  return null
+}
+
+async function resolvePmdbEpisodeForTarget(
+  item: SearchResult,
+  target: Extract<NonNullable<ReturnType<typeof useContextMenu.getState>['target']>, { kind: 'episode' }>,
+): Promise<{ tmdbId: number; season: number; episode: number }> {
+  const fallbackTmdbId = numericId(item.tmdbId)
+  const fallback = {
+    tmdbId: fallbackTmdbId || 0,
+    season: target.seasonNumber,
+    episode: target.episode.episodeNumber,
+  }
+  if (!isAnimeItem(item)) return fallback
+  const mapped = await mapAnimeProvidersForTarget(item, target)
+  if (mapped?.tmdbId && mapped.episode) {
+    const absoluteEpisode = target.episode.absoluteEpisodeNumber ??
+      target.episode.debugOriginalAbsoluteNumber ??
+      seasonEpToAbsolute(target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts)
+    const tvdbSeriesId = numericId(item.tvdbId)
+    if (tvdbSeriesId && absoluteEpisode != null) {
+      try {
+        const { shouldFlattenPmdbAnimeEpisodes } = await import('../services/animeLists')
+        if (await shouldFlattenPmdbAnimeEpisodes(tvdbSeriesId, mapped.tmdbId)) {
+          return {
+            tmdbId: mapped.tmdbId,
+            season: 1,
+            episode: absoluteEpisode,
+          }
+        }
+      } catch (_) {
+        // Use provider mapping below.
+      }
+    }
+    return {
+      tmdbId: mapped.tmdbId,
+      season: mapped.season,
+      episode: mapped.episode,
+    }
+  }
+  return fallback
 }
 
 function checkLocalWatched(
@@ -352,6 +576,10 @@ function checkLocalWatched(
   if (!target) return false
   if (target.kind === 'episode') {
     const lookup = { ...searchResultToLookup(item), season: target.seasonNumber, episode: target.episode.episodeNumber }
+    return getLocalWatchedStatus(lookup, watchProgress)
+  }
+  if (target.kind === 'season') {
+    const lookup = { ...searchResultToLookup(item), season: target.seasonNumber, seasonEpisodeCount: target.episodeCount }
     return getLocalWatchedStatus(lookup, watchProgress)
   }
   return getLocalWatchedStatus(searchResultToLookup(item), watchProgress)
@@ -368,9 +596,22 @@ async function checkTraktWatched(
       lookup.episode = target.episode.episodeNumber
       lookup.absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
       lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
+      const mapped = await mapAnimeProvidersForTarget(item, target)
+      if (mapped?.traktId) {
+        lookup.traktId = mapped.traktId
+        lookup.season = mapped.season
+        lookup.episode = mapped.episode
+        lookup.appSeasonEpCounts = undefined
+      }
+    } else if (target?.kind === 'season') {
+      lookup.season = target.seasonNumber
+      lookup.seasonEpisodeCount = target.episodeCount
+      lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
     }
     return isWatchedFromProviders(lookup, ['trakt'], new Map())
-  } catch { return false }
+  } catch (_) { return false }
 }
 
 async function checkSimklWatched(
@@ -384,9 +625,23 @@ async function checkSimklWatched(
       lookup.episode = target.episode.episodeNumber
       lookup.absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
       lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
+      const mapped = await mapAnimeProvidersForTarget(item, target)
+      if (mapped?.simklId) {
+        lookup.simklId = mapped.simklId
+        lookup.malId = mapped.malId ?? lookup.malId
+        lookup.season = 1
+        lookup.episode = mapped.episode
+        lookup.appSeasonEpCounts = undefined
+      }
+    } else if (target?.kind === 'season') {
+      lookup.season = target.seasonNumber
+      lookup.seasonEpisodeCount = target.episodeCount
+      lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
     }
     return isWatchedFromProviders(lookup, ['simkl'], new Map())
-  } catch { return false }
+  } catch (_) { return false }
 }
 
 async function checkPmdbWatched(
@@ -400,9 +655,20 @@ async function checkPmdbWatched(
       lookup.episode = target.episode.episodeNumber
       lookup.absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
       lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
+      const mapped = await resolvePmdbEpisodeForTarget(item, target)
+      lookup.tmdbId = mapped.tmdbId
+      lookup.season = mapped.season
+      lookup.episode = mapped.episode
+      lookup.appSeasonEpCounts = undefined
+    } else if (target?.kind === 'season') {
+      lookup.season = target.seasonNumber
+      lookup.seasonEpisodeCount = target.episodeCount
+      lookup.isAnime = isAnimeItem(item)
+      lookup.appSeasonEpCounts = target.appSeasonCounts
     }
     return isWatchedFromProviders(lookup, ['pmdb'], new Map())
-  } catch { return false }
+  } catch (_) { return false }
 }
 
 async function checkAniListWatched(
@@ -416,9 +682,15 @@ async function checkAniListWatched(
       lookup.episode = target.episode.episodeNumber
       lookup.absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
       lookup.isAnime = true
+      lookup.appSeasonEpCounts = target.appSeasonCounts
+    } else if (target?.kind === 'season') {
+      lookup.season = target.seasonNumber
+      lookup.seasonEpisodeCount = target.episodeCount
+      lookup.isAnime = true
+      lookup.appSeasonEpCounts = target.appSeasonCounts
     }
     return isWatchedFromProviders(lookup, ['anilist'], new Map())
-  } catch { return false }
+  } catch (_) { return false }
 }
 
 async function toggleLocalWatched(
@@ -488,9 +760,22 @@ async function toggleTraktWatched(
     if (watched) await markMovieWatched(imdbId)
     else await markMovieUnwatched(imdbId)
   } else if (target.kind === 'episode') {
-    const { markEpisodeWatched, markEpisodeUnwatched } = await import('../services/trakt/sync')
-    if (watched) await markEpisodeWatched(imdbId, target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts)
-    else await markEpisodeUnwatched(imdbId, target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts)
+    const trakt = await import('../services/trakt/sync')
+    const animeProviders = await mapAnimeProvidersForTarget(item, target)
+    if (isAnimeItem(item) && animeProviders?.traktId) {
+      const payload = {
+        shows: [{
+          ids: { trakt: animeProviders.traktId },
+          seasons: [{ number: animeProviders.season, episodes: [{ number: animeProviders.episode, watched_at: new Date().toISOString() }] }],
+        }],
+      }
+      if (watched) await trakt.addToHistory(payload)
+      else await trakt.removeFromHistory({ shows: [{ ids: { trakt: animeProviders.traktId }, seasons: [{ number: animeProviders.season, episodes: [{ number: animeProviders.episode }] }] }] })
+    } else if (watched) {
+      await trakt.markEpisodeWatched(imdbId, target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts)
+    } else {
+      await trakt.markEpisodeUnwatched(imdbId, target.seasonNumber, target.episode.episodeNumber, target.appSeasonCounts)
+    }
   } else if (target.kind === 'season') {
     const { markEpisodeWatched, markEpisodeUnwatched } = await import('../services/trakt/sync')
     for (let ep = 1; ep <= target.episodeCount; ep++) {
@@ -515,9 +800,13 @@ async function toggleSimklWatched(
     localId: item.id,
     title: item.title,
     year: item.year,
+    type: isAnimeItem(item) ? 'anime' as const : 'show' as const,
     imdbId: item.imdbId,
     tmdbId: Number.isFinite(tmdbId) ? tmdbId : undefined,
     tvdbId: Number.isFinite(tvdbId) ? tvdbId : undefined,
+    malId: item.malId != null ? Number(item.malId) : undefined,
+    anilistId: item.anilistId != null ? Number(item.anilistId) : undefined,
+    simklId: item.simklId,
   }
 
   if (item.type === 'movie') {
@@ -526,17 +815,29 @@ async function toggleSimklWatched(
     else await removeWatchedFromSimkl(mediaRef, 'movie')
   } else if (target.kind === 'episode') {
     const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl } = await import('../services/simkl/history')
-    const absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
-    const providerEpisode = isAnimeItem(item) && absoluteEpisode != null
-      ? { season: 1, episode: absoluteEpisode }
-      : { season: target.seasonNumber, episode: target.episode.episodeNumber }
-    if (watched) await markEpisodeWatchedOnSimkl(mediaRef, providerEpisode)
-    else await removeEpisodeWatchedOnSimkl(mediaRef, providerEpisode)
+    const mapping = await mapAnimeEpisodeForTarget(item, target)
+    const animeProviders = await mapAnimeProvidersForTarget(item, target)
+    const providerEpisode = mapping?.simkl?.episodeNumber
+      ? { season: mapping.simkl.seasonNumber ?? target.seasonNumber, episode: mapping.simkl.episodeNumber }
+      : animeProviders?.simklId
+      ? { season: 1, episode: animeProviders.episode }
+      : appEpisodeForTarget(target.seasonNumber, target.episode.episodeNumber)
+    const mappedRef = mapping?.simkl?.id
+      ? { ...mediaRef, simklId: mapping.simkl.id }
+      : animeProviders?.simklId
+      ? { ...mediaRef, simklId: animeProviders.simklId, malId: animeProviders.malId ?? mediaRef.malId }
+      : mediaRef
+    if (watched) await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+    else await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
   } else if (target.kind === 'season') {
     const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl } = await import('../services/simkl/history')
     for (let ep = 1; ep <= target.episodeCount; ep++) {
-      if (watched) await markEpisodeWatchedOnSimkl(mediaRef, { season: target.seasonNumber, episode: ep })
-      else await removeEpisodeWatchedOnSimkl(mediaRef, { season: target.seasonNumber, episode: ep })
+      const pseudoTarget = { ...target, kind: 'episode' as const, episode: { ...({} as import('../types').EpisodeDetails), episodeNumber: ep, seasonNumber: target.seasonNumber, id: `${item.id}:${target.seasonNumber}:${ep}`, name: '' } }
+      const mapped = await mapAnimeProvidersForTarget(item, pseudoTarget)
+      const providerEpisode = mapped?.simklId ? { season: 1, episode: mapped.episode } : appEpisodeForTarget(target.seasonNumber, ep)
+      const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
+      if (watched) await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+      else await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
     }
   } else {
     if (watched) {
@@ -557,28 +858,46 @@ async function togglePmdbWatched(
   const tmdbId = Number(item.tmdbId)
   if (!tmdbId || !Number.isFinite(tmdbId)) throw new Error('No TMDB ID for PMDB')
 
-  const { scrobblePMDB } = await import('../services/pmdb')
+  const { scrobblePMDB, removePMDBWatched } = await import('../services/pmdb')
   if (item.type === 'movie') {
     if (watched) await scrobblePMDB(tmdbId, 'movie')
-    else throw new Error('PMDB does not support unwatch')
+    else await removePMDBWatched(tmdbId, 'movie')
   } else if (target.kind === 'episode') {
-    const absoluteEpisode = target.episode.absoluteEpisodeNumber ?? target.episode.debugOriginalAbsoluteNumber
-    const providerEpisode = isAnimeItem(item) && absoluteEpisode != null
-      ? { season: 1, episode: absoluteEpisode }
-      : { season: target.seasonNumber, episode: target.episode.episodeNumber }
-    if (watched) await scrobblePMDB(tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
-    else throw new Error('PMDB does not support unwatch')
-  } else if (target.kind === 'season') {
+    const providerEpisode = await resolvePmdbEpisodeForTarget(item, target)
     if (watched) {
-      for (let ep = 1; ep <= target.episodeCount; ep++) {
-        await scrobblePMDB(tmdbId, 'tv', target.seasonNumber, ep)
+      await scrobblePMDB(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+      if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== target.episode.episodeNumber) {
+        await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, target.episode.episodeNumber)
       }
     } else {
-      throw new Error('PMDB does not support unwatch')
+      await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+      if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== target.episode.episodeNumber) {
+        await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, target.episode.episodeNumber)
+      }
+    }
+  } else if (target.kind === 'season') {
+    for (let ep = 1; ep <= target.episodeCount; ep++) {
+      const pseudoTarget = { ...target, kind: 'episode' as const, episode: { ...({} as import('../types').EpisodeDetails), episodeNumber: ep, seasonNumber: target.seasonNumber, id: `${item.id}:${target.seasonNumber}:${ep}`, name: '' } }
+      const providerEpisode = await resolvePmdbEpisodeForTarget(item, pseudoTarget)
+      if (watched) {
+        await scrobblePMDB(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+        if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
+          await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, ep)
+        }
+      } else {
+        await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+        if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
+          await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, ep)
+        }
+      }
     }
   } else {
     if (watched) await scrobblePMDB(tmdbId, 'tv')
-    else throw new Error('PMDB does not support unwatch')
+    else {
+      const watchedItems = await import('../services/pmdb').then((m) => m.getPMDBWatched())
+      const showItems = watchedItems.filter((entry) => entry.tmdb_id === tmdbId && entry.media_type === 'tv' && entry.season != null && entry.episode != null)
+      await Promise.all(showItems.map((entry) => removePMDBWatched(tmdbId, 'tv', entry.season, entry.episode)))
+    }
   }
 }
 
@@ -591,17 +910,68 @@ async function toggleAniListWatched(
 
   if (watched) {
     if (target.kind === 'episode') {
-      const { saveAniListProgress } = await import('../services/anilist')
+      const { markAniListEpisodeExact, saveAniListProgress } = await import('../services/anilist')
+      const resolved = await resolveAniListEpisodeForTarget(item, target)
       await saveAniListProgress(
-        { anilistId: item.anilistId, malId: item.malId, episode: target.episode.episodeNumber } as any,
+        { anilistId: resolved.anilistId, malId: resolved.malId, episode: resolved.episode } as any,
         0.5,
       )
+      for (const id of aniListExactMarkIds(item)) {
+        markAniListEpisodeExact(id, target.seasonNumber, target.episode.episodeNumber, resolved.episode)
+      }
+    } else if (target.kind === 'season') {
+      const { markAniListEpisodeExact, saveAniListProgress } = await import('../services/anilist')
+      const episode = seasonEpToAbsolute(target.seasonNumber, target.episodeCount, target.appSeasonCounts) ?? target.episodeCount
+      await saveAniListProgress(
+        { anilistId: item.anilistId, malId: item.malId, episode } as any,
+        1,
+      )
+      for (let ep = 1; ep <= target.episodeCount; ep++) {
+        for (const id of aniListExactMarkIds(item)) {
+          markAniListEpisodeExact(id, target.seasonNumber, ep, seasonEpToAbsolute(target.seasonNumber, ep, target.appSeasonCounts) ?? ep)
+        }
+      }
     } else {
       const { addToAniListPlanning } = await import('../services/anilist')
       await addToAniListPlanning(item.anilistId as number | undefined, item.malId as number | undefined)
     }
   } else {
-    const { removeFromAniListList } = await import('../services/anilist')
-    await removeFromAniListList(item.anilistId as number | undefined, item.malId as number | undefined)
+    if (target.kind === 'episode') {
+      const { saveAniListProgress, unmarkAniListEpisodeExact } = await import('../services/anilist')
+      const resolved = await resolveAniListEpisodeForTarget(item, target)
+      for (const id of aniListExactMarkIds(item)) {
+        unmarkAniListEpisodeExact(id, target.seasonNumber, target.episode.episodeNumber)
+      }
+      const previousEpisode = resolved.episode - 1
+      if (previousEpisode > 0) {
+        await saveAniListProgress(
+          { anilistId: resolved.anilistId, malId: resolved.malId, episode: previousEpisode } as any,
+          0.5,
+        )
+      } else {
+        const { removeFromAniListList } = await import('../services/anilist')
+        await removeFromAniListList(resolved.anilistId as number | undefined, resolved.malId as number | undefined)
+      }
+    } else if (target.kind === 'season') {
+      const { saveAniListProgress, unmarkAniListEpisodeExact } = await import('../services/anilist')
+      for (let ep = 1; ep <= target.episodeCount; ep++) {
+        for (const id of aniListExactMarkIds(item)) {
+          unmarkAniListEpisodeExact(id, target.seasonNumber, ep)
+        }
+      }
+      const previousEpisode = (seasonEpToAbsolute(target.seasonNumber, 1, target.appSeasonCounts) ?? 1) - 1
+      if (previousEpisode > 0) {
+        await saveAniListProgress(
+          { anilistId: item.anilistId, malId: item.malId, episode: previousEpisode } as any,
+          0.5,
+        )
+      } else {
+        const { removeFromAniListList } = await import('../services/anilist')
+        await removeFromAniListList(item.anilistId as number | undefined, item.malId as number | undefined)
+      }
+    } else {
+      const { removeFromAniListList } = await import('../services/anilist')
+      await removeFromAniListList(item.anilistId as number | undefined, item.malId as number | undefined)
+    }
   }
 }

@@ -17,6 +17,7 @@ const CatalogPage = lazy(() => import('./pages/CatalogPage'))
 const HomeEditorPage = lazy(() => import('./pages/HomeEditorPage'))
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'))
 const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
+const PersonPage = lazy(() => import('./pages/PersonPage'))
 
 export default function App() {
   const addons = useAppStore((s) => s.addons)
@@ -85,6 +86,7 @@ export default function App() {
             <Route path="/search" element={<SearchPage />} />
             <Route path="/movie/:id" element={<MovieDetailPage />} />
             <Route path="/series/:id" element={<SeriesDetailPage />} />
+            <Route path="/person/:id" element={<PersonPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/discover" element={<DiscoverPage />} />

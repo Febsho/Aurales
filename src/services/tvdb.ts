@@ -262,7 +262,7 @@ export async function getTvdbBanner(tvdbId: string | number): Promise<string | u
         return Number(typeVal) === 1 && typeof a.image === 'string'
       })
       return (banners[0]?.image as string) || null
-    } catch {
+    } catch (_) {
       return null
     }
   }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
@@ -285,7 +285,7 @@ export async function getTvdbCardMetadata(tvdbId: string | number): Promise<Tvdb
         genres: show.genres,
       }
     }, { category: CACHE_CATEGORIES.TVDB_CARD, ttlSeconds: CACHE_TTLS.TVDB_CARD })
-  } catch {
+  } catch (_) {
     return null
   }
 }

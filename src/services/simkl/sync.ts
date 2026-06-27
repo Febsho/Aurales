@@ -151,7 +151,7 @@ export function setLastSimklSyncTime(time: string): void {
 function getLocalStore(): SimklWatchlistItem[] {
   try {
     return JSON.parse(localStorage.getItem(LS_LOCAL_WATCHLIST) || '[]') as SimklWatchlistItem[]
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 function mergeIntoLocalStore(incoming: SimklWatchlistItem[]): void {
