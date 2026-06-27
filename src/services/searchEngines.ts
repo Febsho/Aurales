@@ -117,7 +117,7 @@ async function malSearch(query: string): Promise<SearchResult[]> {
   const data = await res.json()
   const results = (data.data || []) as Record<string, unknown>[]
   const { resolveAnimeIds } = await import('./animeLists')
-  return Promise.all(results.map(async (m) => {
+  const resolved = await Promise.all(results.map(async (m) => {
     const malId = m.mal_id as number
     const titles = m.titles as { type: string; title: string }[] | undefined
     const englishTitle = titles?.find((t) => t.type === 'English')?.title
@@ -127,6 +127,8 @@ async function malSearch(query: string): Promise<SearchResult[]> {
     let tmdbId: number | undefined
     let tvdbId: number | undefined
     let anilistId: number | undefined
+    let traktId: number | undefined
+    let simklId: number | undefined
     try {
       const mapped = await resolveAnimeIds({ malId })
       if (mapped) {
@@ -134,18 +136,32 @@ async function malSearch(query: string): Promise<SearchResult[]> {
         tmdbId = mapped.tmdbId
         tvdbId = mapped.tvdbId
         anilistId = mapped.anilistId
+        traktId = mapped.traktId
+        simklId = mapped.simklId
       }
-    } catch { /* ignore */ }
+    } catch (_) { /* ignore */ }
 
     const isMovie = (m.type as string) === 'Movie'
     const id = tvdbId ? `tvdb-${tvdbId}` : tmdbId ? `tmdb-${tmdbId}` : imdbId || `mal-${malId}`
+
+    let poster: string | undefined
+    if (tmdbId) {
+      try {
+        const { getTmdbCardMetadata } = await import('./tmdb')
+        const tmdbCard = await getTmdbCardMetadata(isMovie ? 'movie' : 'series', tmdbId)
+        poster = tmdbCard?.poster
+      } catch (_) { /* fallback to MAL poster */ }
+    }
+    if (!poster) {
+      poster = (m.images as Record<string, Record<string, string>>)?.jpg?.large_image_url || (m.images as Record<string, Record<string, string>>)?.jpg?.image_url
+    }
 
     return {
       id,
       title: englishTitle || defaultTitle || m.title as string,
       type: (isMovie ? 'movie' : 'series') as 'movie' | 'series',
       year: m.year as number | undefined,
-      poster: (m.images as Record<string, Record<string, string>>)?.jpg?.large_image_url || (m.images as Record<string, Record<string, string>>)?.jpg?.image_url,
+      poster,
       overview: m.synopsis as string | undefined,
       rating: m.score as number | undefined,
       imdbId,
@@ -153,9 +169,28 @@ async function malSearch(query: string): Promise<SearchResult[]> {
       tvdbId,
       malId,
       anilistId,
+      traktId,
+      simklId,
+      isAnime: true,
       provider: 'mal',
     }
   }))
+
+  // Deduplicate multi-season anime that map to the same TVDB/TMDB series
+  const seen = new Set<string>()
+  return resolved.filter((item) => {
+    if (item.tvdbId) {
+      const key = `tvdb:${item.tvdbId}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    if (item.tmdbId) {
+      const key = `tmdb:${item.tmdbId}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    return true
+  })
 }
 
 function filterByType(results: SearchResult[], type?: 'movie' | 'series'): SearchResult[] {

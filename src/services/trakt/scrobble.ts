@@ -75,7 +75,7 @@ export async function buildMappedEpisodeScrobble(
           progress: Math.round(progress * 100) / 100,
         }
       }
-    } catch { /* fall through */ }
+    } catch (_) { /* fall through */ }
   }
   return buildEpisodeScrobble(showImdbId, season, episode, progress)
 }

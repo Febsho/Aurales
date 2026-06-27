@@ -3,7 +3,7 @@ import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatch
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
-import { getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } from './anilist'
+import { getAniListProgress, getAniListTrackedProgress, hasAnyAniListExactEpisodeMarks, isAniListEpisodeMarkedExact, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
@@ -19,8 +19,11 @@ export interface WatchedLookupItem {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  simklId?: string | number
+  traktId?: string | number
   season?: number
   episode?: number
+  seasonEpisodeCount?: number
   absoluteEpisode?: number
   isAnime?: boolean
   appSeasonEpCounts?: { season: number; count: number }[]
@@ -39,6 +42,9 @@ export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
     tvdbId: item.tvdbId,
     malId: item.malId,
     anilistId: item.anilistId,
+    simklId: item.simklId,
+    traktId: item.traktId,
+    isAnime: item.isAnime,
     season: item.season,
     episode: item.episode,
   }
@@ -62,8 +68,18 @@ export function getLocalWatchedStatus(item: WatchedLookupItem, watchProgress: Ma
     if (!progress.completed) continue
     if (!ids.includes(progress.mediaId) && !ids.includes(String(progress.tmdbId || '')) && !ids.includes(String(progress.imdbId || ''))) continue
     if (item.type === 'movie') return true
-    if (item.season == null || item.episode == null) return true
+    if (item.season == null) return false
+    if (item.episode == null) continue
     if (progress.season === item.season && progress.episode === item.episode) return true
+  }
+  if (item.type === 'series' && item.season != null && item.episode == null && item.seasonEpisodeCount) {
+    const watched = new Set<number>()
+    for (const [, progress] of watchProgress.entries()) {
+      if (!progress.completed) continue
+      if (!ids.includes(progress.mediaId) && !ids.includes(String(progress.tmdbId || '')) && !ids.includes(String(progress.imdbId || ''))) continue
+      if (progress.season === item.season && progress.episode != null) watched.add(progress.episode)
+    }
+    return watched.size >= item.seasonEpisodeCount
   }
   return false
 }
@@ -91,6 +107,16 @@ export async function isWatchedFromProviders(
 async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   if (item.type !== 'series') return false
   try {
+    if (item.season != null && item.episode == null && item.seasonEpisodeCount && item.appSeasonEpCounts) {
+      const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
+      if (!mediaId) return false
+      const entries = await getAniListTrackedProgress()
+      const entry = entries.find((e) => e.mediaId === mediaId)
+      if (!entry) return false
+      const endEpisode = seasonEpToAbsolute(item.season, item.seasonEpisodeCount, item.appSeasonEpCounts)
+      return entry.progress >= endEpisode
+    }
+
     if (item.episode == null) {
       const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
       if (!mediaId) return false
@@ -98,8 +124,17 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
       return entries.some((entry) => entry.mediaId === mediaId && entry.progress > 0)
     }
 
+    if (item.season != null && item.episode != null) {
+      const exactMatch = normalizedIds(item).some((id) =>
+        hasAnyAniListExactEpisodeMarks(id) && isAniListEpisodeMarkedExact(id, item.season!, item.episode!)
+      )
+      if (exactMatch) return true
+    }
+
     let anilistId = item.anilistId
-    let progressEpisode = item.absoluteEpisode ?? item.episode
+    let progressEpisode = item.absoluteEpisode ?? (item.isAnime && item.appSeasonEpCounts && item.season != null
+      ? seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
+      : item.episode)
 
     // Try animeApi mapping first
     if (item.tvdbId != null && item.season != null && item.episode != null) {
@@ -116,7 +151,7 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
             anilistId = apiMapping.anilist.mediaId
             progressEpisode = apiMapping.anilist.episodeNumber ?? progressEpisode
           }
-        } catch { /* fall through to animeLists */ }
+        } catch (_) { /* fall through to animeLists */ }
 
         if (anilistId === item.anilistId) {
           const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
@@ -135,7 +170,7 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     if (!entry) return false
     if (item.episode == null) return entry.progress > 0
     return progressEpisode != null && entry.progress >= progressEpisode
-  } catch {
+  } catch (_) {
     return false
   }
 }
@@ -147,6 +182,13 @@ function seasonEpToAbsolute(season: number, episode: number, seasonCounts: { sea
     abs += s.count
   }
   return abs + episode
+}
+
+function seasonAbsoluteRange(item: WatchedLookupItem): { start: number; end: number } | null {
+  if (!item.appSeasonEpCounts || item.season == null || item.seasonEpisodeCount == null) return null
+  const start = seasonEpToAbsolute(item.season, 1, item.appSeasonEpCounts)
+  const end = seasonEpToAbsolute(item.season, item.seasonEpisodeCount, item.appSeasonEpCounts)
+  return { start, end }
 }
 
 function traktSeasonToAbsolute(season: number, episode: number, traktSeasons: TraktSeasonSummary[]): number {
@@ -167,7 +209,27 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
 
     const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
     if (!matchedEntry) return false
-    if (item.season == null || item.episode == null) return true
+    if (item.season == null) return false
+    if (item.episode == null) {
+      if (!item.seasonEpisodeCount) return false
+      if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb && matchedEntry.seasons) {
+        const range = seasonAbsoluteRange(item)
+        const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
+        if (range && traktSeasons.length > 0) {
+          const watched = new Set<number>()
+          for (const season of matchedEntry.seasons) {
+            for (const ep of season.episodes) {
+              if (ep.plays <= 0) continue
+              const absolute = traktSeasonToAbsolute(season.number, ep.number, traktSeasons)
+              if (absolute >= range.start && absolute <= range.end) watched.add(absolute)
+            }
+          }
+          return watched.size >= item.seasonEpisodeCount
+        }
+      }
+      const season = matchedEntry.seasons?.find((s) => s.number === item.season)
+      return season ? new Set(season.episodes.filter((ep) => ep.plays > 0).map((ep) => ep.number)).size >= item.seasonEpisodeCount : false
+    }
 
     // Direct season/episode match
     const directMatch = matchedEntry.seasons?.some((season) =>
@@ -180,17 +242,45 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
       const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
       if (traktSeasons.length > 0) {
         const myAbsolute = seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
-        return matchedEntry.seasons.some((season) =>
+        const absoluteMatch = matchedEntry.seasons.some((season) =>
           season.episodes.some((ep) => {
             if (ep.plays <= 0) return false
             return traktSeasonToAbsolute(season.number, ep.number, traktSeasons) === myAbsolute
           })
         )
+        if (absoluteMatch) return true
       }
     }
 
+    // For anime, try anime-mapping API to check with mapped trakt ID
+    if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
+      try {
+        const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
+        if (Number.isFinite(tvdbId)) {
+          const apiMapping = await mapEpisodeToProviders({
+            localMediaId: item.id,
+            tvdbSeriesId: tvdbId,
+            tvdbSeasonNumber: item.season,
+            tvdbEpisodeNumber: item.episode,
+          })
+          if (apiMapping?.trakt?.id && isConfidenceSufficient(apiMapping)) {
+            const mappedTraktId = apiMapping.trakt.id
+            const mappedSeason = apiMapping.trakt.seasonNumber ?? item.season
+            const mappedEpisode = apiMapping.trakt.episodeNumber ?? item.episode
+            const altEntry = data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
+            if (altEntry?.seasons) {
+              const found = altEntry.seasons.some((season) =>
+                season.number === mappedSeason && season.episodes.some((ep) => ep.number === mappedEpisode && ep.plays > 0)
+              )
+              if (found) return true
+            }
+          }
+        }
+      } catch (_) { /* fall through */ }
+    }
+
     return false
-  } catch {
+  } catch (_) {
     return false
   }
 }
@@ -198,19 +288,64 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
 async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
     const data = await getSimklCache()
+
+    // Pre-resolve anime mapping outside the sync .some() loop
+    let mappedSimkl: { season: number; episode: number } | null = null
+    let mappedSimklShowId: number | null = null
+    if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
+      try {
+        const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
+        if (Number.isFinite(tvdbId)) {
+          const apiMapping = await mapEpisodeToProviders({
+            localMediaId: item.id,
+            tvdbSeriesId: tvdbId,
+            tvdbSeasonNumber: item.season,
+            tvdbEpisodeNumber: item.episode,
+          })
+          if (apiMapping?.simkl && isConfidenceSufficient(apiMapping)) {
+            mappedSimklShowId = apiMapping.simkl.id
+            mappedSimkl = {
+              season: apiMapping.simkl.seasonNumber ?? 1,
+              episode: apiMapping.simkl.episodeNumber ?? item.episode,
+            }
+          }
+        }
+      } catch (_) { /* fall through */ }
+    }
+
     return data.items.some((entry) => {
       if (item.type === 'movie' && entry.type !== 'movie') return false
       if (item.type === 'series' && entry.type === 'movie') return false
-      if (!matchesFlatIds(item, entry)) return false
+      const idsMatch = matchesFlatIds(item, entry) || (mappedSimklShowId != null && sameNumber(mappedSimklShowId, entry.simklId))
+      if (!idsMatch) return false
       if (item.type === 'movie') return true
-      if (item.season == null || item.episode == null) return true
+      if (item.season == null) return false
       if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return false
+      if (item.episode == null) {
+        if (!item.seasonEpisodeCount) return false
+        if (item.isAnime && item.appSeasonEpCounts) {
+          const range = seasonAbsoluteRange(item)
+          if (range) {
+            const watched = new Set(entry.watchedEpisodes
+              .filter((episode) => episode.season === 1 && episode.episode >= range.start && episode.episode <= range.end)
+              .map((episode) => episode.episode))
+            if (watched.size >= item.seasonEpisodeCount) return true
+          }
+        }
+        const watched = new Set(entry.watchedEpisodes.filter((episode) => episode.season === item.season).map((episode) => episode.episode))
+        return watched.size >= item.seasonEpisodeCount
+      }
+      const absoluteEpisode = item.absoluteEpisode ?? (item.isAnime && item.appSeasonEpCounts && item.season != null
+        ? seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
+        : undefined)
+
       return entry.watchedEpisodes.some((episode) =>
         (episode.season === item.season && episode.episode === item.episode) ||
-        (item.isAnime && item.absoluteEpisode != null && episode.season === 1 && episode.episode === item.absoluteEpisode)
+        (item.isAnime && absoluteEpisode != null && episode.season === 1 && episode.episode === absoluteEpisode) ||
+        (mappedSimkl != null && episode.season === mappedSimkl.season && episode.episode === mappedSimkl.episode)
       )
     })
-  } catch {
+  } catch (_) {
     return false
   }
 }
@@ -218,18 +353,71 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
 async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
     const data = await getPmdbCache()
+
+    // For anime, try resolving the correct TMDB ID + season/episode via anime-mapping API
+    if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
+      try {
+        const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
+        if (Number.isFinite(tvdbId)) {
+          const apiMapping = await mapEpisodeToProviders({
+            localMediaId: item.id,
+            tvdbSeriesId: tvdbId,
+            tvdbSeasonNumber: item.season,
+            tvdbEpisodeNumber: item.episode,
+          })
+          if (apiMapping?.tmdb?.id && isConfidenceSufficient(apiMapping)) {
+            const mappedTmdbId = apiMapping.tmdb.id
+            const mappedSeason = apiMapping.tmdb.seasonNumber ?? item.season
+            const mappedEpisode = apiMapping.tmdb.episodeNumber ?? item.episode
+            const found = data.items.some((entry) =>
+              entry.media_type === 'tv' &&
+              sameNumber(mappedTmdbId, entry.tmdb_id) &&
+              entry.season === mappedSeason &&
+              entry.episode === mappedEpisode
+            )
+            if (found) return true
+          }
+        }
+      } catch (_) { /* fall through to standard check */ }
+    }
+
     return data.items.some((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'tv') return false
       if (!sameNumber(item.tmdbId, entry.tmdb_id)) return false
       if (item.type === 'movie') return true
-      if (item.season == null || item.episode == null) return true
+      if (item.season == null) return false
+      if (item.episode == null) {
+        if (!item.seasonEpisodeCount) return false
+        if (item.isAnime && item.appSeasonEpCounts) {
+          const range = seasonAbsoluteRange(item)
+          if (range) {
+            const watched = new Set(data.items
+              .filter((watchedItem) =>
+                watchedItem.media_type === 'tv' &&
+                sameNumber(watchedItem.tmdb_id, item.tmdbId) &&
+                watchedItem.season === 1 &&
+                watchedItem.episode != null &&
+                watchedItem.episode >= range.start &&
+                watchedItem.episode <= range.end
+              )
+              .map((watchedItem) => watchedItem.episode)
+              .filter((episode): episode is number => episode != null))
+            if (watched.size >= item.seasonEpisodeCount) return true
+          }
+        }
+        const watched = new Set(data.items
+          .filter((watchedItem) => watchedItem.media_type === 'tv' && sameNumber(watchedItem.tmdb_id, item.tmdbId) && watchedItem.season === item.season)
+          .map((watchedItem) => watchedItem.episode)
+          .filter((episode): episode is number => episode != null))
+        return watched.size >= item.seasonEpisodeCount
+      }
       return (
         (entry.season === item.season && entry.episode === item.episode) ||
         (item.isAnime && item.absoluteEpisode != null && entry.season === 1 && entry.episode === item.absoluteEpisode)
       )
     })
-  } catch {
+  } catch (_) {
     return false
   }
 }
@@ -264,14 +452,16 @@ function normalizedIds(item: WatchedLookupItem): string[] {
 function matchesIds(item: WatchedLookupItem, ids?: Record<string, unknown>): boolean {
   if (!ids) return false
   return (
+    sameNumber(item.traktId, ids.trakt) ||
     sameString(item.imdbId, ids.imdb) ||
     sameNumber(item.tmdbId, ids.tmdb) ||
     sameNumber(item.tvdbId, ids.tvdb)
   )
 }
 
-function matchesFlatIds(item: WatchedLookupItem, ids: { imdbId?: unknown; tmdbId?: unknown; tvdbId?: unknown; malId?: unknown }): boolean {
+function matchesFlatIds(item: WatchedLookupItem, ids: { imdbId?: unknown; tmdbId?: unknown; tvdbId?: unknown; malId?: unknown; simklId?: unknown }): boolean {
   return (
+    sameNumber(item.simklId, ids.simklId) ||
     sameString(item.imdbId, ids.imdbId) ||
     sameNumber(item.tmdbId, ids.tmdbId) ||
     sameNumber(item.tvdbId, ids.tvdbId) ||

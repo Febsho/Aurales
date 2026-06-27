@@ -60,7 +60,7 @@ export async function findMatchingLocalStream(
       for (const s of results) {
         allStreams.push({ ...s, addonId: addon.manifest.id, addonName: addon.manifest.name })
       }
-    } catch {
+    } catch (_) {
       // addon unavailable, skip
     }
   }

@@ -14,7 +14,7 @@ export default function InviteLinkBox() {
     try {
       await navigator.clipboard.writeText(text)
       toast('success', `${label} copied!`)
-    } catch {
+    } catch (_) {
       toast('error', 'Failed to copy')
     }
   }

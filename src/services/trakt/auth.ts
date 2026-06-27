@@ -38,7 +38,7 @@ export function getStoredTraktAccount(): TraktAccount | null {
     const raw = localStorage.getItem(LS_ACCOUNT)
     if (!raw) return null
     return JSON.parse(raw) as TraktAccount
-  } catch {
+  } catch (_) {
     return null
   }
 }

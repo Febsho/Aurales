@@ -20,7 +20,7 @@ export async function getSimklWatchlist(): Promise<SimklWatchlistItem[]> {
     const items = toWatchlistItems(data ?? [])
     localStorage.setItem(LS_WATCHLIST_CACHE, JSON.stringify(items))
     return items
-  } catch {
+  } catch (_) {
     return getCached(LS_WATCHLIST_CACHE)
   }
 }
@@ -32,7 +32,7 @@ export async function getSimklWatching(): Promise<SimklWatchlistItem[]> {
     const items = toWatchlistItems(data ?? [])
     localStorage.setItem(LS_WATCHING_CACHE, JSON.stringify(items))
     return items
-  } catch {
+  } catch (_) {
     return getCached(LS_WATCHING_CACHE)
   }
 }
@@ -44,7 +44,7 @@ export async function getSimklCompleted(): Promise<SimklWatchlistItem[]> {
     const items = toWatchlistItems(data ?? [])
     localStorage.setItem(LS_COMPLETED_CACHE, JSON.stringify(items))
     return items
-  } catch {
+  } catch (_) {
     return getCached(LS_COMPLETED_CACHE)
   }
 }
@@ -54,7 +54,7 @@ export async function getSimklAnimeWatchlist(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/plantowatch?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklCustomLists(): Promise<{ id: string; name: string; items: SimklWatchlistItem[] }[]> {
@@ -70,7 +70,7 @@ export async function getSimklMoviesWatchlist(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/plantowatch?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklShowsWatchlist(): Promise<SimklWatchlistItem[]> {
@@ -78,7 +78,7 @@ export async function getSimklShowsWatchlist(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/plantowatch?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklMoviesWatching(): Promise<SimklWatchlistItem[]> {
@@ -86,7 +86,7 @@ export async function getSimklMoviesWatching(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/watching?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklShowsWatching(): Promise<SimklWatchlistItem[]> {
@@ -94,7 +94,7 @@ export async function getSimklShowsWatching(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/watching?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklAnimeWatching(): Promise<SimklWatchlistItem[]> {
@@ -102,7 +102,7 @@ export async function getSimklAnimeWatching(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/watching?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklMoviesCompleted(): Promise<SimklWatchlistItem[]> {
@@ -110,7 +110,7 @@ export async function getSimklMoviesCompleted(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/completed?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklShowsCompleted(): Promise<SimklWatchlistItem[]> {
@@ -118,7 +118,7 @@ export async function getSimklShowsCompleted(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/completed?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklAnimeCompleted(): Promise<SimklWatchlistItem[]> {
@@ -126,7 +126,7 @@ export async function getSimklAnimeCompleted(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/completed?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklOnHold(): Promise<SimklWatchlistItem[]> {
@@ -134,7 +134,7 @@ export async function getSimklOnHold(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/hold?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklDropped(): Promise<SimklWatchlistItem[]> {
@@ -142,7 +142,7 @@ export async function getSimklDropped(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/dropped?extended=full')
     return toWatchlistItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 // ─── Mutations ─────────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ export async function isInSimklWatchlist(item: MediaRef): Promise<boolean> {
     if (!mapping?.simklId) return false
     const data = await simklRequest<{ list?: string }>(`/sync/userlist?id=${mapping.simklId}`)
     return data?.list === 'plantowatch'
-  } catch { return false }
+  } catch (_) { return false }
 }
 
 // ─── Private helpers ───────────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ function getCached(key: string): SimklWatchlistItem[] {
   try {
     const raw = localStorage.getItem(key)
     return raw ? (JSON.parse(raw) as SimklWatchlistItem[]) : []
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 // ─── Mock watchlist state ──────────────────────────────────────────────────────

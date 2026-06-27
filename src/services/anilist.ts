@@ -15,6 +15,7 @@ const progressCache = new Map<number, { data: AniListProgress | null; timestamp:
 const progressPending = new Map<number, Promise<AniListProgress | null>>()
 let trackedProgressCache: { data: AniListProgress[]; timestamp: number } | null = null
 let trackedProgressPending: Promise<AniListProgress[]> | null = null
+const EXACT_EPISODE_MARKS_KEY = 'anilist_exact_episode_marks'
 
 export type AniListStatus = 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'PAUSED' | 'DROPPED' | 'REPEATING'
 
@@ -67,6 +68,14 @@ export interface AniListProgress {
   status?: AniListStatus
 }
 
+export interface AniListExactEpisodeMark {
+  localId: string
+  season: number
+  episode: number
+  anilistEpisode: number
+  markedAt: string
+}
+
 export const ANILIST_LIST_SOURCES: { id: string; label: string; layout: 'poster' | 'landscape' }[] = [
   { id: 'CURRENT', label: 'AniList - Watching', layout: 'landscape' },
   { id: 'PLANNING', label: 'AniList - Planning', layout: 'poster' },
@@ -90,7 +99,7 @@ export function getStoredAniListAccount(): AniListAccount | null {
   try {
     const raw = localStorage.getItem(ACCOUNT_KEY)
     return raw ? JSON.parse(raw) as AniListAccount : null
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -102,6 +111,45 @@ export function saveAniListAccount(account: AniListAccount | null): void {
 
 export function isAniListConnected(): boolean {
   return Boolean(getAniListToken())
+}
+
+function exactMarkKey(mark: Pick<AniListExactEpisodeMark, 'localId' | 'season' | 'episode'>): string {
+  return `${mark.localId}:${mark.season}:${mark.episode}`
+}
+
+function readExactEpisodeMarks(): AniListExactEpisodeMark[] {
+  try {
+    const raw = localStorage.getItem(EXACT_EPISODE_MARKS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed as AniListExactEpisodeMark[] : []
+  } catch (_) {
+    return []
+  }
+}
+
+function writeExactEpisodeMarks(marks: AniListExactEpisodeMark[]): void {
+  localStorage.setItem(EXACT_EPISODE_MARKS_KEY, JSON.stringify(marks))
+}
+
+export function hasAnyAniListExactEpisodeMarks(localId: string): boolean {
+  return readExactEpisodeMarks().some((mark) => mark.localId === localId)
+}
+
+export function isAniListEpisodeMarkedExact(localId: string, season: number, episode: number): boolean {
+  const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().some((mark) => exactMarkKey(mark) === key)
+}
+
+export function markAniListEpisodeExact(localId: string, season: number, episode: number, anilistEpisode: number): void {
+  const key = exactMarkKey({ localId, season, episode })
+  const next = readExactEpisodeMarks().filter((mark) => exactMarkKey(mark) !== key)
+  next.push({ localId, season, episode, anilistEpisode, markedAt: new Date().toISOString() })
+  writeExactEpisodeMarks(next)
+}
+
+export function unmarkAniListEpisodeExact(localId: string, season: number, episode: number): void {
+  const key = exactMarkKey({ localId, season, episode })
+  writeExactEpisodeMarks(readExactEpisodeMarks().filter((mark) => exactMarkKey(mark) !== key))
 }
 
 async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
@@ -341,7 +389,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
           }
         }
       }
-    } catch { /* ignore */ }
+    } catch (_) { /* ignore */ }
 
     let poster: string | undefined
     let backdrop: string | undefined
@@ -355,7 +403,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
             if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
             if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
           }
-        } catch { /* ignore */ }
+        } catch (_) { /* ignore */ }
       }
     }
     if (!poster) poster = media.coverImage?.extraLarge || media.coverImage?.large
@@ -425,7 +473,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     }
     if (mapped?.imdbId) imdbId = mapped.imdbId
     if (mapped?.tmdbId) tmdbId = mapped.tmdbId
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
 
   const anilistPoster = media.coverImage?.extraLarge || media.coverImage?.large
   const anilistBackdrop = media.bannerImage
@@ -443,6 +491,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     tvdbId,
     malId: media.idMal,
     anilistId: media.id,
+    isAnime: true,
   }
 }
 

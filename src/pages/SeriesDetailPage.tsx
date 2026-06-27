@@ -181,7 +181,7 @@ function addonMetaToShow(meta: Record<string, unknown>, id: string): ShowDetails
     poster: meta.poster as string | undefined,
     backdrop: (meta.background || meta.banner) as string | undefined,
     logo: meta.logo as string | undefined,
-    certification: meta.certification as string | undefined,
+    certification: typeof meta.certification === 'string' ? meta.certification : undefined,
     status: meta.status as string | undefined,
     numberOfSeasons: seasons.length,
     numberOfEpisodes: meta.episodes ? Number(meta.episodes) : undefined,
@@ -326,7 +326,7 @@ function formatEpisodeAirDate(dateStr?: string): string {
       })
     }
     return dateStr
-  } catch {
+  } catch (_) {
     return dateStr
   }
 }
@@ -353,6 +353,7 @@ export default function SeriesDetailPage() {
   const fetchedSeasonRef = useRef<string | null>(null)
   const episodeScrollRef = useRef<HTMLDivElement>(null)
   const seasonScrollRef = useRef<HTMLDivElement>(null)
+  const [showSeasonArrows, setShowSeasonArrows] = useState(false)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
@@ -365,13 +366,7 @@ export default function SeriesDetailPage() {
   const blurDescriptions = useAppStore((s) => s.blurDescriptions)
   const keepNextEpisodeVisible = useAppStore((s) => s.keepNextEpisodeVisible)
 
-  const isAnime = !!(
-    show?.anilistId ||
-    show?.malId ||
-    state.anilistId ||
-    state.malId ||
-    (id && /^(mal|anilist)[-:]/i.test(id))
-  )
+  const isAnime = show?.isAnime ?? !!(id && /^(mal|anilist)[-:]/i.test(id))
 
   useEffect(() => {
     async function load() {
@@ -430,20 +425,22 @@ export default function SeriesDetailPage() {
         anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
 
-      // Early resolve anime IDs if they are AniList / MAL but we don't have TVDB ID
+      // Early resolve anime IDs via IDS.moe (fast, cached) to get all cross-service IDs
       if ((knownIds.anilistId || knownIds.malId) && !knownIds.tvdbId) {
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
             anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+            tmdbId: knownIds.tmdbId ? Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
+            imdbId: knownIds.imdbId,
           })
           if (resolved) {
             if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
-            if (resolved.tmdbId) knownIds.tmdbId = String(resolved.tmdbId)
-            if (resolved.imdbId) knownIds.imdbId = resolved.imdbId
-            if (resolved.anilistId) knownIds.anilistId = String(resolved.anilistId)
-            if (resolved.malId) knownIds.malId = String(resolved.malId)
+            if (resolved.tmdbId && !knownIds.tmdbId) knownIds.tmdbId = String(resolved.tmdbId)
+            if (resolved.imdbId && !knownIds.imdbId) knownIds.imdbId = resolved.imdbId
+            if (resolved.anilistId && !knownIds.anilistId) knownIds.anilistId = String(resolved.anilistId)
+            if (resolved.malId && !knownIds.malId) knownIds.malId = String(resolved.malId)
           }
         } catch (e) {
           console.error('[SeriesDetailPage] Failed early anime resolution:', e)
@@ -451,50 +448,40 @@ export default function SeriesDetailPage() {
       }
 
       let isAnimeLocal = !!(
-        knownIds.anilistId ||
-        knownIds.malId ||
-        (id && /^(mal|anilist)[-:]/i.test(id))
+        (id && /^(mal|anilist)[-:]/i.test(id)) ||
+        state.provider === 'anilist'
       )
+
+      // Detect anime from non-anime IDs using IDS.moe (fast) then anime-lists fallback
+      if (!isAnimeLocal && (knownIds.tmdbId || knownIds.imdbId)) {
+        try {
+          const { resolveAnimeIds } = await import('../services/animeLists')
+          const resolved = await resolveAnimeIds({
+            tmdbId: knownIds.tmdbId ? Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
+            imdbId: knownIds.imdbId,
+          })
+          if (resolved && (resolved.anilistId || resolved.malId)) {
+            isAnimeLocal = true
+            if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
+            if (resolved.tmdbId && !knownIds.tmdbId) knownIds.tmdbId = String(resolved.tmdbId)
+            if (resolved.anilistId) knownIds.anilistId = String(resolved.anilistId)
+            if (resolved.malId) knownIds.malId = String(resolved.malId)
+            if (resolved.imdbId && !knownIds.imdbId) knownIds.imdbId = resolved.imdbId
+          }
+        } catch (_) { /* ignore */ }
+      }
 
       if (!isAnimeLocal && knownIds.tvdbId) {
         try {
           const { lookupByTvdbId } = await import('../services/animeLists')
-           const matches = await lookupByTvdbId(Number(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')))
+          const matches = await lookupByTvdbId(Number(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')))
           if (matches && matches.length > 0) {
             isAnimeLocal = true
             const first = matches[0]
             if (first.anilist_id) knownIds.anilistId = String(first.anilist_id)
             if (first.mal_id) knownIds.malId = String(first.mal_id)
           }
-        } catch { /* ignore */ }
-      }
-
-      if (!isAnimeLocal && knownIds.tmdbId) {
-        try {
-          const { resolveAnimeIds } = await import('../services/animeLists')
-           const resolved = await resolveAnimeIds({ tmdbId: Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) })
-          if (resolved) {
-            isAnimeLocal = true
-            if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
-            if (resolved.anilistId) knownIds.anilistId = String(resolved.anilistId)
-            if (resolved.malId) knownIds.malId = String(resolved.malId)
-          }
-        } catch { /* ignore */ }
-      }
-
-      if (!isAnimeLocal && knownIds.imdbId) {
-        try {
-          const { lookupByImdbId } = await import('../services/animeLists')
-          const matched = await lookupByImdbId(knownIds.imdbId)
-          if (matched) {
-            isAnimeLocal = true
-            if (matched.anilist_id) knownIds.anilistId = String(matched.anilist_id)
-            if (matched.mal_id) knownIds.malId = String(matched.mal_id)
-            if (matched.tvdb_id) knownIds.tvdbId = String(matched.tvdb_id)
-            const resolvedTmdb = matched.themoviedb_id ? (typeof matched.themoviedb_id === 'object' ? ((matched.themoviedb_id as any).tv ?? (matched.themoviedb_id as any).movie) : matched.themoviedb_id) : undefined
-            if (resolvedTmdb) knownIds.tmdbId = String(resolvedTmdb)
-          }
-        } catch { /* ignore */ }
+        } catch (_) { /* ignore */ }
       }
 
       if (state.sourceAddonId && state.sourceAddonItemId) {
@@ -529,7 +516,7 @@ export default function SeriesDetailPage() {
               if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || String(parsed.anilistId)
               return parsed
             }
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
           return null
         }
 
@@ -590,33 +577,18 @@ export default function SeriesDetailPage() {
       }
 
       // Early anime detection — route to TVDB first for anime
-      const isAnimeEarly = !!(knownIds.anilistId || knownIds.malId)
+      const isAnimeEarly = !!(
+        (id && /^(mal|anilist)[-:]/i.test(id)) ||
+        state.provider === 'anilist'
+      )
       let isAnimeLate = false
 
       if (isAnimeEarly) {
         console.log('[SeriesDetailPage] Anime detected early, using TVDB-first flow')
 
-        // Always resolve via anime-lists for anime — its TVDB mapping is
-        // curated and more reliable than TMDB's external-ID linkage.
-        let tvdbId: string | undefined
+        // IDs already resolved by early resolve above — use knownIds directly
+        let tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
         let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
-        try {
-          const { resolveAnimeIds } = await import('../services/animeLists')
-          const resolved = await resolveAnimeIds({
-            anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
-            malId: knownIds.malId ? Number(knownIds.malId) : undefined,
-            imdbId: knownIds.imdbId,
-            tmdbId: tmdbId ? Number(tmdbId) : undefined,
-          })
-          if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
-          if (resolved?.tmdbId) tmdbId = tmdbId || String(resolved.tmdbId)
-          if (resolved?.imdbId) knownIds.imdbId = knownIds.imdbId || resolved.imdbId
-          if (resolved?.anilistId) knownIds.anilistId = knownIds.anilistId || String(resolved.anilistId)
-          if (resolved?.malId) knownIds.malId = knownIds.malId || String(resolved.malId)
-        } catch { /* continue */ }
-        if (!tvdbId) {
-          tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
-        }
 
         // Resolve TMDB ID if missing (needed for artwork)
         if (!tmdbId && knownIds.imdbId) {
@@ -624,7 +596,7 @@ export default function SeriesDetailPage() {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
             if (found.tmdbId) tmdbId = String(found.tmdbId)
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
         }
 
         // TVDB is source of truth for anime season/episode structure
@@ -762,7 +734,7 @@ export default function SeriesDetailPage() {
                 anilistId: knownIds.anilistId,
               }
             }
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
         }
 
         // Preserve IDs
@@ -811,14 +783,14 @@ export default function SeriesDetailPage() {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
             if (found.tmdbId) tmdbId = String(found.tmdbId)
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
         }
 
         // Fetch from TMDB (primary for non-anime)
         if (tmdbId) {
           try {
             appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
         }
 
         // Detect anime late (via anime-lists) and apply TVDB override
@@ -842,7 +814,7 @@ export default function SeriesDetailPage() {
               if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
               if (resolved?.anilistId) appResult = { ...appResult, anilistId: appResult.anilistId || resolved.anilistId }
               if (resolved?.malId) appResult = { ...appResult, malId: appResult.malId || resolved.malId }
-            } catch { /* continue */ }
+            } catch (_) { /* continue */ }
             if (!tvdbId) {
                tvdbId = appResult.tvdbId ? String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
             }
@@ -920,7 +892,7 @@ export default function SeriesDetailPage() {
                     backdrop: tvdbData.backdrop || appResult.backdrop,
                   }
                 }
-              } catch { /* continue */ }
+              } catch (_) { /* continue */ }
             }
           }
 
@@ -969,7 +941,7 @@ export default function SeriesDetailPage() {
           try {
              appResult = await tvdbProvider.getShow(`tvdb-${String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')}`)
             appResult = { ...appResult, id: id || appResult.id, malId: knownIds.malId, anilistId: knownIds.anilistId }
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
         }
       }
 
@@ -995,6 +967,7 @@ export default function SeriesDetailPage() {
         : (finalTmdbId ? `app_tmdb_tv_${finalTmdbId}` : finalTvdbId ? `app_tvdb_${finalTvdbId}` : finalImdbId ? `app_show_${finalImdbId}` : finalResult.id || id || 'unknown')
 
       finalResult.id = targetId
+      finalResult.isAnime = isAnime
       finalResult.seasons = processSeasons(finalResult.seasons, isAnime)
       const artApplied = applyShowArt(finalResult)
 
@@ -1004,7 +977,7 @@ export default function SeriesDetailPage() {
           const { resolveImdbId } = await import('../services/metadataEnrich')
           const imdbId = await resolveImdbId(artApplied, 'series')
           if (imdbId) artApplied.imdbId = imdbId
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       const finalArt = applyShowArt(artApplied)
@@ -1058,7 +1031,7 @@ export default function SeriesDetailPage() {
 
   useEffect(() => {
     if (!show) return
-    const isAnime = !!(show.malId || show.anilistId)
+    const isAnime = !!show.isAnime
     if (!isAnime) return
 
     let cancelled = false
@@ -1109,7 +1082,7 @@ export default function SeriesDetailPage() {
           }
           return applyArt(tagged)
         }
-      } catch { /* fall through */ }
+      } catch (_) { /* fall through */ }
       return null
     }
 
@@ -1175,7 +1148,7 @@ export default function SeriesDetailPage() {
           }
           return applyArt(tagged)
         }
-      } catch { /* fall through */ }
+      } catch (_) { /* fall through */ }
       return null
     }
 
@@ -1329,16 +1302,23 @@ export default function SeriesDetailPage() {
     return () => { cancelled = true }
   }, [show, selectedSeason, seasonData])
 
+  // Check watched status only for the visible season first, then background-check others
   useEffect(() => {
-    if (!show) {
+    if (!show || selectedSeason === null) {
       setWatchedEpisodes(new Set())
       return
     }
-    const episodes = Object.values(seasonCache).flatMap((season) => season.episodes)
-    if (episodes.length === 0) return
+    const visibleSeason = seasonCache[selectedSeason]
+    if (!visibleSeason) return
     let cancelled = false
-    Promise.all(
-      episodes.map(async (episode) => {
+
+    const appSeasonEpCounts = isAnime ? show.seasons
+      .filter((s) => s.seasonNumber > 0)
+      .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
+      .sort((a, b) => a.season - b.season) : undefined
+
+    const checkEpisodes = (episodes: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }[]) =>
+      Promise.all(episodes.map(async (episode) => {
         const watched = await isWatchedFromProviders({
           id: show.id,
           type: 'series',
@@ -1349,20 +1329,47 @@ export default function SeriesDetailPage() {
           episode: episode.episodeNumber,
           absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
           isAnime,
-          appSeasonEpCounts: isAnime ? show.seasons
-            .filter((s) => s.seasonNumber > 0)
-            .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
-            .sort((a, b) => a.season - b.season) : undefined,
+          appSeasonEpCounts,
         }, watchedCheckmarkSources, watchedProgress)
         return watched ? `${episode.seasonNumber}:${episode.episodeNumber}` : null
+      }))
+
+    // Check visible season first
+    checkEpisodes(visibleSeason.episodes).then((keys) => {
+      if (cancelled) return
+      const visibleSet = new Set(keys.filter((key): key is string => Boolean(key)))
+      setWatchedEpisodes((prev) => {
+        const next = new Set(prev)
+        for (const ep of visibleSeason.episodes) {
+          const k = `${ep.seasonNumber}:${ep.episodeNumber}`
+          if (visibleSet.has(k)) next.add(k)
+          else next.delete(k)
+        }
+        return next
       })
-    ).then((keys) => {
-      if (!cancelled) setWatchedEpisodes(new Set(keys.filter((key): key is string => Boolean(key))))
+
+      // Then check other seasons in background
+      const otherEpisodes = Object.entries(seasonCache)
+        .filter(([num]) => Number(num) !== selectedSeason)
+        .flatMap(([, season]) => season.episodes)
+      if (otherEpisodes.length === 0 || cancelled) return
+      checkEpisodes(otherEpisodes).then((otherKeys) => {
+        if (cancelled) return
+        setWatchedEpisodes((prev) => {
+          const next = new Set(prev)
+          for (const ep of otherEpisodes) {
+            const k = `${ep.seasonNumber}:${ep.episodeNumber}`
+            next.delete(k)
+          }
+          for (const k of otherKeys) if (k) next.add(k)
+          return next
+        })
+      }).catch(() => {})
     }).catch(() => {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, seasonCache, watchedCheckmarkSources, watchedProgress])
+  }, [show, selectedSeason, seasonCache, watchedCheckmarkSources, watchedProgress])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
@@ -1374,6 +1381,27 @@ export default function SeriesDetailPage() {
       })
       .catch(() => setFallbackRecommendations(rotateFallback(MOCK_POPULAR_SHOWS, show.id).map(applySearchResultArt)))
   }, [show])
+
+  useEffect(() => {
+    const container = seasonScrollRef.current
+    if (!container) {
+      setShowSeasonArrows(false)
+      return
+    }
+
+    const updateOverflow = () => {
+      setShowSeasonArrows(container.scrollWidth > container.clientWidth + 1)
+    }
+
+    updateOverflow()
+    window.addEventListener('resize', updateOverflow)
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateOverflow) : null
+    observer?.observe(container)
+    return () => {
+      window.removeEventListener('resize', updateOverflow)
+      observer?.disconnect()
+    }
+  }, [show?.seasons.length])
 
   if (isAnime) {
     console.log("[AnimeDetail] initial render", {
@@ -1609,9 +1637,12 @@ export default function SeriesDetailPage() {
                 localId: show.id,
                 title: show.title,
                 year: show.year,
-                type: 'show',
+                type: isAnime ? 'anime' : 'show',
                 imdbId: show.imdbId,
                 tmdbId: show.tmdbId ? Number(show.tmdbId) : undefined,
+                tvdbId: show.tvdbId ? Number(show.tvdbId) : undefined,
+                malId: show.malId ? Number(show.malId) : undefined,
+                anilistId: show.anilistId ? Number(show.anilistId) : undefined,
               }}
               mediaType="series"
               anilistId={show.anilistId}
@@ -1632,7 +1663,8 @@ export default function SeriesDetailPage() {
               imdbId={show.imdbId}
               anilistId={show.anilistId}
               malId={show.malId}
-              episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber }))}
+              isAnime={isAnime}
+              episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber, absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber }))}
               watched={allEpisodesWatched}
               appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
               onMarked={() => {
@@ -1674,39 +1706,6 @@ export default function SeriesDetailPage() {
                 anilistId: show.anilistId ? Number(show.anilistId) : undefined,
               }}
             />
-            {isAnime && (
-              <button
-                className="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/50 hover:text-white rounded-xl text-[11px] font-semibold transition-all"
-                onClick={() => {
-                  const allSeasonEps = Object.values(seasonCache)
-                  const seasonsWithEps = allSeasonEps.map((sd) => ({
-                    id: `debug_s${sd.seasonNumber}`,
-                    seasonNumber: sd.seasonNumber,
-                    title: sd.name,
-                    episodeCount: sd.episodes.length,
-                    episodes: sd.episodes.map((e) => ({
-                      id: e.id, seasonNumber: e.seasonNumber, episodeNumber: e.episodeNumber,
-                      absoluteEpisodeNumber: (e as any).absoluteEpisodeNumber, title: e.name || '',
-                      airDate: e.airDate, debugSource: (e as any).debugSource,
-                    })),
-                  }))
-                  debugAnimeMapping({
-                    localMediaId: show.id, title: show.title, originalTitle: show.originalTitle,
-                    year: show.year,
-                    anilistId: show.anilistId ? Number(show.anilistId) : undefined,
-                    malId: show.malId ? Number(show.malId) : undefined,
-                    tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
-                    tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
-                    imdbId: show.imdbId,
-                    matchedTvdbSeriesName: show.title,
-                    seasons: seasonsWithEps as any,
-                  })
-                  console.log('[ANIME DEBUG] Open browser DevTools → Console to see debug output')
-                }}
-              >
-                Debug Anime Mapping
-              </button>
-            )}
           </div>
         }
       />
@@ -1718,15 +1717,17 @@ export default function SeriesDetailPage() {
         backdrop={show.backdrop}
       >
       <div className="px-8 relative z-10">
-        <div className="relative mb-7 px-12">
-          <button
-            type="button"
-            onClick={() => scrollSeasons('left')}
-            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-black/55 border border-white/15 text-white/70 hover:text-white hover:bg-black/80 flex items-center justify-center"
-            aria-label="Previous seasons"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
+        <div className={`relative mb-7 ${showSeasonArrows ? 'px-12' : ''}`}>
+          {showSeasonArrows && (
+            <button
+              type="button"
+              onClick={() => scrollSeasons('left')}
+              className="absolute left-0 top-[25px] -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-black/55 border border-white/15 text-white/70 hover:text-white hover:bg-black/80 flex items-center justify-center"
+              aria-label="Previous seasons"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          )}
           <div
             ref={seasonScrollRef}
             onWheel={handleSeasonWheel}
@@ -1739,7 +1740,7 @@ export default function SeriesDetailPage() {
                 onClick={() => selectSeason(season.seasonNumber)}
                 onContextMenu={(e) => {
                   e.preventDefault()
-                  const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, provider: 'tmdb' }
+                  const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
                   const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
                   showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
                 }}
@@ -1754,14 +1755,16 @@ export default function SeriesDetailPage() {
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={() => scrollSeasons('right')}
-            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-black/55 border border-white/15 text-white/70 hover:text-white hover:bg-black/80 flex items-center justify-center"
-            aria-label="Next seasons"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
+          {showSeasonArrows && (
+            <button
+              type="button"
+              onClick={() => scrollSeasons('right')}
+              className="absolute right-0 top-[25px] -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-black/55 border border-white/15 text-white/70 hover:text-white hover:bg-black/80 flex items-center justify-center"
+              aria-label="Next seasons"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          )}
         </div>
 
         {seasonData && (
@@ -1795,7 +1798,7 @@ export default function SeriesDetailPage() {
                     onContextMenu={(e) => {
                       e.preventDefault()
                       if (!show) return
-                      const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, provider: 'tmdb' }
+                      const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
                       const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
                       showCtxMenu(e.clientX, e.clientY, { kind: 'episode', item: searchResult, episode: ep, seasonNumber: ep.seasonNumber, showImdbId: show.imdbId, appSeasonCounts })
                     }}
@@ -1863,10 +1866,11 @@ export default function SeriesDetailPage() {
                           imdbId={ep.imdbId || show.imdbId}
                           tmdbId={show.tmdbId ?? ep.tmdbId}
                           tvdbId={show.tvdbId ?? ep.tvdbId}
+                          malId={show.malId}
                           season={ep.seasonNumber}
                           episode={ep.episodeNumber}
                           episodeRating={ep.imdbRating}
-                          tmdbRating={ep.rating}
+                          isAnime={isAnime}
                           compact
                         />
                         <div className="overflow-visible relative z-20" onClick={(e) => e.stopPropagation()}>
@@ -1875,15 +1879,19 @@ export default function SeriesDetailPage() {
                               localId: show.id,
                               title: show.title,
                               year: show.year,
-                              type: 'show',
+                              type: isAnime ? 'anime' : 'show',
                               imdbId: show.imdbId,
                               tmdbId: show.tmdbId ? Number(show.tmdbId) : undefined,
+                              tvdbId: show.tvdbId ? Number(show.tvdbId) : undefined,
+                              malId: show.malId ? Number(show.malId) : undefined,
+                              anilistId: show.anilistId ? Number(show.anilistId) : undefined,
                             }}
                             mediaType="series"
-                            episode={{ season: ep.seasonNumber, episode: ep.episodeNumber }}
+                            episode={{ season: ep.seasonNumber, episode: ep.episodeNumber, absoluteEpisode: ep.absoluteEpisodeNumber ?? ep.debugOriginalAbsoluteNumber }}
                             imdbId={show.imdbId}
                             anilistId={show.anilistId}
                             malId={show.malId}
+                            isAnime={isAnime}
                             appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
                             compact
                             watched={isWatched}

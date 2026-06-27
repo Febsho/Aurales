@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import WatchTogetherPanel from './watch-together/WatchTogetherPanel'
 import WatchTogetherAutoPlayer from './watch-together/WatchTogetherAutoPlayer'
+import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
@@ -14,6 +15,9 @@ export default function Layout() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState('')
+  const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false)
+  const [searchBarVisible, setSearchBarVisible] = useState(false)
+  const [searchFocused, setSearchFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const mainRef = useRef<HTMLElement>(null)
 
@@ -49,10 +53,13 @@ export default function Layout() {
         return
       }
 
-      if (e.key === '/') {
+      if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
-        inputRef.current?.focus()
-        inputRef.current?.select()
+        setSearchBarVisible(true)
+        requestAnimationFrame(() => {
+          inputRef.current?.focus()
+          inputRef.current?.select()
+        })
       } else if (e.altKey && e.key === 'ArrowLeft') {
         e.preventDefault()
         goBack()
@@ -84,15 +91,65 @@ export default function Layout() {
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      navigate(`/search?q=${encodeURIComponent(query)}`)
+      const text = query.trim()
+      navigate(text ? `/search?q=${encodeURIComponent(text)}` : '/search')
     }
   }
 
-  const isHeroPage = location.pathname === '/' || location.pathname.startsWith('/movie/') || location.pathname.startsWith('/series/')
+  const handleSearchFocus = () => {
+    setSearchFocused(true)
+    setSearchBarVisible(true)
+    if (location.pathname === '/search') return
+    const text = query.trim()
+    navigate(text ? `/search?q=${encodeURIComponent(text)}` : '/search')
+  }
+
+  const handleSearchBlur = () => {
+    setSearchFocused(false)
+    window.setTimeout(() => {
+      if (document.activeElement !== inputRef.current) setSearchBarVisible(false)
+    }, 120)
+  }
+
+  const topControlLeft = !sidebarPinned && sidebarOverlayVisible ? 'left-[14.75rem]' : 'left-4'
+  const searchInput = (
+    <div className="relative w-full max-w-lg">
+      <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
+        <svg className="w-4 h-4 text-white/35" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+      </div>
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={(e) => handleInputChange(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onFocus={handleSearchFocus}
+        onBlur={handleSearchBlur}
+        placeholder="Search movies, shows, people..."
+        className={[
+          'w-full pl-10 pr-12 py-2.5',
+          'bg-white/[0.06] hover:bg-white/[0.09] focus:bg-white/[0.12]',
+          'border border-white/[0.06] focus:border-white/[0.15]',
+          'rounded-xl text-sm font-medium tracking-wide',
+          'text-white placeholder-white/30',
+          'focus:outline-none',
+          'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'shadow-[0_4px_16px_rgba(0,0,0,0.3)]',
+          'backdrop-blur-xl',
+        ].join(' ')}
+      />
+      <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
+        <kbd className="text-[10px] font-bold text-white/25 px-1.5 py-0.5 bg-white/[0.06] rounded border border-white/[0.06]">/</kbd>
+      </div>
+    </div>
+  )
 
   return (
     <div className={`h-screen overflow-hidden bg-black ${sidebarPinned ? 'flex' : 'relative'}`}>
-      <Sidebar />
+      <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
       <div className={`relative flex flex-col min-h-0 h-full ${sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
@@ -101,7 +158,8 @@ export default function Layout() {
             type="button"
             onClick={goBack}
             className={[
-              'absolute top-4 left-4 z-50',
+              'absolute top-4 z-50',
+              topControlLeft,
               'w-11 h-11 rounded-full flex items-center justify-center',
               'bg-black/45 hover:bg-black/70 backdrop-blur-xl',
               'border border-white/15 hover:border-white/30',
@@ -116,49 +174,34 @@ export default function Layout() {
             </svg>
           </button>
         )}
-        {/* Search bar — top-right on hero pages */}
-        {!isHeroPage && (
-          <header className="relative h-14 flex items-center justify-center px-6 z-20 flex-shrink-0">
-            <div className="relative w-full max-w-lg">
-              <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-                <svg className="w-4 h-4 text-white/35" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                  <circle cx="11" cy="11" r="8" />
-                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
-              </div>
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={(e) => handleInputChange(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Search movies, shows, people..."
-                className={[
-                  'w-full pl-10 pr-12 py-2.5',
-                  'bg-white/[0.06] hover:bg-white/[0.09] focus:bg-white/[0.12]',
-                  'border border-white/[0.06] focus:border-white/[0.15]',
-                  'rounded-xl text-sm font-medium tracking-wide',
-                  'text-white placeholder-white/30',
-                  'focus:outline-none',
-                  'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
-                  'shadow-[0_4px_16px_rgba(0,0,0,0.3)]',
-                  'backdrop-blur-xl',
-                ].join(' ')}
-              />
-              <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-                <kbd className="text-[10px] font-bold text-white/25 px-1.5 py-0.5 bg-white/[0.06] rounded border border-white/[0.06]">/</kbd>
-              </div>
-            </div>
-          </header>
-        )}
+        {/* Search bar */}
+        <div
+          className="absolute top-0 left-0 right-0 h-8 z-40"
+          onMouseEnter={() => setSearchBarVisible(true)}
+        />
+        <header
+          onMouseEnter={() => setSearchBarVisible(true)}
+          onMouseLeave={() => { if (!searchFocused) setSearchBarVisible(false) }}
+          className={[
+            'absolute top-0 left-1/2 z-40',
+            'w-[min(32rem,calc(100vw-8rem))]',
+            'transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+            searchBarVisible || searchFocused
+              ? '-translate-x-1/2 translate-y-3 pointer-events-auto'
+              : '-translate-x-1/2 -translate-y-full pointer-events-none',
+          ].join(' ')}
+        >
+          {searchInput}
+        </header>
 
-        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${isHeroPage ? '' : ''} ${roomPanelOpen ? 'mr-[380px]' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
+        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'mr-[380px]' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
           <Outlet />
         </main>
       </div>
 
       <WatchTogetherPanel open={roomPanelOpen} onClose={() => setRoomPanelOpen(false)} />
       <WatchTogetherAutoPlayer />
+      <KeyboardShortcutsHelp />
     </div>
   )
 }

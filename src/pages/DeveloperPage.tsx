@@ -93,7 +93,7 @@ export default function DeveloperPage() {
         } else {
           setPlaybackState(null)
         }
-      } catch {
+      } catch (_) {
         setPlaybackState(null)
       }
     }, 1000)

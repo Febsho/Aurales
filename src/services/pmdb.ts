@@ -38,7 +38,7 @@ async function pmdbFetch(
     })
 
     let data: unknown = null
-    try { data = JSON.parse(result.body) } catch { data = result.body }
+    try { data = JSON.parse(result.body) } catch (_) { data = result.body }
 
     if (!result.ok) {
       console.warn(
@@ -244,7 +244,7 @@ export async function lookupTmdbId(
           if (movies.length > 0) return { tmdbId: movies[0].id, mediaType: 'movie' }
           if (shows.length > 0) return { tmdbId: shows[0].id, mediaType: 'tv' }
         }
-      } catch { /* fall through */ }
+      } catch (_) { /* fall through */ }
     }
   }
 
@@ -268,7 +268,7 @@ export async function lookupTmdbId(
       const mediaType = normalizeMediaType(m.media_type ?? m.mediaType ?? m.type)
       if (tmdbId && mediaType) return { tmdbId, mediaType }
     }
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return null
 }
 
@@ -362,6 +362,29 @@ export async function scrobblePMDB(
   const result = await pmdbFetch('POST', '/watched?dedupe=true', body)
   if (!result.ok) {
     console.warn('[PMDB] scrobblePMDB failed:', result.status)
+  }
+}
+
+export async function removePMDBWatched(
+  tmdbId: number,
+  mediaType: 'movie' | 'tv',
+  season?: number,
+  episode?: number
+): Promise<void> {
+  if (!useAppStore.getState().pmdbApiKey) return
+  if (mediaType === 'tv' && (season == null || episode == null)) return
+
+  const watched = await getPMDBWatched()
+  const target = watched.find((item) =>
+    item.tmdb_id === tmdbId &&
+    item.media_type === mediaType &&
+    (mediaType === 'movie' || (item.season === season && item.episode === episode))
+  )
+  if (!target) return
+
+  const result = await pmdbFetch('DELETE', `/watched/${encodeURIComponent(target.id)}`)
+  if (!result.ok) {
+    console.warn('[PMDB] removePMDBWatched failed:', result.status)
   }
 }
 

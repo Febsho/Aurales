@@ -161,7 +161,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
               if (meta.genre) setResolvedGenre(meta.genre)
             }
           }
-        } catch { /* ignore */ }
+        } catch (_) { /* ignore */ }
       })()
     }
     return () => { cancelled = true }
@@ -178,11 +178,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
   const handleClick = () => {
     try {
       addRecentlyWatched(displayItem)
-    } catch (e) {
-      console.error('[MediaCard] addRecentlyWatched failed:', e, displayItem)
-    }
+    } catch (_) { /* ignore */ }
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
-    console.log('[MediaCard] navigating to', path, 'item:', item.id, item.title)
     navigate(path, {
       state: {
         poster: resolvedPoster || displayItem.poster,

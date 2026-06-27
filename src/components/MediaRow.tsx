@@ -4,6 +4,8 @@ import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
 
+const CATALOG_PREVIEW_LIMIT = 25
+
 interface MediaRowProps {
   title: string
   items: SearchResult[]
@@ -49,6 +51,8 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
   }
 
   const visibleItems = items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)
+  const shouldShowAll = Boolean(showAllPath && visibleItems.length > CATALOG_PREVIEW_LIMIT)
+  const rowItems = shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems
 
   if (visibleItems.length === 0) return null
 
@@ -65,7 +69,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
           </div>
         </div>
         <div className="space-y-2">
-          {visibleItems.map((item) => (
+          {rowItems.map((item) => (
             <MediaCard key={item.id} item={item} layout="landscape" />
           ))}
         </div>
@@ -85,18 +89,20 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
           <div className="flex gap-1">
           <button
             onClick={() => scroll('left')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white"
+            aria-label="Scroll left"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M15 19l-7-7 7-7" />
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
           <button
             onClick={() => scroll('right')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white"
+            aria-label="Scroll right"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M9 5l7 7-7 7" />
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             </button>
           </div>
@@ -107,7 +113,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
         className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pb-2 scrollbar-none"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {visibleItems.map((item) => (
+        {rowItems.map((item) => (
           <MediaCard
             key={item.id}
             item={item}
@@ -115,7 +121,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
             disableArtOverride={disableArtOverride}
           />
         ))}
-        {showAllPath && (
+        {shouldShowAll && showAllPath && (
           <button
             onClick={() => navigate(showAllPath)}
             className={`flex-shrink-0 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex flex-col items-center justify-center text-white transition-colors self-start ${showAllWidthClass} ${

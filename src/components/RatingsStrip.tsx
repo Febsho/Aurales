@@ -7,52 +7,39 @@ interface RatingsStripProps {
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
+  malId?: string | number
   season?: number
   episode?: number
   className?: string
   compact?: boolean
   episodeRating?: string
-  tmdbRating?: number
+  isAnime?: boolean
 }
 
 export default function RatingsStrip(props: RatingsStripProps) {
   const [ratings, setRatings] = useState<MdblistRating[]>([])
 
   useEffect(() => {
-    if (props.episodeRating) {
-      let val = props.episodeRating.trim()
-      if (val.includes('/10')) {
-        val = val.split('/10')[0].trim()
-      }
-      setRatings([
-        {
-          source: 'imdb',
-          label: 'IMDb',
-          value: val,
-          icon: 'IMDb',
-          iconUrl: getRatingIconUrl('imdb') ?? undefined,
-        },
-      ])
+    const imdbEpisodeRating = toImdbRating(props.episodeRating)
+
+    if (props.episode != null && !props.isAnime) {
+      setRatings(imdbEpisodeRating ? [imdbEpisodeRating] : [])
       return
     }
 
-    if (props.episode != null && props.tmdbRating != null && props.tmdbRating > 0) {
-      setRatings([
-        {
-          source: 'tmdb',
-          label: 'TMDB',
-          value: props.tmdbRating.toFixed(1),
-          icon: 'TMDB',
-          iconUrl: getRatingIconUrl('tmdb') ?? undefined,
-        },
-      ])
-      return
-    }
-
-    // Bypassing getMdblistRatings for episodes, since MdbList show-rating fallback is not desired.
-    if (props.episode != null) {
-      setRatings([])
-      return
+    if (props.episode != null && props.isAnime) {
+      let cancelled = false
+      import('../services/jikan')
+        .then(({ getJikanEpisodeRating }) => getJikanEpisodeRating(props.malId, props.episode))
+        .then((score) => {
+          if (cancelled) return
+          const malEpisodeRating = score != null ? toMalRating(score) : null
+          setRatings(malEpisodeRating ? [malEpisodeRating] : imdbEpisodeRating ? [imdbEpisodeRating] : [])
+        })
+        .catch(() => {
+          if (!cancelled) setRatings(imdbEpisodeRating ? [imdbEpisodeRating] : [])
+        })
+      return () => { cancelled = true }
     }
 
     let cancelled = false
@@ -61,21 +48,17 @@ export default function RatingsStrip(props: RatingsStripProps) {
       imdbId: props.imdbId,
       tmdbId: props.tmdbId,
       tvdbId: props.tvdbId,
+      malId: props.malId,
       season: props.season,
       episode: props.episode,
     })
       .then((items) => {
-        if (!cancelled) {
-          if (props.episode != null) {
-            setRatings(items.filter((r) => r.source === 'imdb'))
-          } else {
-            setRatings(items)
-          }
-        }
+        if (cancelled) return
+        setRatings(items)
       })
       .catch(() => { if (!cancelled) setRatings([]) })
     return () => { cancelled = true }
-  }, [props.mediaType, props.imdbId, props.tmdbId, props.tvdbId, props.season, props.episode, props.episodeRating, props.tmdbRating])
+  }, [props.mediaType, props.imdbId, props.tmdbId, props.tvdbId, props.malId, props.season, props.episode, props.episodeRating, props.isAnime])
 
   const visibleHeroRatings = useAppStore((s) => s.visibleHeroRatings)
 
@@ -86,6 +69,9 @@ export default function RatingsStrip(props: RatingsStripProps) {
     }
     if (sourceKey === 'tomatoesaudience' || sourceKey === 'popcorn') {
       return visibleHeroRatings.includes('tomatoesaudience')
+    }
+    if (sourceKey === 'mal') {
+      return visibleHeroRatings.includes('myanimelist')
     }
     return visibleHeroRatings.includes(sourceKey)
   })
@@ -117,4 +103,30 @@ export default function RatingsStrip(props: RatingsStripProps) {
       ))}
     </div>
   )
+}
+
+function toImdbRating(value?: string): MdblistRating | null {
+  if (!value) return null
+  let val = value.trim()
+  if (!val) return null
+  if (val.includes('/10')) {
+    val = val.split('/10')[0].trim()
+  }
+  return {
+    source: 'imdb',
+    label: 'IMDb',
+    value: val,
+    icon: 'IMDb',
+    iconUrl: getRatingIconUrl('imdb') ?? undefined,
+  }
+}
+
+function toMalRating(value: number): MdblistRating {
+  return {
+    source: 'myanimelist',
+    label: 'MAL',
+    value: Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0$/, '').replace(/\.0$/, ''),
+    icon: 'MAL',
+    iconUrl: getRatingIconUrl('myanimelist') ?? undefined,
+  }
 }

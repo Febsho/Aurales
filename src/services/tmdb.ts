@@ -26,7 +26,7 @@ export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number
     try {
       const data = await tmdbFetch(`/tv/${id}/external_ids`) as Record<string, unknown>
       return Number(data.tvdb_id) || null
-    } catch {
+    } catch (_) {
       return null
     }
   }, { category: CACHE_CATEGORIES.TMDB_TVDB_ID, ttlSeconds: CACHE_TTLS.TMDB_TVDB_ID })
@@ -76,7 +76,7 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
     try {
       const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'xx,null,en' }) as Record<string, unknown>
       return pickBestBackdrop(images) || null
-    } catch {
+    } catch (_) {
       return null
     }
   }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
@@ -168,6 +168,7 @@ export const tmdbProvider: MetadataProvider = {
         name: c.name as string,
         job: c.job as string,
         department: c.department as string,
+        profilePath: c.profile_path ? `${IMG_BASE}/w185${c.profile_path}` : undefined,
       }))
 
     const trailers = ((videos.results as Record<string, unknown>[]) || [])
@@ -342,7 +343,7 @@ export async function getTmdbGenres(type: 'movie' | 'tv'): Promise<{ id: number;
   try {
     const data = await tmdbFetch(`/genre/${type}/list`) as { genres: { id: number; name: string }[] }
     return data.genres || []
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -351,7 +352,7 @@ export async function getTmdbLanguages(): Promise<{ iso_639_1: string; english_n
   try {
     const data = await tmdbFetch('/configuration/languages') as { iso_639_1: string; english_name: string }[]
     return (data || []).sort((a, b) => a.english_name.localeCompare(b.english_name))
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -360,7 +361,7 @@ export async function getTmdbCountries(): Promise<{ iso_3166_1: string; english_
   try {
     const data = await tmdbFetch('/configuration/countries') as { iso_3166_1: string; english_name: string }[]
     return (data || []).sort((a, b) => a.english_name.localeCompare(b.english_name))
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -378,7 +379,7 @@ export async function getTmdbWatchProviders(type: 'movie' | 'tv', region: string
       watch_region: region,
     }) as { results: TmdbWatchProvider[] }
     return data.results || []
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -388,9 +389,124 @@ export async function searchTmdbPeople(query: string): Promise<{ id: number; nam
   try {
     const data = await tmdbFetch('/search/person', { query }) as { results: { id: number; name: string; profile_path?: string }[] }
     return data.results || []
-  } catch {
+  } catch (_) {
     return []
   }
+}
+
+export interface TmdbPersonCredit extends SearchResult {
+  character?: string
+  job?: string
+  releaseDate?: string
+  mediaType: 'movie' | 'tv'
+  creditTypes: ('acting' | 'directing' | 'voice')[]
+}
+
+export interface TmdbPersonDetails {
+  id: number
+  name: string
+  biography?: string
+  birthday?: string
+  deathday?: string
+  placeOfBirth?: string
+  profile?: string
+  knownForDepartment?: string
+  homepage?: string
+  imdbId?: string
+  credits: TmdbPersonCredit[]
+}
+
+function creditDate(item: Record<string, unknown>): string | undefined {
+  const raw = (item.release_date || item.first_air_date) as string | undefined
+  return raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined
+}
+
+function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | 'directing' | 'voice'): TmdbPersonCredit | null {
+  const mediaType = item.media_type
+  if (mediaType !== 'movie' && mediaType !== 'tv') return null
+  const title = (mediaType === 'movie' ? item.title : item.name) as string | undefined
+  const id = Number(item.id)
+  if (!title || !Number.isFinite(id)) return null
+
+  const date = creditDate(item)
+  return {
+    id: `tmdb-${id}`,
+    title,
+    type: mediaType === 'movie' ? 'movie' : 'series',
+    year: date ? Number(date.slice(0, 4)) : undefined,
+    poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/w780${item.backdrop_path}` : undefined,
+    overview: item.overview as string | undefined,
+    rating: item.vote_average as number | undefined,
+    provider: 'tmdb',
+    tmdbId: id,
+    genreIds: Array.isArray(item.genre_ids) ? item.genre_ids as number[] : undefined,
+    character: creditType === 'acting' || creditType === 'voice' ? item.character as string | undefined : undefined,
+    job: creditType === 'directing' ? item.job as string | undefined : undefined,
+    releaseDate: date,
+    mediaType,
+    creditTypes: [creditType],
+  }
+}
+
+export async function getTmdbPerson(personId: string | number): Promise<TmdbPersonDetails> {
+  const id = String(personId).replace('tmdb-', '')
+  return cachedFetch<TmdbPersonDetails>(`tmdb_person:${id}`, async () => {
+    const data = await tmdbFetch(`/person/${id}`, {
+      append_to_response: 'combined_credits,external_ids',
+    }) as Record<string, unknown>
+
+    const combinedCredits = (data.combined_credits as Record<string, unknown> | undefined) ?? {}
+    const rawCredits = ((combinedCredits.cast as Record<string, unknown>[]) || []).map((credit) => {
+      const char = (credit.character as string | undefined) ?? ''
+      const isVoice = /\(voice\)/i.test(char)
+      return { raw: credit, type: isVoice ? 'voice' as const : 'acting' as const }
+    })
+    const rawDirectorCredits = ((combinedCredits.crew as Record<string, unknown>[]) || [])
+      .filter((credit) => credit.job === 'Director')
+      .map((credit) => ({ raw: credit, type: 'directing' as const }))
+    const seen = new Map<string, TmdbPersonCredit>()
+    for (const { raw, type } of [...rawCredits, ...rawDirectorCredits]) {
+      const credit = mapPersonCredit(raw, type)
+      if (!credit) continue
+      const key = `${credit.mediaType}:${credit.tmdbId}`
+      const existing = seen.get(key)
+      if (existing) {
+        const roles = [existing.character, credit.character].filter(Boolean) as string[]
+        const jobs = [existing.job, credit.job].filter(Boolean) as string[]
+        seen.set(key, {
+          ...existing,
+          character: [...new Set(roles)].join(', ') || undefined,
+          job: [...new Set(jobs)].join(', ') || undefined,
+          creditTypes: [...new Set([...existing.creditTypes, ...credit.creditTypes])],
+        })
+      } else {
+        seen.set(key, credit)
+      }
+    }
+
+    const credits = [...seen.values()].sort((a, b) => {
+      const left = a.releaseDate ? Date.parse(a.releaseDate) : 0
+      const right = b.releaseDate ? Date.parse(b.releaseDate) : 0
+      if (left !== right) return right - left
+      return (b.rating ?? 0) - (a.rating ?? 0)
+    })
+
+    const externalIds = (data.external_ids as Record<string, unknown> | undefined) ?? {}
+    return {
+      id: Number(data.id),
+      name: data.name as string,
+      biography: data.biography as string | undefined,
+      birthday: data.birthday as string | undefined,
+      deathday: data.deathday as string | undefined,
+      placeOfBirth: data.place_of_birth as string | undefined,
+      profile: data.profile_path ? `${IMG_BASE}/h632${data.profile_path}` : undefined,
+      knownForDepartment: data.known_for_department as string | undefined,
+      homepage: data.homepage as string | undefined,
+      imdbId: externalIds.imdb_id as string | undefined,
+      credits,
+    }
+  }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
 }
 
 export async function searchTmdbCompanies(query: string): Promise<{ id: number; name: string }[]> {
@@ -398,7 +514,7 @@ export async function searchTmdbCompanies(query: string): Promise<{ id: number; 
   try {
     const data = await tmdbFetch('/search/company', { query }) as { results: { id: number; name: string }[] }
     return data.results || []
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -408,7 +524,7 @@ export async function searchTmdbKeywords(query: string): Promise<{ id: number; n
   try {
     const data = await tmdbFetch('/search/keyword', { query }) as { results: { id: number; name: string }[] }
     return data.results || []
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -417,7 +533,7 @@ export async function getTmdbCertifications(type: 'movie' | 'tv'): Promise<Recor
   try {
     const data = await tmdbFetch(`/certification/${type === 'movie' ? 'movie' : 'tv'}/list`) as { certifications: Record<string, { certification: string; order: number }[]> }
     return data.certifications || {}
-  } catch {
+  } catch (_) {
     return {}
   }
 }

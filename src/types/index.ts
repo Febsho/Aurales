@@ -15,6 +15,9 @@ export interface SearchResult {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
+  traktId?: number
+  simklId?: number
   season?: number
   episode?: number
   addonUrl?: string
@@ -50,6 +53,7 @@ export interface MovieDetails {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   provider?: string
 }
 
@@ -81,6 +85,7 @@ export interface ShowDetails {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   provider?: string
 }
 
