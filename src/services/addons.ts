@@ -68,7 +68,7 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
   if (trimmed.startsWith('/')) {
     try {
       return new URL(trimmed, `${baseUrl(addonUrl)}/`).toString()
-    } catch {
+    } catch (_) {
       return undefined
     }
   }
@@ -171,7 +171,7 @@ export async function getAddonCatalog(
       const item = bySourceId.get(preview.sourceAddonItemId)
       return item ? appMediaToSearchResult(item, addonUrl) : preview
     })
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -186,7 +186,7 @@ export async function getAddonStreams(
     if (!res.ok) return []
     const data = await res.json()
     return (data.streams || []) as StreamResult[]
-  } catch {
+  } catch (_) {
     return []
   }
 }
@@ -201,7 +201,7 @@ export async function getAddonMeta(
     if (!res.ok) return null
     const data = await res.json()
     return data.meta || null
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -217,7 +217,7 @@ export async function getAddonSubtitles(
     .map((track) => {
       try {
         return { ...track, url: new URL(track.url, `${baseUrl(addonUrl)}/`).toString() }
-      } catch {
+      } catch (_) {
         return track
       }
     })
@@ -226,12 +226,12 @@ export async function getAddonSubtitles(
     if (!res.ok) return []
     const data = await res.json()
     return normalize((data.subtitles || []) as SubtitleResult[])
-  } catch {
+  } catch (_) {
     try {
       const body = await invoke<string>('http_get_text', { url })
       const data = JSON.parse(body)
       return normalize((data.subtitles || []) as SubtitleResult[])
-    } catch {
+    } catch (_) {
       return []
     }
   }

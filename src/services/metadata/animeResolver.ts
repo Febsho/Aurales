@@ -81,7 +81,7 @@ async function tryTmdbSeasonsFallback(tmdbId: number, options: AnimeResolverOpti
 
     console.log('[animeResolver] TMDB fallback seasons:', seasons.map((s) => ({ num: s.seasonNumber, eps: s.episodeCount })))
     return seasons
-  } catch {
+  } catch (_) {
     return null
   }
 }

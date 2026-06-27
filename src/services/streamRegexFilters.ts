@@ -266,7 +266,7 @@ export function loadStreamRegexFilterConfig(): StreamRegexFilterConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     return raw ? validateStreamRegexFilterConfig(JSON.parse(raw)) : DEFAULT_STREAM_REGEX_FILTER_CONFIG
-  } catch {
+  } catch (_) {
     return DEFAULT_STREAM_REGEX_FILTER_CONFIG
   }
 }
@@ -324,7 +324,7 @@ export function matchStreamRegexFilters(text: string, config = loadStreamRegexFi
     if (!regex) continue
     try {
       if (regex.test(text)) matches.push({ filter, group: groups.get(filter.groupId) })
-    } catch {
+    } catch (_) {
       // Ignore runtime regex failures so one bad tag cannot break stream selection.
     }
   }
@@ -341,7 +341,7 @@ export function compileFilterRegex(pattern: string): RegExp | null {
       flags += 'i'
     }
     return new RegExp(source, flags)
-  } catch {
+  } catch (_) {
     return null
   }
 }

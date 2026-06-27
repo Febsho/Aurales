@@ -60,7 +60,7 @@ function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetai
     poster: meta.poster as string | undefined,
     backdrop: (meta.background || meta.banner) as string | undefined,
     logo: meta.logo as string | undefined,
-    certification: meta.certification as string | undefined,
+    certification: typeof meta.certification === 'string' ? meta.certification : undefined,
     cast: Array.isArray(meta.cast) ? (meta.cast as string[]).map((name, i) => ({
       id: `cast-${i}`, name, character: '', profilePath: undefined,
     })) : [],
@@ -248,7 +248,7 @@ export default function MovieDetailPage() {
               if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || String(parsed.anilistId)
               return parsed
             }
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
           return null
         }
 
@@ -296,7 +296,7 @@ export default function MovieDetailPage() {
           const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
           const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
           if (found.tmdbId) tmdbId = String(found.tmdbId)
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       let appResult: MovieDetails | null = null
@@ -309,7 +309,7 @@ export default function MovieDetailPage() {
             malId: appResult.malId || knownIds.malId,
             anilistId: appResult.anilistId || knownIds.anilistId,
           }
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       // Resolve IMDb if missing
@@ -325,7 +325,7 @@ export default function MovieDetailPage() {
           const { resolveImdbId } = await import('../services/metadataEnrich')
           const imdbId = await resolveImdbId(finalResult, 'movie')
           if (imdbId) finalResult.imdbId = imdbId
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       const cleanTmdb = cleanId(finalResult.tmdbId)
@@ -421,6 +421,7 @@ export default function MovieDetailPage() {
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''
   const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
+  const movieIsAnime = !!(movie.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
 
   return (
     <div className="pb-12">
@@ -491,6 +492,7 @@ export default function MovieDetailPage() {
               imdbId={movie.imdbId}
               anilistId={movie.anilistId}
               malId={movie.malId}
+              isAnime={movieIsAnime}
               watched={movieWatched}
               onMarked={() => {
                 setMovieWatched(true)

@@ -108,7 +108,7 @@ export async function simklRequest<T = unknown>(
 
     // Success
     if (res.status === 200 || res.status === 201) {
-      try { return (await res.json()) as T } catch { return null as T }
+      try { return (await res.json()) as T } catch (_) { return null as T }
     }
     if (res.status === 204) return null as T
 
@@ -194,7 +194,7 @@ export async function resolveSimklMapping(opts: {
         title: media.title,
         year: media.year,
       }
-    } catch { return null }
+    } catch (_) { return null }
   }
 
   if (opts.imdbId) return tryId('imdb', opts.imdbId)

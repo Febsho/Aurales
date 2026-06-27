@@ -16,7 +16,7 @@ export async function getSimklWatchedMovies(): Promise<SimklWatchlistItem[]> {
   try {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/completed?extended=full&date_from=1970-01-01')
     return toHistoryItems(data ?? [])
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 export async function getSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
@@ -45,7 +45,7 @@ export async function getSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
       merged.set(key, { ...existing, watchedEpisodes: [...uniqueEpisodes.values()] })
     }
     return [...merged.values()]
-  } catch { return [] }
+  } catch (_) { return [] }
 }
 
 // ─── Mark watched ──────────────────────────────────────────────────────────────
@@ -87,12 +87,13 @@ export async function markEpisodeWatchedOnSimkl(
 
   const mapping = await resolveSimklId(show)
   const at = watchedAt || new Date().toISOString()
+  const mediaKey = (show.type === 'anime' || mapping?.type === 'anime') ? 'anime' : 'shows'
 
   if (mapping?.simklId) {
     await simklRequest('/sync/history', {
       method: 'POST',
       body: JSON.stringify({
-        shows: [
+        [mediaKey]: [
           {
             ids: { simkl: mapping.simklId },
             seasons: [
@@ -112,10 +113,13 @@ export async function markEpisodeWatchedOnSimkl(
   const ids: Record<string, string | number> = {}
   if (show.imdbId) ids.imdb = show.imdbId
   if (show.tvdbId) ids.tvdb = show.tvdbId
+  if (show.tmdbId) ids.tmdb = show.tmdbId
+  if (show.malId) ids.mal = show.malId
+  if (show.simklId) ids.simkl = show.simklId
   await simklRequest('/sync/history', {
     method: 'POST',
     body: JSON.stringify({
-      shows: [
+      [mediaKey]: [
         {
           title: show.title,
           year: show.year,
@@ -149,15 +153,19 @@ export async function removeEpisodeWatchedOnSimkl(
   if (isSimklMockMode()) return
 
   const mapping = await resolveSimklId(show)
+  const mediaKey = (show.type === 'anime' || mapping?.type === 'anime') ? 'anime' : 'shows'
   const ids: Record<string, string | number> = {}
   if (mapping?.simklId) ids.simkl = mapping.simklId
   if (show.imdbId) ids.imdb = show.imdbId
   if (show.tvdbId) ids.tvdb = show.tvdbId
+  if (show.tmdbId) ids.tmdb = show.tmdbId
+  if (show.malId) ids.mal = show.malId
+  if (show.simklId) ids.simkl = show.simklId
 
   await simklRequest('/sync/history/remove', {
     method: 'POST',
     body: JSON.stringify({
-      shows: [{
+      [mediaKey]: [{
         title: show.title,
         year: show.year,
         ids,

@@ -70,6 +70,15 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
+  const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const changePlaybackSpeed = (speed: number) => {
+    setPlaybackSpeed(speed)
+    setShowSpeedMenu(false)
+    if (videoRef.current) videoRef.current.playbackRate = speed
+  }
+
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
 
@@ -257,7 +266,7 @@ IMPORTANT RULES:
         const objectUrl = URL.createObjectURL(blob)
         objectUrls.push(objectUrl)
         return { ...fallback, url: objectUrl }
-      } catch {
+      } catch (_) {
         return fallback
       }
     })).then((tracks) => {
@@ -616,26 +625,70 @@ IMPORTANT RULES:
 
       <div className={`absolute inset-x-0 bottom-0 p-7 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
         <div className="flex items-center gap-3 text-xs text-white/70 mb-4">
-          <span>{formatTime(currentTime)}</span>
-          <input type="range" min="0" max={duration || 0} value={currentTime} onChange={(event) => seekTo(event.target.value)} className="w-full accent-white" />
-          <span>{duration ? formatTime(duration) : '--:--'}</span>
+          <span className="tabular-nums">{formatTime(currentTime)}</span>
+          <div className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5">
+            <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
+            <div className="absolute inset-y-0 left-0 rounded-full bg-white/90" style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }} />
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ left: `calc(${duration > 0 ? (currentTime / duration) * 100 : 0}% - 6px)` }}
+            />
+            <input type="range" min="0" max={duration || 0} step="0.1" value={currentTime} onChange={(event) => seekTo(event.target.value)} className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5" />
+          </div>
+          <span className="tabular-nums">{duration ? formatTime(duration) : '--:--'}</span>
         </div>
 
         <div className="flex items-center justify-between gap-6">
           <div className="flex items-center gap-4">
-            <button onClick={() => seekBy(-10)} className="text-white/75 hover:text-white">-10</button>
-            <button onClick={togglePlay} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center">
+            <button onClick={() => seekBy(-10)} title="Back 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
+            <button onClick={togglePlay} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors">
               {paused ? (
-                <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                <svg className="w-7 h-7 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
               ) : (
                 <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
               )}
             </button>
-            <button onClick={() => seekBy(10)} className="text-white/75 hover:text-white">+10</button>
+            <button onClick={() => seekBy(10)} title="Forward 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
+                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="relative">
+              {showSpeedMenu && (
+                <div className="absolute bottom-full mb-2 left-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
+                  {SPEED_OPTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => changePlaybackSpeed(s)}
+                      className={`w-full px-4 py-1.5 text-xs font-semibold text-left transition-colors ${
+                        playbackSpeed === s ? 'text-accent bg-white/10' : 'text-white/70 hover:text-white hover:bg-white/8'
+                      }`}
+                    >
+                      {s === 1 ? 'Normal' : `${s}x`}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setShowSpeedMenu((v) => !v)}
+                title="Playback speed"
+                className={`px-3 py-2 rounded-xl text-sm font-bold transition-colors ${
+                  playbackSpeed !== 1 ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-black/80 text-white border border-white/15 hover:bg-white/10'
+                }`}
+              >
+                {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+              </button>
+            </div>
             <select value={selectedAudio} onChange={(event) => changeAudio(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
               {audioTracks.length > 0 ? audioTracks.map((track) => (
                 <option key={track.id} value={track.index}>{track.label}</option>

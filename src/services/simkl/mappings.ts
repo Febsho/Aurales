@@ -124,7 +124,7 @@ export function getCachedSimklMapping(localMediaId: string): SimklMapping | null
     const raw = localStorage.getItem(LS_PREFIX + localMediaId)
     if (!raw) return null
     return JSON.parse(raw) as SimklMapping
-  } catch { return null }
+  } catch (_) { return null }
 }
 
 export function clearSimklMapping(localMediaId: string): void {

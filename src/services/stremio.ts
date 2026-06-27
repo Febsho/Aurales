@@ -27,7 +27,7 @@ function formatApiError(error: unknown): string {
     if (typeof message === 'string') return message
     try {
       return JSON.stringify(error)
-    } catch {
+    } catch (_) {
       return 'Unknown API error'
     }
   }
@@ -38,7 +38,7 @@ async function parseStremioResponse(res: Response, fallbackMessage: string): Pro
   let data: Record<string, unknown> = {}
   try {
     data = await res.json()
-  } catch {
+  } catch (_) {
     // keep fallback below
   }
 
