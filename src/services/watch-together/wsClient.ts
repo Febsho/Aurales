@@ -40,7 +40,7 @@ export function connect(serverUrl: string): Promise<void> {
       if (!settled) {
         settled = true
         getStore().setConnectionStatus('disconnected')
-        if (ws) { try { ws.close() } catch {} }
+        if (ws) { try { ws.close() } catch (_) {} }
         ws = null
         reject(new Error('Connection timed out — is the Watch Together server running?'))
       }
@@ -72,7 +72,7 @@ export function connect(serverUrl: string): Promise<void> {
         const msg: ServerMessage = JSON.parse(event.data)
         logDebug('in', msg.type, msg)
         handleServerMessage(msg)
-      } catch {
+      } catch (_) {
         logDebug('in', 'PARSE_ERROR', { raw: event.data })
       }
     }
@@ -416,7 +416,7 @@ async function autoResolveGuestStream(
     } else {
       logDebug('in', 'AUTO_RESOLVE_NONE', { media: media.title })
     }
-  } catch {
+  } catch (_) {
     logDebug('in', 'AUTO_RESOLVE_ERROR', { media: media.title })
   }
 }
@@ -530,7 +530,7 @@ function attemptReconnect(): void {
           name: store.defaultNickname || 'Reconnecting...',
         })
       }
-    } catch {
+    } catch (_) {
       attemptReconnect()
     }
   }, delay)

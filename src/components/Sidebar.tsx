@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import CreateRoomButton from './watch-together/CreateRoomButton'
 import JoinRoomModal from './watch-together/JoinRoomModal'
@@ -13,7 +13,11 @@ const navItems = [
   { path: '/developer', label: 'Developer', icon: ToolIcon },
 ]
 
-export default function Sidebar() {
+interface SidebarProps {
+  onOverlayVisibleChange?: (visible: boolean) => void
+}
+
+export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
@@ -23,6 +27,10 @@ export default function Sidebar() {
   // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
   const pinned = !autoHide
   const visible = pinned || hovered
+
+  useEffect(() => {
+    onOverlayVisibleChange?.(!pinned && visible)
+  }, [onOverlayVisibleChange, pinned, visible])
 
   return (
     <>

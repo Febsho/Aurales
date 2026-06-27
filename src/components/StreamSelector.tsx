@@ -121,7 +121,7 @@ function loadStreamFilters(): StreamFilterState {
   try {
     const raw = localStorage.getItem(FILTER_STORAGE_KEY)
     return raw ? { ...defaultStreamFilters(), ...JSON.parse(raw) } : defaultStreamFilters()
-  } catch {
+  } catch (_) {
     return defaultStreamFilters()
   }
 }
@@ -193,7 +193,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           addonName: addon.manifest.name,
           addonId: addon.manifest.id,
         }))
-      } catch {
+      } catch (_) {
         return []
       }
     })
@@ -213,7 +213,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           source: 'addon' as const,
           addonName: addon.manifest.name,
         }))
-      } catch {
+      } catch (_) {
         return []
       }
     })).then((results) => {
@@ -263,7 +263,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       try {
         const parsed = new URL(stream.url || '')
         values.push(`${parsed.hostname}${parsed.pathname.split('/').pop() ? ` · ${decodeURIComponent(parsed.pathname.split('/').pop() || '')}` : ''}`)
-      } catch {
+      } catch (_) {
         // ignore invalid display URLs
       }
     }

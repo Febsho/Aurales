@@ -22,6 +22,7 @@ import {
   getPMDBSkips,
   savePMDBPlaybackProgress,
   scrobblePMDB,
+  removePMDBWatched,
   lookupTmdbId
 } from '../services/pmdb'
 import { saveAniListProgress, saveAniListProgressMapped } from '../services/anilist'
@@ -118,6 +119,27 @@ function buildVideoViewport() {
   }
 }
 
+async function resolvePmdbPlaybackEpisode(
+  item: PlaybackItem,
+  tmdbId: number,
+): Promise<{ tmdbId: number; season?: number; episode?: number }> {
+  if (item.mediaType !== 'anime' || item.tvdbId == null || item.season == null || item.episode == null) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+
+  try {
+    const { mapTvdbEpisodeToAnimeProviders, shouldFlattenPmdbAnimeEpisodes } = await import('../services/animeLists')
+    const mapped = await mapTvdbEpisodeToAnimeProviders(item.tvdbId, item.season, item.episode)
+    if (!mapped?.tmdbId) return { tmdbId, season: item.season, episode: item.episode }
+    if (await shouldFlattenPmdbAnimeEpisodes(item.tvdbId, mapped.tmdbId)) {
+      return { tmdbId: mapped.tmdbId, season: 1, episode: mapped.episode }
+    }
+    return { tmdbId: mapped.tmdbId, season: mapped.season, episode: mapped.episode }
+  } catch (_) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+}
+
 function buildUpNextPipViewport() {
   const scale = window.devicePixelRatio || 1
   const width = Math.min(Math.max(window.innerWidth * 0.28, 360), 560)
@@ -173,7 +195,7 @@ async function fetchNextEpisodeFromTmdb(
           ? `https://image.tmdb.org/t/p/original${data.still_path}`
           : undefined,
       }
-    } catch {
+    } catch (_) {
       return null
     }
   }
@@ -553,6 +575,16 @@ function FullNativeMpvPlayer({
     return isNaN(n) ? 100 : Math.max(0, Math.min(130, n))
   })
 
+  // Playback speed
+  const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const changeSpeed = useCallback((speed: number) => {
+    setPlaybackSpeed(speed)
+    setShowSpeedMenu(false)
+    sendPlayerCommand('set_property', ['speed', speed]).catch(() => {})
+  }, [])
+
   // Store
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
@@ -678,21 +710,39 @@ function FullNativeMpvPlayer({
     // Scrobble only when: caller explicitly permits it, we're confident the
     // episode is finished (≥90%), and duration looks real (≥3 min).
     if (allowScrobble && scrobblePmdb && tmdbId && progress >= 0.90 && dur >= 180) {
-      scrobblePMDB(tmdbId, mediaType, item.season, item.episode).catch(() => {})
+      ;(async () => {
+        const pmdbEpisode = isEpisodic
+          ? await resolvePmdbPlaybackEpisode(item, tmdbId)
+          : { tmdbId, season: item.season, episode: item.episode }
+        await scrobblePMDB(pmdbEpisode.tmdbId, mediaType, pmdbEpisode.season, pmdbEpisode.episode)
+        if (
+          isEpisodic &&
+          pmdbEpisode.season != null &&
+          pmdbEpisode.episode != null &&
+          (pmdbEpisode.season !== item.season || pmdbEpisode.episode !== item.episode)
+        ) {
+          await removePMDBWatched(pmdbEpisode.tmdbId, 'tv', item.season, item.episode)
+        }
+      })().catch(() => {})
       return // PMDB server already marks it watched — no need to save resume point
     }
 
     if (pmdbSaveResumePosition && dur > 0) {
       logEvent('PLAYBACK SYNC DEBUG', `Save PMDB resume point: ${Math.floor(pos)}s / ${Math.floor(dur)}s`)
-      savePMDBPlaybackProgress(
-        tmdbId,
-        mediaType,
-        item.season,
-        item.episode,
-        Math.floor(pos * 1000),
-        Math.floor(dur * 1000),
-        imdbId
-      ).catch(() => {})
+      ;(async () => {
+        const pmdbEpisode = isEpisodic && tmdbId
+          ? await resolvePmdbPlaybackEpisode(item, tmdbId)
+          : { tmdbId, season: item.season, episode: item.episode }
+        await savePMDBPlaybackProgress(
+          pmdbEpisode.tmdbId,
+          mediaType,
+          pmdbEpisode.season,
+          pmdbEpisode.episode,
+          Math.floor(pos * 1000),
+          Math.floor(dur * 1000),
+          imdbId
+        )
+      })().catch(() => {})
       // Note: we intentionally ignore the {action:'completed'} response here.
     }
   }, [pmdbApiKey, pmdbSaveResumePosition, scrobblePmdb])
@@ -725,7 +775,7 @@ function FullNativeMpvPlayer({
         const sourceName = track.source === 'addon' ? (track.addonName || 'Addon') : 'Stream'
         const label = `${lang} · ${sourceName} · External`
         let extension = 'srt'
-        try { extension = new URL(track.url!).pathname.split('.').pop()?.slice(0, 5) || 'srt' } catch {}
+        try { extension = new URL(track.url!).pathname.split('.').pop()?.slice(0, 5) || 'srt' } catch (_) {}
         const fileName = `${track.source || 'external'}-${track.lang || 'und'}-${index}.${extension}`
         const localPath = await downloadSubtitle(track.url!, fileName)
         return { track, localPath, label }
@@ -854,7 +904,7 @@ function FullNativeMpvPlayer({
         if (!result || cancelled) return
         liveTranslateCacheRef.current.set(line, result)
         if (liveTranslatePendingRef.current === line) setTranslatedText(result)
-      } catch { /* retry next occurrence */ }
+      } catch (_) { /* retry next occurrence */ }
       finally { inflight.delete(line) }
     }
 
@@ -878,7 +928,7 @@ function FullNativeMpvPlayer({
 
         setTranslatedText('')
         translateLine(trimmed)
-      } catch { /* next poll */ }
+      } catch (_) { /* next poll */ }
     }, 250)
 
     return () => { cancelled = true; clearInterval(poll) }
@@ -1131,7 +1181,7 @@ function FullNativeMpvPlayer({
                 const preferredType = isEpisodic ? 'tv' : 'movie'
                 const mapping = await lookupTmdbId('imdb', playbackItem.imdbId, preferredType)
                 if (mapping) tmdbIdRef.current = mapping.tmdbId
-              } catch {}
+              } catch (_) {}
             }
             const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
             const mediaType = isEpisodic ? 'tv' : 'movie'
@@ -1165,7 +1215,7 @@ function FullNativeMpvPlayer({
           try {
             const found = await refreshTracks()
             void found
-          } catch {}
+          } catch (_) {}
           if (attempts >= 20) {
             if (trackPollRef.current) clearInterval(trackPollRef.current)
             trackPollRef.current = null
@@ -1515,7 +1565,7 @@ function FullNativeMpvPlayer({
           setActiveSkip(null)
           setSkipType(null)
         }
-      } catch { /* transient IPC failures */ }
+      } catch (_) { /* transient IPC failures */ }
       finally { polling = false }
     }, 1000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -1532,7 +1582,7 @@ function FullNativeMpvPlayer({
         try {
           const mapping = await lookupTmdbId('imdb', playbackItem.imdbId)
           if (mapping) { tmdbIdRef.current = mapping.tmdbId; tmdbId = mapping.tmdbId }
-        } catch {}
+        } catch (_) {}
       }
 
       const nextSeason = playbackItem.season!
@@ -1576,7 +1626,7 @@ function FullNativeMpvPlayer({
         const streams = await getAddonStreams(addon.url, 'series', streamId)
         const valid = streams.find((s) => s.url)
         if (valid?.url) { foundUrl = valid.url; break }
-      } catch {}
+      } catch (_) {}
     }
 
     setIsAutoSearching(false)
@@ -1675,7 +1725,7 @@ function FullNativeMpvPlayer({
             if (trackPollRef.current) clearInterval(trackPollRef.current)
             trackPollRef.current = null
           }
-        } catch {}
+        } catch (_) {}
         if (attempts >= 20) {
           if (trackPollRef.current) clearInterval(trackPollRef.current)
           trackPollRef.current = null
@@ -2034,12 +2084,65 @@ function FullNativeMpvPlayer({
                 </button>
               </div>
 
+              {/* Speed */}
+              <div className="relative ml-1">
+                {showSpeedMenu && (
+                  <div className="absolute bottom-full mb-2 right-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
+                    {SPEED_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => changeSpeed(s)}
+                        className={`w-full px-4 py-1.5 text-xs font-semibold text-left transition-colors ${
+                          playbackSpeed === s ? 'text-accent bg-white/10' : 'text-white/70 hover:text-white hover:bg-white/8'
+                        }`}
+                      >
+                        {s === 1 ? 'Normal' : `${s}x`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowSpeedMenu((v) => !v)}
+                  title="Playback speed"
+                  className={`h-7 px-2 rounded-lg flex items-center justify-center text-xs font-bold transition-colors ${
+                    playbackSpeed !== 1 ? 'bg-accent/20 text-accent' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'
+                  }`}
+                >
+                  {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+                </button>
+              </div>
+
               {/* Volume */}
-              <div className="flex items-center gap-1.5 ml-1">
-                <svg className="w-4 h-4 text-white/50 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-                  <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
-                </svg>
+              <div className="flex items-center gap-1.5 ml-1 group/vol">
+                <button
+                  onClick={() => {
+                    const newVol = volume > 0 ? 0 : (volumeRef.current > 0 ? volumeRef.current : 100)
+                    setVolume(newVol)
+                    if (newVol > 0) volumeRef.current = newVol
+                    localStorage.setItem('orynt_volume', String(newVol))
+                    changeVolume(newVol)
+                  }}
+                  title={volume > 0 ? 'Mute (M)' : 'Unmute (M)'}
+                  className="w-5 h-5 flex items-center justify-center text-white/50 hover:text-white transition-colors flex-shrink-0"
+                >
+                  {volume === 0 ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <line x1="23" y1="9" x2="17" y2="15" strokeLinecap="round" />
+                      <line x1="17" y1="9" x2="23" y2="15" strokeLinecap="round" />
+                    </svg>
+                  ) : volume < 50 ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
+                    </svg>
+                  )}
+                </button>
                 <input
                   type="range"
                   min={0}
@@ -2071,7 +2174,7 @@ function FullNativeMpvPlayer({
               {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
-                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
                 className="w-9 h-9 rounded-xl bg-white/8 text-white/60 hover:bg-white/15 hover:text-white flex items-center justify-center transition-colors"
               >
                 {isFullscreen ? (
@@ -2092,7 +2195,7 @@ function FullNativeMpvPlayer({
             {/* Play/Pause */}
             <button
               onClick={(e) => { e.stopPropagation(); togglePlay() }}
-              title={paused ? 'Play' : 'Pause'}
+              title={paused ? 'Play (Space)' : 'Pause (Space)'}
               className="w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors flex-shrink-0"
             >
               {paused ? (
@@ -2106,7 +2209,31 @@ function FullNativeMpvPlayer({
               )}
             </button>
 
-            <div className="relative flex-1 h-1.5 group cursor-pointer">
+            {/* Skip back 10s */}
+            <button
+              onClick={(e) => { e.stopPropagation(); command('seek', [-10, 'relative']) }}
+              title="Back 10s (←)"
+              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
+
+            {/* Skip forward 10s */}
+            <button
+              onClick={(e) => { e.stopPropagation(); command('seek', [10, 'relative']) }}
+              title="Forward 10s (→)"
+              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
+                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
+
+            <div className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5">
               <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
                 <button

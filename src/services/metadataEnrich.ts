@@ -45,7 +45,7 @@ export async function tmdbFindByExternalId(
     }
 
     return {}
-  } catch {
+  } catch (_) {
     return {}
   }
 }
@@ -75,7 +75,7 @@ export async function resolveImdbId(
       })
       if (resolved?.imdbId) return resolved.imdbId
     }
-  } catch { /* continue */ }
+  } catch (_) { /* continue */ }
 
   if (ids.tmdbId != null) {
     try {
@@ -83,7 +83,7 @@ export async function resolveImdbId(
       const endpoint = mediaType === 'movie' ? 'movie' : 'tv'
       const data = (await tmdbApiFetch(`/${endpoint}/${tmdbId}/external_ids`)) as Record<string, unknown>
       if (data.imdb_id && typeof data.imdb_id === 'string') return data.imdb_id as string
-    } catch { /* continue */ }
+    } catch (_) { /* continue */ }
   }
 
   if (ids.tvdbId != null) {
@@ -94,7 +94,7 @@ export async function resolveImdbId(
         const data = (await tmdbApiFetch(`/${endpoint}/${found.tmdbId}/external_ids`)) as Record<string, unknown>
         if (data.imdb_id && typeof data.imdb_id === 'string') return data.imdb_id as string
       }
-    } catch { /* continue */ }
+    } catch (_) { /* continue */ }
   }
 
   return undefined
@@ -218,7 +218,7 @@ async function fetchFromTmdbMovie(movie: MovieDetails): Promise<MovieDetails | n
   if (!tmdbId) return null
   try {
     return await tmdbProvider.getMovie(`tmdb-${tmdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -228,7 +228,7 @@ async function fetchFromTmdbShow(show: ShowDetails): Promise<ShowDetails | null>
   if (!tmdbId) return null
   try {
     return await tmdbProvider.getShow(`tmdb-${tmdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -238,7 +238,7 @@ async function fetchFromTvdbShow(show: ShowDetails): Promise<ShowDetails | null>
   if (!tvdbId) return null
   try {
     return await tvdbProvider.getShow(`tvdb-${tvdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }

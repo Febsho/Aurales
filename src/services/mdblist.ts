@@ -14,6 +14,7 @@ interface RatingRequest {
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
+  malId?: string | number
   season?: number
   episode?: number
 }
@@ -32,6 +33,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   trakt: 'Trakt',
   letterboxd: 'Letterboxd',
   myanimelist: 'MAL',
+  mal: 'MAL',
   popcorn: 'POPCORN',
 }
 
@@ -47,6 +49,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   trakt: 'T',
   letterboxd: 'LB',
   myanimelist: 'MAL',
+  mal: 'MAL',
   popcorn: 'PO',
 }
 
@@ -59,6 +62,7 @@ export async function getMdblistRatings(req: RatingRequest): Promise<MdblistRati
   if (req.imdbId) candidates.push(`/imdb/${media}/${encodeURIComponent(req.imdbId)}`)
   if (req.tmdbId) candidates.push(`/tmdb/${media}/${encodeURIComponent(String(req.tmdbId))}`)
   if (req.tvdbId) candidates.push(`/tvdb/${media}/${encodeURIComponent(String(req.tvdbId))}`)
+  if (req.malId) candidates.push(`/mal/${media}/${encodeURIComponent(String(req.malId))}`)
 
   for (const path of candidates) {
     try {
@@ -71,7 +75,7 @@ export async function getMdblistRatings(req: RatingRequest): Promise<MdblistRati
       const data = await res.json()
       const ratings = normalizeRatings(data)
       if (ratings.length > 0) return ratings
-    } catch {
+    } catch (_) {
       // Try next ID route.
     }
   }
@@ -98,7 +102,7 @@ function normalizeRatings(data: any): MdblistRating[] {
     }
   }
 
-  const directKeys = ['imdb', 'rottentomatoes', 'tomato_meter', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd']
+  const directKeys = ['imdb', 'rottentomatoes', 'tomato_meter', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd', 'myanimelist', 'mal']
   for (const key of directKeys) {
     if (data?.[key] == null) continue
     const source = normalizeSource(key)
@@ -156,7 +160,7 @@ export function getRatingIconUrl(source: string): string | null {
   if (norm === 'letterboxd') {
     return 'https://a.ltrbxd.com/logos/letterboxd-decal-dots-pos-rgb-500px.png'
   }
-  if (norm === 'myanimelist') {
+  if (norm === 'myanimelist' || norm === 'mal') {
     return 'https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/MyAnimeList_favicon.svg/250px-MyAnimeList_favicon.svg.png'
   }
   if (norm === 'anilist') {

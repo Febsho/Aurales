@@ -112,7 +112,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
                 (mediaRef.tmdbId && Number(media?.ids?.tmdb) === mediaRef.tmdbId)
             })
             if (!cancelled) setStates((prev) => ({ ...prev, trakt: { inList: found, loading: false, checking: false } }))
-          } catch {
+          } catch (_) {
             if (!cancelled) setStates((prev) => ({ ...prev, trakt: { inList: false, loading: false, checking: false } }))
           }
         })())
@@ -123,7 +123,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
           try {
             const result = await isInSimklWatchlist(mediaRef)
             if (!cancelled) setStates((prev) => ({ ...prev, simkl: { inList: result, loading: false, checking: false } }))
-          } catch {
+          } catch (_) {
             if (!cancelled) setStates((prev) => ({ ...prev, simkl: { inList: false, loading: false, checking: false } }))
           }
         })())
@@ -135,7 +135,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
             const items = await getPMDBWatchlistItems()
             const found = items.some((i) => i.tmdb_id === mediaRef.tmdbId && i.media_type === (mediaType === 'series' ? 'tv' : 'movie'))
             if (!cancelled) setStates((prev) => ({ ...prev, pmdb: { inList: found, loading: false, checking: false } }))
-          } catch {
+          } catch (_) {
             if (!cancelled) setStates((prev) => ({ ...prev, pmdb: { inList: false, loading: false, checking: false } }))
           }
         })())
@@ -147,7 +147,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
           try {
             const found = await isInAniListList(animeIds.anilistId, animeIds.malId)
             if (!cancelled) setStates((prev) => ({ ...prev, anilist: { inList: found, loading: false, checking: false } }))
-          } catch {
+          } catch (_) {
             if (!cancelled) setStates((prev) => ({ ...prev, anilist: { inList: false, loading: false, checking: false } }))
           }
         })())

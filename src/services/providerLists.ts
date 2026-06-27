@@ -11,7 +11,7 @@ import {
   type PMDBListItem,
   type PMDBPickItem,
 } from './pmdb'
-import { getTvdbIdFromTmdb, tmdbProvider } from './tmdb'
+import { getTvdbIdFromTmdb, getTmdbCardMetadata, tmdbProvider } from './tmdb'
 import { getTvdbCardMetadata } from './tvdb'
 import { resolveAnimeIds } from './animeLists'
 import { cachedFetch } from './cache/sqliteCache'
@@ -86,35 +86,70 @@ export async function canonicalizeCatalogItemsWithTvdb(
       if (item.type !== 'series') continue
 
       let tvdbId = item.tvdbId ? Number(String(item.tvdbId).replace('tvdb-', '')) || undefined : undefined
+      let resolvedTmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
       if (!tvdbId && (item.anilistId || item.malId)) {
         const anime = await resolveAnimeIds({
           anilistId: item.anilistId ? Number(item.anilistId) : undefined,
           malId: item.malId ? Number(item.malId) : undefined,
-          tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined,
+          tmdbId: resolvedTmdbId,
           imdbId: item.imdbId,
         }).catch(() => null)
         tvdbId = anime?.tvdbId
+        if (anime?.tmdbId) resolvedTmdbId = anime.tmdbId
       }
-      if (!tvdbId && item.tmdbId) tvdbId = await getTvdbIdFromTmdb(item.tmdbId)
-      if (!tvdbId) continue
+      if (!tvdbId && resolvedTmdbId) tvdbId = await getTvdbIdFromTmdb(resolvedTmdbId)
 
-      const tvdb = await getTvdbCardMetadata(tvdbId)
-      results[index] = {
-        ...item,
-        id: `tvdb-${tvdbId}`,
-        title: tvdb?.title || item.title,
-        year: tvdb?.year || item.year,
-        overview: tvdb?.overview || item.overview,
-        poster: options?.preservePictures ? item.poster : (tvdb?.poster || item.poster),
-        backdrop: options?.preservePictures ? item.backdrop : (tvdb?.backdrop || item.backdrop),
-        genres: tvdb?.genres?.length ? tvdb.genres : item.genres,
-        provider: 'tvdb',
-        tvdbId,
+      if (tvdbId) {
+        const tvdb = await getTvdbCardMetadata(tvdbId)
+        let poster = options?.preservePictures ? item.poster : (tvdb?.poster || item.poster)
+        let backdrop = options?.preservePictures ? item.backdrop : (tvdb?.backdrop || item.backdrop)
+        if (!options?.preservePictures && resolvedTmdbId && (!poster || poster === item.poster)) {
+          const tmdb = await getTmdbCardMetadata('series', resolvedTmdbId).catch(() => null)
+          if (tmdb?.poster) poster = tmdb.poster
+          if (tmdb?.backdrop && !backdrop) backdrop = tmdb.backdrop
+        }
+        results[index] = {
+          ...item,
+          id: `tvdb-${tvdbId}`,
+          title: tvdb?.title || item.title,
+          year: tvdb?.year || item.year,
+          overview: tvdb?.overview || item.overview,
+          poster,
+          backdrop,
+          genres: tvdb?.genres?.length ? tvdb.genres : item.genres,
+          provider: 'tvdb',
+          tvdbId,
+        }
+      } else if (resolvedTmdbId && !options?.preservePictures) {
+        const tmdb = await getTmdbCardMetadata('series', resolvedTmdbId).catch(() => null)
+        if (tmdb?.poster || tmdb?.backdrop) {
+          results[index] = {
+            ...item,
+            poster: tmdb.poster || item.poster,
+            backdrop: tmdb.backdrop || item.backdrop,
+            tmdbId: resolvedTmdbId,
+          }
+        }
       }
     }
   })
   await Promise.all(workers)
-  return results
+
+  // Deduplicate multi-season anime that resolved to the same TVDB/TMDB series
+  const seen = new Set<string>()
+  return results.filter((item) => {
+    if (item.tvdbId) {
+      const key = `tvdb:${String(item.tvdbId).replace('tvdb-', '')}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    if (item.tmdbId) {
+      const key = `tmdb:${String(item.tmdbId).replace('tmdb-', '')}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    return true
+  })
 }
 
 export async function getAvailableTraktListSources(): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
@@ -125,7 +160,7 @@ export async function getAvailableTraktListSources(): Promise<{ id: string; labe
       ...TRAKT_LIST_SOURCES,
       ...lists.map((list) => ({ id: `list:${list.ids.slug}`, label: `Trakt - ${list.name}`, layout: 'poster' as const })),
     ]
-  } catch {
+  } catch (_) {
     return TRAKT_LIST_SOURCES
   }
 }
@@ -137,7 +172,7 @@ export async function getAvailablePmdbListSources(): Promise<{ id: string; label
       ...PMDB_LIST_SOURCES,
       ...lists.map((list) => ({ id: `list:${list.id}`, label: `PMDB - ${list.name}`, layout: 'poster' as const })),
     ]
-  } catch {
+  } catch (_) {
     return PMDB_LIST_SOURCES
   }
 }
@@ -195,7 +230,7 @@ async function pmdbItemToSearchResult(item: PMDBListItem): Promise<SearchResult 
     }
     const meta = await tmdbProvider.getShow(`tmdb-${item.tmdb_id}`)
     return { ...meta, id: meta.imdbId || `tmdb-${item.tmdb_id}`, provider: 'pmdb', type: 'series', tmdbId: item.tmdb_id }
-  } catch {
+  } catch (_) {
     return {
       id: `tmdb-${item.tmdb_id}`,
       title: `${item.media_type === 'movie' ? 'Movie' : 'Show'} ${item.tmdb_id}`,

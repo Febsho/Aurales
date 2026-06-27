@@ -214,7 +214,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                     const meta = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
                     return { ...item, poster: meta.poster, backdrop: meta.backdrop }
                   }
-                } catch {
+                } catch (_) {
                   // Ignore TMDB fetch errors
                 }
                 return item
@@ -308,7 +308,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                   const backdrop = await getTmdbLandscapeBackdrop('series', item.tmdbId)
                   if (backdrop) return { ...item, backdrop }
                 }
-              } catch {
+              } catch (_) {
                 // Keep local/provider artwork if TMDB cannot enrich the row.
               }
               return item

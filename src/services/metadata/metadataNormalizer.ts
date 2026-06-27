@@ -93,5 +93,6 @@ export function appMediaToSearchResult(item: AppMediaItem, addonUrl?: string): S
     malId: item.malId, anilistId: item.anilistId, provider: item.sourceMetadataProvider, addonUrl,
     sourceAddonId: item.sourceAddonId, sourceAddonItemId: item.sourceAddonItemId,
     metadataFallback: item.sourceMetadataProvider === 'fallback_addon',
+    isAnime: item.type === 'anime',
   }
 }

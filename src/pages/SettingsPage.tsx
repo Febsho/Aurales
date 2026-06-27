@@ -34,7 +34,7 @@ import {
 } from '../services/streamRegexFilters'
 import type { TraktDeviceCode } from '../types'
 import NativeMpvPlayer from '../components/NativeMpvPlayer'
-import { cacheStats, cacheClearCategory, cacheClearExpired } from '../services/cache/sqliteCache'
+import { cacheStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 
 const BACKUP_KEYS = [
@@ -101,7 +101,7 @@ const BACKUP_KEYS = [
 
 function SettingSection({ title, description, children }: { title?: string; description?: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
       {title && (
         <div className="px-6 pt-5 pb-1">
           <h3 className="text-[15px] font-semibold text-white">{title}</h3>
@@ -127,15 +127,15 @@ function SettingRow({ label, description, children }: { label: string; descripti
 
 function SettingToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <button
-      type="button"
+    <div
       role="switch"
+      tabIndex={0}
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-[26px] w-[46px] flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${checked ? 'bg-accent' : 'bg-white/15'}`}
+      className={`relative inline-flex h-[26px] w-[46px] flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 select-none ${checked ? 'bg-green-500' : 'bg-white/15'}`}
     >
       <span className={`pointer-events-none inline-block h-[22px] w-[22px] mt-[2px] ml-[2px] transform rounded-full bg-white shadow ring-0 transition-transform duration-200 ${checked ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-    </button>
+    </div>
   )
 }
 
@@ -163,16 +163,50 @@ function ServiceIcon({ service, className = 'w-4.5 h-4.5' }: { service: string; 
 }
 
 function SearchEngineSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { id: string; name: string }[] }) {
+  const [open, setOpen] = useState(false)
+  const selected = options.find((o) => o.id === value)
+
+  const pick = (id: string) => {
+    onChange(id)
+    setOpen(false)
+  }
+
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white"
-    >
-      {options.map((opt) => (
-        <option key={opt.id} value={opt.id}>{opt.name}</option>
-      ))}
-    </select>
+    <>
+      {open && <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />}
+      <div className="relative w-48" style={{ zIndex: open ? 50 : undefined }}>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setOpen((v) => !v)}
+          className="w-full flex items-center justify-between px-3 py-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded-xl text-sm text-white cursor-pointer transition-colors select-none"
+        >
+          <span className="truncate">{selected?.name ?? value}</span>
+          <svg className={`w-4 h-4 text-white/40 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
+        {open && (
+          <div className="absolute z-50 mt-1 w-full bg-[#1a1a1f] border border-white/[0.12] rounded-xl shadow-2xl overflow-hidden">
+            {options.map((opt) => (
+              <div
+                key={opt.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => pick(opt.id)}
+                className={`w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors select-none ${
+                  opt.id === value
+                    ? 'bg-green-500/15 text-green-400'
+                    : 'text-white/70 hover:bg-white/[0.08] hover:text-white'
+                }`}
+              >
+                {opt.name}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -193,6 +227,12 @@ function CacheManagementSection() {
     cacheStats().then(setStats)
   }
 
+  const handleClearAll = async () => {
+    const cleared = await cacheClearAll()
+    alert(`Cleared ${cleared} total entries`)
+    cacheStats().then(setStats)
+  }
+
   const categoryLabels: Record<string, string> = {
     [CACHE_CATEGORIES.ADDON_CATALOG]: 'Addon Catalogs',
     [CACHE_CATEGORIES.PROVIDER_LIST]: 'Provider Lists',
@@ -206,6 +246,7 @@ function CacheManagementSection() {
     [CACHE_CATEGORIES.HOME_ROW]: 'Home Rows',
     [CACHE_CATEGORIES.DETAIL_PAGE]: 'Detail Pages',
     [CACHE_CATEGORIES.TVDB_SEASON]: 'Season Data',
+    [CACHE_CATEGORIES.ANIME_MAPPING]: 'Anime ID Mappings',
   }
 
   return (
@@ -214,9 +255,14 @@ function CacheManagementSection() {
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <span className="text-xs text-muted">{stats.totalEntries} cached entries ({stats.expiredEntries} expired)</span>
-            <button onClick={handleClearExpired} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-lg text-xs font-bold cursor-pointer">
-              Clear Expired
-            </button>
+            <div className="flex gap-2">
+              <button onClick={handleClearAll} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 rounded-lg text-xs font-bold cursor-pointer">
+                Clear All
+              </button>
+              <button onClick={handleClearExpired} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-lg text-xs font-bold cursor-pointer">
+                Clear Expired
+              </button>
+            </div>
           </div>
           {Object.entries(stats.byCategory).filter(([, count]) => count > 0).map(([cat, count]) => (
             <div key={cat} className="flex items-center justify-between px-1 py-1">
@@ -232,8 +278,73 @@ function CacheManagementSection() {
   )
 }
 
+function AnimeIdMappingsSection() {
+  const [lookupCacheCount, setLookupCacheCount] = useState<number | null>(null)
+  const [animeListCount, setAnimeListCount] = useState<number | null>(null)
+
+  const refresh = () => {
+    cacheStats().then((stats) => {
+      setLookupCacheCount(stats.byCategory[CACHE_CATEGORIES.ANIME_MAPPING] || 0)
+    })
+    import('../services/animeLists')
+      .then(({ getStoredAnimeListEntryCount }) => getStoredAnimeListEntryCount())
+      .then(setAnimeListCount)
+      .catch(() => setAnimeListCount(0))
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  return (
+    <SettingSection title="Anime ID Mappings" description="Local anime mapping data used to connect anime across AniList, MAL, TMDB, Trakt, and Simkl.">
+      <SettingRow label="Anime-list index entries" description="Number of Fribb anime-list mapping entries stored in the browser cache.">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-bold text-white tabular-nums">
+            {animeListCount == null ? 'Loading...' : animeListCount.toLocaleString()}
+          </span>
+          <button
+            onClick={refresh}
+            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
+          >
+            Refresh
+          </button>
+        </div>
+      </SettingRow>
+      <SettingRow label="Anime lookup cache entries" description="SQLite cached lookup results from IDs.moe, anime-api, Jikan, and related anime mapping calls. This can be 0 until a fallback lookup is needed.">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-bold text-white tabular-nums">
+            {lookupCacheCount == null ? 'Loading...' : lookupCacheCount.toLocaleString()}
+          </span>
+          <button
+            onClick={refresh}
+            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
+          >
+            Refresh
+          </button>
+        </div>
+      </SettingRow>
+    </SettingSection>
+  )
+}
+
 function SearchSettingsSection() {
-  const store = useAppStore()
+  const movieSearchEngine = useAppStore((s) => s.movieSearchEngine)
+  const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine)
+  const animeSeriesSearchEngine = useAppStore((s) => s.animeSeriesSearchEngine)
+  const animeMovieSearchEngine = useAppStore((s) => s.animeMovieSearchEngine)
+  const movieSearchEnabled = useAppStore((s) => s.movieSearchEnabled)
+  const seriesSearchEnabled = useAppStore((s) => s.seriesSearchEnabled)
+  const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
+  const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
+  const setMovieSearchEngine = useAppStore((s) => s.setMovieSearchEngine)
+  const setSeriesSearchEngine = useAppStore((s) => s.setSeriesSearchEngine)
+  const setAnimeSeriesSearchEngine = useAppStore((s) => s.setAnimeSeriesSearchEngine)
+  const setAnimeMovieSearchEngine = useAppStore((s) => s.setAnimeMovieSearchEngine)
+  const setMovieSearchEnabled = useAppStore((s) => s.setMovieSearchEnabled)
+  const setSeriesSearchEnabled = useAppStore((s) => s.setSeriesSearchEnabled)
+  const setAnimeSeriesSearchEnabled = useAppStore((s) => s.setAnimeSeriesSearchEnabled)
+  const setAnimeMovieSearchEnabled = useAppStore((s) => s.setAnimeMovieSearchEnabled)
+  const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
+  const openrouterModel = useAppStore((s) => s.openrouterModel)
 
   const movieOptions = [
     { id: 'tmdb', name: 'TMDB Search' },
@@ -266,34 +377,34 @@ function SearchSettingsSection() {
       <SettingSection title="Primary Keyword Engines" description="Choose the default engine for basic keyword searches. The AI search uses this engine to find items based on its suggestions.">
         <SettingRow label="Movies Search Engine:">
           <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.movieSearchEngine} onChange={store.setMovieSearchEngine} options={movieOptions} />
-            <SettingToggle checked={store.movieSearchEnabled} onChange={store.setMovieSearchEnabled} />
+            <SearchEngineSelect value={movieSearchEngine} onChange={setMovieSearchEngine} options={movieOptions} />
+            <SettingToggle checked={movieSearchEnabled} onChange={setMovieSearchEnabled} />
           </div>
         </SettingRow>
         <SettingRow label="Series Search Engine:">
           <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.seriesSearchEngine} onChange={store.setSeriesSearchEngine} options={seriesOptions} />
-            <SettingToggle checked={store.seriesSearchEnabled} onChange={store.setSeriesSearchEnabled} />
+            <SearchEngineSelect value={seriesSearchEngine} onChange={setSeriesSearchEngine} options={seriesOptions} />
+            <SettingToggle checked={seriesSearchEnabled} onChange={setSeriesSearchEnabled} />
           </div>
         </SettingRow>
         <SettingRow label="Anime (Series) Search Engine:">
           <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.animeSeriesSearchEngine} onChange={store.setAnimeSeriesSearchEngine} options={animeSeriesOptions} />
-            <SettingToggle checked={store.animeSeriesSearchEnabled} onChange={store.setAnimeSeriesSearchEnabled} />
+            <SearchEngineSelect value={animeSeriesSearchEngine} onChange={setAnimeSeriesSearchEngine} options={animeSeriesOptions} />
+            <SettingToggle checked={animeSeriesSearchEnabled} onChange={setAnimeSeriesSearchEnabled} />
           </div>
         </SettingRow>
         <SettingRow label="Anime (Movies) Search Engine:">
           <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.animeMovieSearchEngine} onChange={store.setAnimeMovieSearchEngine} options={animeMovieOptions} />
-            <SettingToggle checked={store.animeMovieSearchEnabled} onChange={store.setAnimeMovieSearchEnabled} />
+            <SearchEngineSelect value={animeMovieSearchEngine} onChange={setAnimeMovieSearchEngine} options={animeMovieOptions} />
+            <SettingToggle checked={animeMovieSearchEnabled} onChange={setAnimeMovieSearchEnabled} />
           </div>
         </SettingRow>
       </SettingSection>
 
       <SettingSection title="AI-Powered Search" description="Configure the AI model in the Accounts tab under OpenRouter.">
         <SettingRow label="Status" description="AI search uses your OpenRouter API key to interpret natural language queries.">
-          <span className={`text-xs font-semibold ${store.openrouterApiKey ? 'text-green-400' : 'text-white/30'}`}>
-            {store.openrouterApiKey ? `Active — ${store.openrouterModel || 'default model'}` : 'Not configured'}
+          <span className={`text-xs font-semibold ${openrouterApiKey ? 'text-green-400' : 'text-white/30'}`}>
+            {openrouterApiKey ? `Active — ${openrouterModel || 'default model'}` : 'Not configured'}
           </span>
         </SettingRow>
       </SettingSection>
@@ -527,7 +638,7 @@ export default function SettingsPage() {
               console.error('Failed to fetch Trakt account details:', err)
             }
           }
-        } catch {
+        } catch (_) {
           // polling error, keep trying
         }
       }, (code.interval || 5) * 1000)
@@ -2950,6 +3061,7 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Cache Management */}
+              <AnimeIdMappingsSection />
               <CacheManagementSection />
 
               {/* Factory Reset */}

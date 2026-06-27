@@ -35,7 +35,7 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
     if (!entry) return null
     const data = JSON.parse(entry.value) as T
     return { data, stale: isExpired(entry), age: ageMs(entry) }
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -63,7 +63,7 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
       map.set(entry.key, { data, stale: isExpired(entry), age: ageMs(entry) })
     }
     return map
-  } catch {
+  } catch (_) {
     return new Map()
   }
 }
@@ -71,21 +71,30 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
 export async function cacheDelete(key: string): Promise<void> {
   try {
     await invoke('cache_entry_set', { key })
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
 }
 
 export async function cacheClearCategory(category: string): Promise<number> {
   try {
     return await invoke<number>('cache_entry_clear_category', { category })
-  } catch {
+  } catch (_) {
     return 0
   }
+}
+
+export async function cacheClearAll(): Promise<number> {
+  const { CACHE_CATEGORIES } = await import('./constants')
+  let total = 0
+  for (const category of Object.values(CACHE_CATEGORIES)) {
+    total += await cacheClearCategory(category)
+  }
+  return total
 }
 
 export async function cacheClearExpired(): Promise<number> {
   try {
     return await invoke<number>('cache_entry_clear_expired')
-  } catch {
+  } catch (_) {
     return 0
   }
 }
@@ -93,7 +102,7 @@ export async function cacheClearExpired(): Promise<number> {
 export async function cacheStats(): Promise<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> }> {
   try {
     return await invoke('cache_entry_stats')
-  } catch {
+  } catch (_) {
     return { totalEntries: 0, expiredEntries: 0, byCategory: {} }
   }
 }
