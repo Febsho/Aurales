@@ -2036,6 +2036,36 @@ pub async fn check_simkl_pin(user_code: String, client_id: String) -> Result<Str
     .map_err(|e| format!("Simkl PIN check task panicked: {}", e))?
 }
 
+#[tauri::command]
+pub async fn fetch_simkl_user(access_token: String, client_id: String) -> Result<String, String> {
+    let access_token = access_token.trim().to_string();
+    let client_id = client_id.trim().to_string();
+    if access_token.is_empty() {
+        return Err("SIMKL access token is required".to_string());
+    }
+    if client_id.is_empty() {
+        return Err("SIMKL client ID is required".to_string());
+    }
+
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let response = ureq::get("https://api.simkl.com/users/settings")
+            .query("client_id", &client_id)
+            .query("app-name", "Aurales")
+            .query("app-version", "0.1.0")
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .set("simkl-api-key", &client_id)
+            .set("Accept", "application/json")
+            .call()
+            .map_err(|e| read_ureq_error("Simkl user fetch", e))?;
+
+        response
+            .into_string()
+            .map_err(|e| format!("Failed to read Simkl user response body: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Simkl user fetch task panicked: {}", e))?
+}
+
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for Simkl's
 /// OAuth redirect.  Returns the `code` query parameter from the redirect URL.
 ///

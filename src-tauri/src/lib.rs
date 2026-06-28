@@ -74,6 +74,7 @@ pub fn run() {
             commands::update_temp_subtitle,
             commands::request_simkl_pin,
             commands::check_simkl_pin,
+            commands::fetch_simkl_user,
             commands::start_simkl_callback_server,
             commands::exchange_simkl_token,
             commands::open_simkl_auth,
