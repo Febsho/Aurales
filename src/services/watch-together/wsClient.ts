@@ -46,9 +46,12 @@ export function connect(serverUrl: string): Promise<void> {
       }
     }, 8000)
 
+    console.log('[WT DEBUG] Attempting WebSocket connection to:', serverUrl)
     try {
       ws = new WebSocket(serverUrl)
+      console.log('[WT DEBUG] WebSocket created, readyState:', ws.readyState)
     } catch (err) {
+      console.error('[WT DEBUG] WebSocket constructor threw:', err)
       clearTimeout(timeout)
       settled = true
       getStore().setConnectionStatus('disconnected')
@@ -78,6 +81,7 @@ export function connect(serverUrl: string): Promise<void> {
     }
 
     ws.onclose = (event) => {
+      console.log('[WT DEBUG] onclose:', event.code, event.reason)
       logDebug('in', 'CLOSE', { code: event.code, reason: event.reason })
       stopPingLoop()
       stopSyncLoop()
@@ -99,6 +103,7 @@ export function connect(serverUrl: string): Promise<void> {
     }
 
     ws.onerror = (event) => {
+      console.error('[WT DEBUG] onerror:', (event as ErrorEvent).message ?? 'unknown error')
       logDebug('in', 'ERROR', { message: (event as ErrorEvent).message ?? 'unknown' })
       if (!settled) {
         settled = true
