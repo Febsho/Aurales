@@ -254,19 +254,19 @@ interface AppState {
 
 function loadPersistedAddons(): InstalledAddon[] {
   try {
-    const raw = localStorage.getItem('orynt_addons')
+    const raw = localStorage.getItem('aurales_addons')
     if (raw) return JSON.parse(raw)
   } catch (_) { /* ignore */ }
   return []
 }
 
 function persistAddons(addons: InstalledAddon[]): void {
-  localStorage.setItem('orynt_addons', JSON.stringify(addons))
+  localStorage.setItem('aurales_addons', JSON.stringify(addons))
 }
 
 function loadPersistedHomeRows(): HomeRowConfig[] | null {
   try {
-    const raw = localStorage.getItem('orynt_home_rows')
+    const raw = localStorage.getItem('aurales_home_rows')
     if (raw) {
       const rows = JSON.parse(raw) as HomeRowConfig[]
       const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
@@ -278,12 +278,12 @@ function loadPersistedHomeRows(): HomeRowConfig[] | null {
 }
 
 function persistHomeRows(rows: HomeRowConfig[]): void {
-  localStorage.setItem('orynt_home_rows', JSON.stringify(rows))
+  localStorage.setItem('aurales_home_rows', JSON.stringify(rows))
 }
 
 function loadPersistedWatchProgress(): Map<string, WatchProgress> {
   try {
-    const raw = localStorage.getItem('orynt_watch_progress')
+    const raw = localStorage.getItem('aurales_watch_progress')
     if (raw) {
       const parsed = JSON.parse(raw)
       return new Map(Object.entries(parsed))
@@ -295,13 +295,13 @@ function loadPersistedWatchProgress(): Map<string, WatchProgress> {
 function persistWatchProgress(map: Map<string, WatchProgress>): void {
   try {
     const obj = Object.fromEntries(map.entries())
-    localStorage.setItem('orynt_watch_progress', JSON.stringify(obj))
+    localStorage.setItem('aurales_watch_progress', JSON.stringify(obj))
   } catch (_) { /* ignore */ }
 }
 
 function loadPersistedPreferredSubtitles(): string[] {
   try {
-    const raw = localStorage.getItem('orynt_preferred_subtitles')
+    const raw = localStorage.getItem('aurales_preferred_subtitles')
     if (raw) return JSON.parse(raw)
   } catch (_) { /* ignore */ }
   return ['en']
@@ -309,7 +309,7 @@ function loadPersistedPreferredSubtitles(): string[] {
 
 function loadPersistedPreferredAudio(): string[] {
   try {
-    const raw = localStorage.getItem('orynt_preferred_audio')
+    const raw = localStorage.getItem('aurales_preferred_audio')
     if (raw) return JSON.parse(raw)
   } catch (_) { /* ignore */ }
   return ['en', 'ja']
@@ -317,7 +317,7 @@ function loadPersistedPreferredAudio(): string[] {
 
 function loadRecentlyViewed(): SearchResult[] {
   try {
-    const raw = localStorage.getItem('orynt_recently_viewed')
+    const raw = localStorage.getItem('aurales_recently_viewed')
     return raw ? JSON.parse(raw) as SearchResult[] : []
   } catch (_) {
     return []
@@ -506,31 +506,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentlyWatched: loadRecentlyViewed(),
   addRecentlyWatched: (item) => set((s) => {
     const next = [item, ...s.recentlyWatched.filter((r) => r.id !== item.id)].slice(0, 30)
-    localStorage.setItem('orynt_recently_viewed', JSON.stringify(next))
+    localStorage.setItem('aurales_recently_viewed', JSON.stringify(next))
     return { recentlyWatched: next }
   }),
 
   preferredSubtitles: loadPersistedPreferredSubtitles(),
   preferredAudio: loadPersistedPreferredAudio(),
   setPreferredSubtitles: (langs) => {
-    localStorage.setItem('orynt_preferred_subtitles', JSON.stringify(langs))
+    localStorage.setItem('aurales_preferred_subtitles', JSON.stringify(langs))
     set({ preferredSubtitles: langs })
   },
   setPreferredAudio: (langs) => {
-    localStorage.setItem('orynt_preferred_audio', JSON.stringify(langs))
+    localStorage.setItem('aurales_preferred_audio', JSON.stringify(langs))
     set({ preferredAudio: langs })
   },
 
-  continueWatchingSource: (localStorage.getItem('orynt_cw_source') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
-  continueWatchingLimit: Number(localStorage.getItem('orynt_cw_limit') || '10'),
+  continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
+  continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
   watchedCheckmarkSources: (() => {
     try {
-      const raw = localStorage.getItem('orynt_watched_checkmark_sources')
+      const raw = localStorage.getItem('aurales_watched_checkmark_sources')
       if (raw) return JSON.parse(raw) as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
     } catch (_) { /* ignore */ }
     return ['local'] as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
   })(),
-  watchlistButtonTarget: (localStorage.getItem('orynt_watchlist_target') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
+  watchlistButtonTarget: (localStorage.getItem('aurales_watchlist_target') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   pmdbSyncFrequency: localStorage.getItem('pmdb_sync_freq') || 'every_minute',
@@ -544,47 +544,47 @@ export const useAppStore = create<AppState>((set, get) => ({
   animeTrackingProvider: (localStorage.getItem('anime_tracking_provider') || 'anilist') as 'anilist' | 'simkl' | 'trakt' | 'local',
   animeShowWatchedFrom: (localStorage.getItem('anime_show_watched') || 'all') as 'all' | 'provider',
 
-  blurSpoilers: localStorage.getItem('orynt_blur_spoilers') === 'true',
-  blurThumbnails: localStorage.getItem('orynt_blur_thumbnails') !== 'false',
-  blurTitles: localStorage.getItem('orynt_blur_titles') !== 'false',
-  blurDescriptions: localStorage.getItem('orynt_blur_descriptions') !== 'false',
-  keepNextEpisodeVisible: localStorage.getItem('orynt_keep_next_episode_visible') === 'true',
-  keepFramesFor: (localStorage.getItem('orynt_keep_frames_for') || '30_days') as 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year',
-  savedFramesCount: Number(localStorage.getItem('orynt_saved_frames_count') || '2'),
-  posterSize: (localStorage.getItem('orynt_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
-  nextEpisodePrompt: (localStorage.getItem('orynt_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
+  blurSpoilers: localStorage.getItem('aurales_blur_spoilers') === 'true',
+  blurThumbnails: localStorage.getItem('aurales_blur_thumbnails') !== 'false',
+  blurTitles: localStorage.getItem('aurales_blur_titles') !== 'false',
+  blurDescriptions: localStorage.getItem('aurales_blur_descriptions') !== 'false',
+  keepNextEpisodeVisible: localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
+  keepFramesFor: (localStorage.getItem('aurales_keep_frames_for') || '30_days') as 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year',
+  savedFramesCount: Number(localStorage.getItem('aurales_saved_frames_count') || '2'),
+  posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
+  nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
 
   // New settings options initial values
-  accentColor: (localStorage.getItem('orynt_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
-  defaultStartPage: (localStorage.getItem('orynt_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
-  showRatingsOnCards: localStorage.getItem('orynt_show_ratings_on_cards') !== 'false',
-  discoveryRegion: localStorage.getItem('orynt_discovery_region') || 'US',
-  discoveryMinRating: Number(localStorage.getItem('orynt_discovery_min_rating') || '6'),
-  discoveryIncludeAdult: localStorage.getItem('orynt_discovery_include_adult') === 'true',
-  hwdecMode: (localStorage.getItem('orynt_hwdec_mode') || 'auto') as 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox',
+  accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
+  defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
+  showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
+  discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
+  discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
+  discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
+  hwdecMode: (localStorage.getItem('aurales_hwdec_mode') || 'auto') as 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox',
   isolatedPlaybackMode: false,
-  isolatedPlaybackHwdec: (localStorage.getItem('orynt_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
-  isolatedPlaybackResume: localStorage.getItem('orynt_isolated_resume') === 'true',
-  cacheBufferSize: (localStorage.getItem('orynt_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
-  audioPassthrough: localStorage.getItem('orynt_audio_passthrough') === 'true',
-  autoSkipSegments: localStorage.getItem('orynt_auto_skip_segments') === 'true',
-  subtitleFontSize: Number(localStorage.getItem('orynt_sub_font_size') || '24'),
-  subtitleBgOpacity: localStorage.getItem('orynt_sub_bg_opacity') || '0',
+  isolatedPlaybackHwdec: (localStorage.getItem('aurales_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
+  isolatedPlaybackResume: localStorage.getItem('aurales_isolated_resume') === 'true',
+  cacheBufferSize: (localStorage.getItem('aurales_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
+  audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
+  autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
+  subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   visibleHeroRatings: (() => {
     try {
-      const raw = localStorage.getItem('orynt_visible_hero_ratings')
+      const raw = localStorage.getItem('aurales_visible_hero_ratings')
       if (raw) return JSON.parse(raw) as string[]
     } catch (_) { /* ignore */ }
     return ['imdb', 'rottentomatoes', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd', 'myanimelist']
   })(),
 
-  setContinueWatchingSource: (src) => { localStorage.setItem('orynt_cw_source', src); set({ continueWatchingSource: src }) },
-  setContinueWatchingLimit: (limit) => { localStorage.setItem('orynt_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
+  setContinueWatchingSource: (src) => { localStorage.setItem('aurales_cw_source', src); set({ continueWatchingSource: src }) },
+  setContinueWatchingLimit: (limit) => { localStorage.setItem('aurales_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
   setWatchedCheckmarkSources: (sources) => {
-    localStorage.setItem('orynt_watched_checkmark_sources', JSON.stringify(sources))
+    localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })
   },
-  setWatchlistButtonTarget: (target) => { localStorage.setItem('orynt_watchlist_target', target); set({ watchlistButtonTarget: target }) },
+  setWatchlistButtonTarget: (target) => { localStorage.setItem('aurales_watchlist_target', target); set({ watchlistButtonTarget: target }) },
   setPmdBApiKey: (key) => { localStorage.setItem('pmdb_api_key', key); set({ pmdbApiKey: key }) },
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
   setPmdBSyncFrequency: (freq) => { localStorage.setItem('pmdb_sync_freq', freq); set({ pmdbSyncFrequency: freq }) },
@@ -598,49 +598,49 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAnimeTrackingProvider: (prov) => { localStorage.setItem('anime_tracking_provider', prov); set({ animeTrackingProvider: prov }) },
   setAnimeShowWatchedFrom: (watchedFrom) => { localStorage.setItem('anime_show_watched', watchedFrom); set({ animeShowWatchedFrom: watchedFrom }) },
 
-  setBlurSpoilers: (val) => { localStorage.setItem('orynt_blur_spoilers', String(val)); set({ blurSpoilers: val }) },
-  setBlurThumbnails: (val) => { localStorage.setItem('orynt_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
-  setBlurTitles: (val) => { localStorage.setItem('orynt_blur_titles', String(val)); set({ blurTitles: val }) },
-  setBlurDescriptions: (val) => { localStorage.setItem('orynt_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
-  setKeepNextEpisodeVisible: (val) => { localStorage.setItem('orynt_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
-  setKeepFramesFor: (val) => { localStorage.setItem('orynt_keep_frames_for', val); set({ keepFramesFor: val }) },
-  setSavedFramesCount: (count) => { localStorage.setItem('orynt_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
-  setPosterSize: (size) => { localStorage.setItem('orynt_poster_size', size); set({ posterSize: size }) },
-  setNextEpisodePrompt: (prompt) => { localStorage.setItem('orynt_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
+  setBlurSpoilers: (val) => { localStorage.setItem('aurales_blur_spoilers', String(val)); set({ blurSpoilers: val }) },
+  setBlurThumbnails: (val) => { localStorage.setItem('aurales_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
+  setBlurTitles: (val) => { localStorage.setItem('aurales_blur_titles', String(val)); set({ blurTitles: val }) },
+  setBlurDescriptions: (val) => { localStorage.setItem('aurales_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
+  setKeepNextEpisodeVisible: (val) => { localStorage.setItem('aurales_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
+  setKeepFramesFor: (val) => { localStorage.setItem('aurales_keep_frames_for', val); set({ keepFramesFor: val }) },
+  setSavedFramesCount: (count) => { localStorage.setItem('aurales_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
+  setPosterSize: (size) => { localStorage.setItem('aurales_poster_size', size); set({ posterSize: size }) },
+  setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
 
-  setAccentColor: (color) => { localStorage.setItem('orynt_accent_color', color); set({ accentColor: color }) },
-  setDefaultStartPage: (page) => { localStorage.setItem('orynt_default_start_page', page); set({ defaultStartPage: page }) },
-  setShowRatingsOnCards: (show) => { localStorage.setItem('orynt_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
-  setDiscoveryRegion: (region) => { localStorage.setItem('orynt_discovery_region', region); set({ discoveryRegion: region }) },
-  setDiscoveryMinRating: (rating) => { localStorage.setItem('orynt_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
-  setDiscoveryIncludeAdult: (include) => { localStorage.setItem('orynt_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
-  setHwdecMode: (mode) => { localStorage.setItem('orynt_hwdec_mode', mode); set({ hwdecMode: mode }) },
-  setIsolatedPlaybackMode: (value) => { localStorage.removeItem('orynt_isolated_playback'); set({ isolatedPlaybackMode: value }) },
-  setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('orynt_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
-  setIsolatedPlaybackResume: (value) => { localStorage.setItem('orynt_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
-  setCacheBufferSize: (size) => { localStorage.setItem('orynt_cache_buffer_size', size); set({ cacheBufferSize: size }) },
-  setAudioPassthrough: (val) => { localStorage.setItem('orynt_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
-  setAutoSkipSegments: (val) => { localStorage.setItem('orynt_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
-  setSubtitleFontSize: (size) => { localStorage.setItem('orynt_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
-  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('orynt_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
-  setVisibleHeroRatings: (ratings) => { localStorage.setItem('orynt_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
+  setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
+  setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
+  setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
+  setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); set({ discoveryRegion: region }) },
+  setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
+  setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
+  setHwdecMode: (mode) => { localStorage.setItem('aurales_hwdec_mode', mode); set({ hwdecMode: mode }) },
+  setIsolatedPlaybackMode: (value) => { localStorage.removeItem('aurales_isolated_playback'); set({ isolatedPlaybackMode: value }) },
+  setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('aurales_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
+  setIsolatedPlaybackResume: (value) => { localStorage.setItem('aurales_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
+  setCacheBufferSize: (size) => { localStorage.setItem('aurales_cache_buffer_size', size); set({ cacheBufferSize: size }) },
+  setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
+  setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
+  setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
+  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
+  setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
   openrouterApiKey: localStorage.getItem('openrouter_api_key') || '',
   openrouterModel: localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash',
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
-  mpvCacheSecs: Number(localStorage.getItem('orynt_mpv_cache_secs') || '60'),
-  mpvNetworkTimeout: Number(localStorage.getItem('orynt_mpv_network_timeout') || '15'),
-  mpvCustomArgs: localStorage.getItem('orynt_mpv_custom_args') || '',
-  setMpvCacheSecs: (secs) => { localStorage.setItem('orynt_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
-  setMpvNetworkTimeout: (secs) => { localStorage.setItem('orynt_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
-  setMpvCustomArgs: (args) => { localStorage.setItem('orynt_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
+  mpvCacheSecs: Number(localStorage.getItem('aurales_mpv_cache_secs') || '60'),
+  mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '15'),
+  mpvCustomArgs: localStorage.getItem('aurales_mpv_custom_args') || '',
+  setMpvCacheSecs: (secs) => { localStorage.setItem('aurales_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
+  setMpvNetworkTimeout: (secs) => { localStorage.setItem('aurales_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
+  setMpvCustomArgs: (args) => { localStorage.setItem('aurales_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
   resetPlayerSettings: () => {
-    localStorage.setItem('orynt_hwdec_mode', 'auto')
-    localStorage.setItem('orynt_cache_buffer_size', 'default')
-    localStorage.setItem('orynt_mpv_cache_secs', '60')
-    localStorage.setItem('orynt_mpv_network_timeout', '15')
-    localStorage.setItem('orynt_mpv_custom_args', '')
+    localStorage.setItem('aurales_hwdec_mode', 'auto')
+    localStorage.setItem('aurales_cache_buffer_size', 'default')
+    localStorage.setItem('aurales_mpv_cache_secs', '60')
+    localStorage.setItem('aurales_mpv_network_timeout', '15')
+    localStorage.setItem('aurales_mpv_custom_args', '')
     set({
       hwdecMode: 'auto',
       cacheBufferSize: 'default',
@@ -650,40 +650,40 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  movieMetadataSource: (localStorage.getItem('orynt_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
-  seriesMetadataSource: (localStorage.getItem('orynt_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
-  animeMetadataSource: (localStorage.getItem('orynt_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',
+  movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
+  seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
+  animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',
   movieMetadataFallback: false,
   seriesMetadataFallback: false,
   animeMetadataFallback: false,
-  enableCommunityRatings: localStorage.getItem('orynt_community_ratings') !== 'false',
-  appManagedMetadata: localStorage.getItem('orynt_app_managed_metadata') !== 'false',
-  useAddonMetadataFallback: localStorage.getItem('orynt_addon_metadata_fallback') !== 'false',
-  preferTvdbAnimeSeasons: localStorage.getItem('orynt_tvdb_anime_seasons') !== 'false',
-  animeTitleLanguage: (localStorage.getItem('orynt_anime_title_language') || 'auto') as 'english' | 'romaji' | 'native' | 'auto',
-  hideUnairedAnimeSeasons: localStorage.getItem('orynt_hide_unaired_anime_seasons') !== 'false',
-  hideUnairedAnimeEpisodes: localStorage.getItem('orynt_hide_unaired_anime_eps') !== 'false',
-  includeAnimeSpecials: localStorage.getItem('orynt_include_anime_specials') === 'true',
-  ignoreAddonMetadataForAnime: localStorage.getItem('orynt_ignore_addon_meta_anime') !== 'false',
-  useGenericAnimeSeasonLabels: localStorage.getItem('orynt_generic_anime_season_labels') !== 'false',
-  avoidJapaneseSeasonNames: localStorage.getItem('orynt_avoid_jp_season_names') !== 'false',
-  setMovieMetadataSource: (src) => { localStorage.setItem('orynt_movie_meta_src', src); set({ movieMetadataSource: src }); get().clearAnimeCache() },
-  setSeriesMetadataSource: (src) => { localStorage.setItem('orynt_series_meta_src', src); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
-  setAnimeMetadataSource: (src) => { localStorage.setItem('orynt_anime_meta_src', src); set({ animeMetadataSource: src }); get().clearAnimeCache() },
-  setMovieMetadataFallback: (val) => { localStorage.setItem('orynt_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
-  setSeriesMetadataFallback: (val) => { localStorage.setItem('orynt_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
-  setAnimeMetadataFallback: (val) => { localStorage.setItem('orynt_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
-  setEnableCommunityRatings: (val) => { localStorage.setItem('orynt_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
-  setAppManagedMetadata: (val) => { localStorage.setItem('orynt_app_managed_metadata', String(val)); set({ appManagedMetadata: val }) },
-  setUseAddonMetadataFallback: (val) => { localStorage.setItem('orynt_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
-  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('orynt_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
-  setAnimeTitleLanguage: (val) => { localStorage.setItem('orynt_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },
-  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('orynt_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }); get().clearAnimeCache() },
-  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('orynt_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }); get().clearAnimeCache() },
-  setIncludeAnimeSpecials: (val) => { localStorage.setItem('orynt_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }); get().clearAnimeCache() },
-  setIgnoreAddonMetadataForAnime: (val) => { localStorage.setItem('orynt_ignore_addon_meta_anime', String(val)); set({ ignoreAddonMetadataForAnime: val }) },
-  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('orynt_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }); get().clearAnimeCache() },
-  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('orynt_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }); get().clearAnimeCache() },
+  enableCommunityRatings: localStorage.getItem('aurales_community_ratings') !== 'false',
+  appManagedMetadata: localStorage.getItem('aurales_app_managed_metadata') !== 'false',
+  useAddonMetadataFallback: localStorage.getItem('aurales_addon_metadata_fallback') !== 'false',
+  preferTvdbAnimeSeasons: localStorage.getItem('aurales_tvdb_anime_seasons') !== 'false',
+  animeTitleLanguage: (localStorage.getItem('aurales_anime_title_language') || 'auto') as 'english' | 'romaji' | 'native' | 'auto',
+  hideUnairedAnimeSeasons: localStorage.getItem('aurales_hide_unaired_anime_seasons') !== 'false',
+  hideUnairedAnimeEpisodes: localStorage.getItem('aurales_hide_unaired_anime_eps') !== 'false',
+  includeAnimeSpecials: localStorage.getItem('aurales_include_anime_specials') === 'true',
+  ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',
+  useGenericAnimeSeasonLabels: localStorage.getItem('aurales_generic_anime_season_labels') !== 'false',
+  avoidJapaneseSeasonNames: localStorage.getItem('aurales_avoid_jp_season_names') !== 'false',
+  setMovieMetadataSource: (src) => { localStorage.setItem('aurales_movie_meta_src', src); set({ movieMetadataSource: src }); get().clearAnimeCache() },
+  setSeriesMetadataSource: (src) => { localStorage.setItem('aurales_series_meta_src', src); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
+  setAnimeMetadataSource: (src) => { localStorage.setItem('aurales_anime_meta_src', src); set({ animeMetadataSource: src }); get().clearAnimeCache() },
+  setMovieMetadataFallback: (val) => { localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
+  setSeriesMetadataFallback: (val) => { localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
+  setAnimeMetadataFallback: (val) => { localStorage.setItem('aurales_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
+  setEnableCommunityRatings: (val) => { localStorage.setItem('aurales_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
+  setAppManagedMetadata: (val) => { localStorage.setItem('aurales_app_managed_metadata', String(val)); set({ appManagedMetadata: val }) },
+  setUseAddonMetadataFallback: (val) => { localStorage.setItem('aurales_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
+  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('aurales_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
+  setAnimeTitleLanguage: (val) => { localStorage.setItem('aurales_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('aurales_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('aurales_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }); get().clearAnimeCache() },
+  setIncludeAnimeSpecials: (val) => { localStorage.setItem('aurales_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }); get().clearAnimeCache() },
+  setIgnoreAddonMetadataForAnime: (val) => { localStorage.setItem('aurales_ignore_addon_meta_anime', String(val)); set({ ignoreAddonMetadataForAnime: val }) },
+  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('aurales_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }); get().clearAnimeCache() },
+  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('aurales_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }); get().clearAnimeCache() },
   clearAnimeCache: async () => {
     try {
       const { clearAnimeMetadataCache } = await import('../services/metadata/metadataResolver')
@@ -691,32 +691,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) { console.warn('[appStore] clearAnimeCache failed:', e) }
   },
 
-  movieSearchEngine: localStorage.getItem('orynt_movie_search_engine') || 'tmdb',
-  seriesSearchEngine: localStorage.getItem('orynt_series_search_engine') || 'tvdb',
-  animeSeriesSearchEngine: localStorage.getItem('orynt_anime_series_search_engine') || 'mal',
-  animeMovieSearchEngine: localStorage.getItem('orynt_anime_movie_search_engine') || 'mal',
-  movieSearchEnabled: localStorage.getItem('orynt_movie_search_enabled') !== 'false',
-  seriesSearchEnabled: localStorage.getItem('orynt_series_search_enabled') !== 'false',
-  animeSeriesSearchEnabled: localStorage.getItem('orynt_anime_series_search_enabled') !== 'false',
-  animeMovieSearchEnabled: localStorage.getItem('orynt_anime_movie_search_enabled') !== 'false',
-  setMovieSearchEngine: (engine) => { localStorage.setItem('orynt_movie_search_engine', engine); set({ movieSearchEngine: engine }) },
-  setSeriesSearchEngine: (engine) => { localStorage.setItem('orynt_series_search_engine', engine); set({ seriesSearchEngine: engine }) },
-  setAnimeSeriesSearchEngine: (engine) => { localStorage.setItem('orynt_anime_series_search_engine', engine); set({ animeSeriesSearchEngine: engine }) },
-  setAnimeMovieSearchEngine: (engine) => { localStorage.setItem('orynt_anime_movie_search_engine', engine); set({ animeMovieSearchEngine: engine }) },
-  setMovieSearchEnabled: (val) => { localStorage.setItem('orynt_movie_search_enabled', String(val)); set({ movieSearchEnabled: val }) },
-  setSeriesSearchEnabled: (val) => { localStorage.setItem('orynt_series_search_enabled', String(val)); set({ seriesSearchEnabled: val }) },
-  setAnimeSeriesSearchEnabled: (val) => { localStorage.setItem('orynt_anime_series_search_enabled', String(val)); set({ animeSeriesSearchEnabled: val }) },
-  setAnimeMovieSearchEnabled: (val) => { localStorage.setItem('orynt_anime_movie_search_enabled', String(val)); set({ animeMovieSearchEnabled: val }) },
+  movieSearchEngine: localStorage.getItem('aurales_movie_search_engine') || 'tmdb',
+  seriesSearchEngine: localStorage.getItem('aurales_series_search_engine') || 'tvdb',
+  animeSeriesSearchEngine: localStorage.getItem('aurales_anime_series_search_engine') || 'mal',
+  animeMovieSearchEngine: localStorage.getItem('aurales_anime_movie_search_engine') || 'mal',
+  movieSearchEnabled: localStorage.getItem('aurales_movie_search_enabled') !== 'false',
+  seriesSearchEnabled: localStorage.getItem('aurales_series_search_enabled') !== 'false',
+  animeSeriesSearchEnabled: localStorage.getItem('aurales_anime_series_search_enabled') !== 'false',
+  animeMovieSearchEnabled: localStorage.getItem('aurales_anime_movie_search_enabled') !== 'false',
+  setMovieSearchEngine: (engine) => { localStorage.setItem('aurales_movie_search_engine', engine); set({ movieSearchEngine: engine }) },
+  setSeriesSearchEngine: (engine) => { localStorage.setItem('aurales_series_search_engine', engine); set({ seriesSearchEngine: engine }) },
+  setAnimeSeriesSearchEngine: (engine) => { localStorage.setItem('aurales_anime_series_search_engine', engine); set({ animeSeriesSearchEngine: engine }) },
+  setAnimeMovieSearchEngine: (engine) => { localStorage.setItem('aurales_anime_movie_search_engine', engine); set({ animeMovieSearchEngine: engine }) },
+  setMovieSearchEnabled: (val) => { localStorage.setItem('aurales_movie_search_enabled', String(val)); set({ movieSearchEnabled: val }) },
+  setSeriesSearchEnabled: (val) => { localStorage.setItem('aurales_series_search_enabled', String(val)); set({ seriesSearchEnabled: val }) },
+  setAnimeSeriesSearchEnabled: (val) => { localStorage.setItem('aurales_anime_series_search_enabled', String(val)); set({ animeSeriesSearchEnabled: val }) },
+  setAnimeMovieSearchEnabled: (val) => { localStorage.setItem('aurales_anime_movie_search_enabled', String(val)); set({ animeMovieSearchEnabled: val }) },
 
-  discordRichPresence: localStorage.getItem('orynt_discord_rpc') !== 'false',
-  setDiscordRichPresence: (enabled) => { localStorage.setItem('orynt_discord_rpc', String(enabled)); set({ discordRichPresence: enabled }) },
+  discordRichPresence: localStorage.getItem('aurales_discord_rpc') !== 'false',
+  setDiscordRichPresence: (enabled) => { localStorage.setItem('aurales_discord_rpc', String(enabled)); set({ discordRichPresence: enabled }) },
 
-  subtitleTranslationLang: localStorage.getItem('orynt_sub_translation_lang') || '',
-  subtitleTranslationEnabled: localStorage.getItem('orynt_sub_translation_enabled') === 'true',
-  translationCuesAhead: Number(localStorage.getItem('orynt_translation_cues_ahead') || '10'),
-  contextAwareTranslation: localStorage.getItem('orynt_context_aware_translation') !== 'false',
-  setSubtitleTranslationLang: (lang) => { localStorage.setItem('orynt_sub_translation_lang', lang); set({ subtitleTranslationLang: lang }) },
-  setSubtitleTranslationEnabled: (enabled) => { localStorage.setItem('orynt_sub_translation_enabled', String(enabled)); set({ subtitleTranslationEnabled: enabled }) },
-  setTranslationCuesAhead: (n) => { localStorage.setItem('orynt_translation_cues_ahead', String(n)); set({ translationCuesAhead: n }) },
-  setContextAwareTranslation: (val) => { localStorage.setItem('orynt_context_aware_translation', String(val)); set({ contextAwareTranslation: val }) },
+  subtitleTranslationLang: localStorage.getItem('aurales_sub_translation_lang') || '',
+  subtitleTranslationEnabled: localStorage.getItem('aurales_sub_translation_enabled') === 'true',
+  translationCuesAhead: Number(localStorage.getItem('aurales_translation_cues_ahead') || '10'),
+  contextAwareTranslation: localStorage.getItem('aurales_context_aware_translation') !== 'false',
+  setSubtitleTranslationLang: (lang) => { localStorage.setItem('aurales_sub_translation_lang', lang); set({ subtitleTranslationLang: lang }) },
+  setSubtitleTranslationEnabled: (enabled) => { localStorage.setItem('aurales_sub_translation_enabled', String(enabled)); set({ subtitleTranslationEnabled: enabled }) },
+  setTranslationCuesAhead: (n) => { localStorage.setItem('aurales_translation_cues_ahead', String(n)); set({ translationCuesAhead: n }) },
+  setContextAwareTranslation: (val) => { localStorage.setItem('aurales_context_aware_translation', String(val)); set({ contextAwareTranslation: val }) },
 }))

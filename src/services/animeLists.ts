@@ -16,8 +16,8 @@ interface AnimeMapping {
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
 const DATA_URL =
   'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json'
-const PERSISTENT_CACHE = 'orynt-anime-lists-v1'
-const CACHE_TIMESTAMP_HEADER = 'x-orynt-cached-at'
+const PERSISTENT_CACHE = 'aurales-anime-lists-v1'
+const CACHE_TIMESTAMP_HEADER = 'x-aurales-cached-at'
 
 // ── Indexed lookup maps (O(1) instead of O(n) linear scan) ──────────
 let indexByMal = new Map<number, AnimeMapping[]>()

@@ -8,7 +8,7 @@ export default function InviteLinkBox() {
   if (!currentRoom) return null
 
   const roomCode = currentRoom.code
-  const inviteLink = `orynt://watch/${roomCode}`
+  const inviteLink = `aurales://watch/${roomCode}`
 
   const copyToClipboard = async (text: string, label: string) => {
     try {

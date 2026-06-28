@@ -5,14 +5,14 @@ use std::io::Write;
 
 fn main() {
     let app_dir = dirs::data_dir()
-        .map(|d| d.join("com.orynt.app"))
+        .map(|d| d.join("com.aurales.app"))
         .or_else(|| {
             let home = std::env::var("USERPROFILE").ok()?;
-            Some(PathBuf::from(home).join("AppData").join("Roaming").join("com.orynt.app"))
+            Some(PathBuf::from(home).join("AppData").join("Roaming").join("com.aurales.app"))
         })
         .expect("could not find app data dir");
 
-    let db_path = app_dir.join("orynt.db");
+    let db_path = app_dir.join("aurales.db");
     println!("Opening database at {:?}", db_path);
 
     if !db_path.exists() {
