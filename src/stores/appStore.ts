@@ -67,6 +67,7 @@ interface AppState {
 
   // Watch progress
   watchProgress: Map<string, WatchProgress>
+  completedIds: Set<string>
   setWatchProgress: (id: string, progress: WatchProgress) => void
   removeWatchProgress: (mediaIds: string[], season?: number, episode?: number) => void
 
@@ -139,6 +140,7 @@ interface AppState {
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
+  showGenreOnCards: boolean
   discoveryRegion: string
   discoveryMinRating: number
   discoveryIncludeAdult: boolean
@@ -227,6 +229,7 @@ interface AppState {
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
+  setShowGenreOnCards: (show: boolean) => void
   setDiscoveryRegion: (region: string) => void
   setDiscoveryMinRating: (rating: number) => void
   setDiscoveryIncludeAdult: (include: boolean) => void
@@ -290,6 +293,17 @@ function loadPersistedWatchProgress(): Map<string, WatchProgress> {
     }
   } catch (_) { /* ignore */ }
   return new Map()
+}
+
+function buildCompletedIds(map: Map<string, WatchProgress>): Set<string> {
+  const ids = new Set<string>()
+  for (const [key, p] of map) {
+    if (!p.completed) continue
+    ids.add(key)
+    if (p.mediaId) ids.add(String(p.mediaId))
+    if (p.imdbId) ids.add(String(p.imdbId))
+  }
+  return ids
 }
 
 function persistWatchProgress(map: Map<string, WatchProgress>): void {
@@ -481,11 +495,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetHomeRows: () => { persistHomeRows(DEFAULT_HOME_ROWS); set({ homeRows: DEFAULT_HOME_ROWS }) },
 
   watchProgress: loadPersistedWatchProgress(),
+  completedIds: buildCompletedIds(loadPersistedWatchProgress()),
   setWatchProgress: (id, progress) => set((s) => {
     const map = new Map(s.watchProgress)
     map.set(id, progress)
     persistWatchProgress(map)
-    return { watchProgress: map }
+    return { watchProgress: map, completedIds: buildCompletedIds(map) }
   }),
   removeWatchProgress: (mediaIds, season, episode) => set((s) => {
     const ids = new Set(mediaIds.filter(Boolean).map(String))
@@ -500,7 +515,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (matchesMedia && matchesEpisode) map.delete(key)
     }
     persistWatchProgress(map)
-    return { watchProgress: map }
+    return { watchProgress: map, completedIds: buildCompletedIds(map) }
   }),
 
   recentlyWatched: loadRecentlyViewed(),
@@ -558,6 +573,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
+  showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') !== 'false',
   discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
   discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
   discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
@@ -611,6 +627,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
+  setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
   setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); set({ discoveryRegion: region }) },
   setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },

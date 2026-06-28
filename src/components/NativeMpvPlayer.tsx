@@ -1902,7 +1902,12 @@ function FullNativeMpvPlayer({
   }
   const changeSub = (id: number | 'no') => {
     setSelectedSub(id)
-    command('set_property', ['sid', id])
+    if (id === 'no') {
+      command('set_property', ['sub-visibility', false])
+    } else {
+      command('set_property', ['sid', id])
+      command('set_property', ['sub-visibility', !liveTranslateOn])
+    }
     setTrackMenu(null)
   }
 
@@ -2063,7 +2068,24 @@ function FullNativeMpvPlayer({
                     selected={selectedSub}
                     onSelect={changeSub}
                     onClose={() => setTrackMenu(null)}
-                    onToggleTranslate={() => setLiveTranslateOn((v) => !v)}
+                    onToggleTranslate={() => {
+                      setLiveTranslateOn((prev) => {
+                        const next = !prev
+                        if (next) {
+                          if (selectedSub === 'no' && subTracks.length > 0) {
+                            const firstTrack = subTracks[0].id
+                            setSelectedSub(firstTrack)
+                            command('set_property', ['sid', firstTrack])
+                          }
+                          command('set_property', ['sub-visibility', false])
+                        } else {
+                          if (selectedSub !== 'no') {
+                            command('set_property', ['sub-visibility', true])
+                          }
+                        }
+                        return next
+                      })
+                    }}
                     translateActive={liveTranslateOn}
                     hasTranslateKey={!!openrouterApiKey && !!subtitleTranslationLang}
                   />
@@ -2342,14 +2364,16 @@ function FullNativeMpvPlayer({
 
       {/* Live translated subtitle overlay */}
       {liveTranslateOn && currentSubText && (
-        <div className="absolute inset-x-0 bottom-28 z-[8] flex justify-center pointer-events-none px-16">
-          <div className="bg-black/75 backdrop-blur-sm rounded-xl px-5 py-2.5 max-w-3xl text-center">
-            {translatedText ? (
-              <p className="text-base font-semibold text-purple-200 leading-relaxed">{translatedText}</p>
-            ) : (
-              <p className="text-sm text-white/50 leading-relaxed italic">{currentSubText}</p>
-            )}
-          </div>
+        <div className="absolute inset-x-0 bottom-24 z-[8] flex flex-col items-center pointer-events-none px-12 gap-1">
+          {translatedText ? (
+            <span className="inline-block px-3 py-1 rounded bg-black/80 text-white text-lg font-medium leading-snug text-center shadow-[0_2px_8px_rgba(0,0,0,0.6)]" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.7)' }}>
+              {translatedText}
+            </span>
+          ) : (
+            <span className="inline-block px-3 py-1 rounded bg-black/60 text-white/50 text-base italic leading-snug text-center">
+              {currentSubText}
+            </span>
+          )}
         </div>
       )}
 

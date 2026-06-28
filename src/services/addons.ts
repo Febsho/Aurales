@@ -243,6 +243,12 @@ export function getStreamAddons(type: string): InstalledAddon[] {
   )
 }
 
+export function getSubtitleAddons(type: string): InstalledAddon[] {
+  return Array.from(installedAddons.values()).filter(
+    (a) => a.enabled && addonSupportsResource(a.manifest, 'subtitles', type)
+  )
+}
+
 export function getMetaAddons(type: string): InstalledAddon[] {
   return Array.from(installedAddons.values()).filter(
     (a) => a.enabled && addonSupportsResource(a.manifest, 'meta', type)

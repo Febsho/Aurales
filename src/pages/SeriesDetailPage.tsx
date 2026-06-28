@@ -20,7 +20,7 @@ import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
 import { applyEpisodeArt, applySearchResultArt, applyShowArt } from '../services/artwork'
-import { isWatchedFromProviders } from '../services/watchedStatus'
+import { isWatchedFromProviders, batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
@@ -356,6 +356,11 @@ export default function SeriesDetailPage() {
   const [showSeasonArrows, setShowSeasonArrows] = useState(false)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
+  const completedIds = useAppStore((s) => s.completedIds)
+  const watchProgressRef = useRef(watchedProgress)
+  watchProgressRef.current = watchedProgress
+  const completedIdsRef = useRef(completedIds)
+  completedIdsRef.current = completedIds
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -1302,7 +1307,7 @@ export default function SeriesDetailPage() {
     return () => { cancelled = true }
   }, [show, selectedSeason, seasonData])
 
-  // Check watched status only for the visible season first, then background-check others
+  // Check watched status — uses refs for watchProgress/completedIds to avoid re-triggering on every progress update
   useEffect(() => {
     if (!show || selectedSeason === null) {
       setWatchedEpisodes(new Set())
@@ -1317,32 +1322,28 @@ export default function SeriesDetailPage() {
       .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
       .sort((a, b) => a.season - b.season) : undefined
 
-    const checkEpisodes = (episodes: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }[]) =>
-      Promise.all(episodes.map(async (episode) => {
-        const watched = await isWatchedFromProviders({
-          id: show.id,
-          type: 'series',
-          imdbId: show.imdbId,
-          tmdbId: show.tmdbId ?? episode.tmdbId,
-          tvdbId: show.tvdbId ?? episode.tvdbId,
-          season: episode.seasonNumber,
-          episode: episode.episodeNumber,
-          absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
-          isAnime,
-          appSeasonEpCounts,
-        }, watchedCheckmarkSources, watchedProgress)
-        return watched ? `${episode.seasonNumber}:${episode.episodeNumber}` : null
-      }))
+    const toLookup = (episode: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }): WatchedLookupItem => ({
+      id: show.id,
+      type: 'series',
+      imdbId: show.imdbId,
+      tmdbId: show.tmdbId ?? episode.tmdbId,
+      tvdbId: show.tvdbId ?? episode.tvdbId,
+      season: episode.seasonNumber,
+      episode: episode.episodeNumber,
+      absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
+      isAnime,
+      appSeasonEpCounts,
+    })
 
-    // Check visible season first
-    checkEpisodes(visibleSeason.episodes).then((keys) => {
+    // Check visible season first via batch
+    const visibleLookups = visibleSeason.episodes.map(toLookup)
+    batchIsWatchedFromProviders(visibleLookups, watchedCheckmarkSources, completedIdsRef.current).then((watchedKeys) => {
       if (cancelled) return
-      const visibleSet = new Set(keys.filter((key): key is string => Boolean(key)))
       setWatchedEpisodes((prev) => {
         const next = new Set(prev)
         for (const ep of visibleSeason.episodes) {
           const k = `${ep.seasonNumber}:${ep.episodeNumber}`
-          if (visibleSet.has(k)) next.add(k)
+          if (watchedKeys.has(k)) next.add(k)
           else next.delete(k)
         }
         return next
@@ -1353,15 +1354,16 @@ export default function SeriesDetailPage() {
         .filter(([num]) => Number(num) !== selectedSeason)
         .flatMap(([, season]) => season.episodes)
       if (otherEpisodes.length === 0 || cancelled) return
-      checkEpisodes(otherEpisodes).then((otherKeys) => {
+      const otherLookups = otherEpisodes.map(toLookup)
+      batchIsWatchedFromProviders(otherLookups, watchedCheckmarkSources, completedIdsRef.current).then((otherKeys) => {
         if (cancelled) return
         setWatchedEpisodes((prev) => {
           const next = new Set(prev)
           for (const ep of otherEpisodes) {
             const k = `${ep.seasonNumber}:${ep.episodeNumber}`
-            next.delete(k)
+            if (otherKeys.has(k)) next.add(k)
+            else next.delete(k)
           }
-          for (const k of otherKeys) if (k) next.add(k)
           return next
         })
       }).catch(() => {})
@@ -1369,7 +1371,7 @@ export default function SeriesDetailPage() {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonCache, watchedCheckmarkSources, watchedProgress])
+  }, [show, selectedSeason, seasonCache, watchedCheckmarkSources])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
@@ -1504,12 +1506,11 @@ export default function SeriesDetailPage() {
 
   const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
     if (!show) return null
+    const wp = watchedProgress
     const candidateIds = [show.id, show.imdbId, String(show.tmdbId || '')].filter(Boolean)
-    for (const progress of watchedProgress.values()) {
-      if (progress.season !== seasonNum || progress.episode !== episodeNum || progress.completed) continue
-      const matchesShow = candidateIds.includes(progress.mediaId)
-        || candidateIds.some((candidate) => progress.id === `${candidate}:${seasonNum}:${episodeNum}`)
-      if (matchesShow && progress.progressSeconds > 0) return progress
+    for (const id of candidateIds) {
+      const p = wp.get(`${id}:${seasonNum}:${episodeNum}`)
+      if (p && !p.completed && p.progressSeconds > 0) return p
     }
     return null
   }

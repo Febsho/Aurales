@@ -59,35 +59,25 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
   })
   const posterSize = useAppStore((s) => s.posterSize)
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
+  const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
 
-  // Targeted selectors — only re-render this card when ITS progress changes
   const localCompleted = useAppStore((s) => {
-    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
-    for (const id of ids) {
-      if (s.watchProgress.get(id)?.completed) return true
-    }
+    const ci = s.completedIds
+    if (item.id && ci.has(String(item.id))) return true
+    if (item.imdbId && ci.has(String(item.imdbId))) return true
     if (item.type === 'series' && item.season != null && item.episode != null) {
-      for (const id of ids) {
-        if (s.watchProgress.get(`${id}:${item.season}:${item.episode}`)?.completed) return true
-      }
-    }
-    for (const [, p] of s.watchProgress.entries()) {
-      if (!p.completed) continue
-      const mediaStr = String(p.mediaId || '')
-      const imdbStr = String(p.imdbId || '')
-      if (ids.includes(mediaStr) || ids.includes(imdbStr)) return true
+      if (item.id && ci.has(`${item.id}:${item.season}:${item.episode}`)) return true
+      if (item.imdbId && ci.has(`${item.imdbId}:${item.season}:${item.episode}`)) return true
     }
     return false
   })
 
   const progressPct = useAppStore((s) => {
-    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
-    for (const id of ids) {
-      const direct = s.watchProgress.get(id)
-      if (direct && !direct.completed && direct.durationSeconds > 0) {
-        return (direct.progressSeconds / direct.durationSeconds) * 100
-      }
+    const p = (item.id && s.watchProgress.get(String(item.id)))
+      || (item.imdbId && s.watchProgress.get(item.imdbId))
+    if (p && !p.completed && p.durationSeconds > 0) {
+      return (p.progressSeconds / p.durationSeconds) * 100
     }
     return null
   })
@@ -144,7 +134,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
 
     const needsVisibleArtwork = layout === 'landscape' ? !displayItem.backdrop : !displayItem.poster
-    if (needsVisibleArtwork) {
+    if (needsVisibleArtwork || (showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length)) {
       (async () => {
         try {
           let resolvedTmdbId = tmdbId
@@ -165,7 +155,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
       })()
     }
     return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
+  }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type, showGenreOnCards])
 
   const landscapeBackdrop = resolvedBackdrop || displayItem.backdrop
 
@@ -237,15 +227,6 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
           {/* Permanent subtle dark gradient overlay for text readability */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95" />
           
-          {/* Watched checkmark badge (landscape) */}
-          {isCompleted && (
-            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-accent flex items-center justify-center shadow-lg z-10">
-              <svg className="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
-                <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </div>
-          )}
-
           {/* Rating badge (landscape) */}
           {showRatingsOnCards && ratingStr && (
             <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
@@ -304,8 +285,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
           </div>
         )}
         {/* Bottom gradient + genre label */}
-        <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
-        {(() => {
+        {showGenreOnCards && <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />}
+        {showGenreOnCards && (() => {
           const genre = displayItem.genres?.[0]
             || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
             || resolvedGenre
@@ -317,15 +298,6 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
             </div>
           ) : null
         })()}
-        {/* Watched checkmark badge */}
-        {isCompleted && (
-          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-accent flex items-center justify-center shadow-lg z-10">
-            <svg className="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
-              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-        )}
-
         {/* Rating badge (poster) */}
         {showRatingsOnCards && ratingStr && (
           <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">

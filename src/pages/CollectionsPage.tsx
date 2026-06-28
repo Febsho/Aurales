@@ -391,10 +391,12 @@ function HeroBannerSection({
   row,
   addons,
   onUpdate,
+  onAdd,
 }: {
   row: HomeRowConfig | undefined
   addons: InstalledAddon[]
   onUpdate: (id: string, updates: Partial<HomeRowConfig>) => void
+  onAdd: (row: Omit<HomeRowConfig, 'id' | 'order'>) => void
 }) {
   type CatalogOption = { label: string; addonId: string; addonUrl: string; catalogType: string; catalogId: string }
   const catalogOptions: CatalogOption[] = [
@@ -415,10 +417,21 @@ function HeroBannerSection({
     : 'com.example.mockaddon::movie::mock-movies'
 
   const handleCatalogChange = (val: string) => {
-    if (!row) return
     const opt = catalogOptions.find((o) => `${o.addonId}::${o.catalogType}::${o.catalogId}` === val)
-    if (opt) {
+    if (!opt) return
+    if (row) {
       onUpdate(row.id, {
+        addonId: opt.addonId,
+        addonUrl: opt.addonUrl,
+        catalogType: opt.catalogType,
+        catalogId: opt.catalogId,
+      })
+    } else {
+      onAdd({
+        title: 'Hero Banner',
+        layout: 'hero',
+        enabled: true,
+        sourceType: 'addon',
         addonId: opt.addonId,
         addonUrl: opt.addonUrl,
         catalogType: opt.catalogType,
@@ -2451,7 +2464,7 @@ export default function CollectionsPage() {
 
       <div className="px-8 space-y-6">
         {/* Hero banner config */}
-        <HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} />
+        <HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} onAdd={addHomeRow} />
 
         {/* Shelves list */}
         <div>
