@@ -9,7 +9,7 @@ pub struct Database {
 impl Database {
     pub fn new(app_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&app_dir).ok();
-        let db_path = app_dir.join("orynt.db");
+        let db_path = app_dir.join("aurales.db");
         let conn = Connection::open(db_path)?;
         let db = Database {
             conn: Mutex::new(conn),
