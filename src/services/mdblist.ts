@@ -20,6 +20,7 @@ interface RatingRequest {
 }
 
 const BASE_URL = 'https://api.mdblist.com'
+const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
 
 const PROVIDER_LABELS: Record<string, string> = {
   imdb: 'IMDb',
@@ -54,8 +55,7 @@ const PROVIDER_ICONS: Record<string, string> = {
 }
 
 export async function getMdblistRatings(req: RatingRequest): Promise<MdblistRating[]> {
-  const apiKey = useAppStore.getState().mdblistApiKey.trim()
-  if (!apiKey) return []
+  const apiKey = useAppStore.getState().mdblistApiKey.trim() || BUILTIN_KEY
 
   const media = req.mediaType === 'movie' ? 'movie' : 'show'
   const candidates: string[] = []
