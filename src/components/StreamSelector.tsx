@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
-import { getAddonStreams, getAddonSubtitles, getStreamAddons } from '../services/addons'
+import { getAddonStreams, getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
 import NativeMpvPlayer from './NativeMpvPlayer'
 import InAppPlayer from './InAppPlayer'
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -203,7 +203,14 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       setLoading(false)
     })
 
-    Promise.all(allAddons.map(async (addon) => {
+    const subtitleAddons = getSubtitleAddons(mediaType)
+    const subtitleSeenUrls = new Set(seenUrls)
+    const allSubAddons = [...allAddons]
+    for (const a of subtitleAddons) {
+      if (!subtitleSeenUrls.has(a.url)) { allSubAddons.push(a); subtitleSeenUrls.add(a.url) }
+    }
+
+    Promise.all(allSubAddons.map(async (addon) => {
       try {
         const baseId = addon.manifest.id === sourceAddonId && sourceAddonItemId ? sourceAddonItemId : cleanMediaId
         const streamId = makeStreamId(baseId)
