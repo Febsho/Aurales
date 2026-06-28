@@ -39,7 +39,6 @@
     "active": true,
     "targets": ["msi", "nsis"],
     "externalBin": ["binaries/mpv"],
-    "resources": ["binaries/d3dcompiler_43.dll"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
