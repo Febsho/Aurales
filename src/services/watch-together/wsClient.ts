@@ -26,8 +26,11 @@ function logDebug(direction: 'in' | 'out', event: string, data?: any) {
 // ── Connection ──────────────────────────────────────────────────────────────
 
 export function connect(serverUrl: string): Promise<void> {
+  console.log('[WT DEBUG] connect() called, current ws:', ws ? `readyState=${ws.readyState}` : 'null')
+  console.trace('[WT DEBUG] connect call stack')
   return new Promise((resolve, reject) => {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      console.log('[WT DEBUG] Already connected/connecting, resolving immediately')
       resolve()
       return
     }
@@ -38,6 +41,7 @@ export function connect(serverUrl: string): Promise<void> {
     let settled = false
     const timeout = setTimeout(() => {
       if (!settled) {
+        console.log('[WT DEBUG] TIMEOUT after 8s, ws readyState:', ws?.readyState)
         settled = true
         getStore().setConnectionStatus('disconnected')
         if (ws) { try { ws.close() } catch (_) {} }
@@ -48,8 +52,15 @@ export function connect(serverUrl: string): Promise<void> {
 
     console.log('[WT DEBUG] Attempting WebSocket connection to:', serverUrl)
     try {
-      ws = new WebSocket(serverUrl)
+      const localWs = new WebSocket(serverUrl)
+      ws = localWs
       console.log('[WT DEBUG] WebSocket created, readyState:', ws.readyState)
+
+      // Poll readyState
+      const poll = setInterval(() => {
+        console.log('[WT DEBUG] poll: ws===localWs?', ws === localWs, 'readyState:', localWs.readyState, 'settled:', settled)
+        if (localWs.readyState > 1 || settled) clearInterval(poll)
+      }, 500)
     } catch (err) {
       console.error('[WT DEBUG] WebSocket constructor threw:', err)
       clearTimeout(timeout)
@@ -60,6 +71,7 @@ export function connect(serverUrl: string): Promise<void> {
     }
 
     ws.onopen = () => {
+      console.log('[WT DEBUG] >>> onopen fired!')
       if (settled) return
       settled = true
       clearTimeout(timeout)
@@ -129,12 +141,15 @@ export function disconnect(): void {
 }
 
 export function send(event: WatchTogetherEvent): void {
+  console.log('[WT DEBUG] send():', event.type, 'ws:', ws ? `readyState=${ws.readyState}` : 'null')
   if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log('[WT DEBUG] SEND_FAILED: not connected')
     logDebug('out', 'SEND_FAILED', { event: event.type, reason: 'not connected' })
     return
   }
   logDebug('out', event.type, event)
   ws.send(JSON.stringify(event))
+  console.log('[WT DEBUG] sent OK:', JSON.stringify(event))
 }
 
 // ── Room actions ────────────────────────────────────────────────────────────
