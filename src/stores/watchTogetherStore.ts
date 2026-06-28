@@ -50,6 +50,7 @@ export interface WatchTogetherState {
   // Local state
   selectedLocalStream: { stream: StreamResult; addonId: string; addonName: string } | null
   isHost: boolean
+  drawModeActive: boolean
   errors: string[]
   debugLog: DebugLogEntry[]
 
@@ -72,6 +73,7 @@ export interface WatchTogetherState {
   toggleRoomPanel: () => void
   setSelectedLocalStream: (stream: WatchTogetherState['selectedLocalStream']) => void
   setIsHost: (host: boolean) => void
+  setDrawModeActive: (active: boolean) => void
   addError: (error: string) => void
   clearErrors: () => void
   addDebugLog: (entry: DebugLogEntry) => void
@@ -110,6 +112,7 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   // Local state
   selectedLocalStream: null,
   isHost: false,
+  drawModeActive: false,
   errors: [],
   debugLog: [],
 
@@ -132,6 +135,7 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   toggleRoomPanel: () => set((s) => ({ roomPanelOpen: !s.roomPanelOpen })),
   setSelectedLocalStream: (stream) => set({ selectedLocalStream: stream }),
   setIsHost: (host) => set({ isHost: host }),
+  setDrawModeActive: (active) => set({ drawModeActive: active }),
 
   addError: (error) =>
     set((s) => ({ errors: [...s.errors, error] })),

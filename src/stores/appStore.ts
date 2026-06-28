@@ -153,6 +153,8 @@ interface AppState {
   autoSkipSegments: boolean
   subtitleFontSize: number
   subtitleBgOpacity: string
+  subtitleColor: string
+  subtitleBorderStyle: 'outline' | 'shadow' | 'none'
   visibleHeroRatings: string[]
   openrouterApiKey: string
   openrouterModel: string
@@ -242,6 +244,8 @@ interface AppState {
   setAutoSkipSegments: (val: boolean) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
+  setSubtitleColor: (color: string) => void
+  setSubtitleBorderStyle: (style: 'outline' | 'shadow' | 'none') => void
   setVisibleHeroRatings: (ratings: string[]) => void
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
@@ -586,6 +590,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
   subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
+  subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
+  subtitleBorderStyle: (localStorage.getItem('aurales_sub_border_style') as 'outline' | 'shadow' | 'none') || 'outline',
   visibleHeroRatings: (() => {
     try {
       const raw = localStorage.getItem('aurales_visible_hero_ratings')
@@ -640,6 +646,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
   setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
   setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
+  setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color }) },
+  setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style }) },
   setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
   openrouterApiKey: localStorage.getItem('openrouter_api_key') || '',
   openrouterModel: localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash',

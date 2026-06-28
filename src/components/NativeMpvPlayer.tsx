@@ -601,6 +601,10 @@ function FullNativeMpvPlayer({
   const openrouterModel = useAppStore((s) => s.openrouterModel)
   const subtitleTranslationLang = useAppStore((s) => s.subtitleTranslationLang)
   const subtitleTranslationEnabled = useAppStore((s) => s.subtitleTranslationEnabled)
+  const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
+  const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
+  const subtitleColor = useAppStore((s) => s.subtitleColor)
+  const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
   const translationCuesAhead = useAppStore((s) => s.translationCuesAhead)
   const contextAwareTranslation = useAppStore((s) => s.contextAwareTranslation)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
@@ -614,6 +618,28 @@ function FullNativeMpvPlayer({
   useEffect(() => { showUpNextRef.current = showUpNext }, [showUpNext])
   useEffect(() => { volumeRef.current = volume }, [volume])
 
+  // Live-sync subtitle styling to mpv when settings change during playback
+  const playerRunningRef = useRef(playerRunning)
+  useEffect(() => { playerRunningRef.current = playerRunning }, [playerRunning])
+  useEffect(() => {
+    if (!playerRunningRef.current) return
+    sendPlayerCommand('set_property', ['sub-font-size', subtitleFontSize]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-color', subtitleColor]).catch(() => {})
+    const bgAlpha = Math.round(Number(subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
+    sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
+    if (subtitleBorderStyle === 'outline') {
+      sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+    } else if (subtitleBorderStyle === 'shadow') {
+      sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
+    } else {
+      sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+    }
+  }, [subtitleFontSize, subtitleColor, subtitleBgOpacity, subtitleBorderStyle])
+
   const applySavedVolume = useCallback((delays = [0, 250, 750, 1500, 3000]) => {
     const target = volumeRef.current
     delays.forEach((delay) => {
@@ -625,12 +651,12 @@ function FullNativeMpvPlayer({
 
   // ── Watch Together sync ──────────────────────────────────────────────────
   useEffect(() => {
-    const wtState = useWatchTogetherStore.getState()
-    if (!wtState.currentRoom) return
+    if (!isInWatchTogether) return
 
     resetDriftState()
 
     const onSyncRequest = (e: Event) => {
+      if (!playerRunningRef.current) return
       const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean }
 
       const { driftThreshold } = useWatchTogetherStore.getState()
@@ -661,7 +687,7 @@ function FullNativeMpvPlayer({
       window.removeEventListener('wt:sync_request', onSyncRequest)
       resetDriftState()
     }
-  }, [])
+  }, [isInWatchTogether])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -1019,6 +1045,8 @@ function FullNativeMpvPlayer({
         return
       }
 
+      if (useWatchTogetherStore.getState().drawModeActive) return
+
       const key = e.key
       if (key === ' ' || key === 'Spacebar') {
         e.preventDefault()
@@ -1158,9 +1186,25 @@ function FullNativeMpvPlayer({
         setPlayerRunning(true)
         session.status = "playing"
 
-        // Enforce saved volume a few times because mpv can reset filters/audio
-        // while the demuxer initializes on some streams.
+        // Enforce saved volume and subtitle styling
         applySavedVolume()
+        const subState = useAppStore.getState()
+        sendPlayerCommand('set_property', ['sub-font-size', subState.subtitleFontSize]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-color', subState.subtitleColor]).catch(() => {})
+        const bgAlpha = Math.round(Number(subState.subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
+        sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
+        if (subState.subtitleBorderStyle === 'outline') {
+          sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+        } else if (subState.subtitleBorderStyle === 'shadow') {
+          sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
+        } else {
+          sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+        }
+        sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
 
         if (playbackItem) {
           const startProgress = startTime && progressRef.current.duration > 0
@@ -1833,13 +1877,23 @@ function FullNativeMpvPlayer({
       setError('The player process has exited. Go back and choose another stream.')
       return
     }
+    command('cycle', ['pause'])
+
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
+      const pos = progressRef.current.currentTime
+      if (pausedRef.current) wtPlay(pos)
+      else wtPause(pos)
+    }
+    wtIgnoreNextEvent.current = false
+
     setPaused((prev) => {
       const newPaused = !prev
       const item = currentItemRef.current
       if (item) {
         const { currentTime: pos, duration: dur } = progressRef.current
         const progress = dur > 0 ? pos / dur : 0
-        saveLocalProgress(pos, dur, false)
+        queueMicrotask(() => saveLocalProgress(pos, dur, false))
         if (newPaused) {
           if (scrobbleSimkl) {
             saveSimklPlaybackProgress(item, progress).catch(() => {})
@@ -1869,15 +1923,6 @@ function FullNativeMpvPlayer({
       }
       return newPaused
     })
-    command('cycle', ['pause'])
-
-    const wt = useWatchTogetherStore.getState()
-    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
-      const pos = progressRef.current.currentTime
-      if (paused) wtPlay(pos)
-      else wtPause(pos)
-    }
-    wtIgnoreNextEvent.current = false
   }
 
   const seekBy = (secs: number) => {
@@ -1906,6 +1951,7 @@ function FullNativeMpvPlayer({
       command('set_property', ['sub-visibility', false])
     } else {
       command('set_property', ['sid', id])
+      sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
       command('set_property', ['sub-visibility', !liveTranslateOn])
     }
     setTrackMenu(null)
@@ -1951,8 +1997,8 @@ function FullNativeMpvPlayer({
       {/* Video click area (sit below controls) */}
       <div
         className="absolute inset-0 z-[1]"
-        onClick={() => { showControls(); togglePlay() }}
-        onDoubleClick={toggleFullscreen}
+        onClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) { showControls(); togglePlay() } }}
+        onDoubleClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) toggleFullscreen() }}
       />
 
       {/* Center play/pause indicator */}
@@ -2075,9 +2121,26 @@ function FullNativeMpvPlayer({
                           if (selectedSub === 'no' && subTracks.length > 0) {
                             const firstTrack = subTracks[0].id
                             setSelectedSub(firstTrack)
-                            command('set_property', ['sid', firstTrack])
+                            sendPlayerCommand('set_property', ['sid', firstTrack]).catch(() => {})
                           }
-                          command('set_property', ['sub-visibility', false])
+                          const subState = useAppStore.getState()
+                          sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
+                          sendPlayerCommand('set_property', ['sub-font-size', subState.subtitleFontSize]).catch(() => {})
+                          sendPlayerCommand('set_property', ['sub-color', subState.subtitleColor]).catch(() => {})
+                          const bgAlpha = Math.round(Number(subState.subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
+                          sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
+                          if (subState.subtitleBorderStyle === 'outline') {
+                            sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
+                            sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+                          } else if (subState.subtitleBorderStyle === 'shadow') {
+                            sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+                            sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
+                            sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
+                          } else {
+                            sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+                            sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+                          }
+                          sendPlayerCommand('set_property', ['sub-visibility', false]).catch(() => {})
                         } else {
                           if (selectedSub !== 'no') {
                             command('set_property', ['sub-visibility', true])
@@ -2363,19 +2426,41 @@ function FullNativeMpvPlayer({
       </div>
 
       {/* Live translated subtitle overlay */}
-      {liveTranslateOn && currentSubText && (
-        <div className="absolute inset-x-0 bottom-24 z-[8] flex flex-col items-center pointer-events-none px-12 gap-1">
-          {translatedText ? (
-            <span className="inline-block px-3 py-1 rounded bg-black/80 text-white text-lg font-medium leading-snug text-center shadow-[0_2px_8px_rgba(0,0,0,0.6)]" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.7)' }}>
-              {translatedText}
-            </span>
-          ) : (
-            <span className="inline-block px-3 py-1 rounded bg-black/60 text-white/50 text-base italic leading-snug text-center">
-              {currentSubText}
-            </span>
-          )}
-        </div>
-      )}
+      {liveTranslateOn && currentSubText && (() => {
+        const subTextShadow = subtitleBorderStyle === 'outline'
+          ? `0 0 3px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.8), -1px -1px 0 rgba(0,0,0,0.8)`
+          : subtitleBorderStyle === 'shadow'
+            ? `2px 2px 4px rgba(0,0,0,0.9)`
+            : 'none'
+        return (
+          <div className="absolute inset-x-0 bottom-24 z-[8] flex flex-col items-center pointer-events-none px-12 gap-1">
+            {translatedText ? (
+              <span
+                className="inline-block px-3 py-1 rounded font-semibold leading-snug text-center"
+                style={{
+                  fontSize: `${subtitleFontSize}px`,
+                  color: subtitleColor,
+                  backgroundColor: `rgba(0, 0, 0, ${subtitleBgOpacity})`,
+                  textShadow: subTextShadow,
+                }}
+              >
+                {translatedText}
+              </span>
+            ) : (
+              <span
+                className="inline-block px-3 py-1 rounded italic leading-snug text-center"
+                style={{
+                  fontSize: `${Math.max(14, subtitleFontSize - 4)}px`,
+                  color: `${subtitleColor}80`,
+                  backgroundColor: `rgba(0, 0, 0, ${Math.max(0.3, Number(subtitleBgOpacity))})`,
+                }}
+              >
+                {currentSubText}
+              </span>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Up Next overlay */}
       {showUpNext && nextEpInfo && (

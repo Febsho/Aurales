@@ -27,6 +27,14 @@
       "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:; media-src * blob: data:; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Febsho/Aurales/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
