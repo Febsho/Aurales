@@ -38,6 +38,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Prepare bundled mpv
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          $tmp = Join-Path $env:RUNNER_TEMP 'mpv'
+          $zip = Join-Path $env:RUNNER_TEMP 'mpv.zip'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-pc-windows-msvc.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          Copy-Item (Join-Path $tmp 'mpv.exe') 'src-tauri/binaries/mpv-x86_64-pc-windows-msvc.exe' -Force
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
