@@ -132,6 +132,14 @@ function handleEvent(ws: WebSocket, client: ConnectedClient, event: ClientEvent,
       handleChat(ws, client, event, config)
       return
 
+    case 'DRAW_STROKE':
+      handleDrawStroke(ws, client, event)
+      return
+
+    case 'DRAW_CLEAR':
+      handleDrawClear(ws, client, event)
+      return
+
     case 'TRANSFER_HOST':
       handleTransferHost(ws, client, event)
       return
@@ -388,6 +396,37 @@ function handleTransferHost(
     broadcastToRoom(event.roomId, { type: 'HOST_TRANSFERRED', newHostUserId: event.newHostUserId })
     broadcastToRoom(event.roomId, { type: 'ROOM_STATE', room: updated })
   }
+}
+
+function handleDrawStroke(
+  ws: WebSocket,
+  client: ConnectedClient,
+  event: Extract<ClientEvent, { type: 'DRAW_STROKE' }>,
+): void {
+  const room = getRoom(event.roomId)
+  if (!room || !isParticipant(room, event.senderUserId)) return
+
+  const sender = room.participants.find(p => p.id === event.senderUserId)
+  broadcastToRoom(event.roomId, {
+    type: 'DRAW_RECEIVED',
+    stroke: event.stroke,
+    senderUserId: event.senderUserId,
+    senderName: sender?.name ?? 'Unknown',
+  }, event.senderUserId)
+}
+
+function handleDrawClear(
+  ws: WebSocket,
+  client: ConnectedClient,
+  event: Extract<ClientEvent, { type: 'DRAW_CLEAR' }>,
+): void {
+  const room = getRoom(event.roomId)
+  if (!room || !isParticipant(room, event.senderUserId)) return
+
+  broadcastToRoom(event.roomId, {
+    type: 'DRAW_CLEARED',
+    senderUserId: event.senderUserId,
+  })
 }
 
 function handleDisconnect(ws: WebSocket, client: ConnectedClient, config: ServerConfig): void {

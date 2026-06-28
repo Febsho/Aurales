@@ -40,6 +40,8 @@ import {
   sendBuffering as wtSendBuffering,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
+import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
+import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -602,6 +604,7 @@ function FullNativeMpvPlayer({
   const translationCuesAhead = useAppStore((s) => s.translationCuesAhead)
   const contextAwareTranslation = useAppStore((s) => s.contextAwareTranslation)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   // Keep refs in sync with state for stale-closure access
   const pausedRef = useRef(paused)
@@ -1996,6 +1999,14 @@ function FullNativeMpvPlayer({
           <div className="w-3.5 h-3.5 border border-white/30 border-t-transparent rounded-full animate-spin" />
           Detecting tracks…
         </div>
+      )}
+
+      {/* Watch Together overlays */}
+      {isInWatchTogether && (
+        <>
+          <PlayerDrawOverlay />
+          <PlayerChatOverlay />
+        </>
       )}
 
       {/* Skip Intro / Credits button */}
