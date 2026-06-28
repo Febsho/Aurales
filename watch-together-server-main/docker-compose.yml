@@ -1,0 +1,9 @@
+services:
+  watch-together:
+    build: .
+    container_name: orynt-watch-together
+    restart: unless-stopped
+    ports:
+      - "3009:3009"
+    env_file:
+      - .env
