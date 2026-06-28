@@ -505,7 +505,8 @@ export default function SettingsPage() {
     } catch (err: any) {
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
-      setAnilistMessage(err?.message || 'AniList connection failed')
+      const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
+      setAnilistMessage(msg)
     } finally {
       setAnilistLoading(false)
     }
@@ -523,7 +524,8 @@ export default function SettingsPage() {
     } catch (err: any) {
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
-      setAnilistMessage(err?.message || 'AniList connection failed')
+      const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
+      setAnilistMessage(msg)
     } finally {
       setAnilistLoading(false)
     }
@@ -1878,10 +1880,13 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              {/* Ratings on Cards */}
+              {/* Card overlays */}
               <SettingSection>
                 <SettingRow label="Show Ratings on Media Cards" description="Render rating badges on card thumbnails.">
                   <SettingToggle checked={store.showRatingsOnCards} onChange={(v) => store.setShowRatingsOnCards(v)} />
+                </SettingRow>
+                <SettingRow label="Show Genre on Media Cards" description="Display genre label on poster cards. Disabling can speed up catalog loading.">
+                  <SettingToggle checked={store.showGenreOnCards} onChange={(v) => store.setShowGenreOnCards(v)} />
                 </SettingRow>
               </SettingSection>
 
