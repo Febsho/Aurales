@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Manager, State};
 
 // ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
@@ -71,10 +71,13 @@ fn discord_ipc_set_activity(activity: serde_json::Value) -> Result<(), String> {
         .as_mut()
         .ok_or_else(|| "Discord IPC not connected".to_string())?;
 
-    let nonce = format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let nonce = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     let payload = serde_json::json!({
         "cmd": "SET_ACTIVITY",
@@ -97,16 +100,20 @@ fn discord_ipc_set_activity(activity: serde_json::Value) -> Result<(), String> {
     {
         use std::io::Read;
         use std::os::windows::io::AsRawHandle;
-        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
         use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
         let handle = HANDLE(pipe.as_raw_handle());
         let mut mode = PIPE_NOWAIT;
-        unsafe { let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None); }
+        unsafe {
+            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
         let mut drain = [0u8; 4096];
         let _ = pipe.read(&mut drain);
         let mut mode = PIPE_WAIT;
-        unsafe { let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None); }
+        unsafe {
+            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
+        }
     }
 
     Ok(())
@@ -256,7 +263,7 @@ struct NativePlayerState {
     host_hwnd: isize,
     child: Child,
     ipc_path: String,
-    writer: Option<std::fs::File>,
+    writer: Option<Arc<Mutex<std::fs::File>>>,
 }
 
 static NATIVE_PLAYER: OnceLock<Mutex<Option<NativePlayerState>>> = OnceLock::new();
@@ -297,9 +304,12 @@ fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
     NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
 }
 
-static PROPERTY_CACHE: OnceLock<std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>> = OnceLock::new();
+static PROPERTY_CACHE: OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
+> = OnceLock::new();
 
-fn get_property_cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>> {
+fn get_property_cache(
+) -> &'static std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>> {
     PROPERTY_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
@@ -553,13 +563,25 @@ pub fn save_app_metadata(
     db: State<Database>,
 ) -> Result<(), String> {
     let media: serde_json::Value = serde_json::from_str(&media_json).map_err(|e| e.to_string())?;
-    let id = media.get("id").and_then(|v| v.as_str()).ok_or("Missing media id")?;
-    let title = media.get("title").and_then(|v| v.as_str()).ok_or("Missing media title")?;
-    let updated_at = media.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("");
+    let id = media
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing media id")?;
+    let title = media
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing media title")?;
+    let updated_at = media
+        .get("updatedAt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let text = |key: &str| media.get(key).and_then(|v| v.as_str());
     let integer = |key: &str| media.get(key).and_then(|v| v.as_i64());
     let real = |key: &str| media.get(key).and_then(|v| v.as_f64());
-    let genres = media.get("genres").map(|v| v.to_string()).unwrap_or_else(|| "[]".into());
+    let genres = media
+        .get("genres")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "[]".into());
     let provider = text("sourceMetadataProvider").unwrap_or("fallback_addon");
     let conn = db.conn.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
@@ -567,8 +589,10 @@ pub fn save_app_metadata(
         "INSERT OR REPLACE INTO app_media (id, media_type, title, original_title, localized_title, year, overview, poster, backdrop, logo, genres_json, runtime, rating, age_rating, language, country, tmdb_id, tvdb_id, imdb_id, trakt_id, simkl_id, anilist_id, mal_id, source_metadata_provider, source_addon_id, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
         rusqlite::params![id, media_type, title, text("originalTitle"), text("localizedTitle"), integer("year"), text("overview"), text("poster"), text("backdrop"), text("logo"), genres, integer("runtime"), real("rating"), text("ageRating"), text("language"), text("country"), integer("tmdbId"), integer("tvdbId"), text("imdbId"), integer("traktId"), integer("simklId"), integer("anilistId"), integer("malId"), provider, addon_id, media_json, updated_at]
     ).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [id]).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
     if let Some(seasons) = media.get("seasons").and_then(|v| v.as_array()) {
         for season in seasons {
             let season_id = season.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -582,13 +606,25 @@ pub fn save_app_metadata(
     }
     let mapping_id = format!("{}:{}", addon_id, addon_item_id);
     tx.execute("INSERT OR REPLACE INTO addon_media_mappings (id, addon_id, addon_item_id, local_media_id, media_type, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,COALESCE((SELECT created_at FROM addon_media_mappings WHERE id=?1),datetime('now')),datetime('now'))", rusqlite::params![mapping_id, addon_id, addon_item_id, id, media_type]).map_err(|e| e.to_string())?;
-    let log_id = format!("{}:{}:{}", addon_id, addon_item_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let log_id = format!(
+        "{}:{}:{}",
+        addon_id,
+        addon_item_id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
     tx.execute("INSERT INTO metadata_resolution_log (id, addon_id, addon_item_id, local_media_id, status, reason, created_at) VALUES (?1,?2,?3,?4,?5,?6,datetime('now'))", rusqlite::params![log_id, addon_id, addon_item_id, id, if provider == "fallback_addon" { "fallback" } else { "resolved" }, provider]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_app_metadata_for_addon(addon_id: String, addon_item_id: String, db: State<Database>) -> Option<String> {
+pub fn get_app_metadata_for_addon(
+    addon_id: String,
+    addon_item_id: String,
+    db: State<Database>,
+) -> Option<String> {
     let conn = db.conn.lock().unwrap();
     conn.query_row("SELECT m.raw_json FROM app_media m JOIN addon_media_mappings a ON a.local_media_id=m.id WHERE a.addon_id=?1 AND a.addon_item_id=?2", rusqlite::params![addon_id, addon_item_id], |row| row.get(0)).ok()
 }
@@ -603,70 +639,70 @@ pub fn get_app_metadata_by_ids(
     db: State<Database>,
 ) -> Option<String> {
     let conn = db.conn.lock().unwrap();
-    
+
     // 1. Try by id first
     if let Some(ref id_str) = id {
         if let Ok(json) = conn.query_row(
             "SELECT raw_json FROM app_media WHERE id = ?1",
             [id_str],
-            |row| row.get::<_, String>(0)
+            |row| row.get::<_, String>(0),
         ) {
             return Some(json);
         }
     }
-    
+
     // 2. Try by imdb_id
     if let Some(ref imdb) = imdb_id {
         if !imdb.is_empty() {
             if let Ok(json) = conn.query_row(
                 "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
                 [imdb],
-                |row| row.get::<_, String>(0)
+                |row| row.get::<_, String>(0),
             ) {
                 return Some(json);
             }
         }
     }
-    
+
     // 3. Try by tmdb_id
     if let Some(tmdb) = tmdb_id {
         if tmdb > 0 {
             if let Ok(json) = conn.query_row(
                 "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
                 [tmdb],
-                |row| row.get::<_, String>(0)
+                |row| row.get::<_, String>(0),
             ) {
                 return Some(json);
             }
         }
     }
-    
+
     // 4. Try by tvdb_id
     if let Some(tvdb) = tvdb_id {
         if tvdb > 0 {
             if let Ok(json) = conn.query_row(
                 "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
                 [tvdb],
-                |row| row.get::<_, String>(0)
+                |row| row.get::<_, String>(0),
             ) {
                 return Some(json);
             }
         }
     }
-    
+
     // 5. Try by anilist_id
     if let Some(anilist) = anilist_id {
         if anilist > 0 {
             if let Ok(json) = conn.query_row(
                 "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
                 [anilist],
-                |row| row.get::<_, String>(0)
+                |row| row.get::<_, String>(0),
             ) {
                 return Some(json);
             }
         }
     }
-    
+
     None
 }
 
@@ -676,58 +712,71 @@ pub fn get_app_metadata_by_ids_batch(
     db: State<Database>,
 ) -> Vec<Option<String>> {
     let conn = db.conn.lock().unwrap();
-    items.iter().map(|item| {
-        let id = item.get("id").and_then(|v| v.as_str());
-        let imdb_id = item.get("imdbId").and_then(|v| v.as_str());
-        let tmdb_id = item.get("tmdbId").and_then(|v| v.as_i64());
-        let tvdb_id = item.get("tvdbId").and_then(|v| v.as_i64());
-        let anilist_id = item.get("anilistId").and_then(|v| v.as_i64());
+    items
+        .iter()
+        .map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str());
+            let imdb_id = item.get("imdbId").and_then(|v| v.as_str());
+            let tmdb_id = item.get("tmdbId").and_then(|v| v.as_i64());
+            let tvdb_id = item.get("tvdbId").and_then(|v| v.as_i64());
+            let anilist_id = item.get("anilistId").and_then(|v| v.as_i64());
 
-        if let Some(id_str) = id {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE id = ?1",
-                [id_str],
-                |row| row.get::<_, String>(0)
-            ) { return Some(json); }
-        }
-        if let Some(imdb) = imdb_id {
-            if !imdb.is_empty() {
+            if let Some(id_str) = id {
                 if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-                    [imdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
+                    "SELECT raw_json FROM app_media WHERE id = ?1",
+                    [id_str],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    return Some(json);
+                }
             }
-        }
-        if let Some(tmdb) = tmdb_id {
-            if tmdb > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
-                    [tmdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
+            if let Some(imdb) = imdb_id {
+                if !imdb.is_empty() {
+                    if let Ok(json) = conn.query_row(
+                        "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
+                        [imdb],
+                        |row| row.get::<_, String>(0),
+                    ) {
+                        return Some(json);
+                    }
+                }
             }
-        }
-        if let Some(tvdb) = tvdb_id {
-            if tvdb > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
-                    [tvdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
+            if let Some(tmdb) = tmdb_id {
+                if tmdb > 0 {
+                    if let Ok(json) = conn.query_row(
+                        "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
+                        [tmdb],
+                        |row| row.get::<_, String>(0),
+                    ) {
+                        return Some(json);
+                    }
+                }
             }
-        }
-        if let Some(anilist) = anilist_id {
-            if anilist > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
-                    [anilist],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
+            if let Some(tvdb) = tvdb_id {
+                if tvdb > 0 {
+                    if let Ok(json) = conn.query_row(
+                        "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
+                        [tvdb],
+                        |row| row.get::<_, String>(0),
+                    ) {
+                        return Some(json);
+                    }
+                }
             }
-        }
-        None
-    }).collect()
+            if let Some(anilist) = anilist_id {
+                if anilist > 0 {
+                    if let Ok(json) = conn.query_row(
+                        "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
+                        [anilist],
+                        |row| row.get::<_, String>(0),
+                    ) {
+                        return Some(json);
+                    }
+                }
+            }
+            None
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -746,27 +795,69 @@ pub fn delete_app_metadata(
     ).ok();
 
     if let Some(id) = local_media_id {
-        tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM anime_season_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM anime_episode_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_media WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM addon_media_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&id])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&id])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM anime_season_mappings WHERE local_media_id = ?1",
+            [&id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM anime_episode_mappings WHERE local_media_id = ?1",
+            [&id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM app_media WHERE id = ?1", [&id])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM addon_media_mappings WHERE local_media_id = ?1",
+            [&id],
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn hard_reset_anime_metadata(local_media_id: String, db: State<Database>) -> Result<(), String> {
+pub fn hard_reset_anime_metadata(
+    local_media_id: String,
+    db: State<Database>,
+) -> Result<(), String> {
     let conn = db.conn.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM anime_season_mappings WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM anime_episode_mappings WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM metadata_resolution_log WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("UPDATE app_media SET raw_json = NULL, updated_at = NULL WHERE id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM app_seasons WHERE local_media_id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM app_episodes WHERE local_media_id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM anime_season_mappings WHERE local_media_id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM anime_episode_mappings WHERE local_media_id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM metadata_resolution_log WHERE local_media_id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE app_media SET raw_json = NULL, updated_at = NULL WHERE id = ?1",
+        [&local_media_id],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -939,7 +1030,11 @@ pub fn launch_minimal_mpv(
         std::process::id(),
         MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
     );
-    let hwdec = if hwdec_mode.as_deref() == Some("no") { "no" } else { "auto-safe" };
+    let hwdec = if hwdec_mode.as_deref() == Some("no") {
+        "no"
+    } else {
+        "auto-safe"
+    };
 
     let mut args = vec![
         "--force-window=yes".to_string(),
@@ -1004,7 +1099,10 @@ pub fn launch_minimal_mpv(
         let stderr_session = session_id.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
             }
         });
@@ -1014,7 +1112,10 @@ pub fn launch_minimal_mpv(
         let stdout_session = session_id.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
             }
         });
@@ -1043,24 +1144,40 @@ pub fn launch_minimal_mpv(
             }
         };
         if let Some(status) = exit {
-            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            player_debug_log(format!(
+                "[PLAYER EXIT] session={} status={}",
+                monitor_session, status
+            ));
             return;
         }
     });
 
-    Ok(MinimalPlayerInfo { session_id, pid, stream_hash })
+    Ok(MinimalPlayerInfo {
+        session_id,
+        pid,
+        stream_hash,
+    })
 }
 
 #[tauri::command]
-pub fn minimal_mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+pub fn minimal_mpv_command(
+    command: String,
+    args: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
     let _ = args;
-    player_debug_log(format!("[PLAYER CONTROL IGNORED] command={} reason=ipc-disabled-in-isolation", command));
+    player_debug_log(format!(
+        "[PLAYER CONTROL IGNORED] command={} reason=ipc-disabled-in-isolation",
+        command
+    ));
     Err("Player controls are disabled in isolated playback. Use mpv's native controls.".to_string())
 }
 
 #[tauri::command]
 pub fn stop_minimal_mpv(reason: Option<String>) -> Result<(), String> {
-    player_debug_log(format!("[PLAYER STOP CALLED] reason={}", reason.unwrap_or_else(|| "unspecified".to_string())));
+    player_debug_log(format!(
+        "[PLAYER STOP CALLED] reason={}",
+        reason.unwrap_or_else(|| "unspecified".to_string())
+    ));
     stop_embedded_mpv()
 }
 
@@ -1068,7 +1185,10 @@ pub fn stop_minimal_mpv(reason: Option<String>) -> Result<(), String> {
 pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> {
     let (running, pid) = {
         let state = native_player_state().lock().map_err(|e| e.to_string())?;
-        (state.is_some(), state.as_ref().map(|player| player.child.id()))
+        (
+            state.is_some(),
+            state.as_ref().map(|player| player.child.id()),
+        )
     };
     let debug = player_debug_state().lock().map_err(|e| e.to_string())?;
     Ok(MinimalPlayerStateResponse {
@@ -1082,17 +1202,28 @@ pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> 
 
 #[tauri::command]
 pub fn get_embedded_player_running() -> Result<bool, String> {
-    Ok(native_player_state().lock().map_err(|e| e.to_string())?.is_some())
+    Ok(native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .is_some())
 }
 
 #[tauri::command]
 pub fn get_player_debug_logs() -> Result<Vec<String>, String> {
-    Ok(player_debug_state().lock().map_err(|e| e.to_string())?.logs.clone())
+    Ok(player_debug_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .logs
+        .clone())
 }
 
 #[tauri::command]
 pub fn clear_player_debug_logs() -> Result<(), String> {
-    player_debug_state().lock().map_err(|e| e.to_string())?.logs.clear();
+    player_debug_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .logs
+        .clear();
     Ok(())
 }
 
@@ -1236,7 +1367,10 @@ fn launch_mpv_with_window(
         let stderr_session = normal_session.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
             }
         });
@@ -1246,7 +1380,10 @@ fn launch_mpv_with_window(
         let stdout_session = normal_session.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
             }
         });
@@ -1271,7 +1408,9 @@ fn launch_mpv_with_window(
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let Some(player) = state.as_mut() else { continue };
+            let Some(player) = state.as_mut() else {
+                continue;
+            };
             if player.ipc_path != monitor_ipc_path {
                 return;
             }
@@ -1285,7 +1424,10 @@ fn launch_mpv_with_window(
             }
         };
         if let Some(status) = exit {
-            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            player_debug_log(format!(
+                "[PLAYER EXIT] session={} status={}",
+                monitor_session, status
+            ));
             return;
         }
     });
@@ -1316,15 +1458,16 @@ fn launch_mpv_with_window(
             Err(_) => return,
         };
 
+        let writer = Arc::new(Mutex::new(file));
+
         if let Ok(mut state_lock) = native_player_state().lock() {
             if let Some(player) = state_lock.as_mut() {
                 if player.ipc_path == ipc_path_clone {
-                    player.writer = file.try_clone().ok();
+                    player.writer = Some(Arc::clone(&writer));
                 }
             }
         }
 
-        let mut writer = file;
         let observe_cmds = [
             r#"{"command":["observe_property",1,"time-pos"]}"#,
             r#"{"command":["observe_property",2,"duration"]}"#,
@@ -1339,8 +1482,11 @@ fn launch_mpv_with_window(
             r#"{"command":["observe_property",11,"idle-active"]}"#,
             r#"{"command":["observe_property",12,"core-idle"]}"#,
         ];
-        for cmd in observe_cmds {
-            let _ = writeln!(writer, "{}", cmd);
+        if let Ok(mut writer_guard) = writer.lock() {
+            for cmd in observe_cmds {
+                let _ = writeln!(writer_guard, "{}", cmd);
+            }
+            let _ = writer_guard.flush();
         }
 
         let reader = std::io::BufReader::new(reader_file);
@@ -1381,13 +1527,22 @@ pub fn mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Res
     let writer_opt = {
         let state = native_player_state().lock().map_err(|e| e.to_string())?;
         match state.as_ref() {
-            Some(player) => player.writer.as_ref().and_then(|w| w.try_clone().ok()),
+            Some(player) => player.writer.as_ref().map(Arc::clone),
             None => return Err("No player is running".to_string()),
         }
     };
 
-    if let Some(mut writer) = writer_opt {
-        if let Err(e) = writeln!(writer, "{}", payload) {
+    if let Some(writer) = writer_opt {
+        let write_result = writer
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|mut writer_guard| {
+                writeln!(writer_guard, "{}", payload)
+                    .and_then(|_| writer_guard.flush())
+                    .map_err(|e| e.to_string())
+            });
+
+        if let Err(e) = write_result {
             if let Ok(mut state) = native_player_state().lock() {
                 if let Some(player) = state.as_mut() {
                     player.writer = None;
@@ -1650,7 +1805,10 @@ pub async fn http_get_text(url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn openrouter_chat(api_key: String, request_body: serde_json::Value) -> Result<String, String> {
+pub async fn openrouter_chat(
+    api_key: String,
+    request_body: serde_json::Value,
+) -> Result<String, String> {
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {
         return Err("OpenRouter API key is required.".to_string());
@@ -2227,7 +2385,9 @@ pub fn cache_entry_stats(db: State<Database>) -> Result<serde_json::Value, Strin
         .prepare("SELECT category, COUNT(*) FROM cache_entries GROUP BY category")
         .map_err(|e| e.to_string())?;
     let by_category: std::collections::HashMap<String, i64> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -2241,8 +2401,13 @@ pub fn cache_entry_stats(db: State<Database>) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 pub fn get_mpv_info() -> Result<serde_json::Value, String> {
-    let path = find_mpv().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "Not Found".to_string());
-    let candidates: Vec<String> = mpv_candidates().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let path = find_mpv()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Not Found".to_string());
+    let candidates: Vec<String> = mpv_candidates()
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     Ok(serde_json::json!({
         "path": path,
         "candidates": candidates,
