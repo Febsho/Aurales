@@ -114,7 +114,7 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   debugLog: [],
 
   // Settings (loaded from localStorage)
-  serverUrl: lsGet('serverUrl', 'ws://localhost:9876'),
+  serverUrl: lsGet('serverUrl', 'wss://watch.orynt.app/ws'),
   defaultNickname: lsGet('defaultNickname', ''),
   defaultControlMode: lsGet<'host_only' | 'everyone'>('defaultControlMode', 'host_only'),
   requireReadyCheck: lsGet('requireReadyCheck', true),
