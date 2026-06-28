@@ -104,6 +104,57 @@ export async function isWatchedFromProviders(
   return checks.some(Boolean)
 }
 
+export async function batchIsWatchedFromProviders(
+  items: WatchedLookupItem[],
+  sources: WatchedSource[],
+  completedIds: Set<string>,
+): Promise<Set<string>> {
+  const result = new Set<string>()
+  if (items.length === 0) return result
+
+  const toKey = (it: WatchedLookupItem) => `${it.season}:${it.episode}`
+
+  if (sources.includes('local')) {
+    for (const item of items) {
+      const ids = normalizedIds(item)
+      if (ids.some((id) => completedIds.has(id))) { result.add(toKey(item)); continue }
+      if (item.type === 'series' && item.season != null && item.episode != null) {
+        if (ids.some((id) => completedIds.has(`${id}:${item.season}:${item.episode}`))) result.add(toKey(item))
+      }
+    }
+  }
+
+  const remaining = items.filter((it) => !result.has(toKey(it)))
+  if (remaining.length === 0) return result
+
+  const providerSources = sources.filter((s) => s !== 'local')
+  if (providerSources.length === 0) return result
+
+  const [traktData, simklData, pmdbData] = await Promise.all([
+    providerSources.includes('trakt') ? getTraktCache().catch(() => ({ movies: [], shows: [] } as TraktCacheData)) : null,
+    providerSources.includes('simkl') ? getSimklCache().catch(() => ({ items: [] } as SimklCacheData)) : null,
+    providerSources.includes('pmdb') ? getPmdbCache().catch(() => ({ items: [] } as PmdbCacheData)) : null,
+  ])
+
+  const checkPromises = remaining.map(async (item) => {
+    if (traktData) {
+      if (await isTraktWatched(item).catch(() => false)) { result.add(toKey(item)); return }
+    }
+    if (simklData) {
+      if (await isSimklWatched(item).catch(() => false)) { result.add(toKey(item)); return }
+    }
+    if (pmdbData) {
+      if (await isPmdbWatched(item).catch(() => false)) { result.add(toKey(item)); return }
+    }
+    if (providerSources.includes('anilist')) {
+      if (await isAniListWatched(item).catch(() => false)) { result.add(toKey(item)); return }
+    }
+  })
+
+  await Promise.all(checkPromises)
+  return result
+}
+
 async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   if (item.type !== 'series') return false
   try {
