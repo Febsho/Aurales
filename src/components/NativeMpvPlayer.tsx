@@ -228,6 +228,7 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
         backgroundSize: 'cover',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
+        backgroundAttachment: 'fixed',
       } as CSSProperties
     : undefined
   const pipVars = {
@@ -548,6 +549,7 @@ function FullNativeMpvPlayer({
   const [showTimeRemaining, setShowTimeRemaining] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [draggingProgress, setDraggingProgress] = useState(0)
+  const draggingProgressRef = useRef(0)
   const [accumulatedSeek, setAccumulatedSeek] = useState<number | null>(null)
   const accumulatedSeekRef = useRef<number | null>(null)
 
@@ -1235,7 +1237,15 @@ function FullNativeMpvPlayer({
       if (pollRef.current) clearInterval(pollRef.current)
       if (trackPollRef.current) clearInterval(trackPollRef.current)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-      stopEmbeddedPlayer().catch(() => {})
+      // Defer stop so a re-mount's launchEmbeddedPlayer (which internally
+      // calls stop_embedded_mpv) can claim the player first.  If a new
+      // session has already taken over by the time this fires, skip the
+      // stop — otherwise we'd kill the new session's mpv process.
+      setTimeout(() => {
+        if (activeSessionRef.current === null || activeSessionRef.current.id === session.id) {
+          stopEmbeddedPlayer().catch(() => {})
+        }
+      }, 0)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, title])
@@ -2272,26 +2282,30 @@ function FullNativeMpvPlayer({
                 value={displayProgressPct}
                 onMouseDown={() => {
                   setIsDragging(true)
+                  draggingProgressRef.current = progressPct
                   setDraggingProgress(progressPct)
                 }}
                 onMouseUp={() => {
                   setIsDragging(false)
-                  command('seek', [draggingProgress, 'absolute-percent'])
+                  command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgress / 100) * duration)
+                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgressRef.current / 100) * duration)
                 }}
                 onTouchStart={() => {
                   setIsDragging(true)
+                  draggingProgressRef.current = progressPct
                   setDraggingProgress(progressPct)
                 }}
                 onTouchEnd={() => {
                   setIsDragging(false)
-                  command('seek', [draggingProgress, 'absolute-percent'])
+                  command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgress / 100) * duration)
+                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgressRef.current / 100) * duration)
                 }}
                 onChange={(e) => {
-                  setDraggingProgress(Number(e.target.value))
+                  const val = Number(e.target.value)
+                  draggingProgressRef.current = val
+                  setDraggingProgress(val)
                 }}
                 className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
               />

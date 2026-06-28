@@ -16,6 +16,7 @@ export interface WatchRoom {
   requireReadyCheck: boolean
   createdAt: string
   updatedAt: string
+  lastActivityAt?: string
 }
 
 export interface RoomMedia {
@@ -98,6 +99,8 @@ export interface RoomParticipant {
   playbackTime?: number
   latencyMs?: number
   status: ParticipantStatus
+  joinedAt?: string
+  lastSeenAt?: string
 }
 
 export interface RoomChatMessage {
@@ -111,7 +114,7 @@ export interface RoomChatMessage {
 // ── Events ───────────────────────────────────────────────────────────────────
 
 export type WatchTogetherEvent =
-  | { type: 'ROOM_JOIN'; roomId: string; name: string; createRoom?: boolean; title?: string }
+  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string }
   | { type: 'ROOM_LEAVE'; roomId: string; userId: string }
   | { type: 'READY'; roomId: string; userId: string; ready: boolean }
   | { type: 'MEDIA_SELECTED'; roomId: string; senderUserId: string; media: RoomMedia; episode?: RoomEpisode; stream?: RoomStream; sentAt: number }
@@ -124,6 +127,7 @@ export type WatchTogetherEvent =
   | { type: 'BUFFERING'; roomId: string; senderUserId: string; buffering: boolean; time: number; sentAt: number }
   | { type: 'CHAT_MESSAGE'; roomId: string; userId: string; message: string; sentAt: number }
   | { type: 'TRANSFER_HOST'; roomId: string; senderUserId: string; newHostUserId: string }
+  | { type: 'PING'; sentAt: number }
 
 // ── Server responses ─────────────────────────────────────────────────────────
 
