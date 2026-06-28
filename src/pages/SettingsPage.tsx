@@ -15,7 +15,6 @@ import {
   completeSimklLogin,
   disconnectSimkl,
   getSimklConnectionStatus,
-  isSimklMockMode,
 } from '../services/simkl/auth'
 import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
 import { loadAddonManifest, installAddon } from '../services/addons'
@@ -579,7 +578,6 @@ export default function SettingsPage() {
   const [simklVerificationUrl, setSimklVerificationUrl] = useState('')
   const simklPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simklTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isMock = isSimklMockMode()
 
   const [stremioEmail, setStremioEmail] = useState('')
   const [stremioPassword, setStremioPassword] = useState('')
@@ -1375,7 +1373,7 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Simkl */}
-              <SettingSection title={isMock ? 'Simkl (Mock mode)' : 'Simkl'} description="Sync watchlist, watching, and watch history.">
+              <SettingSection title="Simkl" description="Sync watchlist, watching, and watch history.">
                 <div className="px-6 py-4">
                   {simklStatus.connected || store.simklConnected ? (
                     <div className="space-y-3">
@@ -1459,14 +1457,6 @@ export default function SettingsPage() {
                       <p className="text-sm text-white/40">
                         Connect your Simkl account to sync your watchlist, watching, and watch history.
                       </p>
-                      {isMock && (
-                        <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-                          <p className="text-xs text-yellow-200">
-                            No Simkl client ID configured. Clicking Connect will use mock mode with sample data.
-                            To use real Simkl data, build with <code className="font-mono">VITE_SIMKL_CLIENT_ID</code>.
-                          </p>
-                        </div>
-                      )}
                       <button
                         onClick={handleSimklConnect}
                         disabled={simklLoading}
