@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { getTmdbPerson, type TmdbPersonDetails, type TmdbPersonCredit } from '../services/tmdb'
 
 function formatDate(value?: string): string | null {
@@ -24,9 +24,6 @@ function ageText(person: TmdbPersonDetails): string | null {
 export default function PersonPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const location = useLocation()
-  const canGoBack = location.key !== 'default'
-  const goBack = () => canGoBack ? navigate(-1) : navigate('/')
   const [person, setPerson] = useState<TmdbPersonDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -75,8 +72,7 @@ export default function PersonPage() {
   if (error || !person) {
     return (
       <div className="min-h-screen px-8 py-24">
-        <button onClick={() => goBack()} className="mb-8 text-sm text-white/50 hover:text-white cursor-pointer">Back</button>
-        <h1 className="text-2xl font-bold text-white">Person not found</h1>
+        <h1 className="text-2xl font-bold text-white mt-16">Person not found</h1>
         {error && <p className="mt-2 text-sm text-white/45">{error}</p>}
       </div>
     )
@@ -84,19 +80,7 @@ export default function PersonPage() {
 
   return (
     <div className="min-h-screen pb-20">
-      <div className="px-6 sm:px-8 pt-8">
-        <button
-          onClick={() => goBack()}
-          className="w-10 h-10 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
-          aria-label="Back"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
-            <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      </div>
-
-      <section className="px-6 sm:px-8 pt-8">
+      <section className="px-6 sm:px-8 pt-16">
         <div className="grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)] max-w-7xl">
           <div className="w-[180px] sm:w-[220px]">
             <div className="aspect-[2/3] rounded-xl overflow-hidden bg-white/[0.06] border border-white/[0.08] shadow-2xl">
