@@ -556,7 +556,7 @@ function SearchSettingsSection() {
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'subtitles' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
