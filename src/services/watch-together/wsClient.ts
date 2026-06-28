@@ -141,9 +141,8 @@ export async function createRoom(name: string): Promise<void> {
   }
   send({
     type: 'ROOM_JOIN',
-    roomId: '',
+    roomCode: '',
     name,
-    createRoom: true,
   })
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -175,8 +174,9 @@ export async function joinRoom(code: string, name: string): Promise<void> {
   }
   send({
     type: 'ROOM_JOIN',
-    roomId: code,
+    roomCode: code,
     name,
+    clientId: store.currentUserId || undefined,
   })
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -526,8 +526,9 @@ function attemptReconnect(): void {
       if (store.currentRoom && store.currentUserId) {
         send({
           type: 'ROOM_JOIN',
-          roomId: store.currentRoom.id,
+          roomCode: store.currentRoom.code,
           name: store.defaultNickname || 'Reconnecting...',
+          clientId: store.currentUserId,
         })
       }
     } catch (_) {
