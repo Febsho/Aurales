@@ -20,40 +20,23 @@ const LS_TOKEN = 'simkl_token'
 const LS_ACCOUNT = 'simkl_account'
 const LS_LAST_SYNC = 'simkl_last_sync'
 
+const BUILTIN_CLIENT_ID = '41909722c07fbb1a25cdca36ac9223cf0bca362b5081b18669c71189eb8027dc'
 const DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
 
-let _config: SimklConfig | null = null
-let _configResolved = false
+export function getSimklClientId(): string {
+  return localStorage.getItem('simkl_client_id') || import.meta.env.VITE_SIMKL_CLIENT_ID || BUILTIN_CLIENT_ID
+}
 
 export async function getSimklConfig(): Promise<SimklConfig> {
-  if (_configResolved) return _config!
-
-  try {
-    // Dynamic import: the local file is optional and gitignored.
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    const mod = await import(/* @vite-ignore */ '../../config/simkl.local')
-    if (mod?.SIMKL_CONFIG?.clientId) {
-      _config = mod.SIMKL_CONFIG as SimklConfig
-      _configResolved = true
-      return _config
-    }
-  } catch (_) {
-    // Local config absent; fall through to env vars.
-  }
-
-  _config = {
-    clientId: import.meta.env.VITE_SIMKL_CLIENT_ID || '',
+  return {
+    clientId: getSimklClientId(),
     clientSecret: '',
     redirectUri: import.meta.env.VITE_SIMKL_REDIRECT_URI || DEFAULT_REDIRECT_URI,
   }
-  _configResolved = true
-  return _config
 }
 
 export function isSimklMockMode(): boolean {
-  if (_configResolved) return !_config?.clientId
-  return !import.meta.env.VITE_SIMKL_CLIENT_ID
+  return false
 }
 
 export async function initiateSimklLogin(): Promise<SimklPinAuth> {
