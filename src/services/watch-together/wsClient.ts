@@ -4,6 +4,7 @@ import type {
   RoomMedia,
   RoomEpisode,
   RoomStream,
+  DrawStroke,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import { findMatchingLocalStream } from './streamMatcher'
@@ -340,6 +341,31 @@ export function sendChatMessage(message: string): void {
   })
 }
 
+// ── Drawing ────────────────────────────────────────────────────────────
+
+export function sendDrawStroke(stroke: DrawStroke): void {
+  const store = getStore()
+  if (!store.currentRoom || !store.currentUserId) return
+  send({
+    type: 'DRAW_STROKE',
+    roomId: store.currentRoom.id,
+    senderUserId: store.currentUserId,
+    stroke,
+    sentAt: Date.now(),
+  })
+}
+
+export function sendDrawClear(): void {
+  const store = getStore()
+  if (!store.currentRoom || !store.currentUserId) return
+  send({
+    type: 'DRAW_CLEAR',
+    roomId: store.currentRoom.id,
+    senderUserId: store.currentUserId,
+    sentAt: Date.now(),
+  })
+}
+
 // ── Host transfer ───────────────────────────────────────────────────────────
 
 export function transferHost(newHostUserId: string): void {
@@ -491,6 +517,18 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'CHAT_RECEIVED':
       store.addChatMessage(msg.message)
+      break
+
+    case 'DRAW_RECEIVED':
+      window.dispatchEvent(
+        new CustomEvent('wt:draw_received', {
+          detail: { stroke: msg.stroke, senderUserId: msg.senderUserId, senderName: msg.senderName },
+        }),
+      )
+      break
+
+    case 'DRAW_CLEARED':
+      window.dispatchEvent(new CustomEvent('wt:draw_cleared', { detail: { senderUserId: msg.senderUserId } }))
       break
 
     case 'HOST_TRANSFERRED': {
