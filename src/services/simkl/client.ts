@@ -5,7 +5,7 @@
  * All calls are authenticated with Bearer token + simkl-api-key header.
  */
 
-import { getStoredSimklToken, getSimklConfig, isSimklMockMode } from './auth'
+import { getStoredSimklToken, getSimklClientId, isSimklMockMode } from './auth'
 import type { SimklApiItem, SimklMapping } from './types'
 
 const BASE = 'https://api.simkl.com'
@@ -38,13 +38,8 @@ export type SimklErrorCode =
 
 // ─── Request wrapper ──────────────────────────────────────────────────────────
 
-let _clientId = ''
-
 async function ensureClientId(): Promise<string> {
-  if (_clientId) return _clientId
-  const config = await getSimklConfig()
-  _clientId = config.clientId
-  return _clientId
+  return getSimklClientId()
 }
 
 export async function simklRequest<T = unknown>(
@@ -155,7 +150,7 @@ export async function searchSimklItem(opts: {
   const params = new URLSearchParams({
     q: opts.title,
     type: opts.type ?? 'all',
-    client_id: _clientId || import.meta.env.VITE_SIMKL_CLIENT_ID || '',
+    client_id: getSimklClientId(),
   })
   if (opts.year) params.set('years', String(opts.year))
 
@@ -171,7 +166,7 @@ export async function resolveSimklMapping(opts: {
 }): Promise<SimklMapping | null> {
   if (isSimklMockMode()) return null
 
-  const clientId = _clientId || import.meta.env.VITE_SIMKL_CLIENT_ID || ''
+  const clientId = getSimklClientId()
 
   const tryId = async (service: string, id: string | number): Promise<SimklMapping | null> => {
     try {
