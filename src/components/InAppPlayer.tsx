@@ -22,6 +22,8 @@ import {
   sendSyncState as wtSendSyncState,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
+import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
+import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 
 interface InAppPlayerProps {
   url: string
@@ -81,6 +83,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
+  const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   const [showTranslateModal, setShowTranslateModal] = useState(false)
   const [translatingSub, setTranslatingSub] = useState(false)
@@ -584,6 +587,14 @@ IMPORTANT RULES:
           />
         ))}
       </video>
+
+      {/* Watch Together overlays */}
+      {isInWatchTogether && (
+        <>
+          <PlayerDrawOverlay />
+          <PlayerChatOverlay />
+        </>
+      )}
 
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
