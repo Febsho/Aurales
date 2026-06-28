@@ -235,6 +235,7 @@ export function leaveRoom(): void {
   store.setCurrentRoom(null)
   store.setCurrentUserId(null)
   store.setIsHost(false)
+  store.setDrawModeActive(false)
   store.setSelectedLocalStream(null)
   store.setRoomPanelOpen(false)
 }

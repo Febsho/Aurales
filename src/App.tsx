@@ -25,6 +25,7 @@ export default function App() {
   const defaultStartPage = useAppStore((s) => s.defaultStartPage)
   const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
+  const subtitleColor = useAppStore((s) => s.subtitleColor)
 
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -63,7 +64,8 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--sub-font-size', `${subtitleFontSize}px`)
     document.documentElement.style.setProperty('--sub-bg-opacity', subtitleBgOpacity)
-  }, [subtitleFontSize, subtitleBgOpacity])
+    document.documentElement.style.setProperty('--sub-color', subtitleColor)
+  }, [subtitleFontSize, subtitleBgOpacity, subtitleColor])
 
   useEffect(() => {
     if (location.pathname === '/' && defaultStartPage !== 'home') {

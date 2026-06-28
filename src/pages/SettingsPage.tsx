@@ -1026,10 +1026,21 @@ export default function SettingsPage() {
         {
           id: 'languages',
           label: 'Languages',
-          description: 'Preferred audio and subtitle language selection.',
+          description: 'Preferred audio and subtitle language auto-selection.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
+            </svg>
+          )
+        },
+        {
+          id: 'subtitles',
+          label: 'Subtitles',
+          description: 'Subtitle styling, translation, and display preferences.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="2" y="4" width="20" height="16" rx="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M6 11h6M6 15h10" strokeLinecap="round" />
             </svg>
           )
         },
@@ -1063,7 +1074,7 @@ export default function SettingsPage() {
         {
           id: 'player',
           label: 'Player',
-          description: 'Hardware decoding, buffering, subtitles, and playback behavior.',
+          description: 'Hardware decoding, buffering, and playback behavior.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
@@ -1091,7 +1102,7 @@ export default function SettingsPage() {
   return (
     <div className="flex h-full">
       {/* ─── Left Sidebar ─── */}
-      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5">
+      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 pt-14 space-y-5">
         {categories.map((cat) => (
           <div key={cat.title}>
             <div className="text-[10px] font-bold uppercase tracking-wider text-white/30 px-3 mb-1.5">{cat.title}</div>
@@ -1119,7 +1130,7 @@ export default function SettingsPage() {
       </div>
 
       {/* ─── Right Content ─── */}
-      <div className="flex-1 overflow-y-auto p-8">
+      <div className="flex-1 overflow-y-auto p-8 pt-14">
         <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
         <p className="text-[13px] text-white/35 mb-8">{activeItem?.description ?? ''}</p>
 
@@ -2507,6 +2518,148 @@ export default function SettingsPage() {
           )}
 
           {/* ═══════════════════════════════════════════════
+              SUBTITLES TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'subtitles' && (
+            <>
+              {/* Subtitle Styling */}
+              <SettingSection title="Appearance" description="These styles apply to all subtitles including live translation.">
+                <div className="px-6 py-4 space-y-6">
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-semibold text-white">Font Size</span>
+                      <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
+                    </div>
+                    <input
+                      type="range" min="16" max="64"
+                      value={store.subtitleFontSize}
+                      onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
+                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-semibold text-white">Background Opacity</span>
+                      <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
+                    </div>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={store.subtitleBgOpacity}
+                      onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
+                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white">Text Color</span>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {[
+                        { label: 'White', value: '#FFFFFF' },
+                        { label: 'Yellow', value: '#FFFF00' },
+                        { label: 'Cyan', value: '#00FFFF' },
+                        { label: 'Green', value: '#00FF00' },
+                        { label: 'Pink', value: '#FF88CC' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => store.setSubtitleColor(opt.value)}
+                          className={`h-8 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-2 ${
+                            store.subtitleColor === opt.value
+                              ? 'bg-white/15 border-accent text-white'
+                              : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                          }`}
+                        >
+                          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: opt.value }} />
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white">Border Style</span>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {([
+                        { label: 'Outline', value: 'outline' as const },
+                        { label: 'Drop Shadow', value: 'shadow' as const },
+                        { label: 'None', value: 'none' as const },
+                      ]).map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => store.setSubtitleBorderStyle(opt.value)}
+                          className={`h-8 px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            store.subtitleBorderStyle === opt.value
+                              ? 'bg-white text-black border-white'
+                              : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Preview */}
+                  <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.04] flex items-center justify-center min-h-[100px] relative overflow-hidden">
+                    <div className="absolute inset-0 bg-cover bg-center opacity-30" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
+                    <div className="relative z-10 text-center font-semibold tracking-wide" style={{
+                      fontSize: `${store.subtitleFontSize * 0.75}px`,
+                      color: store.subtitleColor,
+                      textShadow: store.subtitleBorderStyle === 'outline'
+                        ? '0 0 3px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.8), -1px -1px 0 rgba(0,0,0,0.8)'
+                        : store.subtitleBorderStyle === 'shadow'
+                          ? '2px 2px 4px rgba(0,0,0,0.9)'
+                          : 'none'
+                    }}>
+                      <span className="px-2 py-0.5 rounded" style={{ backgroundColor: `rgba(0, 0, 0, ${store.subtitleBgOpacity})` }}>
+                        This is how your subtitles will look
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* Subtitle Translation */}
+              <SettingSection title="Live Translation" description="AI-powered subtitle translation via OpenRouter.">
+                <SettingRow label="Translate subtitles" description="Create and prefer an AI-translated track on playback.">
+                  <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
+                </SettingRow>
+                <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
+                  <select
+                    value={store.subtitleTranslationLang}
+                    onChange={(e) => {
+                      const language = e.target.value
+                      store.setSubtitleTranslationLang(language)
+                      store.setSubtitleTranslationEnabled(Boolean(language))
+                    }}
+                    className="w-40 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
+                  >
+                    <option value="">None</option>
+                    {APP_LANGUAGES.map((lang) => (
+                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow label="Cues Ahead" description="Number of subtitle cues to pre-translate.">
+                  <select
+                    value={store.translationCuesAhead}
+                    onChange={(e) => store.setTranslationCuesAhead(Number(e.target.value))}
+                    className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
+                  >
+                    {[1, 2, 3, 5, 8, 10, 15, 20].map(n => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
+                  <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
+                </SettingRow>
+                <div className="px-6 py-3 text-xs text-white/30 leading-relaxed">
+                  {store.openrouterApiKey ? 'Ready (OpenRouter)' : 'OpenRouter API key required'}.
+                  Subtitle text is sent to OpenRouter. No account data or viewing history is included.
+                </div>
+              </SettingSection>
+            </>
+          )}
+
+          {/* ═══════════════════════════════════════════════
               FILTERS TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'filters' && (
@@ -2823,86 +2976,6 @@ export default function SettingsPage() {
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
                   <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
                 </SettingRow>
-              </SettingSection>
-
-              {/* Subtitle Styling */}
-              <SettingSection title="Subtitle Styling" description="Customize subtitle appearance inside the player.">
-                <div className="px-6 py-4 space-y-6">
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Font Size</span>
-                      <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
-                    </div>
-                    <input
-                      type="range" min="16" max="64"
-                      value={store.subtitleFontSize}
-                      onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Background Opacity</span>
-                      <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
-                    </div>
-                    <input
-                      type="range" min="0" max="1" step="0.05"
-                      value={store.subtitleBgOpacity}
-                      onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  {/* Preview */}
-                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04] flex items-center justify-center min-h-[90px] relative overflow-hidden">
-                    <div className="absolute inset-0 bg-cover bg-center opacity-30" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
-                    <div className="relative z-10 text-center font-bold tracking-wide" style={{ fontSize: `${store.subtitleFontSize * 0.75}px`, textShadow: '0 2px 2px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.9)' }}>
-                      <span className="px-2 py-0.5 rounded" style={{ backgroundColor: `rgba(0, 0, 0, ${store.subtitleBgOpacity})` }}>
-                        Subtitles Preview text
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Subtitle Translation */}
-              <SettingSection title="Subtitle Translation" description="AI-powered subtitle translation via OpenRouter.">
-                <SettingRow label="Translate subtitles" description="Create and prefer an AI-translated track on playback.">
-                  <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
-                </SettingRow>
-                <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
-                  <select
-                    value={store.subtitleTranslationLang}
-                    onChange={(e) => {
-                      const language = e.target.value
-                      store.setSubtitleTranslationLang(language)
-                      store.setSubtitleTranslationEnabled(Boolean(language))
-                    }}
-                    className="w-40 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
-                  >
-                    <option value="">None</option>
-                    {APP_LANGUAGES.map((lang) => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Cues Ahead" description="Number of subtitle cues to pre-translate.">
-                  <select
-                    value={store.translationCuesAhead}
-                    onChange={(e) => store.setTranslationCuesAhead(Number(e.target.value))}
-                    className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
-                  >
-                    {[1, 2, 3, 5, 8, 10, 15, 20].map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
-                  <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
-                </SettingRow>
-                <div className="px-6 py-3 text-xs text-white/30 leading-relaxed">
-                  {store.openrouterApiKey ? 'Ready (OpenRouter)' : 'OpenRouter API key required'}.
-                  Subtitle text is sent to OpenRouter. No account data or viewing history is included.
-                </div>
               </SettingSection>
 
               {/* Next episode prompt */}

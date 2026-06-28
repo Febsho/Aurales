@@ -15,100 +15,119 @@ interface RenderedStroke extends DrawStroke {
 
 export default function PlayerDrawOverlay() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
+  const setDrawModeActive = useWatchTogetherStore((s) => s.setDrawModeActive)
   const [active, setActive] = useState(false)
   const [color, setColor] = useState('#ff4444')
   const [width, setWidth] = useState(4)
-  const [strokes, setStrokes] = useState<RenderedStroke[]>([])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const drawingRef = useRef(false)
   const currentPointsRef = useRef<{ x: number; y: number }[]>([])
+  const strokesRef = useRef<RenderedStroke[]>([])
   const animFrameRef = useRef<number>(0)
+  const colorRef = useRef(color)
+  const widthRef = useRef(width)
+  const runningRef = useRef(false)
 
-  const redraw = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+  useEffect(() => { colorRef.current = color }, [color])
+  useEffect(() => { widthRef.current = width }, [width])
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    const now = Date.now()
+  useEffect(() => {
+    setDrawModeActive(active)
+    return () => setDrawModeActive(false)
+  }, [active, setDrawModeActive])
 
-    const stillVisible: RenderedStroke[] = []
-    for (const stroke of strokes) {
-      const elapsed = stroke.fadeStart ? now - stroke.fadeStart : 0
-      const opacity = stroke.fadeStart ? Math.max(0, 1 - elapsed / 5000) : 1
-      if (opacity <= 0) continue
-      stillVisible.push(stroke)
+  const startLoop = useCallback(() => {
+    if (runningRef.current) return
+    runningRef.current = true
+    const tick = () => {
+      const canvas = canvasRef.current
+      if (!canvas) { runningRef.current = false; return }
+      const ctx = canvas.getContext('2d')
+      if (!ctx) { runningRef.current = false; return }
 
-      ctx.globalAlpha = opacity
-      ctx.strokeStyle = stroke.color
-      ctx.lineWidth = stroke.width
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const now = Date.now()
+      const strokes = strokesRef.current
+      const stillVisible: RenderedStroke[] = []
 
-      if (stroke.points.length > 0) {
+      for (const stroke of strokes) {
+        const elapsed = stroke.fadeStart ? now - stroke.fadeStart : 0
+        const opacity = stroke.fadeStart ? Math.max(0, 1 - elapsed / 5000) : 1
+        if (opacity <= 0) continue
+        stillVisible.push(stroke)
+
+        ctx.globalAlpha = opacity
+        ctx.strokeStyle = stroke.color
+        ctx.lineWidth = stroke.width
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+
+        if (stroke.points.length > 0) {
+          ctx.beginPath()
+          ctx.moveTo(stroke.points[0].x * canvas.width, stroke.points[0].y * canvas.height)
+          for (let i = 1; i < stroke.points.length; i++) {
+            ctx.lineTo(stroke.points[i].x * canvas.width, stroke.points[i].y * canvas.height)
+          }
+          ctx.stroke()
+        }
+      }
+
+      const pts = currentPointsRef.current
+      if (pts.length > 0) {
+        ctx.globalAlpha = 1
+        ctx.strokeStyle = colorRef.current
+        ctx.lineWidth = widthRef.current
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
         ctx.beginPath()
-        ctx.moveTo(stroke.points[0].x * canvas.width, stroke.points[0].y * canvas.height)
-        for (let i = 1; i < stroke.points.length; i++) {
-          ctx.lineTo(stroke.points[i].x * canvas.width, stroke.points[i].y * canvas.height)
+        ctx.moveTo(pts[0].x * canvas.width, pts[0].y * canvas.height)
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].x * canvas.width, pts[i].y * canvas.height)
         }
         ctx.stroke()
       }
-    }
 
-    // Draw current in-progress stroke
-    if (currentPointsRef.current.length > 0) {
       ctx.globalAlpha = 1
-      ctx.strokeStyle = color
-      ctx.lineWidth = width
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.beginPath()
-      ctx.moveTo(currentPointsRef.current[0].x * canvas.width, currentPointsRef.current[0].y * canvas.height)
-      for (let i = 1; i < currentPointsRef.current.length; i++) {
-        ctx.lineTo(currentPointsRef.current[i].x * canvas.width, currentPointsRef.current[i].y * canvas.height)
+      strokesRef.current = stillVisible
+
+      if (stillVisible.length > 0 || pts.length > 0) {
+        animFrameRef.current = requestAnimationFrame(tick)
+      } else {
+        runningRef.current = false
       }
-      ctx.stroke()
     }
-
-    ctx.globalAlpha = 1
-
-    if (stillVisible.length !== strokes.length) {
-      setStrokes(stillVisible)
-    }
-
-    if (stillVisible.length > 0 || currentPointsRef.current.length > 0) {
-      animFrameRef.current = requestAnimationFrame(redraw)
-    }
-  }, [strokes, color, width])
+    animFrameRef.current = requestAnimationFrame(tick)
+  }, [])
 
   useEffect(() => {
-    animFrameRef.current = requestAnimationFrame(redraw)
-    return () => cancelAnimationFrame(animFrameRef.current)
-  }, [redraw])
+    return () => {
+      cancelAnimationFrame(animFrameRef.current)
+      runningRef.current = false
+    }
+  }, [])
 
-  // Resize canvas to match parent
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const resize = () => {
       canvas.width = canvas.offsetWidth
       canvas.height = canvas.offsetHeight
-      redraw()
+      startLoop()
     }
     resize()
     window.addEventListener('resize', resize)
     return () => window.removeEventListener('resize', resize)
-  }, [active])
+  }, [active, startLoop])
 
-  // Listen for remote draw events
   useEffect(() => {
     const onDrawReceived = (e: Event) => {
       const { stroke } = (e as CustomEvent).detail as { stroke: DrawStroke }
-      setStrokes((prev) => [...prev, { ...stroke, fadeStart: Date.now() }])
+      strokesRef.current = [...strokesRef.current, { ...stroke, fadeStart: Date.now() }]
+      startLoop()
     }
     const onDrawCleared = () => {
-      setStrokes([])
+      strokesRef.current = []
+      startLoop()
     }
     window.addEventListener('wt:draw_received', onDrawReceived)
     window.addEventListener('wt:draw_cleared', onDrawCleared)
@@ -116,10 +135,11 @@ export default function PlayerDrawOverlay() {
       window.removeEventListener('wt:draw_received', onDrawReceived)
       window.removeEventListener('wt:draw_cleared', onDrawCleared)
     }
-  }, [])
+  }, [startLoop])
 
-  const getRelativePos = (e: React.MouseEvent): { x: number; y: number } => {
-    const canvas = canvasRef.current!
+  const getRelativePos = (e: React.MouseEvent): { x: number; y: number } | null => {
+    const canvas = canvasRef.current
+    if (!canvas) return null
     const rect = canvas.getBoundingClientRect()
     return {
       x: (e.clientX - rect.left) / rect.width,
@@ -131,16 +151,19 @@ export default function PlayerDrawOverlay() {
     if (!active) return
     e.preventDefault()
     e.stopPropagation()
+    const pos = getRelativePos(e)
+    if (!pos) return
     drawingRef.current = true
-    currentPointsRef.current = [getRelativePos(e)]
-    animFrameRef.current = requestAnimationFrame(redraw)
+    currentPointsRef.current = [pos]
+    startLoop()
   }
 
   const handlePointerMove = (e: React.MouseEvent) => {
     if (!drawingRef.current) return
     e.preventDefault()
     e.stopPropagation()
-    currentPointsRef.current.push(getRelativePos(e))
+    const pos = getRelativePos(e)
+    if (pos) currentPointsRef.current.push(pos)
   }
 
   const handlePointerUp = (e: React.MouseEvent) => {
@@ -153,17 +176,18 @@ export default function PlayerDrawOverlay() {
       const stroke: DrawStroke = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         points: currentPointsRef.current,
-        color,
-        width,
+        color: colorRef.current,
+        width: widthRef.current,
       }
-      setStrokes((prev) => [...prev, { ...stroke, fadeStart: Date.now() }])
+      strokesRef.current = [...strokesRef.current, { ...stroke, fadeStart: Date.now() }]
       sendDrawStroke(stroke)
     }
     currentPointsRef.current = []
   }
 
   const handleClear = () => {
-    setStrokes([])
+    strokesRef.current = []
+    startLoop()
     sendDrawClear()
   }
 
@@ -186,6 +210,7 @@ export default function PlayerDrawOverlay() {
       <div
         className="absolute left-4 bottom-28 z-[65] flex flex-col gap-2"
         onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
       >
         {/* Toggle draw mode */}
