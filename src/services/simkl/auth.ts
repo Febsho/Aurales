@@ -21,7 +21,6 @@ const LS_ACCOUNT = 'simkl_account'
 const LS_LAST_SYNC = 'simkl_last_sync'
 
 const DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
-const SIMKL_API_BASE = 'https://api.simkl.com'
 
 let _config: SimklConfig | null = null
 let _configResolved = false
@@ -200,19 +199,11 @@ export function getSimklConnectionStatus(): SimklConnectionStatus {
 }
 
 async function fetchSimklAccount(accessToken: string, clientId: string): Promise<SimklAccount> {
-  const params = new URLSearchParams({
-    client_id: clientId,
-    'app-name': 'Aurales',
-    'app-version': '0.1.0',
+  const json = await invoke<string>('fetch_simkl_user', {
+    accessToken,
+    clientId,
   })
-  const res = await fetch(`${SIMKL_API_BASE}/users/settings?${params.toString()}`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'simkl-api-key': clientId,
-    },
-  })
-  if (!res.ok) throw new Error(`Simkl account fetch failed: ${res.status}`)
-  const data = (await res.json()) as Record<string, unknown>
+  const data = JSON.parse(json) as Record<string, unknown>
   const user = (data.user || data) as Record<string, unknown>
   return {
     id: String(user.id || user.simkl_id || ''),
