@@ -36,6 +36,8 @@ import type { TraktDeviceCode } from '../types'
 import NativeMpvPlayer from '../components/NativeMpvPlayer'
 import { cacheStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { checkForUpdate, downloadAndInstall, getAppVersion } from '../services/updater'
+import type { UpdateInfo, UpdateProgress } from '../services/updater'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -207,6 +209,145 @@ function SearchEngineSelect({ value, onChange, options }: { value: string; onCha
         )}
       </div>
     </>
+  )
+}
+
+function AppUpdateSection() {
+  const [checking, setChecking] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const [progress, setProgress] = useState<UpdateProgress | null>(null)
+  const [noUpdate, setNoUpdate] = useState(false)
+
+  const appVersion = getAppVersion()
+
+  const handleCheck = async () => {
+    setChecking(true)
+    setUpdateError(null)
+    setUpdateInfo(null)
+    setNoUpdate(false)
+    try {
+      const info = await checkForUpdate()
+      if (info) {
+        setUpdateInfo(info)
+      } else {
+        setNoUpdate(true)
+      }
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : 'Failed to check for updates')
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const handleInstall = async () => {
+    setInstalling(true)
+    setProgress(null)
+    try {
+      await downloadAndInstall((p) => setProgress(p))
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : 'Update failed')
+      setInstalling(false)
+    }
+  }
+
+  const progressPct = progress && progress.total ? Math.round((progress.downloaded / progress.total) * 100) : null
+
+  return (
+    <SettingSection title="App Update" description={`Aurales v${appVersion}`}>
+      <div className="px-6 py-4 space-y-4">
+        {/* Check / Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={[
+              'w-9 h-9 rounded-xl flex items-center justify-center border',
+              updateInfo ? 'bg-accent/15 border-accent/30 text-accent' : 'bg-white/[0.04] border-white/[0.08] text-white/50',
+            ].join(' ')}>
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </div>
+            <div>
+              <span className="text-sm font-semibold text-white">
+                {updateInfo ? `v${updateInfo.version} available` : noUpdate ? 'Up to date' : `v${appVersion}`}
+              </span>
+              <p className="text-[11px] text-white/35">
+                {checking ? 'Checking for updates...'
+                  : installing ? 'Downloading and installing...'
+                  : updateInfo ? 'A new version is ready to install'
+                  : noUpdate ? 'You are running the latest version'
+                  : 'Check for the latest version'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {updateInfo && !installing ? (
+              <button
+                onClick={handleInstall}
+                className="px-4 py-2 bg-accent text-black font-bold rounded-xl text-xs transition-colors hover:bg-accent-hover cursor-pointer"
+              >
+                Install & Restart
+              </button>
+            ) : (
+              <button
+                onClick={handleCheck}
+                disabled={checking || installing}
+                className={[
+                  'px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer',
+                  checking || installing
+                    ? 'bg-white/[0.04] text-white/30 cursor-not-allowed'
+                    : 'bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white',
+                ].join(' ')}
+              >
+                {checking ? (
+                  <span className="flex items-center gap-2">
+                    <span className="w-3 h-3 border border-white/30 border-t-transparent rounded-full animate-spin" />
+                    Checking...
+                  </span>
+                ) : 'Check for Updates'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {installing && (
+          <div className="space-y-1.5">
+            <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+              {progressPct != null ? (
+                <div
+                  className="h-full bg-accent rounded-full transition-all duration-300"
+                  style={{ width: `${progressPct}%` }}
+                />
+              ) : (
+                <div className="h-full bg-accent/60 rounded-full animate-pulse" style={{ width: '100%' }} />
+              )}
+            </div>
+            <p className="text-[10px] text-white/30 text-right">
+              {progressPct != null ? `${progressPct}%` : progress ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} MB` : 'Preparing...'}
+            </p>
+          </div>
+        )}
+
+        {/* Release notes */}
+        {updateInfo?.body && (
+          <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-white/30 block mb-2">Release Notes</span>
+            <p className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap">{updateInfo.body}</p>
+          </div>
+        )}
+
+        {/* Error */}
+        {updateError && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+            <p className="text-xs text-red-400">{updateError}</p>
+          </div>
+        )}
+      </div>
+    </SettingSection>
   )
 }
 
@@ -3096,6 +3237,9 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'advanced' && (
             <>
+              {/* App Update */}
+              <AppUpdateSection />
+
               {/* Backup & Restore */}
               <SettingSection title="Configuration Backup" description="Export or restore all local settings, tokens, and addon lists.">
                 <div className="px-6 py-4">
