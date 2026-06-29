@@ -148,7 +148,7 @@ export default function Layout() {
   )
 
   return (
-    <div className={`h-screen overflow-hidden bg-black ${sidebarPinned ? 'flex' : 'relative'}`}>
+    <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${sidebarPinned ? 'flex' : 'relative'}`}>
       <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}

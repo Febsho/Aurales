@@ -1,19 +1,24 @@
-import React, { useState, useEffect, useCallback, memo } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applySearchResultArt } from '../services/artwork'
+import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import RatingsStrip from './RatingsStrip'
 import { Button } from './ui'
 
 interface HeroSectionProps {
   items: SearchResult[]
   isSmall?: boolean
+  onActiveBackdropChange?: (url: string | undefined) => void
 }
 
-function HeroSection({ items, isSmall = false }: HeroSectionProps) {
+function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
   const [logoError, setLogoError] = useState(false)
+  const [scrollBlur, setScrollBlur] = useState(0)
+  const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
+  const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
 
   const goTo = useCallback(
@@ -29,17 +34,82 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
     setActiveIndex(0)
   }, [items])
 
+  const [scrolledAway, setScrolledAway] = useState(false)
+
   useEffect(() => {
     if (count <= 1) return
+    if (scrolledAway) return
     const id = setInterval(() => setActiveIndex((prev) => (prev + 1) % count), 8000)
     return () => clearInterval(id)
-  }, [count])
+  }, [count, scrolledAway])
 
-  if (!items.length) return null
+  // Scroll blur: listen to the scroll container (closest overflow-y parent)
+  useEffect(() => {
+    if (isSmall) return
+    const el = heroRef.current
+    if (!el) return
+    const scrollParent = el.closest('[class*="overflow-y"]') as HTMLElement | null
+    if (!scrollParent) return
+
+    const onScroll = () => {
+      const t = scrollParent.scrollTop
+      setScrollBlur(Math.min(t / 400, 1) * 20)
+      setScrolledAway(t > 100)
+    }
+    scrollParent.addEventListener('scroll', onScroll, { passive: true })
+    return () => scrollParent.removeEventListener('scroll', onScroll)
+  }, [isSmall])
+
+  // Upgrade backdrops to highest-voted from TMDB images endpoint
+  const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    const toFetch = items.filter((itm) => {
+      const tmdbId = itm.tmdbId || (String(itm.id).startsWith('tmdb-') ? String(itm.id).replace('tmdb-', '') : undefined)
+      return tmdbId && !upgradedBackdrops[String(itm.id)]
+    })
+    toFetch.forEach((itm) => {
+      const tmdbId = itm.tmdbId || String(itm.id).replace('tmdb-', '')
+      const t = itm.type === 'series' ? 'series' : 'movie'
+      getTmdbLandscapeBackdrop(t, tmdbId)
+        .then((url) => {
+          if (!cancelled && url) {
+            setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+          }
+        })
+        .catch(() => {})
+    })
+    return () => { cancelled = true }
+  }, [items])
 
   const displayItems = items.map(applySearchResultArt)
   const item = displayItems[activeIndex]
-  const type = item.type === 'series' ? 'series' : 'movie'
+  const type = item?.type === 'series' ? 'series' : 'movie'
+
+  // Report active backdrop to parent for blurred background
+  useEffect(() => {
+    if (!onActiveBackdropChange || isSmall) return
+    const activeItem = displayItems[activeIndex]
+    if (!activeItem) { onActiveBackdropChange(undefined); return }
+    const backdrop = upgradedBackdrops[String(activeItem.id)] || activeItem.backdrop || activeItem.poster
+    onActiveBackdropChange(backdrop)
+  }, [activeIndex, upgradedBackdrops, isSmall])
+
+  // Fetch top 3 cast for the active hero item
+  useEffect(() => {
+    if (!item) return
+    const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
+    if (!tmdbId) { setCast([]); return }
+
+    let cancelled = false
+    getTmdbHeroCast(type, tmdbId)
+      .then((c) => { if (!cancelled) setCast(c) })
+      .catch(() => { if (!cancelled) setCast([]) })
+    return () => { cancelled = true }
+  }, [item?.id, item?.tmdbId, type])
+
+  if (!items.length || !item) return null
 
   const sharedState = {
     poster: item.poster,
@@ -56,12 +126,32 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
   const nav = () =>
     navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: sharedState })
 
+  const genreStr = item.genres?.[0] || ''
+  const ratingLabel = item.rating ? `R` : ''
+  const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
+
+  const heroHeight = isSmall ? '380px' : 'clamp(550px, calc(100vh - 270px), 1200px)'
+
   return (
     <div
+      ref={heroRef}
       className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
-      style={isSmall ? { height: '380px' } : { height: 'clamp(550px, calc(100vh - 270px), 1200px)' }}
+      style={{
+        height: heroHeight,
+        ...(isSmall ? {} : {
+          maskImage: 'linear-gradient(to bottom, black 95%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, black 95%, transparent 100%)',
+        }),
+      }}
     >
-      {/* Backdrop slides — only render adjacent slides for performance */}
+      {renderHeroContent()}
+    </div>
+  )
+
+  function renderHeroContent() {
+    return (
+      <>
+      {/* Backdrop slides */}
       {displayItems.map((itm, i) => {
         const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
         if (!isAdjacentSlide) return null
@@ -69,11 +159,17 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
           <div
             key={`${itm.id ?? i}-${i}`}
             className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
-            style={{ opacity: i === activeIndex ? 1 : 0, pointerEvents: 'none' }}
+            style={{
+              opacity: i === activeIndex ? 1 : 0,
+              pointerEvents: 'none',
+              filter: scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
+              transform: scrollBlur > 0 ? 'scale(1.05)' : undefined,
+              transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
+            }}
           >
-            {itm.backdrop ? (
+            {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
               <img
-                src={itm.backdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
+                src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
                 alt=""
                 className="absolute inset-0 w-full h-full object-cover"
                 style={{ objectPosition: 'center 20%' }}
@@ -97,9 +193,9 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
         )
       })}
 
-      {/* Cinematic gradients — heavier bottom fade */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/20 to-transparent" />
+      {/* Cinematic gradients — bottom fades to transparent for seamless blur bg blend */}
+      <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
 
       {/* Prev / Next */}
       {count > 1 && (
@@ -127,26 +223,8 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
 
       {/* Content — bottom-left */}
       <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-12'}`}>
-        {/* Meta badges */}
-        <div className={`flex items-center gap-2.5 ${isSmall ? 'mb-2' : 'mb-3'}`}>
-          {item.type && (
-            <span className="px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-[0.15em] bg-white/10 text-white/80 border border-white/10">
-              {item.type}
-            </span>
-          )}
-          {item.year && <span className="text-sm text-white/50 font-medium">{item.year}</span>}
-          {item.rating && (
-            <span className="flex items-center gap-1 text-sm text-yellow-400/90 font-bold">
-              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 20 20">
-                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-              </svg>
-              {item.rating.toFixed(1)}
-            </span>
-          )}
-        </div>
-
         {/* Title */}
-        <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-4 min-h-[60px]'} flex items-end`}>
+        <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
           {item.logo && !logoError ? (
             <img
               src={item.logo}
@@ -162,19 +240,50 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
           )}
         </div>
 
+        {/* Year · Genre · Rating */}
+        {metaLine && (
+          <p className={`text-white/50 font-medium tracking-wide ${isSmall ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+            {metaLine}
+          </p>
+        )}
+
+        {/* Compact colored rating badges */}
         <RatingsStrip
           mediaType={type}
           imdbId={item.imdbId}
           tmdbId={item.tmdbId}
           tvdbId={item.tvdbId}
-          className={isSmall ? 'mb-2.5' : 'mb-4'}
+          className={isSmall ? 'mb-2.5' : 'mb-3'}
+          compact
         />
 
         {/* Overview */}
         {item.overview && (
-          <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-4' : 'text-[15px] line-clamp-2 mb-6'}`}>
+          <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-[15px] line-clamp-2 mb-4'}`}>
             {item.overview}
           </p>
+        )}
+
+        {/* Actor avatars */}
+        {!isSmall && cast.length > 0 && (
+          <div className="flex items-center gap-2 mb-5">
+            <div className="flex -space-x-1.5">
+              {cast.map((actor) => (
+                <div key={actor.name} className="w-8 h-8 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
+                  {actor.photo ? (
+                    <img src={actor.photo} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-white/40">
+                      {actor.name.charAt(0)}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <span className="text-xs text-white/45 font-medium truncate max-w-sm">
+              {cast.map((a) => a.name).join(', ')}
+            </span>
+          </div>
         )}
 
         {/* Actions + dots */}
@@ -183,16 +292,8 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
             variant="white"
             size={isSmall ? 'md' : 'lg'}
             onClick={nav}
-            icon={
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            }
           >
-            Play
-          </Button>
-          <Button variant="glass" size={isSmall ? 'md' : 'lg'} onClick={nav}>
-            More Info
+            Go to {type === 'movie' ? 'Movie' : 'Series'}
           </Button>
 
           {count > 1 && (
@@ -214,8 +315,9 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
           )}
         </div>
       </div>
-    </div>
+    </>
   )
+  }
 }
 
 export default React.memo(HeroSection)

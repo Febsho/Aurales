@@ -19,9 +19,10 @@ interface MediaCardProps {
   item: SearchResult
   layout?: 'poster' | 'landscape'
   disableArtOverride?: boolean
+  rank?: number
 }
 
-function MediaCard({ item, layout = 'poster', disableArtOverride = false }: MediaCardProps) {
+function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const [isVisible, setIsVisible] = useState(false)
 
@@ -262,6 +263,10 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
     )
   }
 
+  const genre = displayItem.genres?.[0]
+    || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+    || resolvedGenre
+
   return (
     <button
       ref={cardRef}
@@ -284,29 +289,30 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
             <span className="text-3xl font-bold text-muted/30">{displayItem.title?.charAt(0) || '?'}</span>
           </div>
         )}
-        {/* Bottom gradient + genre label */}
-        {showGenreOnCards && <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />}
-        {showGenreOnCards && (() => {
-          const genre = displayItem.genres?.[0]
-            || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
-            || resolvedGenre
-          return genre ? (
-            <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
+
+        {/* Bottom gradient overlay with genre + rating */}
+        <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
+        {(showGenreOnCards || showRatingsOnCards) && (
+          <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center gap-1.5">
+            {showGenreOnCards && genre && (
               <span className="text-[10px] font-semibold text-white/70 tracking-wide">
                 {genre}
               </span>
-            </div>
-          ) : null
-        })()}
-        {/* Rating badge (poster) */}
-        {showRatingsOnCards && ratingStr && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
-            <svg className="w-3 h-3 fill-current text-yellow-400" viewBox="0 0 24 24">
-              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-            </svg>
-            <span>{ratingStr}</span>
+            )}
+            {showGenreOnCards && genre && showRatingsOnCards && ratingStr && (
+              <span className="text-white/30">·</span>
+            )}
+            {showRatingsOnCards && ratingStr && (
+              <span className="flex items-center gap-0.5 text-[10px] font-bold text-yellow-400">
+                <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                </svg>
+                {ratingStr}
+              </span>
+            )}
           </div>
         )}
+
         {import.meta.env.DEV && displayItem.metadataFallback && (
           <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-[9px] font-bold z-20">metadata fallback</div>
         )}

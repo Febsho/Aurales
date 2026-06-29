@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, cloneElement } from 'react'
+import { useState, useEffect, useRef, useCallback, cloneElement } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import ErrorBoundary from '../components/ui/ErrorBoundary'
@@ -254,6 +254,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
       title={`${row.title} (${items.length})`}
       items={items}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+      showRank={row.showRank ?? /trending/i.test(row.title)}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
     />
@@ -307,6 +308,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
       items={items}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       disableArtOverride={false}
+      showRank={row.showRank ?? /trending/i.test(row.title)}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
@@ -418,6 +420,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
       title={`${row.title} (${sortedItems.length})`}
       items={sortedItems}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+      showRank={row.showRank ?? /trending/i.test(row.title)}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
@@ -513,6 +516,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
       title={`${row.title} (${sortedItems.length})`}
       items={sortedItems}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+      showRank={row.showRank ?? /trending/i.test(row.title)}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
@@ -520,7 +524,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   )
 }
 
-function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
+function HeroCatalogSection({ row, onBackdropChange }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void }) {
   const [items, setItems] = useState<SearchResult[]>([])
   const addons = useAppStore((s) => s.addons)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
@@ -619,7 +623,7 @@ function HeroCatalogSection({ row }: { row: HomeRowConfig }) {
   ])
 
   if (items.length === 0) return null
-  return <HeroSection items={items} />
+  return <HeroSection items={items} onActiveBackdropChange={onBackdropChange} />
 }
 
 // ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
@@ -829,6 +833,8 @@ export default function HomePage() {
   const { homeRows, reorderHomeRows, removeHomeRow } = useAppStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
+  const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
+  const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
 
   useEffect(() => {
     taskQueue.enqueue({
@@ -838,6 +844,23 @@ export default function HomePage() {
       execute: async () => { await cacheClearExpired() },
     })
   }, [])
+
+  // Set blurred hero backdrop as page background via CSS custom property
+  useEffect(() => {
+    const root = document.documentElement
+    if (heroBackdrop) {
+      const url = heroBackdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')
+      root.style.setProperty('--hero-bg', `url(${url})`)
+      root.classList.add('hero-bg-active')
+    } else {
+      root.classList.remove('hero-bg-active')
+      root.style.removeProperty('--hero-bg')
+    }
+    return () => {
+      root.classList.remove('hero-bg-active')
+      root.style.removeProperty('--hero-bg')
+    }
+  }, [heroBackdrop])
 
   const setIsEditing = (val: boolean) => {
     if (val) {
@@ -889,6 +912,7 @@ export default function HomePage() {
 
   return (
     <div className="pb-12 relative">
+
       {isEditing && (
         <div className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/10 py-4 px-6 flex items-center justify-center gap-4">
           <button
@@ -900,25 +924,9 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Floating Edit Home Button */}
-      {!isEditing && (
-        <div className="absolute top-6 right-6 z-40">
-          <button
-            onClick={() => setIsEditing(true)}
-            className="px-4 py-2 bg-black/60 hover:bg-black/85 border border-white/10 hover:border-white/20 text-white font-semibold rounded-xl text-xs transition-all shadow-lg backdrop-blur-md cursor-pointer flex items-center gap-1.5"
-          >
-            <svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 113 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-            Edit Home
-          </button>
-        </div>
-      )}
+      {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
 
-      {heroRow && <HeroCatalogSection row={heroRow} />}
-
-      <div className="mt-4">
+      <div className="relative">
         {isEditing ? (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>

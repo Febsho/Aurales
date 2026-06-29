@@ -282,6 +282,7 @@ export interface HomeRowConfig {
   /** Provider-specific list key, for example Simkl/Trakt/PMDB/AniList status or list id */
   providerListId?: string
   sortBy?: 'default' | 'alphabetical'
+  showRank?: boolean
   discoverConfig?: DiscoverConfig
 }
 
