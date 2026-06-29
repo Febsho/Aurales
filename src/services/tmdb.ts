@@ -37,9 +37,6 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
   const backdrops = ((images.backdrops as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
-      const aLang = (a.iso_639_1 === null || a.iso_639_1 === 'xx' || !a.iso_639_1) ? 1 : 0
-      const bLang = (b.iso_639_1 === null || b.iso_639_1 === 'xx' || !b.iso_639_1) ? 1 : 0
-      if (aLang !== bLang) return bLang - aLang
       const aVotes = Number(a.vote_count || 0)
       const bVotes = Number(b.vote_count || 0)
       if (aVotes !== bVotes) return bVotes - aVotes
@@ -53,9 +50,6 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
   const posters = ((images.posters as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
-      const aLang = a.iso_639_1 === 'en' ? 1 : 0
-      const bLang = b.iso_639_1 === 'en' ? 1 : 0
-      if (aLang !== bLang) return bLang - aLang
       const aVotes = Number(a.vote_count || 0)
       const bVotes = Number(b.vote_count || 0)
       if (aVotes !== bVotes) return bVotes - aVotes
@@ -93,13 +87,34 @@ export async function getTmdbCardMetadata(
   if (!id) return {}
 
   return cachedFetch<{ poster?: string; backdrop?: string; genre?: string }>(`tmdb_card:${mediaType}:${id}`, async () => {
-    const details = await tmdbFetch(`/${mediaType}/${id}`) as Record<string, unknown>
+    const [details, images] = await Promise.all([
+      tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,xx,null' }) as Promise<Record<string, unknown>>,
+    ])
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
     return {
-      poster: details.poster_path ? `${IMG_BASE}/w342${details.poster_path}` : undefined,
-      backdrop: details.backdrop_path ? `${IMG_BASE}/w780${details.backdrop_path}` : undefined,
+      poster: pickBestPoster(images, details.poster_path as string),
+      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/w780${details.backdrop_path}` : undefined),
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
+  }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+}
+
+export async function getTmdbHeroCast(
+  type: 'movie' | 'series' | 'show' | 'anime',
+  tmdbId: string | number,
+): Promise<{ name: string; photo?: string }[]> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return []
+  const mediaType = type === 'movie' ? 'movie' : 'tv'
+  const id = String(tmdbId).replace('tmdb-', '')
+  if (!id) return []
+
+  return cachedFetch<{ name: string; photo?: string }[]>(`tmdb_hero_cast:${mediaType}:${id}`, async () => {
+    const credits = await tmdbFetch(`/${mediaType}/${id}/credits`) as Record<string, unknown>
+    return ((credits.cast as Record<string, unknown>[]) || []).slice(0, 3).map((c) => ({
+      name: c.name as string,
+      photo: c.profile_path ? `${IMG_BASE}/w185${c.profile_path}` : undefined,
+    }))
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
 }
 
