@@ -1599,7 +1599,8 @@ export default function SeriesDetailPage() {
               imdbId={show.imdbId}
               tmdbId={show.tmdbId}
               tvdbId={show.tvdbId}
-              className="mb-4"
+              className="mb-3"
+              compact
             />
             {metadataStatus === 'fallback' && (
               <div className="inline-flex items-center self-start px-2.5 py-1 bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-bold rounded-lg uppercase tracking-wider mb-2">
