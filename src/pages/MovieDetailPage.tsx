@@ -448,7 +448,8 @@ export default function MovieDetailPage() {
             imdbId={movie.imdbId}
             tmdbId={movie.tmdbId}
             tvdbId={movie.tvdbId}
-            className="mb-4"
+            className="mb-3"
+            compact
           />
         }
         actions={

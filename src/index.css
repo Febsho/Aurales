@@ -65,6 +65,21 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Blurred hero backdrop visible behind home page content */
+html.hero-bg-active::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--hero-bg) center / cover no-repeat;
+  filter: blur(40px) brightness(0.35);
+  transform: scale(1.15);
+  pointer-events: none;
+}
+html.hero-bg-active .hero-bg-transparent {
+  background: transparent !important;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }
