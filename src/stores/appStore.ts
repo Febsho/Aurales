@@ -533,7 +533,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   preferredAudio: loadPersistedPreferredAudio(),
   setPreferredSubtitles: (langs) => {
     localStorage.setItem('aurales_preferred_subtitles', JSON.stringify(langs))
-    set({ preferredSubtitles: langs })
+    const updates: Partial<AppState> = { preferredSubtitles: langs }
+    if (!localStorage.getItem('aurales_sub_translation_lang') && langs[0]) {
+      updates.subtitleTranslationLang = langs[0]
+    }
+    set(updates)
   },
   setPreferredAudio: (langs) => {
     localStorage.setItem('aurales_preferred_audio', JSON.stringify(langs))
@@ -736,7 +740,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   discordRichPresence: localStorage.getItem('aurales_discord_rpc') !== 'false',
   setDiscordRichPresence: (enabled) => { localStorage.setItem('aurales_discord_rpc', String(enabled)); set({ discordRichPresence: enabled }) },
 
-  subtitleTranslationLang: localStorage.getItem('aurales_sub_translation_lang') || '',
+  subtitleTranslationLang: localStorage.getItem('aurales_sub_translation_lang') || loadPersistedPreferredSubtitles()[0] || '',
   subtitleTranslationEnabled: localStorage.getItem('aurales_sub_translation_enabled') === 'true',
   translationCuesAhead: Number(localStorage.getItem('aurales_translation_cues_ahead') || '10'),
   contextAwareTranslation: localStorage.getItem('aurales_context_aware_translation') !== 'false',

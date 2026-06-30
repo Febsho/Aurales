@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { getSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
@@ -8,6 +10,7 @@ import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 import StreamSelector from './StreamSelector'
 import type { HomeRowConfig } from '../types'
 import { formatTime } from '../services/player'
+import { useContextMenu } from '../hooks/useContextMenu'
 
 type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'anilist'
 
@@ -66,15 +69,35 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     malId?: number
     anilistId?: number
   } | null>(null)
+  const [cwMenu, setCwMenu] = useState<{ x: number; y: number; item: ContinueWatchingItem } | null>(null)
+  const cwMenuRef = useRef<HTMLDivElement>(null)
 
+  const navigate = useNavigate()
   const watchProgress = useAppStore((s) => s.watchProgress)
   const updateHomeRow = useAppStore((s) => s.updateHomeRow)
   const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
   const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
   const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
+  const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const keepFramesFor = useAppStore((s) => s.keepFramesFor)
   const source = (row.sourceType || continueWatchingSource) as SourceType
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!cwMenu) return
+    const handle = (e: MouseEvent) => {
+      if (cwMenuRef.current && !cwMenuRef.current.contains(e.target as Node)) setCwMenu(null)
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCwMenu(null)
+    }
+    document.addEventListener('mousedown', handle)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [cwMenu])
 
   const changeSource = (next: SourceType) => {
     updateHomeRow(row.id, { sourceType: next })
@@ -366,7 +389,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             {headerRightControls}
           </div>
         </div>
-        <div className="flex gap-4 overflow-x-hidden px-6 pb-2 animate-pulse">
+        <div className="flex gap-4 overflow-x-hidden px-6 pt-4 -mt-4 pb-4 animate-pulse">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="flex-shrink-0 w-72 aspect-video bg-neutral-800/40 rounded-xl" />
           ))}
@@ -389,7 +412,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           </div>
         </div>
         <div className="px-6">
-          <div className="flex gap-4 overflow-x-hidden pb-2">
+          <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
                 <span className="text-[11px] text-white/15 select-none">Nothing in progress</span>
@@ -434,7 +457,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pb-2 scrollbar-none"
+        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {items.map((item) => {
@@ -454,6 +477,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                   malId: item.malId,
                   anilistId: item.anilistId,
                 })
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setCwMenu({ x: e.clientX, y: e.clientY, item })
               }}
               className="flex-shrink-0 w-72 group cursor-pointer focus:outline-none text-left transition-all duration-300"
             >
@@ -536,6 +563,142 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           anilistId={streamSelectorData.anilistId}
         />
       )}
+
+      {cwMenu && (
+        <ContinueWatchingMenu
+          ref={cwMenuRef}
+          x={cwMenu.x}
+          y={cwMenu.y}
+          item={cwMenu.item}
+          source={source}
+          onClose={() => setCwMenu(null)}
+          onRemove={(item) => {
+            removeWatchProgress([item.mediaId, item.imdbId].filter(Boolean) as string[], item.season, item.episode)
+            setItems((prev) => prev.filter((i) => i.id !== item.id))
+            setCwMenu(null)
+          }}
+          onGoTo={(item) => {
+            const path = item.mediaType === 'movie' ? `/movie/${item.mediaId}` : `/series/${item.mediaId}`
+            navigate(path, {
+              state: {
+                poster: item.poster,
+                backdrop: item.backdrop,
+                title: item.title,
+              },
+            })
+            setCwMenu(null)
+          }}
+          onPlay={(item) => {
+            setStreamSelectorData({
+              mediaId: item.mediaId,
+              mediaType: item.mediaType,
+              title: item.title,
+              artwork: { poster: item.poster, backdrop: item.backdrop },
+              seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+              startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
+              tmdbId: item.tmdbId,
+              malId: item.malId,
+              anilistId: item.anilistId,
+            })
+            setCwMenu(null)
+          }}
+        />
+      )}
     </div>
   )
 }
+
+const ContinueWatchingMenu = forwardRef<
+  HTMLDivElement,
+  {
+    x: number
+    y: number
+    item: ContinueWatchingItem
+    source: SourceType
+    onClose: () => void
+    onRemove: (item: ContinueWatchingItem) => void
+    onGoTo: (item: ContinueWatchingItem) => void
+    onPlay: (item: ContinueWatchingItem) => void
+  }
+>(({ x, y, item, source, onClose, onRemove, onGoTo, onPlay }, ref) => {
+  const [adjusted, setAdjusted] = useState({ x, y })
+  const innerRef = useRef<HTMLDivElement>(null)
+  const menuRef = (ref as React.RefObject<HTMLDivElement>) || innerRef
+
+  useLayoutEffect(() => {
+    const el = menuRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    let ax = x
+    let ay = y
+    if (x + rect.width > vw - 8) ax = vw - rect.width - 8
+    if (y + rect.height > vh - 8) ay = vh - rect.height - 8
+    if (ax < 8) ax = 8
+    if (ay < 8) ay = 8
+    setAdjusted({ x: ax, y: ay })
+  }, [x, y])
+
+  const menu = (
+    <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()} onClick={onClose}>
+      <div
+        ref={menuRef}
+        onClick={(e) => e.stopPropagation()}
+        className="fixed min-w-[240px] max-w-[280px] rounded-2xl overflow-hidden border border-white/[0.12]"
+        style={{
+          left: adjusted.x,
+          top: adjusted.y,
+          maxHeight: 'calc(100vh - 16px)',
+          overflowY: 'auto',
+          background: 'rgba(20, 20, 22, 0.75)',
+          backdropFilter: 'blur(60px) saturate(200%)',
+          WebkitBackdropFilter: 'blur(60px) saturate(200%)',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.1)',
+          animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        <div className="absolute inset-0 bg-gradient-to-b from-white/[0.08] to-white/[0.02] pointer-events-none" />
+        <div className="relative">
+          <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <div className="flex items-center gap-2.5">
+              {(item.backdrop || item.poster) && (
+                <img src={item.backdrop || item.poster} alt="" className="w-12 h-8 rounded-md object-cover flex-shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-semibold text-white truncate">{item.title}</p>
+                <p className="text-[11px] text-white/40 mt-0.5">
+                  {item.subtitle || (item.mediaType === 'movie' ? 'Movie' : 'Series')}
+                  {source !== 'local' ? ` · ${source.charAt(0).toUpperCase() + source.slice(1)}` : ''}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="px-1.5 py-1.5">
+            <button onClick={() => onPlay(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              <span className="text-[13px] text-white/70">Resume Playing</span>
+            </button>
+            <button onClick={() => onGoTo(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span className="text-[13px] text-white/70">Go to {item.mediaType === 'movie' ? 'Movie' : 'Series'}</span>
+            </button>
+            <div className="my-1 border-t border-white/[0.06]" />
+            <button onClick={() => onRemove(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span className="text-[13px] text-red-400">Remove from Continue Watching</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  return createPortal(menu, document.body)
+})
