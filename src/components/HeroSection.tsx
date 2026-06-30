@@ -132,191 +132,202 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
 
   const heroHeight = isSmall ? '380px' : 'clamp(550px, calc(100vh - 270px), 1200px)'
 
+  const maskGradient = 'linear-gradient(to bottom, black 75%, rgba(0,0,0,0.4) 90%, transparent 100%)'
+
   return (
     <div
       ref={heroRef}
       className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
-      style={{
-        height: heroHeight,
-        ...(isSmall ? {} : {
-          maskImage: 'linear-gradient(to bottom, black 70%, rgba(0,0,0,0.6) 85%, rgba(0,0,0,0.2) 95%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to bottom, black 70%, rgba(0,0,0,0.6) 85%, rgba(0,0,0,0.2) 95%, transparent 100%)',
-        }),
-      }}
+      style={{ height: heroHeight }}
     >
-      {renderHeroContent()}
+      {/* Masked backdrop layer — fade only affects backgrounds, not text */}
+      {!isSmall && (
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ maskImage: maskGradient, WebkitMaskImage: maskGradient }}
+        >
+          {renderBackdrops()}
+        </div>
+      )}
+      {isSmall && renderBackdrops()}
+      {renderOverlay()}
     </div>
   )
 
-  function renderHeroContent() {
+  function renderBackdrops() {
     return (
       <>
-      {/* Backdrop slides */}
-      {displayItems.map((itm, i) => {
-        const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
-        if (!isAdjacentSlide) return null
-        return (
-          <div
-            key={`${itm.id ?? i}-${i}`}
-            className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
-            style={{
-              opacity: i === activeIndex ? 1 : 0,
-              pointerEvents: 'none',
-              filter: scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
-              transform: scrollBlur > 0 ? 'scale(1.05)' : undefined,
-              transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
-            }}
-          >
-            {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
-              <img
-                src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
-                alt=""
-                className="absolute inset-0 w-full h-full object-cover"
-                style={{ objectPosition: 'center 20%' }}
-                draggable={false}
-                loading={i === activeIndex ? 'eager' : 'lazy'}
-              />
-            ) : itm.poster ? (
-              <>
+        {displayItems.map((itm, i) => {
+          const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
+          if (!isAdjacentSlide) return null
+          return (
+            <div
+              key={`${itm.id ?? i}-${i}`}
+              className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
+              style={{
+                opacity: i === activeIndex ? 1 : 0,
+                pointerEvents: 'none',
+                filter: scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
+                transform: scrollBlur > 0 ? 'scale(1.05)' : undefined,
+                transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
+              }}
+            >
+              {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
                 <img
-                  src={itm.poster}
+                  src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace(/\/w\d+\//, '/original/')}
                   alt=""
-                  className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
+                  className="absolute inset-0 w-full h-full object-cover"
+                  style={{ objectPosition: 'center 20%' }}
                   draggable={false}
+                  loading={i === activeIndex ? 'eager' : 'lazy'}
                 />
-                <div className="absolute inset-0 bg-black/50" />
-              </>
+              ) : itm.poster ? (
+                <>
+                  <img
+                    src={itm.poster}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
+                    draggable={false}
+                  />
+                  <div className="absolute inset-0 bg-black/50" />
+                </>
+              ) : (
+                <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+              )}
+            </div>
+          )
+        })}
+
+        {/* Cinematic gradients */}
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
+      </>
+    )
+  }
+
+  function renderOverlay() {
+    return (
+      <>
+        {/* Prev / Next */}
+        {count > 1 && (
+          <>
+            <button
+              onClick={() => goTo(activeIndex - 1)}
+              className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              aria-label="Previous"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(activeIndex + 1)}
+              className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              aria-label="Next"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </>
+        )}
+
+        {/* Content — bottom-left */}
+        <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-6'}`}>
+          {/* Title */}
+          <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
+            {item.logo && !logoError ? (
+              <img
+                src={item.logo}
+                alt={item.title}
+                className={`${isSmall ? 'max-h-[65px]' : 'max-h-[110px] md:max-h-[140px]'} max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
+                onError={() => setLogoError(true)}
+                draggable={false}
+              />
             ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+              <h1 className={`${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
+                {item.title}
+              </h1>
             )}
           </div>
-        )
-      })}
 
-      {/* Cinematic gradients — bottom fades to transparent for seamless blur bg blend */}
-      <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
-
-      {/* Prev / Next */}
-      {count > 1 && (
-        <>
-          <button
-            onClick={() => goTo(activeIndex - 1)}
-            className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
-            aria-label="Previous"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <button
-            onClick={() => goTo(activeIndex + 1)}
-            className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
-            aria-label="Next"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </>
-      )}
-
-      {/* Content — bottom-left */}
-      <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-12'}`}>
-        {/* Title */}
-        <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
-          {item.logo && !logoError ? (
-            <img
-              src={item.logo}
-              alt={item.title}
-              className={`${isSmall ? 'max-h-[65px]' : 'max-h-[110px] md:max-h-[140px]'} max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
-              onError={() => setLogoError(true)}
-              draggable={false}
-            />
-          ) : (
-            <h1 className={`${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
-              {item.title}
-            </h1>
+          {/* Year · Genre · Rating */}
+          {metaLine && (
+            <p className={`text-white/50 font-medium tracking-wide ${isSmall ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+              {metaLine}
+            </p>
           )}
-        </div>
 
-        {/* Year · Genre · Rating */}
-        {metaLine && (
-          <p className={`text-white/50 font-medium tracking-wide ${isSmall ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
-            {metaLine}
-          </p>
-        )}
+          {/* Compact colored rating badges */}
+          <RatingsStrip
+            mediaType={type}
+            imdbId={item.imdbId}
+            tmdbId={item.tmdbId}
+            tvdbId={item.tvdbId}
+            className={isSmall ? 'mb-2.5' : 'mb-3'}
+            compact
+          />
 
-        {/* Compact colored rating badges */}
-        <RatingsStrip
-          mediaType={type}
-          imdbId={item.imdbId}
-          tmdbId={item.tmdbId}
-          tvdbId={item.tvdbId}
-          className={isSmall ? 'mb-2.5' : 'mb-3'}
-          compact
-        />
+          {/* Overview */}
+          {item.overview && (
+            <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-[15px] line-clamp-2 mb-4'}`}>
+              {item.overview}
+            </p>
+          )}
 
-        {/* Overview */}
-        {item.overview && (
-          <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-[15px] line-clamp-2 mb-4'}`}>
-            {item.overview}
-          </p>
-        )}
-
-        {/* Actor avatars */}
-        {!isSmall && cast.length > 0 && (
-          <div className="flex items-center gap-2 mb-5">
-            <div className="flex -space-x-1.5">
-              {cast.map((actor) => (
-                <div key={actor.name} className="w-8 h-8 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
-                  {actor.photo ? (
-                    <img src={actor.photo} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-white/40">
-                      {actor.name.charAt(0)}
-                    </div>
-                  )}
-                </div>
-              ))}
+          {/* Actor avatars */}
+          {!isSmall && cast.length > 0 && (
+            <div className="flex items-center gap-2 mb-5">
+              <div className="flex -space-x-1.5">
+                {cast.map((actor) => (
+                  <div key={actor.name} className="w-8 h-8 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
+                    {actor.photo ? (
+                      <img src={actor.photo} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-white/40">
+                        {actor.name.charAt(0)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <span className="text-xs text-white/45 font-medium truncate max-w-sm">
+                {cast.map((a) => a.name).join(', ')}
+              </span>
             </div>
-            <span className="text-xs text-white/45 font-medium truncate max-w-sm">
-              {cast.map((a) => a.name).join(', ')}
-            </span>
+          )}
+
+          {/* Actions + dots */}
+          <div className="flex items-center gap-3">
+            <Button
+              variant="white"
+              size={isSmall ? 'md' : 'lg'}
+              onClick={nav}
+            >
+              Go to {type === 'movie' ? 'Movie' : 'Series'}
+            </Button>
+
+            {count > 1 && (
+              <div className="flex items-center gap-1.5 ml-auto">
+                {items.map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => goTo(i)}
+                    className={[
+                      'rounded-full transition-all duration-300 cursor-pointer',
+                      i === activeIndex
+                        ? 'w-7 h-2 bg-white'
+                        : 'w-2 h-2 bg-white/25 hover:bg-white/50',
+                    ].join(' ')}
+                    aria-label={`Go to slide ${i + 1}`}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-        )}
-
-        {/* Actions + dots */}
-        <div className="flex items-center gap-3">
-          <Button
-            variant="white"
-            size={isSmall ? 'md' : 'lg'}
-            onClick={nav}
-          >
-            Go to {type === 'movie' ? 'Movie' : 'Series'}
-          </Button>
-
-          {count > 1 && (
-            <div className="flex items-center gap-1.5 ml-auto">
-              {items.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => goTo(i)}
-                  className={[
-                    'rounded-full transition-all duration-300 cursor-pointer',
-                    i === activeIndex
-                      ? 'w-7 h-2 bg-white'
-                      : 'w-2 h-2 bg-white/25 hover:bg-white/50',
-                  ].join(' ')}
-                  aria-label={`Go to slide ${i + 1}`}
-                />
-              ))}
-            </div>
-          )}
         </div>
-      </div>
-    </>
-  )
+      </>
+    )
   }
 }
 

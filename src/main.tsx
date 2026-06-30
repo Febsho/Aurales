@@ -14,6 +14,14 @@ if (import.meta.hot) {
   })
 }
 
+if (!import.meta.env.DEV) {
+  document.addEventListener('contextmenu', (e) => e.preventDefault())
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F12') e.preventDefault()
+    if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i')) e.preventDefault()
+  })
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
