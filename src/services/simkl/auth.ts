@@ -190,7 +190,9 @@ async function fetchSimklAccount(accessToken: string, clientId: string): Promise
   return {
     id: String(user.id || user.simkl_id || ''),
     username: String(user.username || user.name || 'Simkl User'),
-    avatar: typeof user.avatar === 'string' ? `https://wsrv.nl/?url=https://simkl.in${user.avatar}&w=64` : undefined,
+    avatar: typeof user.avatar === 'string'
+      ? (user.avatar.startsWith('http') ? user.avatar : `https://wsrv.nl/?url=https://simkl.in${user.avatar}&w=64`)
+      : undefined,
   }
 }
 

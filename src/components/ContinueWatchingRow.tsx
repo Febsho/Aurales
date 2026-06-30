@@ -457,7 +457,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none"
+        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-6 scrollbar-none"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {items.map((item) => {
@@ -572,9 +572,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           item={cwMenu.item}
           source={source}
           onClose={() => setCwMenu(null)}
-          onRemove={(item) => {
-            removeWatchProgress([item.mediaId, item.imdbId].filter(Boolean) as string[], item.season, item.episode)
-            setItems((prev) => prev.filter((i) => i.id !== item.id))
+          onRemove={(removedItem) => {
+            if (source === 'local') {
+              removeWatchProgress([removedItem.mediaId, removedItem.imdbId].filter(Boolean) as string[], removedItem.season, removedItem.episode)
+            }
+            setItems((prev) => prev.filter((i) => i.id !== removedItem.id))
             setCwMenu(null)
           }}
           onGoTo={(item) => {

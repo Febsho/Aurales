@@ -14,24 +14,16 @@ export function validateAnimeTvdbStructure(
   if (
     nonSpecialSeasons.length === 1 &&
     nonSpecialSeasons[0].seasonNumber === 1 &&
-    nonSpecialSeasons[0].episodes.length > 13
+    nonSpecialSeasons[0].episodes.length > 13 &&
+    expectedMultiSeason
   ) {
     const eps = nonSpecialSeasons[0].episodes
-    const allAbsoluteMatchEpisode = eps.every(
-      (e) => e.absoluteEpisodeNumber != null && e.episodeNumber === e.absoluteEpisodeNumber,
-    )
-
-    if (allAbsoluteMatchEpisode) {
-      suspiciousSingleSeasonFlattening = true
-      reason = 'All episode numbers match absolute numbers in a single high-count season'
-    }
-
     const hasLateEpisodes = eps.some(
       (e) => e.episodeNumber >= 13 || (e.absoluteEpisodeNumber != null && e.absoluteEpisodeNumber >= 13),
     )
-    if (hasLateEpisodes && expectedMultiSeason) {
+    if (hasLateEpisodes) {
       suspiciousSingleSeasonFlattening = true
-      reason = reason || 'Single season with 13+ episodes where multi-season expected from relations'
+      reason = 'Single season with 13+ episodes where multi-season expected from relations'
     }
   }
 

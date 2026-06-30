@@ -68,7 +68,7 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
 
   const result = await cachedFetch<string | null>(`tmdb_backdrop:${mediaType}:${id}`, async () => {
     try {
-      const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'xx,null,en' }) as Record<string, unknown>
+      const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Record<string, unknown>
       return pickBestBackdrop(images) || null
     } catch (_) {
       return null
@@ -89,12 +89,12 @@ export async function getTmdbCardMetadata(
   return cachedFetch<{ poster?: string; backdrop?: string; genre?: string }>(`tmdb_card:${mediaType}:${id}`, async () => {
     const [details, images] = await Promise.all([
       tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,xx,null' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
     ])
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
     return {
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/w780${details.backdrop_path}` : undefined),
+      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
@@ -125,7 +125,7 @@ function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'
     type,
     year: ((item.release_date || item.first_air_date) as string)?.slice(0, 4) ? parseInt(((item.release_date || item.first_air_date) as string).slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/w780${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/w1280${item.backdrop_path}` : undefined,
     overview: item.overview as string,
     rating: item.vote_average as number,
     provider: 'tmdb',
@@ -166,7 +166,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/movie/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/movie/${tmdbId}/images`, { include_image_language: 'xx,null,en' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/movie/${tmdbId}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
     ])
 
     const cast = ((credits.cast as Record<string, unknown>[]) || []).slice(0, 20).map((c): CastMember => ({
@@ -237,7 +237,7 @@ export const tmdbProvider: MetadataProvider = {
       tmdbFetch(`/tv/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/videos`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/recommendations`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/tv/${tmdbId}/images`, { include_image_language: 'xx,null,en' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/tv/${tmdbId}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/external_ids`) as Promise<Record<string, unknown>>,
     ])
 
@@ -450,7 +450,7 @@ function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | '
     type: mediaType === 'movie' ? 'movie' : 'series',
     year: date ? Number(date.slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/w780${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/w1280${item.backdrop_path}` : undefined,
     overview: item.overview as string | undefined,
     rating: item.vote_average as number | undefined,
     provider: 'tmdb',
