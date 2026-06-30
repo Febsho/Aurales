@@ -139,8 +139,8 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
       style={{
         height: heroHeight,
         ...(isSmall ? {} : {
-          maskImage: 'linear-gradient(to bottom, black 95%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to bottom, black 95%, transparent 100%)',
+          maskImage: 'linear-gradient(to bottom, black 70%, rgba(0,0,0,0.6) 85%, rgba(0,0,0,0.2) 95%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, black 70%, rgba(0,0,0,0.6) 85%, rgba(0,0,0,0.2) 95%, transparent 100%)',
         }),
       }}
     >
