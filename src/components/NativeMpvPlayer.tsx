@@ -863,34 +863,42 @@ function FullNativeMpvPlayer({
 
       // ── Audio auto-select ──
       if (!hasAutoSelectedAudioRef.current && audio.length > 0) {
-        let bestAudioId = selAudio?.id
+        let bestAudioId: number | undefined
         let bestAudioRank = Infinity
         audio.forEach((t) => {
           const code = getLanguageCodeFromTrack(t.lang)
           const rank = code ? preferredAudio.indexOf(code) : -1
           if (rank !== -1 && rank < bestAudioRank) { bestAudioRank = rank; bestAudioId = t.id }
         })
-        if (bestAudioId !== undefined && bestAudioId !== selAudio?.id) {
-          sendPlayerCommand('set_property', ['aid', bestAudioId])
-          setSelectedAudio(bestAudioId)
+        if (bestAudioId !== undefined) {
+          if (bestAudioId !== selAudio?.id) {
+            sendPlayerCommand('set_property', ['aid', bestAudioId])
+            setSelectedAudio(bestAudioId)
+          }
+          hasAutoSelectedAudioRef.current = true
+        } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
+          hasAutoSelectedAudioRef.current = true
         }
-        hasAutoSelectedAudioRef.current = true
       }
 
       // ── Subtitle auto-select ──
       if (!hasAutoSelectedSubRef.current && subs.length > 0) {
-        let bestSubId: number | 'no' = selSub?.id || 'no'
+        let bestSubId: number | undefined
         let bestSubRank = Infinity
         subs.forEach((t) => {
           const code = getLanguageCodeFromTrack(t.lang)
           const rank = code ? preferredSubtitles.indexOf(code) : -1
           if (rank !== -1 && rank < bestSubRank) { bestSubRank = rank; bestSubId = t.id }
         })
-        if (bestSubId !== 'no' && bestSubId !== selSub?.id) {
-          sendPlayerCommand('set_property', ['sid', bestSubId])
-          setSelectedSub(bestSubId as number)
+        if (bestSubId !== undefined) {
+          if (bestSubId !== selSub?.id) {
+            sendPlayerCommand('set_property', ['sid', bestSubId])
+            setSelectedSub(bestSubId)
+          }
+          hasAutoSelectedSubRef.current = true
+        } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
+          hasAutoSelectedSubRef.current = true
         }
-        hasAutoSelectedSubRef.current = true
       }
     }
     setTracksLoaded(audio.length > 0 || subs.length > 0)
