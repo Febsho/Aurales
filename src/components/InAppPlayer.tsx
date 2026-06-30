@@ -12,7 +12,7 @@ import {
   buildEpisodeScrobble,
   buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
-import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   play as wtPlay,
@@ -282,6 +282,30 @@ IMPORTANT RULES:
     }
   }, [subtitles])
 
+  // ── Auto-select subtitle track by language priority ──
+  useEffect(() => {
+    if (preparedSubtitles.length === 0) return
+    const preferredSubs = useAppStore.getState().preferredSubtitles || ['en']
+    let bestIdx = -1
+    let bestRank = Infinity
+    preparedSubtitles.forEach((t, idx) => {
+      const code = getLanguageCodeFromTrack(t.lang)
+      const rank = code ? preferredSubs.indexOf(code) : -1
+      if (rank !== -1 && rank < bestRank) { bestRank = rank; bestIdx = idx }
+    })
+    if (bestIdx !== -1) {
+      setSelectedSubtitle(String(bestIdx))
+      if (videoRef.current) {
+        setTimeout(() => {
+          if (!videoRef.current) return
+          Array.from(videoRef.current.textTracks).forEach((t, idx) => {
+            t.mode = idx === bestIdx ? 'showing' : 'disabled'
+          })
+        }, 100)
+      }
+    }
+  }, [preparedSubtitles])
+
   // ── Watch Together sync ───────────────────────────────────────────────────
   const wtIgnoreNextEvent = useRef(false)
 
@@ -368,6 +392,21 @@ IMPORTANT RULES:
       tracks[0].enabled = true
       next[0].enabled = true
     }
+
+    // Auto-select audio by language priority
+    const preferredAudio = useAppStore.getState().preferredAudio || ['en', 'ja']
+    let bestIdx = -1
+    let bestRank = Infinity
+    Array.from(tracks).forEach((t, idx) => {
+      const code = getLanguageCodeFromTrack(t.language)
+      const rank = code ? preferredAudio.indexOf(code) : -1
+      if (rank !== -1 && rank < bestRank) { bestRank = rank; bestIdx = idx }
+    })
+    if (bestIdx !== -1) {
+      Array.from(tracks).forEach((t, idx) => { t.enabled = idx === bestIdx })
+      next.forEach((t, idx) => { t.enabled = idx === bestIdx })
+    }
+
     setAudioTracks(next)
     setSelectedAudio(String(next.find((track) => track.enabled)?.index ?? 0))
   }
