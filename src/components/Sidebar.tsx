@@ -10,7 +10,7 @@ const navItems = [
   { path: '/discover', label: 'Discover', icon: CompassIcon },
   { path: '/collections', label: 'Library', icon: LibraryIcon },
   { path: '/settings', label: 'Settings', icon: SettingsIcon },
-  { path: '/developer', label: 'Developer', icon: ToolIcon },
+  ...(import.meta.env.DEV ? [{ path: '/developer', label: 'Developer', icon: ToolIcon }] : []),
 ]
 
 interface SidebarProps {
