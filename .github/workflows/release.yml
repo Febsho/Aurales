@@ -55,6 +55,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AURALES_UPDATE_TOKEN: ${{ secrets.AURALES_UPDATE_TOKEN }}
         with:
           tagName: v__VERSION__
           releaseName: 'Aurales v__VERSION__'
@@ -62,36 +63,3 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-
-      - name: Mirror updater assets to public release repo
-        shell: pwsh
-        env:
-          PRIVATE_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
-          PUBLIC_RELEASE_REPO: Febsho/Aurales-Releases
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:RELEASE_REPO_TOKEN)) {
-            Write-Host 'Skipping public release mirror because RELEASE_REPO_TOKEN is not configured.'
-            exit 0
-          }
-
-          $tag = $env:GITHUB_REF_NAME
-          $releaseDir = Join-Path $env:RUNNER_TEMP 'public-release'
-          New-Item -ItemType Directory -Force $releaseDir | Out-Null
-
-          $env:GH_TOKEN = $env:PRIVATE_REPO_TOKEN
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --dir $releaseDir --clobber
-
-          $latestJson = Join-Path $releaseDir 'latest.json'
-          $latest = Get-Content $latestJson -Raw
-          $latest = $latest -replace 'github.com/Febsho/Aurales/releases/download', 'github.com/Febsho/Aurales-Releases/releases/download'
-          Set-Content -Path $latestJson -Value $latest -NoNewline
-
-          $env:GH_TOKEN = $env:RELEASE_REPO_TOKEN
-          gh release view $tag --repo $env:PUBLIC_RELEASE_REPO *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release delete $tag --repo $env:PUBLIC_RELEASE_REPO --yes
-          }
-
-          $assets = Get-ChildItem $releaseDir -File | ForEach-Object { $_.FullName }
-          gh release create $tag $assets --repo $env:PUBLIC_RELEASE_REPO --title "Aurales $tag" --notes 'Public updater release for Aurales.' --latest
