@@ -43,12 +43,8 @@ interface AppState {
   // AniList
   anilistConnected: boolean
   anilistAccount: AniListAccount | null
-  anilistClientId: string
-  anilistClientSecret: string
   setAnilistConnected: (connected: boolean) => void
   setAnilistAccount: (account: AniListAccount | null) => void
-  setAnilistClientId: (key: string) => void
-  setAnilistClientSecret: (key: string) => void
 
   // Addons
   addons: InstalledAddon[]
@@ -449,16 +445,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as AniListAccount : null
     } catch (_) { return null }
   })(),
-  anilistClientId: localStorage.getItem('anilist_client_id') || '',
-  anilistClientSecret: localStorage.getItem('anilist_client_secret') || '',
   setAnilistConnected: (connected) => set({ anilistConnected: connected }),
   setAnilistAccount: (account) => {
     if (account) localStorage.setItem('anilist_account', JSON.stringify(account))
     else localStorage.removeItem('anilist_account')
     set({ anilistAccount: account })
   },
-  setAnilistClientId: (key) => { localStorage.setItem('anilist_client_id', key); set({ anilistClientId: key }) },
-  setAnilistClientSecret: (key) => { localStorage.setItem('anilist_client_secret', key); set({ anilistClientSecret: key }) },
 
   addons: loadPersistedAddons(),
   setAddons: (addons) => { persistAddons(addons); set({ addons }) },

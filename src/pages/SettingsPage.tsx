@@ -88,8 +88,6 @@ const BACKUP_KEYS = [
   'simkl_account',
   'anilist_token',
   'anilist_account',
-  'anilist_client_id',
-  'anilist_client_secret',
   'openrouter_api_key',
   'openrouter_model',
   'orynt_sub_translation_enabled',
@@ -602,14 +600,17 @@ export default function SettingsPage() {
     setPmdbConnChecking(false)
   }
 
+  const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || ''
+  const getAnilistClientSecret = () => localStorage.getItem('anilist_client_secret') || import.meta.env.VITE_ANILIST_CLIENT_SECRET || ''
+
   const handleAnilistConnect = async () => {
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
-      const clientId = store.anilistClientId.trim()
-      const clientSecret = store.anilistClientSecret.trim()
+      const clientId = getAnilistClientId()
+      const clientSecret = getAnilistClientSecret()
       if (!clientId || !clientSecret) {
-        throw new Error('Client ID and Client Secret are required.')
+        throw new Error('AniList credentials not configured.')
       }
 
       setAnilistMessage('Waiting for browser authorization callback...')
@@ -1693,45 +1694,10 @@ export default function SettingsPage() {
               {/* AniList */}
               <SettingSection title="AniList" description="Track anime watch progress, manage lists, and sync history.">
                 <div className="px-6 py-4 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Client ID</label>
-                      <input
-                        type="text"
-                        value={store.anilistClientId}
-                        onChange={(e) => store.setAnilistClientId(e.target.value)}
-                        placeholder="Enter AniList Client ID"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Client Secret</label>
-                      <input
-                        type="password"
-                        value={store.anilistClientSecret}
-                        onChange={(e) => store.setAnilistClientSecret(e.target.value)}
-                        placeholder="Enter AniList Client Secret"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 bg-white/[0.02] border border-white/[0.06] rounded-xl">
-                    <p className="text-xs text-white/50 leading-relaxed">
-                      To connect AniList:
-                      <br />
-                      1. Register an API client on the <a href="https://anilist.co/settings/developer" target="_blank" rel="noopener noreferrer" className="text-accent underline font-semibold">AniList Developer Portal</a>.
-                      <br />
-                      2. Set the <b>Redirect URL</b> to <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-white">http://localhost:42814/</code>.
-                      <br />
-                      3. Input the Client ID and Client Secret above, then click <b>Connect AniList</b> below.
-                    </p>
-                  </div>
-
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleAnilistConnect}
-                      disabled={anilistLoading || !store.anilistClientId || !store.anilistClientSecret}
+                      disabled={anilistLoading}
                       className="px-3.5 py-2 bg-accent text-black rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
                     >
                       {anilistLoading ? 'Connecting...' : store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList'}
