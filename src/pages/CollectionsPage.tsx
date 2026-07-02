@@ -13,20 +13,9 @@ import type { HomeRowConfig, DiscoverConfig, SearchResult } from '../types'
 import type { InstalledAddon } from '../services/addons'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
-  getSimklWatching,
-  getSimklWatchlist,
-  getSimklCompleted,
-  getSimklOnHold,
-  getSimklDropped,
-  getSimklAnimeWatchlist,
-  getSimklAnimeWatching,
-  getSimklAnimeCompleted,
-  getSimklMoviesWatchlist,
-  getSimklMoviesWatching,
-  getSimklMoviesCompleted,
-  getSimklShowsWatchlist,
-  getSimklShowsWatching,
-  getSimklShowsCompleted,
+  getSimklWatchStatusList,
+  getSimklDerivedCatalogItems,
+  isSimklDerivedCatalogId,
 } from '../services/simkl/lists'
 import {
   getTmdbGenres,
@@ -43,7 +32,8 @@ import {
 } from '../services/tmdb'
 import { MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { ANILIST_LIST_SOURCES } from '../services/anilist'
-import { canonicalizeCatalogItemsWithTvdb, getAvailablePmdbListSources, getAvailablePmdbPickSources, getAvailableTraktListSources, getProviderListItems, PMDB_LIST_SOURCES, TRAKT_LIST_SOURCES } from '../services/providerLists'
+import { canonicalizeCatalogItemsWithTvdb, getAvailableMdblistSources, getAvailablePmdbListSources, getAvailablePmdbPickSources, getAvailableTraktListSources, getProviderListItems, searchTraktPublicListSources, MDBLIST_LIST_SOURCES, PMDB_LIST_SOURCES, TRAKT_LIST_SOURCES } from '../services/providerLists'
+import { createMdblistList } from '../services/mdblist'
 import {
   DndContext,
   closestCenter,
@@ -79,44 +69,57 @@ const SIMKL_LIST_SOURCES = [
   { id: 'dropped',            label: 'Dropped',                   type: 'poster' as const },
 ]
 
+const SIMKL_LIBRARY_CATALOGS = [
+  { id: 'movies-watchlist',          label: 'Plan to Watch',             type: 'poster' as const, group: 'watchlist', section: 'Movies' },
+  { id: 'movies-completed',          label: 'Completed',                 type: 'poster' as const, group: 'watchlist', section: 'Movies' },
+  { id: 'movies-on-hold',            label: 'On Hold',                   type: 'poster' as const, group: 'watchlist', section: 'Movies' },
+  { id: 'movies-dropped',            label: 'Dropped',                   type: 'poster' as const, group: 'watchlist', section: 'Movies' },
+  { id: 'shows-watching',            label: 'Watching',                  type: 'landscape' as const, group: 'watchlist', section: 'Shows' },
+  { id: 'shows-watchlist',           label: 'Plan to Watch',             type: 'poster' as const, group: 'watchlist', section: 'Shows' },
+  { id: 'shows-completed',           label: 'Completed',                 type: 'poster' as const, group: 'watchlist', section: 'Shows' },
+  { id: 'shows-on-hold',             label: 'On Hold',                   type: 'poster' as const, group: 'watchlist', section: 'Shows' },
+  { id: 'shows-dropped',             label: 'Dropped',                   type: 'poster' as const, group: 'watchlist', section: 'Shows' },
+  { id: 'anime-watching',            label: 'Watching',                  type: 'landscape' as const, group: 'watchlist', section: 'Anime' },
+  { id: 'anime-watchlist',           label: 'Plan to Watch',             type: 'poster' as const, group: 'watchlist', section: 'Anime' },
+  { id: 'anime-completed',           label: 'Completed',                 type: 'poster' as const, group: 'watchlist', section: 'Anime' },
+  { id: 'anime-on-hold',             label: 'On Hold',                   type: 'poster' as const, group: 'watchlist', section: 'Anime' },
+  { id: 'anime-dropped',             label: 'Dropped',                   type: 'poster' as const, group: 'watchlist', section: 'Anime' },
+  { id: 'trending-movies',           label: 'Trending Movies',           type: 'poster' as const, group: 'trending' },
+  { id: 'trending-shows',            label: 'Trending Shows',            type: 'poster' as const, group: 'trending' },
+  { id: 'trending-anime',            label: 'Trending Anime',            type: 'poster' as const, group: 'trending' },
+  { id: 'anime-airing-soon',         label: 'Airing Soon (Anime)',       type: 'poster' as const, group: 'trending' },
+  { id: 'anime-airing-soon-earlier', label: 'Airing Soon (Earlier)',     type: 'poster' as const, group: 'trending' },
+  { id: 'dvd-releases',              label: 'DVD Releases',              type: 'poster' as const, group: 'trending' },
+  { id: 'hidden-gems-movies',        label: 'Movies',                    type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
+  { id: 'hidden-gems-shows',         label: 'Shows',                     type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
+  { id: 'hidden-gems-anime',         label: 'Anime',                     type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
+  { id: 'binge-worthy-shows',        label: 'Shows',                     type: 'poster' as const, group: 'curated', section: 'Binge-Worthy' },
+  { id: 'binge-worthy-anime',        label: 'Anime',                     type: 'poster' as const, group: 'curated', section: 'Binge-Worthy' },
+  { id: 'quick-watches',             label: 'Quick Watches (under 100 min)', type: 'poster' as const, group: 'curated', section: 'Mom picks' },
+  { id: 'box-office-hits',           label: 'Box Office Hits',           type: 'poster' as const, group: 'curated', section: 'Mom picks' },
+]
+
 const ANILIST_WIDGET_LISTS = ANILIST_LIST_SOURCES.map((list) => ({ id: list.id, label: list.label.replace(/^AniList - /, ''), type: list.layout }))
 
 // ── Poster fetching ────────────────────────────────────────────────────────────
 
 async function fetchSimklPosters(listId: string): Promise<string[]> {
-  let items: import('../services/simkl/types').SimklWatchlistItem[] = []
-  switch (listId) {
-    case 'watching':         items = await getSimklWatching(); break
-    case 'plantowatch':
-    case 'watchlist':        items = await getSimklWatchlist(); break
-    case 'completed':        items = await getSimklCompleted(); break
-    case 'hold':
-    case 'on-hold':          items = await getSimklOnHold(); break
-    case 'dropped':          items = await getSimklDropped(); break
-    case 'anime-watchlist':  items = await getSimklAnimeWatchlist(); break
-    case 'anime-watching':   items = await getSimklAnimeWatching(); break
-    case 'anime-completed':  items = await getSimklAnimeCompleted(); break
-    case 'movies-watchlist': items = await getSimklMoviesWatchlist(); break
-    case 'movies-watching':  items = await getSimklMoviesWatching(); break
-    case 'movies-completed': items = await getSimklMoviesCompleted(); break
-    case 'shows-watchlist':  items = await getSimklShowsWatchlist(); break
-    case 'shows-watching':   items = await getSimklShowsWatching(); break
-    case 'shows-completed':  items = await getSimklShowsCompleted(); break
-    default:                 items = await getSimklWatchlist()
-  }
-  const canonical = await canonicalizeCatalogItemsWithTvdb(items.map((item) => ({
-    id: item.tvdbId ? `tvdb-${item.tvdbId}` : item.imdbId || (item.tmdbId ? `tmdb-${item.tmdbId}` : item.id),
-    title: item.title,
-    type: item.type === 'movie' ? 'movie' as const : 'series' as const,
-    year: item.year,
-    poster: item.poster,
-    backdrop: item.backdrop,
-    provider: 'simkl',
-    imdbId: item.imdbId,
-    tmdbId: item.tmdbId,
-    tvdbId: item.tvdbId,
-    malId: item.malId,
-  })))
+  const rawItems = isSimklDerivedCatalogId(listId)
+    ? await getSimklDerivedCatalogItems(listId)
+    : (await getSimklWatchStatusList(listId)).map((item) => ({
+        id: item.tvdbId ? `tvdb-${item.tvdbId}` : item.imdbId || (item.tmdbId ? `tmdb-${item.tmdbId}` : item.id),
+        title: item.title,
+        type: item.type === 'movie' ? 'movie' as const : 'series' as const,
+        year: item.year,
+        poster: item.poster,
+        backdrop: item.backdrop,
+        provider: 'simkl' as const,
+        imdbId: item.imdbId,
+        tmdbId: item.tmdbId,
+        tvdbId: item.tvdbId,
+        malId: item.malId,
+      }))
+  const canonical = await canonicalizeCatalogItemsWithTvdb(rawItems)
   return canonical
     .slice(0, 4)
     .map((i) => i.poster || '')
@@ -171,7 +174,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
           return
         }
 
-        if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') && row.providerListId) {
+        if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') && row.providerListId) {
           const items = await getProviderListItems(row)
           total = items.length
           urls = items.slice(0, 4).map((i) => i.poster || i.backdrop || '').filter(Boolean)
@@ -214,30 +217,47 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
   return { posters, count, loading }
 }
 
-// ── Poster strip (horizontal row for list items) ──────────────────────────────
+// ── Poster mosaic (card background) ───────────────────────────────────────────
 
-function PosterStrip({ posters, loading }: { posters: string[]; loading: boolean }) {
+function PosterMosaic({ posters, loading }: { posters: string[]; loading: boolean }) {
   if (loading) {
     return (
-      <div className="flex gap-1">
-        {[0, 1, 2].map((i) => <div key={i} className="w-9 h-[52px] rounded-md bg-white/5 animate-pulse flex-shrink-0" />)}
+      <div className="absolute inset-0 grid grid-cols-2 grid-rows-2">
+        {[0, 1, 2, 3].map((i) => <div key={i} className="bg-white/[0.03] animate-pulse" />)}
       </div>
     )
   }
   if (posters.length === 0) {
     return (
-      <div className="w-9 h-[52px] rounded-md bg-white/[0.04] flex items-center justify-center flex-shrink-0">
-        <svg className="w-4 h-4 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <path d="M3 16l5-5 4 4 4-5 5 6" />
+      <div className="absolute inset-0 bg-white/[0.03] flex items-center justify-center">
+        <svg className="w-10 h-10 text-white/10" fill="none" stroke="currentColor" strokeWidth="1.2" viewBox="0 0 24 24">
+          <rect x="2" y="2" width="20" height="20" rx="2.5" />
+          <path d="M2 17l5-5 4 4 4-5 7 8" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
         </svg>
       </div>
     )
   }
+  if (posters.length === 1) {
+    return (
+      <div className="absolute inset-0">
+        <img src={posters[0]} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+      </div>
+    )
+  }
+  if (posters.length === 2) {
+    return (
+      <div className="absolute inset-0 grid grid-cols-2">
+        {posters.map((url, i) => <img key={i} src={url} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />)}
+      </div>
+    )
+  }
   return (
-    <div className="flex gap-1 flex-shrink-0">
-      {posters.slice(0, 3).map((url, i) => (
-        <img key={i} src={url} alt="" className="w-9 h-[52px] rounded-md object-cover flex-shrink-0" loading="lazy" />
+    <div className="absolute inset-0 grid grid-cols-2 grid-rows-2">
+      {[0, 1, 2, 3].map((i) => (
+        posters[i]
+          ? <img key={i} src={posters[i]} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+          : <div key={i} className="bg-white/[0.04]" />
       ))}
     </div>
   )
@@ -250,6 +270,7 @@ function shelfSourceLabel(row: HomeRowConfig): string {
   if (row.sourceType === 'anilist') return 'AniList'
   if (row.sourceType === 'pmdb') return 'PMDB'
   if (row.sourceType === 'pmdb-picks') return 'PMDB Picks'
+  if (row.sourceType === 'mdblist') return 'MDBList'
   if (row.sourceType === 'discover') return 'Discover'
   if (row.addonId) return 'Addon'
   return 'Catalog'
@@ -272,14 +293,15 @@ function sourceColor(row: HomeRowConfig): string {
   if (row.sourceType === 'anilist') return 'bg-sky-500/15 text-sky-400'
   if (row.sourceType === 'pmdb') return 'bg-purple-500/15 text-purple-300'
   if (row.sourceType === 'pmdb-picks') return 'bg-fuchsia-500/15 text-fuchsia-300'
+  if (row.sourceType === 'mdblist') return 'bg-green-500/15 text-green-400'
   if (row.sourceType === 'discover') return 'bg-amber-500/15 text-amber-400'
   if (row.layout === 'continue') return 'bg-accent/15 text-accent'
   return 'bg-white/[0.06] text-white/50'
 }
 
-// ── Sortable shelf row ────────────────────────────────────────────────────────
+// ── Sortable shelf card (Steam-style grid card) ──────────────────────────────
 
-function SortableShelfRow({
+function SortableShelfCard({
   row,
   addons,
   onRemove,
@@ -292,11 +314,12 @@ function SortableShelfRow({
   onEdit: () => void
   onToggle: () => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id })
+  const locked = row.layout === 'continue'
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id, disabled: locked })
   const { posters, count, loading } = useRowPosters(row, addons)
 
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: locked ? undefined : CSS.Transform.toString(transform),
     transition: isDragging ? 'none' : transition,
     zIndex: isDragging ? 50 : undefined,
   }
@@ -305,65 +328,47 @@ function SortableShelfRow({
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex items-center gap-4 px-4 py-3 rounded-xl border transition-all ${
-        isDragging
-          ? 'bg-white/[0.06] border-white/15 shadow-[0_12px_40px_rgba(0,0,0,0.5)] scale-[1.01]'
-          : !row.enabled
-            ? 'bg-white/[0.01] border-white/[0.04] opacity-50'
-            : 'bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.1]'
+      {...(!locked ? attributes : {})}
+      {...(!locked ? listeners : {})}
+      className={`group relative overflow-hidden rounded-2xl border aspect-[4/3] transition-all duration-200 ${
+        locked
+          ? 'cursor-default border-accent/15 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]'
+          : isDragging
+          ? 'scale-[1.05] border-white/20 shadow-[0_20px_60px_rgba(0,0,0,0.6)]'
+          : 'border-white/[0.08] hover:border-white/[0.15] hover:shadow-[0_8px_32px_rgba(0,0,0,0.4)] hover:scale-[1.02]'
       }`}
     >
-      {/* Drag handle */}
-      <div
-        className="flex-shrink-0 cursor-grab active:cursor-grabbing text-white/20 hover:text-white/40 transition-colors touch-none"
-        {...attributes}
-        {...listeners}
-      >
-        <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
-          <circle cx="5" cy="3" r="1.5" /><circle cx="11" cy="3" r="1.5" />
-          <circle cx="5" cy="8" r="1.5" /><circle cx="11" cy="8" r="1.5" />
-          <circle cx="5" cy="13" r="1.5" /><circle cx="11" cy="13" r="1.5" />
-        </svg>
+      {/* Poster mosaic background */}
+      <PosterMosaic posters={posters} loading={loading} />
+
+      {/* Gradient overlay */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/10" />
+
+      {/* Source pill (top-left) */}
+      <div className="absolute top-2.5 left-2.5 z-10">
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-black/50 backdrop-blur-sm ${sourceColor(row).split(' ').find(c => c.startsWith('text-')) || 'text-white/60'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${sourceColor(row).split(' ').find(c => c.startsWith('bg-'))?.replace(/\/\d+/, '') || 'bg-white/40'}`} />
+          {locked ? 'Fixed' : shelfSourceLabel(row)}
+        </span>
       </div>
 
-      {/* Poster thumbnails */}
-      <PosterStrip posters={posters} loading={loading} />
-
-      {/* Info */}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-white/85 truncate leading-tight">{row.title}</p>
-        <div className="flex items-center gap-2 mt-1">
-          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${sourceColor(row)}`}>
-            {shelfSourceLabel(row)}
-          </span>
-          <span className="text-[10px] text-white/25">{shelfLayoutLabel(row)}</span>
-          <span className="text-[10px] text-white/25">{loading ? '...' : `${count} items`}</span>
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center gap-1.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Hover actions (top-right) */}
+      <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 px-1.5 py-1 rounded-xl bg-black/60 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={(e) => { e.stopPropagation(); onToggle() }}
           onPointerDown={(e) => e.stopPropagation()}
-          title={row.enabled ? 'Hide from home' : 'Show on home'}
-          className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-            row.enabled ? 'text-white/40 hover:text-white hover:bg-white/[0.08]' : 'text-white/20 hover:text-accent hover:bg-accent/10'
-          }`}
+          title="Hide from home"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/50 hover:text-white hover:bg-white/[0.12] transition-colors cursor-pointer"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            {row.enabled ? (
-              <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
-            ) : (
-              <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></>
-            )}
+            <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" />
           </svg>
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); onEdit() }}
           onPointerDown={(e) => e.stopPropagation()}
           title="Edit"
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/50 hover:text-white hover:bg-white/[0.12] transition-colors cursor-pointer"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
@@ -374,12 +379,18 @@ function SortableShelfRow({
           onClick={(e) => { e.stopPropagation(); onRemove() }}
           onPointerDown={(e) => e.stopPropagation()}
           title="Remove"
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/50 hover:text-red-400 hover:bg-red-500/15 transition-colors cursor-pointer"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
           </svg>
         </button>
+      </div>
+
+      {/* Title + count (bottom) */}
+      <div className="absolute bottom-0 left-0 right-0 p-3.5 z-10">
+        <p className="text-sm font-bold text-white truncate leading-tight drop-shadow-lg">{row.title}</p>
+        <p className="text-[11px] text-white/50 mt-0.5 drop-shadow-md">{loading ? '...' : `${count} items`}</p>
       </div>
     </div>
   )
@@ -398,71 +409,206 @@ function HeroBannerSection({
   onUpdate: (id: string, updates: Partial<HomeRowConfig>) => void
   onAdd: (row: Omit<HomeRowConfig, 'id' | 'order'>) => void
 }) {
-  type CatalogOption = { label: string; addonId: string; addonUrl: string; catalogType: string; catalogId: string }
-  const catalogOptions: CatalogOption[] = [
-    { label: 'Default (Mock)', addonId: 'com.example.mockaddon', addonUrl: '', catalogType: 'movie', catalogId: 'mock-movies' },
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+
+  type CatalogOption = {
+    group: string
+    label: string
+    detail: string
+    value: string
+    row: Partial<HomeRowConfig>
+  }
+
+  const addonOptions: CatalogOption[] = [
+    {
+      group: 'Built-in',
+      label: 'Default Movies',
+      detail: 'Local sample catalog',
+      value: 'addon:com.example.mockaddon:movie:mock-movies',
+      row: {
+        sourceType: 'addon',
+        addonId: 'com.example.mockaddon',
+        addonUrl: '',
+        catalogType: 'movie',
+        catalogId: 'mock-movies',
+        catalogExtra: undefined,
+        providerListId: undefined,
+        showRank: undefined,
+      },
+    },
     ...addons.filter((a) => a.enabled).flatMap((a) =>
       (a.manifest.catalogs || []).map((c: any) => ({
-        label: `${c.name || c.id} (${a.manifest.name})`,
-        addonId: a.manifest.id,
-        addonUrl: a.url,
-        catalogType: c.type,
-        catalogId: c.id,
+        group: a.manifest.name || 'Addons',
+        label: c.name || c.id,
+        detail: `${c.type} catalog`,
+        value: `addon:${a.manifest.id}:${c.type}:${c.id}`,
+        row: {
+          sourceType: 'addon' as const,
+          addonId: a.manifest.id,
+          addonUrl: a.url,
+          catalogType: c.type,
+          catalogId: c.id,
+          catalogExtra: defaultCatalogExtra(c.extra),
+          providerListId: undefined,
+          showRank: undefined,
+        },
       }))
     ),
   ]
 
+  const serviceOptions: CatalogOption[] = [
+    ...(simklConnected ? SIMKL_LIBRARY_CATALOGS.map((list) => ({
+      group: 'Simkl',
+      label: list.section ? `${list.section} - ${list.label}` : list.label,
+      detail: list.group === 'trending' ? 'Trending catalog' : list.group === 'curated' ? 'Curated catalog' : 'Watchlist catalog',
+      value: `simkl:${list.id}`,
+      row: {
+        sourceType: 'simkl' as const,
+        providerListId: list.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogId: undefined,
+        catalogExtra: undefined,
+        showRank: list.group === 'trending' || list.group === 'curated',
+      },
+    })) : []),
+    ...(traktConnected ? TRAKT_LIST_SOURCES.map((list) => ({
+      group: 'Trakt',
+      label: list.label.replace(/^Trakt - /, ''),
+      detail: `${list.layout} list`,
+      value: `trakt:${list.id}`,
+      row: {
+        sourceType: 'trakt' as const,
+        providerListId: list.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogId: undefined,
+        catalogExtra: undefined,
+        showRank: undefined,
+      },
+    })) : []),
+    ...(anilistConnected ? ANILIST_WIDGET_LISTS.map((list) => ({
+      group: 'AniList',
+      label: list.label,
+      detail: `${list.type} list`,
+      value: `anilist:${list.id}`,
+      row: {
+        sourceType: 'anilist' as const,
+        providerListId: list.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogId: undefined,
+        catalogExtra: undefined,
+        showRank: undefined,
+      },
+    })) : []),
+    ...(pmdbApiKey ? PMDB_LIST_SOURCES.map((list) => ({
+      group: 'PMDB',
+      label: list.label.replace(/^PMDB - /, ''),
+      detail: `${list.layout} list`,
+      value: `pmdb:${list.id}`,
+      row: {
+        sourceType: 'pmdb' as const,
+        providerListId: list.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogId: undefined,
+        catalogExtra: undefined,
+        showRank: undefined,
+      },
+    })) : []),
+    ...(mdblistApiKey ? MDBLIST_LIST_SOURCES.map((list) => ({
+      group: 'MDBList',
+      label: list.label.replace(/^MDBList - /, ''),
+      detail: `${list.layout} list`,
+      value: `mdblist:${list.id}`,
+      row: {
+        sourceType: 'mdblist' as const,
+        providerListId: list.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogId: undefined,
+        catalogExtra: undefined,
+        showRank: undefined,
+      },
+    })) : []),
+  ]
+
+  const catalogOptions = [...addonOptions, ...serviceOptions]
+  const groupedOptions = catalogOptions.reduce<Record<string, CatalogOption[]>>((acc, option) => {
+    if (!acc[option.group]) acc[option.group] = []
+    acc[option.group].push(option)
+    return acc
+  }, {})
+
   const currentValue = row
-    ? `${row.addonId || 'com.example.mockaddon'}::${row.catalogType || 'movie'}::${row.catalogId || 'mock-movies'}`
-    : 'com.example.mockaddon::movie::mock-movies'
+    ? row.sourceType && row.sourceType !== 'addon'
+      ? `${row.sourceType}:${row.providerListId || ''}`
+      : `addon:${row.addonId || 'com.example.mockaddon'}:${row.catalogType || 'movie'}:${row.catalogId || 'mock-movies'}`
+    : 'addon:com.example.mockaddon:movie:mock-movies'
+  const selectedOption = catalogOptions.find((option) => option.value === currentValue) || catalogOptions[0]
 
   const handleCatalogChange = (val: string) => {
-    const opt = catalogOptions.find((o) => `${o.addonId}::${o.catalogType}::${o.catalogId}` === val)
+    const opt = catalogOptions.find((o) => o.value === val)
     if (!opt) return
+    const updates: Partial<HomeRowConfig> = {
+      ...opt.row,
+      title: 'Hero Banner',
+      layout: 'hero',
+      enabled: true,
+    }
     if (row) {
-      onUpdate(row.id, {
-        addonId: opt.addonId,
-        addonUrl: opt.addonUrl,
-        catalogType: opt.catalogType,
-        catalogId: opt.catalogId,
-      })
+      onUpdate(row.id, updates)
     } else {
-      onAdd({
-        title: 'Hero Banner',
-        layout: 'hero',
-        enabled: true,
-        sourceType: 'addon',
-        addonId: opt.addonId,
-        addonUrl: opt.addonUrl,
-        catalogType: opt.catalogType,
-        catalogId: opt.catalogId,
-      })
+      onAdd(updates as Omit<HomeRowConfig, 'id' | 'order'>)
     }
   }
 
   return (
-    <div className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] rounded-xl border border-white/[0.06]">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <div className="w-8 h-8 flex-shrink-0 rounded-lg bg-accent/10 flex items-center justify-center">
-          <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
-          </svg>
+    <div className="relative overflow-hidden glass-panel-light rounded-2xl p-5">
+      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-accent/0 via-accent/40 to-accent/0" />
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="w-10 h-10 flex-shrink-0 rounded-xl bg-accent/10 flex items-center justify-center">
+            <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+              <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-white/85">Hero Banner</p>
+            <p className="text-[11px] text-white/35 truncate">Featured catalog at the top of your home screen</p>
+          </div>
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-white/80">Hero Banner</p>
-          <p className="text-[11px] text-white/30 truncate">Featured catalog at the top of your home screen</p>
+        <div className="min-w-0 flex-shrink-0 sm:min-w-[320px]">
+          <select
+            value={selectedOption?.value || currentValue}
+            onChange={(e) => handleCatalogChange(e.target.value)}
+            className="w-full bg-white/[0.06] border border-white/[0.08] text-white/80 text-xs rounded-xl px-3.5 py-2.5 outline-none cursor-pointer truncate"
+          >
+            {Object.entries(groupedOptions).map(([group, options]) => (
+              <optgroup key={group} label={group} className="bg-neutral-900 text-white/70">
+                {options.map((opt) => (
+                  <option key={opt.value} value={opt.value} className="bg-neutral-900">
+                    {opt.label} - {opt.detail}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {selectedOption && (
+            <p className="mt-1.5 truncate text-[10px] text-white/30">{selectedOption.group} / {selectedOption.detail}</p>
+          )}
         </div>
       </div>
-      <select
-        value={currentValue}
-        onChange={(e) => handleCatalogChange(e.target.value)}
-        className="bg-white/[0.06] border border-white/[0.08] text-white/70 text-xs rounded-lg px-3 py-2 outline-none cursor-pointer max-w-[240px] truncate flex-shrink-0"
-      >
-        {catalogOptions.map((opt) => {
-          const val = `${opt.addonId}::${opt.catalogType}::${opt.catalogId}`
-          return <option key={val} value={val} className="bg-neutral-900">{opt.label}</option>
-        })}
-      </select>
     </div>
   )
 }
@@ -489,15 +635,15 @@ function ProviderListPickerSection({
   onClose,
 }: {
   title: string
-  service: 'anilist' | 'trakt' | 'pmdb' | 'pmdb-picks'
+  service: 'anilist' | 'trakt' | 'pmdb' | 'pmdb-picks' | 'mdblist'
   lists: { id: string; label: string; type: 'poster' | 'landscape' }[]
   isAlreadyAdded: (key: string) => boolean
   onAdd: (row: Omit<HomeRowConfig, 'id' | 'order'>) => void
   onClose: () => void
 }) {
-  const label = service === 'anilist' ? 'AniList' : service === 'pmdb' ? 'PMDB' : service === 'pmdb-picks' ? 'PMDB Picks' : 'Trakt'
-  const borderColor = service === 'anilist' ? 'border-l-[#3b82f6]' : service === 'pmdb' ? 'border-l-[#a855f7]' : service === 'pmdb-picks' ? 'border-l-[#d946ef]' : 'border-l-[#ef4444]'
-  const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#3b82f6]' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#a855f7]' : service === 'pmdb-picks' ? 'bg-[#d946ef]/15 text-[#d946ef]' : 'bg-[#ef4444]/15 text-[#ef4444]'
+  const label = service === 'anilist' ? 'AniList' : service === 'pmdb' ? 'PMDB' : service === 'pmdb-picks' ? 'PMDB Picks' : service === 'mdblist' ? 'MDBList' : 'Trakt'
+
+  const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#60a5fa] ring-[#3b82f6]/20' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#c084fc] ring-[#a855f7]/20' : service === 'pmdb-picks' ? 'bg-[#d946ef]/15 text-[#e879f9] ring-[#d946ef]/20' : service === 'mdblist' ? 'bg-[#22c55e]/15 text-[#4ade80] ring-[#22c55e]/20' : 'bg-[#ef4444]/15 text-[#f87171] ring-[#ef4444]/20'
   return (
     <div className="space-y-1.5">
       {lists.map((list) => {
@@ -516,16 +662,19 @@ function ProviderListPickerSection({
               })
               onClose()
             }}
-            className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${borderColor} transition-all text-left ${
-              added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
+            className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border text-left transition-all ${
+              added ? 'bg-white/[0.025] border-white/[0.05] opacity-60 cursor-default' : 'bg-white/[0.035] border-white/[0.07] hover:bg-white/[0.065] hover:border-white/[0.14] cursor-pointer'
             }`}
           >
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${badgeBg}`}>
-              <span className="text-[11px] font-black">{label[0]}</span>
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ring-1 ${badgeBg}`}>
+              <span className="text-xs font-black">{label[0]}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-              <p className="text-[10px] text-white/25 mt-0.5">{list.type} layout</p>
+              <p className="text-sm font-semibold text-white/85 truncate">{list.label}</p>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white/35">{list.type}</span>
+                <span className="text-[10px] text-white/20">{label}</span>
+              </div>
             </div>
             {added ? (
               <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
@@ -533,7 +682,9 @@ function ProviderListPickerSection({
                 <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
               </div>
             ) : (
-              <svg className="w-4 h-4 text-white/15 group-hover:text-white/30 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
+              <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-white/[0.045] text-white/35 transition-colors group-hover:bg-white/[0.09] group-hover:text-white/70">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
+              </span>
             )}
           </button>
         )
@@ -561,8 +712,10 @@ function AddWidgetOverlay({
 }) {
   const [mode, setMode] = useState<'preset' | 'discover'>('preset')
   const [search, setSearch] = useState('')
+  const [newMdblistName, setNewMdblistName] = useState('')
+  const [creatingMdblistList, setCreatingMdblistList] = useState(false)
   const [editLayout, setEditLayout] = useState<'poster' | 'landscape' | 'list' | 'continue' | 'hero'>('poster')
-  const [selectedSourceFilter, setSelectedSourceFilter] = useState<'all' | 'builtin' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks'>('all')
+  const [selectedSourceFilter, setSelectedSourceFilter] = useState<'all' | 'builtin' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks' | 'mdblist'>('all')
   const [discoverTab, setDiscoverTab] = useState<'setup' | 'filters' | 'streaming' | 'people' | 'ranges'>('setup')
 
   // ─── Standard Presets State ───
@@ -581,7 +734,7 @@ function AddWidgetOverlay({
 
   const isAlreadyAdded = useCallback((key: string) =>
     homeRows.some((r) => {
-      if (r.sourceType === 'simkl' || r.sourceType === 'trakt' || r.sourceType === 'pmdb' || r.sourceType === 'pmdb-picks' || r.sourceType === 'anilist') return `${r.sourceType}:${r.providerListId}` === key
+      if (r.sourceType === 'simkl' || r.sourceType === 'trakt' || r.sourceType === 'pmdb' || r.sourceType === 'pmdb-picks' || r.sourceType === 'mdblist' || r.sourceType === 'anilist') return `${r.sourceType}:${r.providerListId}` === key
       return `${r.addonId}::${r.catalogType}::${r.catalogId}` === key
     }), [homeRows])
 
@@ -589,9 +742,17 @@ function AddWidgetOverlay({
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const [traktLists, setTraktLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(TRAKT_LIST_SOURCES)
   const [pmdbLists, setPmdbLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(PMDB_LIST_SOURCES)
   const [pmdbPicks, setPmdbPicks] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
+  const [mdblistLists, setMdblistLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(MDBLIST_LIST_SOURCES)
+  const [mdblistPublicLists, setMdblistPublicLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
+  const [mdblistPublicSearch, setMdblistPublicSearch] = useState('')
+  const [mdblistPublicSearching, setMdblistPublicSearching] = useState(false)
+  const [traktPublicLists, setTraktPublicLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
+  const [traktPublicSearch, setTraktPublicSearch] = useState('')
+  const [traktPublicSearching, setTraktPublicSearching] = useState(false)
 
   useEffect(() => {
     if (traktConnected) getAvailableTraktListSources().then(setTraktLists).catch(() => setTraktLists(TRAKT_LIST_SOURCES))
@@ -605,6 +766,59 @@ function AddWidgetOverlay({
     if (pmdbApiKey) getAvailablePmdbPickSources().then(setPmdbPicks).catch(() => setPmdbPicks([]))
     else setPmdbPicks([])
   }, [pmdbApiKey])
+
+  useEffect(() => {
+    if (mdblistApiKey) getAvailableMdblistSources().then(setMdblistLists).catch(() => setMdblistLists(MDBLIST_LIST_SOURCES))
+    else setMdblistLists(MDBLIST_LIST_SOURCES)
+  }, [mdblistApiKey])
+
+  const handleMdblistPublicSearch = useCallback(async () => {
+    const q = mdblistPublicSearch.trim()
+    if (!q) return
+    setMdblistPublicSearching(true)
+    try {
+      const results = await getAvailableMdblistSources(q)
+      const publicOnly = results.filter((r) => !mdblistLists.some((own) => own.id === r.id) && r.id !== 'watchlist')
+      setMdblistPublicLists(publicOnly)
+    } catch (_) {
+      setMdblistPublicLists([])
+    } finally {
+      setMdblistPublicSearching(false)
+    }
+  }, [mdblistPublicSearch, mdblistLists])
+
+  const handleTraktPublicSearch = useCallback(async () => {
+    const q = traktPublicSearch.trim()
+    if (!q) return
+    setTraktPublicSearching(true)
+    try {
+      const results = await searchTraktPublicListSources(q)
+      const publicOnly = results.filter((r) => !traktLists.some((own) => own.id === r.id))
+      setTraktPublicLists(publicOnly)
+    } catch (_) {
+      setTraktPublicLists([])
+    } finally {
+      setTraktPublicSearching(false)
+    }
+  }, [traktPublicSearch, traktLists])
+
+  const handleCreateMdblistList = async () => {
+    const name = newMdblistName.trim()
+    if (!name || creatingMdblistList) return
+    setCreatingMdblistList(true)
+    try {
+      const created = await createMdblistList(name)
+      if (created) {
+        setMdblistLists((current) => [
+          ...current,
+          { id: `list:${created.id}`, label: `MDBList - ${created.name}`, layout: 'poster' as const },
+        ])
+        setNewMdblistName('')
+      }
+    } finally {
+      setCreatingMdblistList(false)
+    }
+  }
 
   const filteredPmdbAddonCatalogs = useMemo(() => {
     const pmdbCatalogs = addonCatalogs.filter((c) => {
@@ -651,9 +865,13 @@ function AddWidgetOverlay({
   }, [addonCatalogs, search])
 
   const filteredSimklLists = useMemo(() => {
-    if (!search) return SIMKL_LIST_SOURCES
+    if (!search) return SIMKL_LIBRARY_CATALOGS
     const q = search.toLowerCase()
-    return SIMKL_LIST_SOURCES.filter((l) => l.label.toLowerCase().includes(q))
+    return SIMKL_LIBRARY_CATALOGS.filter((l) =>
+      l.label.toLowerCase().includes(q) ||
+      l.group.toLowerCase().includes(q) ||
+      l.section?.toLowerCase().includes(q)
+    )
   }, [search])
 
   const filteredAniListLists = useMemo(() => {
@@ -679,6 +897,18 @@ function AddWidgetOverlay({
     const q = search.toLowerCase()
     return pmdbPicks.filter((pick) => pick.label.toLowerCase().includes(q))
   }, [search, pmdbPicks])
+
+  const filteredMdblistLists = useMemo(() => {
+    if (!search) return mdblistLists
+    const q = search.toLowerCase()
+    return mdblistLists.filter((l) => l.label.toLowerCase().includes(q))
+  }, [search, mdblistLists])
+
+  const filteredMdblistPublicLists = useMemo(() => {
+    if (!search) return mdblistPublicLists
+    const q = search.toLowerCase()
+    return mdblistPublicLists.filter((l) => l.label.toLowerCase().includes(q))
+  }, [search, mdblistPublicLists])
 
   // ─── Build Your Catalog (Discover) Form State ───
   const [catalogName, setCatalogName] = useState('')
@@ -1171,8 +1401,48 @@ function AddWidgetOverlay({
     anilist: { bg: 'bg-[#3b82f6]/15', text: 'text-[#3b82f6]', border: 'border-l-[#3b82f6]', dot: 'bg-[#3b82f6]' },
     pmdb: { bg: 'bg-[#a855f7]/15', text: 'text-[#a855f7]', border: 'border-l-[#a855f7]', dot: 'bg-[#a855f7]' },
     'pmdb-picks': { bg: 'bg-[#d946ef]/15', text: 'text-[#d946ef]', border: 'border-l-[#d946ef]', dot: 'bg-[#d946ef]' },
+    mdblist: { bg: 'bg-[#22c55e]/15', text: 'text-[#22c55e]', border: 'border-l-[#22c55e]', dot: 'bg-[#22c55e]' },
     builtin: { bg: 'bg-accent/15', text: 'text-accent', border: 'border-l-accent', dot: 'bg-accent' },
     addons: { bg: 'bg-orange-500/15', text: 'text-orange-400', border: 'border-l-orange-400', dot: 'bg-orange-400' },
+  }
+
+  const addSimklCatalog = (list: typeof SIMKL_LIBRARY_CATALOGS[number]) => {
+    onAdd({
+      title: `Simkl - ${list.label}`,
+      sourceType: 'simkl',
+      providerListId: list.id,
+      layout: list.type,
+      enabled: true,
+      showRank: list.group === 'trending' || list.group === 'curated',
+    })
+    onClose()
+  }
+
+  const renderSimklCatalogButton = (list: typeof SIMKL_LIBRARY_CATALOGS[number]) => {
+    const added = isAlreadyAdded(`simkl:${list.id}`)
+    return (
+      <button
+        key={list.id}
+        disabled={added}
+        onClick={() => addSimklCatalog(list)}
+        className={`group min-h-10 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all ${
+          added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] cursor-pointer'
+        }`}
+      >
+        {added ? (
+          <svg className="w-3 h-3 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+        ) : (
+          <svg className="w-3 h-3 text-white/35 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M12 5v14m7-7H5" /></svg>
+        )}
+        <span className="text-[11px] font-bold text-white/75 truncate">{list.label}</span>
+      </button>
+    )
+  }
+
+  const visibleSimklCatalogs = {
+    watchlist: filteredSimklLists.filter((list) => list.group === 'watchlist'),
+    trending: filteredSimklLists.filter((list) => list.group === 'trending'),
+    curated: filteredSimklLists.filter((list) => list.group === 'curated'),
   }
 
   // Toggle component for checkboxes
@@ -1216,10 +1486,10 @@ function AddWidgetOverlay({
   const styledInput = "w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/40 transition-colors"
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md" onClick={onClose}>
       <div
-        className={`bg-[#0c0d12] border border-white/[0.08] rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl shadow-black/50 transition-all duration-300 h-[min(800px,calc(100dvh-2rem))] ${
-          mode === 'discover' ? 'max-w-4xl' : 'max-w-3xl'
+        className={`glass-panel border border-white/[0.10] rounded-2xl w-full flex flex-col overflow-hidden shadow-2xl shadow-black/60 transition-all duration-300 h-[min(820px,calc(100dvh-1.5rem))] ${
+          mode === 'discover' ? 'max-w-5xl' : 'max-w-4xl'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -1227,9 +1497,9 @@ function AddWidgetOverlay({
         <div className="h-px bg-gradient-to-r from-accent/0 via-accent/50 to-accent/0" />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.06] flex-shrink-0">
+        <div className="flex items-center justify-between gap-4 px-5 sm:px-6 py-4 border-b border-white/[0.06] flex-shrink-0 bg-black/15">
           <div className="flex items-center gap-3.5">
-            <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/10 flex items-center justify-center flex-shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-accent/12 border border-accent/15 flex items-center justify-center flex-shrink-0 shadow-[0_0_28px_rgba(34,197,94,0.08)]">
               {editingRow ? (
                 <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
               ) : (
@@ -1237,14 +1507,14 @@ function AddWidgetOverlay({
               )}
             </div>
             <div>
-              <h2 className="text-base font-bold text-white tracking-tight">
+              <h2 className="text-lg font-bold text-white tracking-tight">
                 {editingRow
                   ? editingRow.sourceType === 'discover'
                     ? 'Edit Custom Catalog'
                     : 'Edit Shelf Settings'
                   : 'Add to Home'}
               </h2>
-              <p className="text-xs text-white/30 mt-0.5">
+              <p className="text-xs text-white/40 mt-0.5">
                 {editingRow
                   ? editingRow.sourceType === 'discover'
                     ? 'Modify your discover catalog filters'
@@ -1253,7 +1523,7 @@ function AddWidgetOverlay({
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-all text-white/30 hover:text-white/60 hover:rotate-90 duration-200 cursor-pointer">
+          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.10] flex items-center justify-center transition-all text-white/40 hover:text-white/75 duration-200 cursor-pointer">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -1262,13 +1532,13 @@ function AddWidgetOverlay({
 
         {/* Navigation Tabs */}
         {!editingRow && (
-          <div className="flex gap-2 px-5 sm:px-6 py-2.5 border-b border-white/[0.06] flex-shrink-0">
+          <div className="grid grid-cols-2 gap-2 px-5 sm:px-6 py-3 border-b border-white/[0.06] flex-shrink-0 bg-black/10">
             <button
               onClick={() => setMode('preset')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              className={`flex items-center justify-center gap-2 px-3 sm:px-4 py-3 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer border ${
                 mode === 'preset'
-                  ? 'bg-accent/15 text-accent border border-accent/20'
-                  : 'text-white/35 hover:bg-white/[0.04] hover:text-white/55 border border-transparent'
+                  ? 'bg-accent/15 text-accent border-accent/25 backdrop-blur-sm'
+                  : 'bg-white/[0.025] text-white/40 hover:bg-white/[0.05] hover:text-white/65 border-white/[0.04]'
               }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
@@ -1276,10 +1546,10 @@ function AddWidgetOverlay({
             </button>
             <button
               onClick={() => setMode('discover')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              className={`flex items-center justify-center gap-2 px-3 sm:px-4 py-3 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer border ${
                 mode === 'discover'
-                  ? 'bg-accent/15 text-accent border border-accent/20'
-                  : 'text-white/35 hover:bg-white/[0.04] hover:text-white/55 border border-transparent'
+                  ? 'bg-accent/15 text-accent border-accent/25 backdrop-blur-sm'
+                  : 'bg-white/[0.025] text-white/40 hover:bg-white/[0.05] hover:text-white/65 border-white/[0.04]'
               }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
@@ -1346,6 +1616,7 @@ function AddWidgetOverlay({
             const showTrakt = selectedSourceFilter === 'all' || selectedSourceFilter === 'trakt'
             const showPmdb = selectedSourceFilter === 'all' || selectedSourceFilter === 'pmdb'
             const showPmdbPicks = selectedSourceFilter === 'all' || selectedSourceFilter === 'pmdb-picks'
+            const showMdblist = selectedSourceFilter === 'all' || selectedSourceFilter === 'mdblist'
 
             const builtinCount = (showBuiltin && (!search || 'continue watching'.includes(search.toLowerCase()))) ? 1 : 0
             const pmdbAddonCatalogsCount = (showPmdb || showAddons) ? filteredPmdbAddonCatalogs.length : 0
@@ -1355,19 +1626,31 @@ function AddWidgetOverlay({
             const traktListsCount = (showTrakt && traktConnected) ? filteredTraktLists.length : 0
             const pmdbListsCount = (showPmdb && !!pmdbApiKey) ? filteredPmdbLists.length : 0
             const pmdbPicksCount = (showPmdbPicks && !!pmdbApiKey) ? filteredPmdbPicks.length : 0
+            const mdblistListsCount = (showMdblist && !!mdblistApiKey) ? filteredMdblistLists.length : 0
 
-            const totalVisible = builtinCount + pmdbAddonCatalogsCount + otherAddonCatalogsCount + simklListsCount + aniListListsCount + traktListsCount + pmdbListsCount + pmdbPicksCount
+            const totalVisible = builtinCount + pmdbAddonCatalogsCount + otherAddonCatalogsCount + simklListsCount + aniListListsCount + traktListsCount + pmdbListsCount + pmdbPicksCount + mdblistListsCount
+            const sourceFilters = [
+              { id: 'all' as const, label: 'All sources', shortLabel: 'All', count: totalVisible, color: null, connected: true },
+              { id: 'builtin' as const, label: 'Built-in', shortLabel: 'Built-in', count: builtinCount, color: sourceColors.builtin, connected: true },
+              { id: 'addons' as const, label: 'Addons', shortLabel: 'Addons', count: pmdbAddonCatalogsCount + otherAddonCatalogsCount, color: sourceColors.addons, connected: addons.length > 0 },
+              { id: 'simkl' as const, label: 'Simkl', shortLabel: 'Simkl', count: simklConnected ? filteredSimklLists.length : 0, color: sourceColors.simkl, connected: simklConnected },
+              { id: 'trakt' as const, label: 'Trakt', shortLabel: 'Trakt', count: traktConnected ? filteredTraktLists.length : 0, color: sourceColors.trakt, connected: traktConnected },
+              { id: 'anilist' as const, label: 'AniList', shortLabel: 'AniList', count: anilistConnected ? filteredAniListLists.length : 0, color: sourceColors.anilist, connected: anilistConnected },
+              { id: 'pmdb' as const, label: 'PMDB', shortLabel: 'PMDB', count: pmdbApiKey ? filteredPmdbLists.length + filteredPmdbAddonCatalogs.length : 0, color: sourceColors.pmdb, connected: !!pmdbApiKey },
+              { id: 'pmdb-picks' as const, label: 'PMDB Picks', shortLabel: 'Picks', count: pmdbApiKey ? filteredPmdbPicks.length : 0, color: sourceColors['pmdb-picks'], connected: !!pmdbApiKey },
+              { id: 'mdblist' as const, label: 'MDBList', shortLabel: 'MDBList', count: mdblistApiKey ? filteredMdblistLists.length : 0, color: sourceColors.mdblist, connected: !!mdblistApiKey },
+            ]
 
             const DisconnectedCard = ({ source, letter, name, desc }: { source: string; letter: string; name: string; desc: string }) => {
               const c = sourceColors[source] || sourceColors.builtin
               return (
-                <div className="flex flex-col items-center justify-center text-center py-14 px-8">
-                  <div className={`w-16 h-16 rounded-2xl ${c.bg} border border-white/[0.04] flex items-center justify-center mb-5`}>
+                <div className="glass-panel-light rounded-2xl flex flex-col items-center justify-center text-center py-12 px-8">
+                  <div className={`w-16 h-16 rounded-2xl ${c.bg} border border-white/[0.06] flex items-center justify-center mb-5`}>
                     <span className={`text-2xl font-black ${c.text}`}>{letter}</span>
                   </div>
                   <h4 className="text-sm font-semibold text-white mb-2">{name} not connected</h4>
                   <p className="text-xs text-white/25 max-w-xs leading-relaxed">{desc}</p>
-                  <div className="mt-4 px-4 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-[11px] text-white/30 font-medium">
+                  <div className="mt-4 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/30 font-medium hover:bg-white/[0.08] transition-colors cursor-default">
                     Go to Settings &rarr; Accounts
                   </div>
                 </div>
@@ -1376,71 +1659,80 @@ function AddWidgetOverlay({
 
             return (
               <div className="flex-1 flex flex-col min-h-0">
-                {/* Search */}
-                <div className="px-5 sm:px-6 py-3 border-b border-white/[0.06] flex-shrink-0">
-                  <div className="relative">
-                    <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/25" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                    </svg>
-                    <input
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search catalogs and lists..."
-                      className="w-full bg-white/[0.04] border border-white/[0.06] rounded-xl pl-10 pr-10 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-accent/30 focus:bg-white/[0.05] transition-all"
-                      autoFocus
-                    />
-                    {search && (
-                      <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md bg-white/[0.08] hover:bg-white/[0.12] flex items-center justify-center text-white/30 hover:text-white/60 transition-all cursor-pointer">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                      </button>
-                    )}
+                <div className="border-b border-white/[0.06] bg-black/10 px-5 sm:px-6 py-4 flex-shrink-0">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                    <div className="relative">
+                      <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
+                      <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search shelves, catalogs, lists..."
+                        className="w-full bg-white/[0.055] border border-white/[0.08] rounded-xl pl-11 pr-10 py-3 text-sm text-white placeholder-white/28 outline-none focus:border-accent/35 focus:bg-white/[0.07] focus:ring-1 focus:ring-accent/20 transition-all"
+                        autoFocus
+                      />
+                      {search && (
+                        <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] flex items-center justify-center text-white/40 hover:text-white/75 transition-all cursor-pointer">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-white/35">
+                      <span className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-2.5 py-1.5 font-semibold text-white/55">{totalVisible} shelves</span>
+                      <span className="hidden sm:inline">Click any row to add it to Home</span>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5 md:hidden" style={{ scrollbarWidth: 'none' }}>
+                    {sourceFilters.map((filter) => {
+                      const active = selectedSourceFilter === filter.id
+                      return (
+                        <button
+                          key={filter.id}
+                          type="button"
+                          onClick={() => setSelectedSourceFilter(filter.id)}
+                          className={`flex h-9 flex-shrink-0 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold transition-all ${
+                            active
+                              ? 'border-accent/25 bg-accent/15 text-accent'
+                              : 'border-white/[0.06] bg-white/[0.035] text-white/45 hover:bg-white/[0.065] hover:text-white/70'
+                          }`}
+                        >
+                          {filter.color && <span className={`h-2 w-2 rounded-full ${filter.connected ? filter.color.dot : 'bg-white/18'}`} />}
+                          <span>{filter.shortLabel}</span>
+                          <span className="rounded-md bg-white/[0.08] px-1.5 py-0.5 text-[10px] text-white/45">{filter.count}</span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
 
-                {/* Source selector */}
-                <div className="px-5 sm:px-6 py-3 border-b border-white/[0.06] grid grid-cols-2 sm:grid-cols-4 gap-2 flex-shrink-0 bg-white/[0.01]">
-                  {([
-                    { id: 'all' as const, label: 'All', color: null, connected: undefined },
-                    { id: 'builtin' as const, label: 'Built-in', color: sourceColors.builtin, connected: undefined },
-                    { id: 'addons' as const, label: 'Addons', color: sourceColors.addons, connected: undefined },
-                    { id: 'simkl' as const, label: 'Simkl', color: sourceColors.simkl, connected: simklConnected },
-                    { id: 'trakt' as const, label: 'Trakt', color: sourceColors.trakt, connected: traktConnected },
-                    { id: 'anilist' as const, label: 'AniList', color: sourceColors.anilist, connected: anilistConnected },
-                    { id: 'pmdb' as const, label: 'PMDB', color: sourceColors.pmdb, connected: !!pmdbApiKey },
-                    { id: 'pmdb-picks' as const, label: 'PMDB Picks', color: sourceColors['pmdb-picks'], connected: !!pmdbApiKey },
-                  ]).map((filter) => {
-                    const active = selectedSourceFilter === filter.id
-                    const activeBg = filter.color ? `${filter.color.bg} ${filter.color.text}` : 'bg-accent/15 text-accent'
-                    const activeBorder = filter.color
-                      ? filter.id === 'simkl' ? 'border-[#0ea5e9]/25'
-                        : filter.id === 'trakt' ? 'border-[#ef4444]/25'
-                        : filter.id === 'anilist' ? 'border-[#3b82f6]/25'
-                        : filter.id === 'pmdb' ? 'border-[#a855f7]/25'
-                        : filter.id === 'pmdb-picks' ? 'border-[#d946ef]/25'
-                        : filter.id === 'addons' ? 'border-orange-400/25'
-                        : 'border-accent/20'
-                      : 'border-accent/20'
-                    return (
-                      <button
-                        key={filter.id}
-                        onClick={() => setSelectedSourceFilter(filter.id)}
-                        className={`h-9 min-w-0 flex items-center justify-center gap-2 px-3 rounded-lg text-[11px] font-bold transition-all cursor-pointer border ${
-                          active
-                            ? `${activeBg} ${activeBorder}`
-                            : 'bg-white/[0.03] text-white/35 hover:bg-white/[0.06] hover:text-white/55 border-white/[0.04]'
-                        }`}
-                      >
-                        {filter.connected !== undefined && (
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${filter.connected ? (filter.color?.dot || 'bg-emerald-400') : 'bg-white/15'}`} />
-                        )}
-                        <span className="truncate">{filter.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
+                <div className="grid flex-1 min-h-0 md:grid-cols-[190px_minmax(0,1fr)]">
+                  <aside className="hidden border-r border-white/[0.06] bg-black/10 p-3 md:block">
+                    <div className="space-y-1">
+                      {sourceFilters.map((filter) => {
+                        const active = selectedSourceFilter === filter.id
+                        return (
+                          <button
+                            key={filter.id}
+                            type="button"
+                            onClick={() => setSelectedSourceFilter(filter.id)}
+                            className={`group flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                              active
+                                ? 'border-accent/25 bg-accent/12 text-white'
+                                : 'border-transparent text-white/45 hover:border-white/[0.06] hover:bg-white/[0.045] hover:text-white/70'
+                            }`}
+                          >
+                            <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${filter.color ? (filter.connected ? filter.color.dot : 'bg-white/15') : 'bg-accent'}`} />
+                            <span className="min-w-0 flex-1 truncate text-xs font-bold">{filter.label}</span>
+                            <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${active ? 'bg-black/20 text-white/55' : 'bg-white/[0.06] text-white/30 group-hover:text-white/50'}`}>{filter.count}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </aside>
 
-                {/* Catalog List */}
-                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-6 py-4 space-y-5" style={{ scrollbarWidth: 'thin', scrollbarGutter: 'stable' }}>
+                  {/* Catalog List */}
+                  <div className="min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-6 py-5 space-y-5" style={{ scrollbarWidth: 'thin', scrollbarGutter: 'stable' }}>
 
                   {/* Not-connected empty states -- shown only when that specific filter is selected */}
                   {selectedSourceFilter === 'simkl' && !simklConnected && (
@@ -1458,9 +1750,12 @@ function AddWidgetOverlay({
                   {selectedSourceFilter === 'pmdb-picks' && !pmdbApiKey && (
                     <DisconnectedCard source="pmdb-picks" letter="P" name="PMDB Picks" desc="Enter your PublicMetaDB API key in Settings > Accounts to access your personalized pick catalogs." />
                   )}
+                  {selectedSourceFilter === 'mdblist' && !mdblistApiKey && (
+                    <DisconnectedCard source="mdblist" letter="M" name="MDBList" desc="Enter your MDBList API key in Settings > Accounts to access watchlists, account lists, public list search, and history." />
+                  )}
                   {selectedSourceFilter === 'addons' && addons.length === 0 && (
-                    <div className="flex flex-col items-center justify-center text-center py-10 px-6">
-                      <div className="w-14 h-14 rounded-2xl bg-orange-500/15 flex items-center justify-center mb-4">
+                    <div className="glass-panel-light rounded-2xl flex flex-col items-center justify-center text-center py-12 px-6">
+                      <div className="w-14 h-14 rounded-2xl bg-orange-500/15 border border-white/[0.06] flex items-center justify-center mb-4">
                         <svg className="w-6 h-6 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                           <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                         </svg>
@@ -1473,9 +1768,11 @@ function AddWidgetOverlay({
                   {/* Built-in Section */}
                   {showBuiltin && builtinCount > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.builtin.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Built-in</h3>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
+                          <svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50">Built-in</h3>
                       </div>
                       {(() => {
                         const added = homeRows.some((r) => r.layout === 'continue')
@@ -1486,11 +1783,11 @@ function AddWidgetOverlay({
                               onAdd({ title: 'Continue Watching', layout: 'continue', enabled: true, sourceType: 'local' })
                               onClose()
                             }}
-                            className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.builtin.border} transition-all text-left ${
-                              added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
+                            className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all text-left ${
+                              added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] hover:translate-y-[-1px] cursor-pointer'
                             }`}
                           >
-                            <div className={`w-8 h-8 rounded-lg ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
+                            <div className={`w-9 h-9 rounded-xl ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}>
                               <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                             </div>
                             <div className="flex-1 min-w-0">
@@ -1514,10 +1811,12 @@ function AddWidgetOverlay({
                   {/* PMDB Catalogs */}
                   {(showPmdb || showAddons) && filteredPmdbAddonCatalogs.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.pmdb.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Catalogs</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbAddonCatalogs.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Catalogs</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbAddonCatalogs.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {filteredPmdbAddonCatalogs.map((cat) => {
@@ -1540,12 +1839,12 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.pmdb.border} transition-all text-left ${
-                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] hover:translate-y-[-1px] cursor-pointer'
                               }`}
                             >
-                              <div className={`w-8 h-8 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
-                                <span className={`text-[11px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                              <div className={`w-9 h-9 rounded-xl ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-xs font-black ${sourceColors.pmdb.text}`}>P</span>
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
@@ -1573,10 +1872,12 @@ function AddWidgetOverlay({
                   {/* Addon Catalogs */}
                   {showAddons && filteredOtherAddonCatalogs.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.addons.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Addon Catalogs</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredOtherAddonCatalogs.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
+                          <svg className="w-3.5 h-3.5 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Addon Catalogs</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredOtherAddonCatalogs.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {filteredOtherAddonCatalogs.map((cat) => {
@@ -1599,11 +1900,11 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.addons.border} transition-all text-left ${
-                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] hover:translate-y-[-1px] cursor-pointer'
                               }`}
                             >
-                              <div className={`w-8 h-8 rounded-lg ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
+                              <div className={`w-9 h-9 rounded-xl ${sourceColors.addons.bg} flex items-center justify-center flex-shrink-0`}>
                                 <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                                   <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                                 </svg>
@@ -1631,8 +1932,88 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
-                  {/* Simkl Lists */}
+                  {/* Simkl Catalogs */}
                   {showSimkl && simklConnected && filteredSimklLists.length > 0 && (
+                    <div className="space-y-4">
+                      {visibleSimklCatalogs.watchlist.length > 0 && (
+                        <div className="glass-panel-light rounded-2xl p-5">
+                          <div className="flex items-start gap-3 mb-4">
+                            <div className="w-8 h-8 rounded-xl bg-violet-500/15 text-violet-300 flex items-center justify-center flex-shrink-0">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M6 4h12v16l-6-3-6 3V4z" /></svg>
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-bold text-white/85">Watchlist Catalogs</h3>
+                              <p className="text-[10px] text-white/35">Add watchlist catalogs for movies, shows, and anime by status</p>
+                            </div>
+                          </div>
+                          <div className="space-y-2.5">
+                            {['Movies', 'Shows', 'Anime'].map((section) => {
+                              const items = visibleSimklCatalogs.watchlist.filter((list) => list.section === section)
+                              if (!items.length) return null
+                              return (
+                                <div key={section}>
+                                  <p className="text-[10px] font-bold text-white/45 mb-1.5">{section}</p>
+                                  <div className="grid grid-cols-2 gap-2">{items.map(renderSimklCatalogButton)}</div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                          <p className="text-[9px] text-white/25 mt-3">These catalogs show your Simkl watchlist items by status. Page size must match your Simkl settings.</p>
+                        </div>
+                      )}
+
+                      {visibleSimklCatalogs.trending.length > 0 && (
+                        <div className="glass-panel-light rounded-2xl p-5">
+                          <div className="flex items-start gap-3 mb-4">
+                            <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-300 flex items-center justify-center flex-shrink-0">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 17l6-6 4 4 6-8" /><path d="M14 7h6v6" /></svg>
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-bold text-white/85">Trending & Calendar</h3>
+                              <p className="text-[10px] text-white/35">Add trending catalogs or view upcoming releases</p>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">{visibleSimklCatalogs.trending.map(renderSimklCatalogButton)}</div>
+                          <p className="text-[9px] text-white/25 mt-3">Trending catalogs update automatically. Airing Soon shows TV and Anime episodes releasing in your timezone.</p>
+                        </div>
+                      )}
+
+                      {visibleSimklCatalogs.curated.length > 0 && (
+                        <div className="glass-panel-light rounded-2xl p-5">
+                          <div className="flex items-start gap-3 mb-4">
+                            <div className="w-8 h-8 rounded-xl bg-violet-500/15 text-violet-300 flex items-center justify-center flex-shrink-0">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 3l1.7 5.2H19l-4.3 3.1 1.6 5.2L12 13.3 7.7 16.5l1.6-5.2L5 8.2h5.3L12 3z" /></svg>
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-bold text-white/85">Curated Picks</h3>
+                              <p className="text-[10px] text-white/35">Hidden Gems - highly rated titles that are flying under the radar</p>
+                            </div>
+                          </div>
+                          <div className="space-y-2.5">
+                            {['Hidden Gems', 'Binge-Worthy', 'Mom picks'].map((section) => {
+                              const items = visibleSimklCatalogs.curated.filter((list) => list.section === section)
+                              if (!items.length) return null
+                              const helper = section === 'Hidden Gems'
+                                ? 'highly rated, under the radar'
+                                : section === 'Binge-Worthy'
+                                  ? 'finished series, low drop-off'
+                                  : 'movies only'
+                              return (
+                                <div key={section}>
+                                  <p className="text-[10px] font-bold text-white/45 mb-1.5">{section} <span className="font-medium text-white/25">- {helper}</span></p>
+                                  <div className="grid grid-cols-3 gap-2">{items.map(renderSimklCatalogButton)}</div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                          <p className="text-[9px] text-white/25 mt-3">Computed from the trending pool - no extra API calls. Defaults to this week.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Simkl Lists */}
+                  {false && showSimkl && simklConnected && filteredSimklLists.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
                         <div className={`w-1.5 h-5 rounded-full ${sourceColors.simkl.dot}`} />
@@ -1656,12 +2037,12 @@ function AddWidgetOverlay({
                                 })
                                 onClose()
                               }}
-                              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/[0.04] border-l-[3px] ${sourceColors.simkl.border} transition-all text-left ${
-                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.08] hover:translate-x-0.5 cursor-pointer'
+                              className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all text-left ${
+                                added ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] hover:translate-y-[-1px] cursor-pointer'
                               }`}
                             >
-                              <div className={`w-8 h-8 rounded-lg ${sourceColors.simkl.bg} flex items-center justify-center flex-shrink-0`}>
-                                <span className={`text-[11px] font-black ${sourceColors.simkl.text}`}>S</span>
+                              <div className={`w-9 h-9 rounded-xl ${sourceColors.simkl.bg} flex items-center justify-center flex-shrink-0`}>
+                                <span className={`text-xs font-black ${sourceColors.simkl.text}`}>S</span>
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
@@ -1685,10 +2066,12 @@ function AddWidgetOverlay({
                   {/* AniList Lists */}
                   {showAniList && anilistConnected && filteredAniListLists.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.anilist.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">AniList Lists</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredAniListLists.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.anilist.bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors.anilist.text}`}>A</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">AniList Lists</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredAniListLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="AniList Lists"
@@ -1702,31 +2085,75 @@ function AddWidgetOverlay({
                   )}
 
                   {/* Trakt Lists */}
-                  {showTrakt && traktConnected && filteredTraktLists.length > 0 && (
+                  {showTrakt && traktConnected && (filteredTraktLists.length > 0 || selectedSourceFilter === 'trakt') && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.trakt.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Trakt Lists</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredTraktLists.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.trakt.bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors.trakt.text}`}>T</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Trakt Lists</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredTraktLists.length}</span>
                       </div>
-                      <ProviderListPickerSection
-                        title="Trakt Lists"
-                        service="trakt"
-                        lists={filteredTraktLists.map((l) => ({ id: l.id, label: l.label.replace(/^Trakt - /, ''), type: l.layout }))}
-                        isAlreadyAdded={isAlreadyAdded}
-                        onAdd={onAdd}
-                        onClose={onClose}
-                      />
+                      {filteredTraktLists.length > 0 && (
+                        <ProviderListPickerSection
+                          title="Trakt Lists"
+                          service="trakt"
+                          lists={filteredTraktLists.map((l) => ({ id: l.id, label: l.label.replace(/^Trakt - /, ''), type: l.layout }))}
+                          isAlreadyAdded={isAlreadyAdded}
+                          onAdd={onAdd}
+                          onClose={onClose}
+                        />
+                      )}
+                      {/* Trakt public list search */}
+                      <div className="mt-4 pt-4 border-t border-white/[0.06]">
+                        <div className="flex items-center gap-2 mb-2">
+                          <svg className="w-3.5 h-3.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                          <h4 className="text-[11px] font-bold uppercase tracking-wider text-white/30">Search Public Lists</h4>
+                          <span className="text-[10px] text-white/20 ml-auto">Find lists by other Trakt users</span>
+                        </div>
+                        <div className="flex gap-2 mb-3">
+                          <input
+                            value={traktPublicSearch}
+                            onChange={(e) => setTraktPublicSearch(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleTraktPublicSearch() }}
+                            placeholder="Search Trakt public lists..."
+                            className="min-w-0 flex-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3.5 py-2.5 text-xs text-white outline-none placeholder-white/25 focus:border-[#ef4444]/35 focus:ring-1 focus:ring-[#ef4444]/15 backdrop-blur-sm transition-all"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleTraktPublicSearch}
+                            disabled={!traktPublicSearch.trim() || traktPublicSearching}
+                            className="rounded-xl border border-[#ef4444]/20 bg-[#ef4444]/10 px-4 py-2.5 text-xs font-bold text-[#ef4444] transition-all hover:bg-[#ef4444]/15 backdrop-blur-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {traktPublicSearching ? 'Searching...' : 'Search'}
+                          </button>
+                        </div>
+                        {traktPublicLists.length > 0 && (
+                          <ProviderListPickerSection
+                            title="Public Trakt Lists"
+                            service="trakt"
+                            lists={traktPublicLists.map((l) => ({ id: l.id, label: l.label, type: l.layout }))}
+                            isAlreadyAdded={isAlreadyAdded}
+                            onAdd={onAdd}
+                            onClose={onClose}
+                          />
+                        )}
+                        {traktPublicSearch.trim() && !traktPublicSearching && traktPublicLists.length === 0 && (
+                          <p className="text-xs text-white/25 text-center py-3">No public lists found</p>
+                        )}
+                      </div>
                     </div>
                   )}
 
                   {/* PMDB Lists */}
                   {showPmdb && !!pmdbApiKey && filteredPmdbLists.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors.pmdb.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Lists</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbLists.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Lists</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="PMDB Lists"
@@ -1739,13 +2166,91 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
+                  {/* MDBList Lists */}
+                  {showMdblist && !!mdblistApiKey && (
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors.mdblist.bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors.mdblist.text}`}>M</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">MDBList Lists</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredMdblistLists.length}</span>
+                      </div>
+                      <div className="mb-3 flex gap-2">
+                        <input
+                          value={newMdblistName}
+                          onChange={(e) => setNewMdblistName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleCreateMdblistList() }}
+                          placeholder="New MDBList list name"
+                          className="min-w-0 flex-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3.5 py-2.5 text-xs text-white outline-none placeholder-white/25 focus:border-[#22c55e]/35 focus:ring-1 focus:ring-[#22c55e]/15 backdrop-blur-sm transition-all"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateMdblistList}
+                          disabled={!newMdblistName.trim() || creatingMdblistList}
+                          className="rounded-xl border border-[#22c55e]/20 bg-[#22c55e]/10 px-4 py-2.5 text-xs font-bold text-[#22c55e] transition-all hover:bg-[#22c55e]/15 backdrop-blur-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {creatingMdblistList ? 'Creating...' : 'Create'}
+                        </button>
+                      </div>
+                      <ProviderListPickerSection
+                        title="MDBList Lists"
+                        service="mdblist"
+                        lists={filteredMdblistLists.map((l) => ({ id: l.id, label: l.label.replace(/^MDBList - /, ''), type: l.layout }))}
+                        isAlreadyAdded={isAlreadyAdded}
+                        onAdd={onAdd}
+                        onClose={onClose}
+                      />
+                      {/* Public list search */}
+                      <div className="mt-4 pt-4 border-t border-white/[0.06]">
+                        <div className="flex items-center gap-2 mb-2">
+                          <svg className="w-3.5 h-3.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                          <h4 className="text-[11px] font-bold uppercase tracking-wider text-white/30">Search Public Lists</h4>
+                          <span className="text-[10px] text-white/20 ml-auto">Find lists by other MDBList users</span>
+                        </div>
+                        <div className="flex gap-2 mb-3">
+                          <input
+                            value={mdblistPublicSearch}
+                            onChange={(e) => setMdblistPublicSearch(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleMdblistPublicSearch() }}
+                            placeholder="Search public MDBList lists..."
+                            className="min-w-0 flex-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3.5 py-2.5 text-xs text-white outline-none placeholder-white/25 focus:border-[#22c55e]/35 focus:ring-1 focus:ring-[#22c55e]/15 backdrop-blur-sm transition-all"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleMdblistPublicSearch}
+                            disabled={!mdblistPublicSearch.trim() || mdblistPublicSearching}
+                            className="rounded-xl border border-[#22c55e]/20 bg-[#22c55e]/10 px-4 py-2.5 text-xs font-bold text-[#22c55e] transition-all hover:bg-[#22c55e]/15 backdrop-blur-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {mdblistPublicSearching ? 'Searching...' : 'Search'}
+                          </button>
+                        </div>
+                        {filteredMdblistPublicLists.length > 0 && (
+                          <ProviderListPickerSection
+                            title="Public MDBList Lists"
+                            service="mdblist"
+                            lists={filteredMdblistPublicLists.map((l) => ({ id: l.id, label: l.label.replace(/^MDBList - /, ''), type: l.layout }))}
+                            isAlreadyAdded={isAlreadyAdded}
+                            onAdd={onAdd}
+                            onClose={onClose}
+                          />
+                        )}
+                        {mdblistPublicSearch.trim() && !mdblistPublicSearching && filteredMdblistPublicLists.length === 0 && (
+                          <p className="text-xs text-white/25 text-center py-3">No public lists found</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* PMDB Picks */}
                   {showPmdbPicks && !!pmdbApiKey && filteredPmdbPicks.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-1.5 h-5 rounded-full ${sourceColors['pmdb-picks'].dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">PMDB Picks</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredPmdbPicks.length}</span>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className={`w-6 h-6 rounded-lg ${sourceColors['pmdb-picks'].bg} flex items-center justify-center flex-shrink-0`}>
+                          <span className={`text-[10px] font-black ${sourceColors['pmdb-picks'].text}`}>P</span>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Picks</h3>
+                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbPicks.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="PMDB Picks"
@@ -1760,8 +2265,8 @@ function AddWidgetOverlay({
 
                   {/* Search empty state */}
                   {totalVisible === 0 && search && (
-                    <div className="flex flex-col items-center justify-center text-center py-16">
-                      <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
+                    <div className="glass-panel-light rounded-2xl flex flex-col items-center justify-center text-center py-14">
+                      <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-4">
                         <svg className="w-6 h-6 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
                           <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                         </svg>
@@ -1772,9 +2277,9 @@ function AddWidgetOverlay({
                   )}
 
                   {/* Nothing connected at all */}
-                  {selectedSourceFilter === 'all' && addons.length === 0 && !simklConnected && !traktConnected && !anilistConnected && !pmdbApiKey && !search && (
-                    <div className="flex flex-col items-center justify-center text-center py-16">
-                      <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-5">
+                  {selectedSourceFilter === 'all' && totalVisible === 0 && addons.length === 0 && !simklConnected && !traktConnected && !anilistConnected && !pmdbApiKey && !search && (
+                    <div className="glass-panel-light rounded-2xl flex flex-col items-center justify-center text-center py-14">
+                      <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-5">
                         <svg className="w-7 h-7 text-white/10" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
                           <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
                           <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
@@ -1786,6 +2291,7 @@ function AddWidgetOverlay({
                   )}
                 </div>
               </div>
+            </div>
             )
           })()
         ) : (
@@ -1808,15 +2314,15 @@ function AddWidgetOverlay({
                   <button
                     key={tab.id}
                     onClick={() => setDiscoverTab(tab.id)}
-                    className={`h-9 flex items-center gap-2 px-4 rounded-xl text-xs font-bold transition-all cursor-pointer flex-shrink-0 border ${
+                    className={`h-9 flex items-center gap-2 px-4 rounded-xl text-xs font-bold transition-all cursor-pointer flex-shrink-0 border backdrop-blur-sm ${
                       active
-                        ? 'bg-accent/15 text-accent border-accent/20'
+                        ? 'bg-accent/15 text-accent border-accent/25'
                         : completed
                           ? 'bg-white/[0.04] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
                           : 'bg-white/[0.02] text-white/30 hover:bg-white/[0.05] hover:text-white/50 border-transparent'
                     }`}
                   >
-                    <span className={`w-5 h-5 rounded-md text-[10px] font-black flex items-center justify-center flex-shrink-0 ${
+                    <span className={`w-5 h-5 rounded-lg text-[10px] font-black flex items-center justify-center flex-shrink-0 ${
                       active ? 'bg-accent/25 text-accent' : completed ? 'bg-white/[0.06] text-white/30' : 'bg-white/[0.04] text-white/20'
                     }`}>{tab.step}</span>
                     {tab.label}
@@ -2422,9 +2928,14 @@ export default function CollectionsPage() {
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
 
   const heroRow = homeRows.find((r) => r.layout === 'hero')
-  const widgetRows = homeRows
+  const allWidgetRows = homeRows
     .filter((r) => r.layout !== 'hero')
     .sort((a, b) => a.order - b.order)
+  const enabledWidgetRows = allWidgetRows.filter((r) => r.enabled)
+  const fixedWidgetRows = enabledWidgetRows.filter((r) => r.layout === 'continue')
+  const movableWidgetRows = enabledWidgetRows.filter((r) => r.layout !== 'continue')
+  const widgetRows = [...fixedWidgetRows, ...movableWidgetRows]
+  const hiddenCount = allWidgetRows.length - widgetRows.length
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -2433,11 +2944,16 @@ export default function CollectionsPage() {
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
     if (over && active.id !== over.id) {
-      const oldIndex = widgetRows.findIndex((r) => r.id === active.id)
-      const newIndex = widgetRows.findIndex((r) => r.id === over.id)
-      const reordered = arrayMove(widgetRows, oldIndex, newIndex)
+      const activeRow = widgetRows.find((r) => r.id === active.id)
+      const overRow = widgetRows.find((r) => r.id === over.id)
+      if (activeRow?.layout === 'continue' || overRow?.layout === 'continue') return
+      const oldIndex = movableWidgetRows.findIndex((r) => r.id === active.id)
+      const newIndex = movableWidgetRows.findIndex((r) => r.id === over.id)
+      if (oldIndex < 0 || newIndex < 0) return
+      const reordered = arrayMove(movableWidgetRows, oldIndex, newIndex)
       const hero = homeRows.find((r) => r.layout === 'hero')
-      reorderHomeRows([...(hero ? [hero] : []), ...reordered])
+      const hidden = allWidgetRows.filter((r) => !r.enabled)
+      reorderHomeRows([...(hero ? [hero] : []), ...fixedWidgetRows, ...reordered, ...hidden])
     }
   }
 
@@ -2466,28 +2982,36 @@ export default function CollectionsPage() {
         {/* Hero banner config */}
         <HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} onAdd={addHomeRow} />
 
-        {/* Shelves list */}
+        {/* Shelves grid */}
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
-              Shelves ({widgetRows.length})
-            </h2>
-            <span className="text-[10px] text-white/20">Drag to reorder</span>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
+                Shelves ({widgetRows.length})
+              </h2>
+              {hiddenCount > 0 && (
+                <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md">
+                  {hiddenCount} hidden
+                </span>
+              )}
+            </div>
           </div>
 
           {widgetRows.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 bg-white/[0.01] border border-dashed border-white/[0.08] rounded-2xl">
-              <svg className="w-10 h-10 text-white/10 mb-4" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-                <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-              </svg>
-              <p className="text-sm text-white/30 mb-1">No shelves yet</p>
-              <p className="text-xs text-white/20 mb-5">Add catalogs, lists, or custom discover shelves to your home screen</p>
+            <div className="flex flex-col items-center justify-center py-20 glass-panel-light rounded-2xl">
+              <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-5">
+                <svg className="w-8 h-8 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.2" viewBox="0 0 24 24">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
+                </svg>
+              </div>
+              <p className="text-sm font-medium text-white/35 mb-1">No shelves yet</p>
+              <p className="text-xs text-white/20 mb-6">Add catalogs, lists, or custom discover shelves to your home screen</p>
               <button
                 onClick={() => { setEditingRow(null); setAddOverlay(true) }}
-                className="flex items-center gap-2 px-4 py-2 bg-white/[0.06] hover:bg-white/[0.1] text-white/70 text-xs font-semibold rounded-xl border border-white/[0.08] transition-all cursor-pointer"
+                className="flex items-center gap-2 px-5 py-2.5 bg-accent/15 hover:bg-accent/25 text-accent text-xs font-bold rounded-xl border border-accent/20 transition-all cursor-pointer"
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
                 Add your first shelf
@@ -2496,9 +3020,9 @@ export default function CollectionsPage() {
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={widgetRows.map((r) => r.id)} strategy={rectSortingStrategy}>
-                <div className="space-y-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                   {widgetRows.map((row) => (
-                    <SortableShelfRow
+                    <SortableShelfCard
                       key={row.id}
                       row={row}
                       addons={addons}

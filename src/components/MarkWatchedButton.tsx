@@ -17,6 +17,7 @@ import {
 } from '../services/simkl/history'
 import { markAniListEpisodeExact, removeFromAniListList, saveAniListProgress, unmarkAniListEpisodeExact } from '../services/anilist'
 import { scrobblePMDB, removePMDBWatched } from '../services/pmdb'
+import { markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { useAppStore } from '../stores/appStore'
@@ -38,7 +39,7 @@ interface MarkWatchedButtonProps {
   appSeasonCounts?: { season: number; count: number }[]
 }
 
-type Service = 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+type Service = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 interface ServiceState {
   loading: boolean
@@ -50,6 +51,7 @@ const SERVICE_LABELS: Record<Service, string> = {
   trakt: 'Trakt',
   simkl: 'Simkl',
   pmdb: 'PMDB',
+  mdblist: 'MDBList',
   anilist: 'AniList',
 }
 
@@ -60,6 +62,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
     trakt: { loading: false, done: false, error: false },
     simkl: { loading: false, done: false, error: false },
     pmdb: { loading: false, done: false, error: false },
+    mdblist: { loading: false, done: false, error: false },
     anilist: { loading: false, done: false, error: false },
   })
   const menuRef = useRef<HTMLDivElement>(null)
@@ -67,6 +70,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   const traktConnected = isTraktConnected()
   const simklConnected = !!getStoredSimklToken()?.accessToken
   const pmdbConnected = !!useAppStore((s) => s.pmdbApiKey)
+  const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey)
   const anilistConnected = isAniListConnected()
   const tmdbId = mediaRef.tmdbId != null ? Number(mediaRef.tmdbId) : undefined
 
@@ -74,6 +78,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   if (traktConnected) connectedServices.push('trakt')
   if (simklConnected) connectedServices.push('simkl')
   if (pmdbConnected && Number.isFinite(tmdbId)) connectedServices.push('pmdb')
+  if (mdblistConnected && (Number.isFinite(tmdbId) || imdbId)) connectedServices.push('mdblist')
   if (anilistConnected && isAnime && (anilistId || malId)) connectedServices.push('anilist')
 
   useEffect(() => setAllDone(watched), [watched])
@@ -178,6 +183,16 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
             }
             return scrobblePMDB(providerEp.tmdbId, 'tv', providerEp.season, providerEp.episode)
           }))
+        }
+      } else if (service === 'mdblist') {
+        if (mediaType === 'movie') {
+          await markMdblistWatched(tmdbId, 'movie', undefined, undefined, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+        } else if (episode) {
+          await markMdblistWatched(tmdbId, 'series', episode.season, episode.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+        } else if (episodes.length > 0) {
+          await Promise.all(episodes.map((item) =>
+            markMdblistWatched(tmdbId, 'series', item.season, item.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+          ))
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
@@ -284,6 +299,16 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
               await removePMDBWatched(providerEp.tmdbId, 'tv', item.season, item.episode)
             }
           }))
+        }
+      } else if (service === 'mdblist') {
+        if (mediaType === 'movie') {
+          await removeMdblistWatched(tmdbId, 'movie', undefined, undefined, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+        } else if (episode) {
+          await removeMdblistWatched(tmdbId, 'series', episode.season, episode.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+        } else {
+          await Promise.all(episodes.map((item) =>
+            removeMdblistWatched(tmdbId, 'series', item.season, item.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
+          ))
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)

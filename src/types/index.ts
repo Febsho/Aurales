@@ -278,8 +278,8 @@ export interface HomeRowConfig {
   enabled: boolean
   order: number
   /** Determines which data source drives this row */
-  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'anilist'
-  /** Provider-specific list key, for example Simkl/Trakt/PMDB/AniList status or list id */
+  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'anilist'
+  /** Provider-specific list key, for example Simkl/Trakt/PMDB/MDBList/AniList status or list id */
   providerListId?: string
   sortBy?: 'default' | 'alphabetical'
   showRank?: boolean

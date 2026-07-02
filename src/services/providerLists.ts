@@ -1,7 +1,7 @@
 import type { HomeRowConfig, SearchResult } from '../types'
 import { getAniListList, getStoredAniListAccount } from './anilist'
 import { getCollection, getWatchlist } from './trakt/sync'
-import { getListItems as getTraktListItems } from './trakt/lists'
+import { getListItems as getTraktListItems, getPublicListItems as getTraktPublicListItems, searchTraktPopularLists } from './trakt/lists'
 import {
   getPMDBListItems,
   getPMDBLists,
@@ -11,6 +11,12 @@ import {
   type PMDBListItem,
   type PMDBPickItem,
 } from './pmdb'
+import {
+  getMdblistListItems,
+  getMdblistUserLists,
+  getMdblistWatchlistItems,
+  searchMdblistPublicLists,
+} from './mdblist'
 import { getTvdbIdFromTmdb, getTmdbCardMetadata, tmdbProvider } from './tmdb'
 import { getTvdbCardMetadata } from './tvdb'
 import { resolveAnimeIds } from './animeLists'
@@ -33,6 +39,10 @@ export const PMDB_LIST_SOURCES = [
   { id: 'watchlist', label: 'PMDB - Watchlist', layout: 'poster' as const },
 ]
 
+export const MDBLIST_LIST_SOURCES = [
+  { id: 'watchlist', label: 'MDBList - Watchlist', layout: 'poster' as const },
+]
+
 export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
   const key = providerListCacheKey(row)
   return cachedFetch<SearchResult[]>(key, () => loadProviderListItems(row), {
@@ -52,6 +62,8 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
     items = await getPmdbProviderList(id)
   } else if (row.sourceType === 'pmdb-picks') {
     items = (await getPMDBPickItems(id)).map(pmdbPickItemToSearchResult)
+  } else if (row.sourceType === 'mdblist') {
+    items = await getMdblistProviderList(id)
   }
 
   if (items.length > 0) {
@@ -165,6 +177,15 @@ export async function getAvailableTraktListSources(): Promise<{ id: string; labe
   }
 }
 
+export async function searchTraktPublicListSources(query: string): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
+  const results = await searchTraktPopularLists(query)
+  return results.map((list) => ({
+    id: `public:${list.user.ids.slug}:${list.ids.slug}`,
+    label: `${list.name} by ${list.user.username}`,
+    layout: 'poster' as const,
+  }))
+}
+
 export async function getAvailablePmdbListSources(): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
   try {
     const lists = await getPMDBLists()
@@ -182,12 +203,37 @@ export async function getAvailablePmdbPickSources(): Promise<{ id: string; label
   return catalogs.map((catalog) => ({ id: catalog.id, label: catalog.name, layout: 'poster' as const }))
 }
 
+export async function getAvailableMdblistSources(search = ''): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
+  const [owned, publicLists] = await Promise.all([
+    getMdblistUserLists().catch(() => []),
+    search.trim() ? searchMdblistPublicLists(search).catch(() => []) : Promise.resolve([]),
+  ])
+  const mediatypeSuffix = (mt?: string) => mt ? ` (${mt === 'movie' ? 'Movies' : mt === 'show' ? 'Shows' : mt})` : ''
+  return [
+    ...MDBLIST_LIST_SOURCES,
+    ...owned.map((list) => ({
+      id: `list:${list.id}`,
+      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}`,
+      layout: 'poster' as const,
+    })),
+    ...publicLists.map((list) => ({
+      id: `list:${list.id}`,
+      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}${list.user_name ? ` by ${list.user_name}` : ''}`,
+      layout: 'poster' as const,
+    })),
+  ]
+}
+
 async function getTraktProviderList(id: string): Promise<SearchResult[]> {
   let raw: unknown[] = []
   if (id === 'watchlist-movies') raw = await getWatchlist('movies')
   else if (id === 'watchlist-shows') raw = await getWatchlist('shows')
   else if (id === 'collection-movies') raw = await getCollection('movies')
   else if (id === 'collection-shows') raw = await getCollection('shows')
+  else if (id.startsWith('public:')) {
+    const parts = id.slice(7).split(':')
+    raw = await getTraktPublicListItems(parts[0], parts.slice(1).join(':'))
+  }
   else if (id.startsWith('list:')) raw = await getTraktListItems(id.slice(5))
   return raw.map(traktItemToSearchResult).filter((item): item is SearchResult => item !== null)
 }
@@ -198,6 +244,12 @@ async function getPmdbProviderList(id: string): Promise<SearchResult[]> {
     : await getPMDBWatchlistItems()
   const items = await Promise.all(raw.map(pmdbItemToSearchResult))
   return items.filter((item): item is SearchResult => item !== null)
+}
+
+async function getMdblistProviderList(id: string): Promise<SearchResult[]> {
+  return id.startsWith('list:')
+    ? getMdblistListItems(id.slice(5))
+    : getMdblistWatchlistItems()
 }
 
 function traktItemToSearchResult(raw: unknown): SearchResult | null {

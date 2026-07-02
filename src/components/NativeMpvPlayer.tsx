@@ -25,6 +25,7 @@ import {
   removePMDBWatched,
   lookupTmdbId
 } from '../services/pmdb'
+import { scrobbleMdblist } from '../services/mdblist'
 import { saveAniListProgress, saveAniListProgressMapped } from '../services/anilist'
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
@@ -593,9 +594,12 @@ function FullNativeMpvPlayer({
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
   const scrobblePmdb = useAppStore((s) => s.scrobblePmdb)
+  const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
   const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
+  const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
   const autoSkipSegments = useAppStore((s) => s.autoSkipSegments)
   const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
   const openrouterModel = useAppStore((s) => s.openrouterModel)
@@ -613,6 +617,15 @@ function FullNativeMpvPlayer({
   // Keep refs in sync with state for stale-closure access
   const pausedRef = useRef(paused)
   const wtIgnoreNextEvent = useRef(false)
+  const wtIgnoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressNextWatchTogetherEvent = useCallback(() => {
+    wtIgnoreNextEvent.current = true
+    if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+    wtIgnoreTimerRef.current = setTimeout(() => {
+      wtIgnoreNextEvent.current = false
+      wtIgnoreTimerRef.current = null
+    }, 750)
+  }, [])
   useEffect(() => { pausedRef.current = paused }, [paused])
   useEffect(() => { nextEpInfoRef.current = nextEpInfo }, [nextEpInfo])
   useEffect(() => { showUpNextRef.current = showUpNext }, [showUpNext])
@@ -649,6 +662,14 @@ function FullNativeMpvPlayer({
     })
   }, [])
 
+  const sendWatchTogetherSeek = useCallback((targetTime: number) => {
+    if (!Number.isFinite(targetTime)) return
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
+      wtSeek(Math.max(0, targetTime))
+    }
+  }, [])
+
   // ── Watch Together sync ──────────────────────────────────────────────────
   useEffect(() => {
     if (!isInWatchTogether) return
@@ -657,27 +678,27 @@ function FullNativeMpvPlayer({
 
     const onSyncRequest = (e: Event) => {
       if (!playerRunningRef.current) return
-      const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean }
+      const { time, isPlaying, sentAt } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
 
       const { driftThreshold } = useWatchTogetherStore.getState()
       const { shouldSeek, targetTime } = shouldCorrectDrift(
         progressRef.current.currentTime,
-        { currentTime: time, isPlaying, lastUpdatedAt: Date.now() },
+        { currentTime: time, isPlaying, lastUpdatedAt: sentAt },
         driftThreshold,
         3000,
       )
 
       if (shouldSeek) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         sendPlayerCommand('seek', [targetTime, 'absolute']).catch(() => {})
         markCorrectionApplied()
       }
 
       if (isPlaying && pausedRef.current) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         sendPlayerCommand('set_property', ['pause', false]).catch(() => {})
       } else if (!isPlaying && !pausedRef.current) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         sendPlayerCommand('set_property', ['pause', true]).catch(() => {})
       }
     }
@@ -685,9 +706,10 @@ function FullNativeMpvPlayer({
     window.addEventListener('wt:sync_request', onSyncRequest)
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)
+      if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
       resetDriftState()
     }
-  }, [isInWatchTogether])
+  }, [isInWatchTogether, suppressNextWatchTogetherEvent])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -777,6 +799,24 @@ function FullNativeMpvPlayer({
       // Note: we intentionally ignore the {action:'completed'} response here.
     }
   }, [pmdbApiKey, pmdbSaveResumePosition, scrobblePmdb])
+
+  const saveMdblistProgressHelper = useCallback((pos: number, dur: number, allowScrobble = false) => {
+    const item = currentItemRef.current
+    const tmdbId = tmdbIdRef.current
+    if (!item || !mdblistApiKey || dur <= 0) return
+    const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
+    const mediaType = isEpisodic ? 'series' : 'movie'
+    const progressPct = Math.max(0, Math.min(100, (pos / dur) * 100))
+
+    if (allowScrobble && scrobbleMdblistEnabled && progressPct >= 90 && dur >= 180) {
+      scrobbleMdblist('stop', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
+      return
+    }
+
+    if (mdblistSaveResumePosition) {
+      scrobbleMdblist('pause', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
+    }
+  }, [mdblistApiKey, mdblistSaveResumePosition, scrobbleMdblistEnabled])
 
   // ─ Controls visibility ────────────────────────────────────────────────────
   const showControls = useCallback(() => {
@@ -1131,6 +1171,7 @@ function FullNativeMpvPlayer({
           if (accumulatedSeekRef.current !== null) {
             logEvent('PLAYER DEBUG', `Keyboard seek triggered for: ${accumulatedSeekRef.current}s`)
             sendPlayerCommand('seek', [accumulatedSeekRef.current, 'relative']).catch(() => {})
+            sendWatchTogetherSeek(progressRef.current.currentTime + accumulatedSeekRef.current)
           }
           
           pressedKey = null
@@ -1151,7 +1192,7 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [showControls, toggleFullscreen])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1228,6 +1269,11 @@ function FullNativeMpvPlayer({
               : buildMovieScrobble(playbackItem.imdbId, pct)
             logEvent('PLAYBACK SYNC DEBUG', `Send Trakt start for session ${session.id} at ${pct}%`)
             traktScrobbleStart(payload).catch(() => {})
+          }
+          if (scrobbleMdblistEnabled && mdblistApiKey) {
+            const pct = Math.round(startProgress * 10000) / 100
+            const mediaType = playbackItem.mediaType === 'movie' ? 'movie' : 'series'
+            scrobbleMdblist('start', tmdbIdRef.current, mediaType, pct, playbackItem.season, playbackItem.episode, playbackItem.imdbId).catch(() => {})
           }
 
           // Resolve TMDB ID then fetch skips from PMDB + IntroDB and merge
@@ -1566,6 +1612,7 @@ function FullNativeMpvPlayer({
           if (item && pmdbApiKey && pmdbSaveResumePosition && (tmdbIdRef.current || item.imdbId) && pos - lastPmdbPlaybackSaveRef.current >= 60) {
             lastPmdbPlaybackSaveRef.current = pos
             savePMDBProgressHelper(pos, dur, false)
+            saveMdblistProgressHelper(pos, dur, false)
           }
 
           // Detect near-end for Up Next
@@ -1622,6 +1669,7 @@ function FullNativeMpvPlayer({
               autoSkippedSegmentsRef.current.add(segmentKey)
               logEvent('PLAYER DEBUG', `Auto-skipping segment [${foundType}] to ${endMs / 1000}s`)
               await command('seek', [endMs / 1000, 'absolute'])
+              sendWatchTogetherSeek(endMs / 1000)
               setActiveSkip(null)
               setSkipType(null)
             }
@@ -1634,7 +1682,7 @@ function FullNativeMpvPlayer({
       finally { polling = false }
     }, 1000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, triggerRestart])
+  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -1843,6 +1891,7 @@ function FullNativeMpvPlayer({
         traktScrobbleStop(payload).catch(() => {})
       }
       savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is done watching
+      saveMdblistProgressHelper(pos, dur, true)
     }
     if (isFullscreen) await getCurrentWindow().setFullscreen(false).catch(() => {})
     await stopEmbeddedPlayer().catch(() => {})
@@ -1874,6 +1923,7 @@ function FullNativeMpvPlayer({
         traktScrobbleStop(payload).catch(() => {})
       }
       savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is switching away
+      saveMdblistProgressHelper(pos, dur, true)
     }
     if (isFullscreen) { await getCurrentWindow().setFullscreen(false).catch(() => {}); setIsFullscreen(false) }
     await stopEmbeddedPlayer().catch(() => {})
@@ -1893,7 +1943,6 @@ function FullNativeMpvPlayer({
       if (pausedRef.current) wtPlay(pos)
       else wtPause(pos)
     }
-    wtIgnoreNextEvent.current = false
 
     setPaused((prev) => {
       const newPaused = !prev
@@ -1915,6 +1964,7 @@ function FullNativeMpvPlayer({
             traktScrobblePause(payload).catch(() => {})
           }
           savePMDBProgressHelper(pos, dur, false)
+          saveMdblistProgressHelper(pos, dur, false)
         } else {
           if (scrobbleSimkl) {
             saveSimklPlaybackProgress(item, progress).catch(() => {})
@@ -1935,12 +1985,9 @@ function FullNativeMpvPlayer({
 
   const seekBy = (secs: number) => {
     if (!playerRunning) return
+    const targetTime = progressRef.current.currentTime + secs
     command('seek', [secs, 'relative'])
-    const wt = useWatchTogetherStore.getState()
-    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
-      wtSeek(progressRef.current.currentTime + secs)
-    }
-    wtIgnoreNextEvent.current = false
+    sendWatchTogetherSeek(targetTime)
   }
   // seekTo is now handled directly by inline slider events.
   const changeVolume = (val: number) => {
@@ -2080,6 +2127,7 @@ function FullNativeMpvPlayer({
             const targetSec = endMs / 1000
             if (!isNaN(targetSec)) {
               command('seek', [targetSec, 'absolute'])
+              sendWatchTogetherSeek(targetSec)
               setActiveSkip(null)
               setSkipType(null)
             }
@@ -2325,7 +2373,7 @@ function FullNativeMpvPlayer({
 
             {/* Skip back 10s */}
             <button
-              onClick={(e) => { e.stopPropagation(); command('seek', [-10, 'relative']) }}
+              onClick={(e) => { e.stopPropagation(); seekBy(-10) }}
               title="Back 10s (←)"
               className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
             >
@@ -2337,7 +2385,7 @@ function FullNativeMpvPlayer({
 
             {/* Skip forward 10s */}
             <button
-              onClick={(e) => { e.stopPropagation(); command('seek', [10, 'relative']) }}
+              onClick={(e) => { e.stopPropagation(); seekBy(10) }}
               title="Forward 10s (→)"
               className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
             >
@@ -2355,7 +2403,9 @@ function FullNativeMpvPlayer({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation()
-                    command('seek', [range.end / 1000, 'absolute'])
+                    const targetTime = range.end / 1000
+                    command('seek', [targetTime, 'absolute'])
+                    sendWatchTogetherSeek(targetTime)
                   }}
                   title={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
                   aria-label={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
@@ -2392,8 +2442,7 @@ function FullNativeMpvPlayer({
                 onMouseUp={() => {
                   setIsDragging(false)
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
-                  const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgressRef.current / 100) * duration)
+                  if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
                 }}
                 onTouchStart={() => {
                   setIsDragging(true)
@@ -2403,8 +2452,7 @@ function FullNativeMpvPlayer({
                 onTouchEnd={() => {
                   setIsDragging(false)
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
-                  const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgressRef.current / 100) * duration)
+                  if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
                 }}
                 onChange={(e) => {
                   const val = Number(e.target.value)

@@ -52,3 +52,39 @@ export async function removeFromWatchlist(items: { movies?: unknown[]; shows?: u
     body: JSON.stringify(items),
   })
 }
+
+export interface TraktPublicList {
+  name: string
+  description: string
+  likes: number
+  itemCount: number
+  user: { username: string; ids: { slug: string } }
+  ids: { trakt: number; slug: string }
+}
+
+export async function searchTraktPopularLists(query: string, limit = 20): Promise<TraktPublicList[]> {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+  const encoded = encodeURIComponent(trimmed)
+  const data = await traktFetch(`/search/list?query=${encoded}&limit=${limit}`) as any[]
+  return data
+    .filter((item) => item.type === 'list' && item.list)
+    .map((item) => {
+      const l = item.list
+      return {
+        name: l.name || '',
+        description: l.description || '',
+        likes: l.likes ?? 0,
+        itemCount: l.item_count ?? 0,
+        user: {
+          username: l.user?.username || 'unknown',
+          ids: { slug: l.user?.ids?.slug || '' },
+        },
+        ids: { trakt: l.ids?.trakt ?? 0, slug: l.ids?.slug || '' },
+      }
+    })
+}
+
+export async function getPublicListItems(username: string, listSlug: string): Promise<unknown[]> {
+  return await traktFetch(`/users/${username}/lists/${listSlug}/items`) as unknown[]
+}
