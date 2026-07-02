@@ -298,6 +298,8 @@ function handlePlayback(
     case 'SEEK':
       playback = updatePlayback(event.roomId, {
         currentTime: event.time,
+        isPlaying: room.playback.isPlaying,
+        status: room.playback.isPlaying ? 'playing' : 'paused',
         lastActionBy: event.senderUserId,
       })
       break
@@ -318,8 +320,8 @@ function handlePlayback(
       broadcastToRoom(event.roomId, {
         type: 'SYNC_REQUEST',
         time: 'time' in event ? event.time : 0,
-        isPlaying: event.type === 'PLAY',
-        sentAt: Date.now(),
+        isPlaying: playback.isPlaying,
+        sentAt: playback.lastUpdatedAt,
       }, event.senderUserId)
     }
   }

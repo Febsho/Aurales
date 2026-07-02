@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore'
 import { getSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistUpNext } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 import StreamSelector from './StreamSelector'
@@ -12,13 +13,14 @@ import type { HomeRowConfig } from '../types'
 import { formatTime } from '../services/player'
 import { useContextMenu } from '../hooks/useContextMenu'
 
-type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'anilist'
+type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
 
 const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
   { value: 'local', label: 'Local' },
   { value: 'simkl', label: 'Simkl' },
   { value: 'trakt', label: 'Trakt' },
   { value: 'pmdb', label: 'PMDB' },
+  { value: 'mdblist', label: 'MDBList' },
   { value: 'anilist', label: 'AniList' },
 ]
 
@@ -101,7 +103,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
   const changeSource = (next: SourceType) => {
     updateHomeRow(row.id, { sourceType: next })
-    if (next === 'local' || next === 'trakt' || next === 'simkl' || next === 'pmdb' || next === 'anilist') {
+    if (next === 'local' || next === 'trakt' || next === 'simkl' || next === 'pmdb' || next === 'mdblist' || next === 'anilist') {
       setContinueWatchingSource(next)
     }
   }
@@ -308,6 +310,43 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             )
             list = resolvedList
           }
+        } else if (source === 'mdblist') {
+          const upNextRaw = await getMdblistUpNext()
+          const upNextItems: ContinueWatchingItem[] = await Promise.all(
+            upNextRaw.map(async (u) => {
+              let poster: string | undefined
+              let backdrop: string | undefined
+              let imdbId = u.imdbId
+              let title = u.title
+              if (u.tmdbId) {
+                try {
+                  const meta = await tmdbProvider.getShow(`tmdb-${u.tmdbId}`)
+                  poster = meta.poster
+                  backdrop = meta.backdrop
+                  if (!imdbId) imdbId = meta.imdbId
+                  if (title === 'Show') title = meta.title || title
+                } catch (_) { /* keep what we have */ }
+              }
+              return {
+                id: `mdblist-upnext-${u.showId}-${u.season}-${u.episode}`,
+                mediaId: imdbId || (u.tmdbId ? `tmdb-${u.tmdbId}` : u.showId),
+                mediaType: 'series' as const,
+                title,
+                subtitle: `S${u.season} E${u.episode}`,
+                poster,
+                backdrop,
+                season: u.season,
+                episode: u.episode,
+                progressSeconds: 0,
+                durationSeconds: 0,
+                progressPct: 0,
+                imdbId,
+                tmdbId: u.tmdbId,
+                updatedAt: u.lastWatchedAt || new Date().toISOString(),
+              } satisfies ContinueWatchingItem
+            })
+          )
+          list = upNextItems
         } else if (source === 'anilist') {
           list = await getAniListContinueWatching()
         }
@@ -376,13 +415,15 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     </div>
   )
 
+  const displayTitle = source === 'mdblist' ? 'Up Next' : row.title
+
   if (loading) {
     return (
       <div className="mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+            <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
           </div>
           <div className="flex items-center gap-3">
             {sourceSelector}
@@ -404,7 +445,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+            <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
           </div>
           <div className="flex items-center gap-3">
             {sourceSelector}
@@ -415,7 +456,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
-                <span className="text-[11px] text-white/15 select-none">Nothing in progress</span>
+                <span className="text-[11px] text-white/15 select-none">{source === 'mdblist' ? 'No shows to catch up on' : 'Nothing in progress'}</span>
               </div>
             ))}
           </div>
@@ -429,7 +470,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       <div className="flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
         </div>
         <div className="flex items-center gap-3">
           {sourceSelector}
@@ -457,7 +498,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-6 scrollbar-none"
+        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-6 scrollbar-none scroll-gpu"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {items.map((item) => {

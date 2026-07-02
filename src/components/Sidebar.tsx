@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
+import { getAppVersion } from '../services/updater'
 import CreateRoomButton from './watch-together/CreateRoomButton'
 import JoinRoomModal from './watch-together/JoinRoomModal'
 
@@ -36,10 +37,19 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
     <>
       {/* Invisible hit zone on left edge — only needed in auto-hide mode */}
       {autoHide && (
-        <div
-          className="absolute top-0 left-0 bottom-0 w-3 z-30"
-          onMouseEnter={() => setHovered(true)}
-        />
+        <>
+          <div
+            className="absolute top-0 left-0 bottom-0 w-5 z-40"
+            onMouseEnter={() => setHovered(true)}
+            onMouseMove={() => setHovered(true)}
+          />
+          {!visible && (
+            <div
+              className="absolute left-0 top-1/2 z-30 h-44 w-1.5 -translate-y-1/2 rounded-r-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
+              aria-hidden="true"
+            />
+          )}
+        </>
       )}
       <aside
         onMouseEnter={() => !pinned && setHovered(true)}
@@ -48,7 +58,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
           'flex flex-col z-30',
           'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
           pinned
-            ? 'relative w-52 flex-shrink-0 bg-white/[0.05] border-r border-white/[0.06]'
+            ? 'relative w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
             : [
                 'absolute top-3 bottom-3 rounded-2xl overflow-hidden',
                 visible
@@ -136,7 +146,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
 
       {/* Footer */}
       <div className="p-3 border-t border-white/[0.04]">
-        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v0.1.0</div>
+        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>
 
       <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
