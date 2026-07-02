@@ -12,6 +12,7 @@ import {
   buildEpisodeScrobble,
   buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
+import { scrobbleMdblist } from '../services/mdblist'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -19,7 +20,6 @@ import {
   pause as wtPause,
   seek as wtSeek,
   sendBuffering as wtSendBuffering,
-  sendSyncState as wtSendSyncState,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
@@ -83,6 +83,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
+  const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   const [showTranslateModal, setShowTranslateModal] = useState(false)
@@ -91,6 +93,20 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
   const openrouterModel = useAppStore((s) => s.openrouterModel)
+
+  const sendMdblistScrobble = (action: 'start' | 'pause' | 'stop', progress: number) => {
+    if (!playbackItem || !scrobbleMdblistEnabled || !mdblistApiKey) return
+    const progressPct = Math.round(progress * 10000) / 100
+    scrobbleMdblist(
+      action,
+      playbackItem.tmdbId,
+      playbackItem.mediaType === 'movie' ? 'movie' : 'series',
+      progressPct,
+      playbackItem.season,
+      playbackItem.episode,
+      playbackItem.imdbId
+    ).catch(() => {})
+  }
 
   const handleTranslateSubtitle = async (langCode: string, langName: string) => {
     if (selectedSubtitle === 'off') return
@@ -243,6 +259,7 @@ IMPORTANT RULES:
               : buildMovieScrobble(playbackItem.imdbId, startProgressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
           }
+          sendMdblistScrobble('start', startProgress)
         }
       }).catch(() => setPaused(true))
     }, 50)
@@ -308,6 +325,15 @@ IMPORTANT RULES:
 
   // ── Watch Together sync ───────────────────────────────────────────────────
   const wtIgnoreNextEvent = useRef(false)
+  const wtIgnoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressNextWatchTogetherEvent = () => {
+    wtIgnoreNextEvent.current = true
+    if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+    wtIgnoreTimerRef.current = setTimeout(() => {
+      wtIgnoreNextEvent.current = false
+      wtIgnoreTimerRef.current = null
+    }, 750)
+  }
 
   useEffect(() => {
     const wtState = useWatchTogetherStore.getState()
@@ -323,22 +349,22 @@ IMPORTANT RULES:
       const { driftThreshold } = useWatchTogetherStore.getState()
       const { shouldSeek, targetTime } = shouldCorrectDrift(
         video.currentTime,
-        { currentTime: time, isPlaying, lastUpdatedAt: Date.now() },
+        { currentTime: time, isPlaying, lastUpdatedAt: (e as CustomEvent).detail.sentAt },
         driftThreshold,
         3000,
       )
 
       if (shouldSeek) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         video.currentTime = targetTime
         markCorrectionApplied()
       }
 
       if (isPlaying && video.paused) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         video.play().catch(() => {})
       } else if (!isPlaying && !video.paused) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         video.pause()
       }
     }
@@ -346,6 +372,7 @@ IMPORTANT RULES:
     window.addEventListener('wt:sync_request', onSyncRequest)
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)
+      if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
       resetDriftState()
     }
   }, [])
@@ -354,7 +381,7 @@ IMPORTANT RULES:
     const video = videoRef.current
     const wt = useWatchTogetherStore.getState()
     if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    if (wtIgnoreNextEvent.current) return
     wtPlay(video.currentTime)
   }
 
@@ -362,16 +389,8 @@ IMPORTANT RULES:
     const video = videoRef.current
     const wt = useWatchTogetherStore.getState()
     if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    if (wtIgnoreNextEvent.current) return
     wtPause(video.currentTime)
-  }
-
-  const wtSendSeek = () => {
-    const video = videoRef.current
-    const wt = useWatchTogetherStore.getState()
-    if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
-    wtSeek(video.currentTime)
   }
 
   const refreshAudioTracks = () => {
@@ -433,6 +452,7 @@ IMPORTANT RULES:
               : buildMovieScrobble(playbackItem.imdbId, progressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
           }
+          sendMdblistScrobble('start', progress)
         }
       }).catch(() => {
         setError('The embedded WebView player could not start this stream. Pick another stream if this does not retry.')
@@ -454,6 +474,7 @@ IMPORTANT RULES:
             : buildMovieScrobble(playbackItem.imdbId, progressPct)
           traktScrobblePause(traktPayload).catch(() => {})
         }
+        sendMdblistScrobble('pause', progress)
       }
     }
   }
@@ -479,6 +500,7 @@ IMPORTANT RULES:
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      sendMdblistScrobble('stop', progress)
     }
     onClose()
   }
@@ -504,6 +526,7 @@ IMPORTANT RULES:
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      sendMdblistScrobble('stop', progress)
     }
     onPickAnother()
   }
@@ -521,23 +544,28 @@ IMPORTANT RULES:
           : buildMovieScrobble(playbackItem.imdbId, 100)
         traktScrobbleStop(traktPayload).catch(() => {})
       }
+      sendMdblistScrobble('stop', 1)
     }
   }
 
   const seekBy = (seconds: number) => {
     const video = videoRef.current
     if (!video) return
-    video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds))
+    const targetTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds))
+    video.currentTime = targetTime
     showControlsTemporarily()
-    wtSendSeek()
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) wtSeek(targetTime)
   }
 
   const seekTo = (value: string) => {
     const video = videoRef.current
     if (!video) return
-    video.currentTime = Number(value)
+    const targetTime = Number(value)
+    video.currentTime = targetTime
     showControlsTemporarily()
-    wtSendSeek()
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) wtSeek(targetTime)
   }
 
   const changeVolume = (value: string) => {

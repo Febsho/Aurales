@@ -174,7 +174,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
             >
               {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
                 <img
-                  src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace(/\/w\d+\//, '/original/')}
+                  src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace(/\/w\d+\//, '/w1280/')}
                   alt=""
                   className="absolute inset-0 w-full h-full object-cover"
                   style={{ objectPosition: 'center 20%' }}

@@ -6,12 +6,6 @@ import { getAddonStreams, getAddonSubtitles, getStreamAddons, getSubtitleAddons 
 import NativeMpvPlayer from './NativeMpvPlayer'
 import InAppPlayer from './InAppPlayer'
 import type { PlaybackItem } from '../services/simkl/playback'
-import {
-  cssColorFromFilterColor,
-  loadStreamRegexFilterConfig,
-  matchStreamRegexFilters,
-  type MatchedStreamRegexFilter,
-} from '../services/streamRegexFilters'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { selectStream as wtSelectStream, play as wtPlay } from '../services/watch-together/wsClient'
 import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
@@ -135,7 +129,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [streamFilters, setStreamFilters] = useState<StreamFilterState>(loadStreamFilters)
-  const [regexFilterConfig, setRegexFilterConfig] = useState(loadStreamRegexFilterConfig)
   const addons = useAppStore((s) => s.addons)
 
   // Stream card display toggles — persisted in localStorage
@@ -149,7 +142,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   useEffect(() => {
     if (!open || !mediaId) return
-    setRegexFilterConfig(loadStreamRegexFilterConfig())
     setStreams([])
     setLoading(true)
     setPlayError('')
@@ -365,10 +357,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     ).slice(0, 8)
   }
 
-  const matchedRegexFilters = (stream: AddonStream): MatchedStreamRegexFilter[] => {
-    return matchStreamRegexFilters(getFilterText(stream), regexFilterConfig).slice(0, 16)
-  }
-
   const filteredStreams = useMemo(() => {
     return streams.filter((stream) => {
       const text = getFilterText(stream)
@@ -411,31 +399,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   if (!open) return null
 
-  const renderRegexTag = (match: MatchedStreamRegexFilter) => {
-    const { filter, group } = match
-    const filled = filter.tagStyle.includes('filled')
-    const bordered = filter.tagStyle.includes('bordered')
-    const backgroundColor = filled ? cssColorFromFilterColor(filter.tagColor, 'transparent') : 'transparent'
-    const borderColor = bordered
-      ? cssColorFromFilterColor(filter.borderColor, group?.color || '#80FFFFFF')
-      : 'transparent'
-    const color = cssColorFromFilterColor(filter.textColor, '#FFFFFF')
-
-    return (
-      <span
-        key={filter.id}
-        className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] font-black leading-none shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]"
-        style={{ backgroundColor, border: `2px solid ${borderColor}`, color }}
-        title={filter.name}
-      >
-        {filter.imageURL ? (
-          <img src={filter.imageURL} alt="" className="h-4 max-w-[54px] object-contain" loading="lazy" />
-        ) : (
-          <span>{filter.name}</span>
-        )}
-      </span>
-    )
-  }
 
   const handlePlay = async (stream: AddonStream, index: number) => {
     const url = getPlayableUrl(stream)
@@ -592,8 +555,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           {!loading && filteredStreams.map((stream, i) => {
             const playable = !!getPlayableUrl(stream)
             const description = getStreamDescription(stream)
-            const regexTags = matchedRegexFilters(stream)
-            const filterBadges = regexTags.length > 0 ? [] : matchedFilterLabels(stream)
+            const filterBadges = matchedFilterLabels(stream)
             return (
             <button
               key={`${stream.addonId}-${i}`}
@@ -617,11 +579,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                   <p className="text-[15px] leading-snug text-white/82 whitespace-pre-line mt-1.5">
                     {description}
                   </p>
-                )}
-                {showStreamTags && regexTags.length > 0 && (
-                  <div className="flex items-center gap-2 flex-wrap mt-2">
-                    {regexTags.map(renderRegexTag)}
-                  </div>
                 )}
                 {showStreamTags && (
                   <div className="flex items-center gap-2 text-xs text-white/70 flex-wrap mt-2">

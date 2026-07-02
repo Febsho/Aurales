@@ -5,6 +5,7 @@ import { getWatchedMovies, getWatchedShows, type TraktWatchedItem } from './trak
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched } from './pmdb'
+import { getMdblistWatched } from './mdblist'
 import type { WatchedSource } from './watchedStatus'
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -45,6 +46,16 @@ function extractPmdbKeys(items: { tmdb_id?: number }[]): WatchedKey[] {
   return keys
 }
 
+function extractMdblistKeys(items: { imdb_id?: string; tmdb_id?: number; tvdb_id?: number }[]): WatchedKey[] {
+  const keys: WatchedKey[] = []
+  for (const item of items) {
+    if (item.imdb_id) keys.push(makeWatchedKey('imdb', item.imdb_id))
+    if (item.tmdb_id) keys.push(makeWatchedKey('tmdb', item.tmdb_id))
+    if (item.tvdb_id) keys.push(makeWatchedKey('tvdb', item.tvdb_id))
+  }
+  return keys
+}
+
 async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]> {
   const allKeys: WatchedKey[] = []
 
@@ -71,6 +82,12 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
             return await getPMDBWatched()
           }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
           return extractPmdbKeys(data)
+        }
+        if (source === 'mdblist') {
+          const data = await cachedFetch('watched:mdblist', async () => {
+            return await getMdblistWatched()
+          }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+          return extractMdblistKeys(data)
         }
       } catch (e) {
         console.warn(`[WatchedCache] failed to fetch ${source}:`, e)

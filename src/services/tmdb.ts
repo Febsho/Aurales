@@ -43,7 +43,7 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
   const selected = backdrops[0]
-  return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
+  return selected ? `${IMG_BASE}/w1280${selected.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
@@ -217,7 +217,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,
       cast,
@@ -288,7 +288,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,
       status: details.status as string,
@@ -319,7 +319,7 @@ export const tmdbProvider: MetadataProvider = {
         overview: e.overview as string,
         airDate: e.air_date as string,
         runtime: e.runtime as number,
-        still: e.still_path ? `${IMG_BASE}/original${e.still_path}` : undefined,
+        still: e.still_path ? `${IMG_BASE}/w780${e.still_path}` : undefined,
         rating: e.vote_average as number,
         voteCount: e.vote_count as number,
       }))
@@ -345,7 +345,7 @@ export const tmdbProvider: MetadataProvider = {
       overview: data.overview as string,
       airDate: data.air_date as string,
       runtime: data.runtime as number,
-      still: data.still_path ? `${IMG_BASE}/original${data.still_path}` : undefined,
+      still: data.still_path ? `${IMG_BASE}/w780${data.still_path}` : undefined,
       rating: data.vote_average as number,
       voteCount: data.vote_count as number,
     }

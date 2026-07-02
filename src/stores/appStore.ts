@@ -5,6 +5,8 @@ import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
 import { v4 as uuid } from 'uuid'
 
+type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+
 interface AppState {
   sidebarCollapsed: boolean
   toggleSidebar: () => void
@@ -28,10 +30,12 @@ interface AppState {
   scrobbleSimkl: boolean
   scrobbleTrakt: boolean
   scrobblePmdb: boolean
+  scrobbleMdblist: boolean
   scrobbleAnilist: boolean
   setScrobbleSimkl: (enabled: boolean) => void
   setScrobbleTrakt: (enabled: boolean) => void
   setScrobblePmdb: (enabled: boolean) => void
+  setScrobbleMdblist: (enabled: boolean) => void
   setScrobbleAnilist: (enabled: boolean) => void
 
   // Simkl
@@ -76,12 +80,15 @@ interface AppState {
   setPreferredSubtitles: (langs: string[]) => void
   setPreferredAudio: (langs: string[]) => void
 
-  continueWatchingSource: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+  continueWatchingSource: ProgressProvider
   continueWatchingLimit: number
-  watchedCheckmarkSources: ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
-  watchlistButtonTarget: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+  watchedCheckmarkSources: ProgressProvider[]
+  watchlistButtonTarget: ProgressProvider
   pmdbApiKey: string
   pmdbSaveResumePosition: boolean
+  mdblistSaveResumePosition: boolean
+  mdblistSyncFrequency: string
+  mdblistLastSyncTime: string
   pmdbSyncFrequency: string
   pmdbLastSyncTime: string
   traktSaveResumePosition: boolean
@@ -93,12 +100,15 @@ interface AppState {
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
   animeShowWatchedFrom: 'all' | 'provider'
 
-  setContinueWatchingSource: (src: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist') => void
+  setContinueWatchingSource: (src: ProgressProvider) => void
   setContinueWatchingLimit: (limit: number) => void
-  setWatchedCheckmarkSources: (sources: ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]) => void
-  setWatchlistButtonTarget: (target: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist') => void
+  setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
+  setWatchlistButtonTarget: (target: ProgressProvider) => void
   setPmdBApiKey: (key: string) => void
   setPmdBSaveResumePosition: (val: boolean) => void
+  setMdblistSaveResumePosition: (val: boolean) => void
+  setMdblistSyncFrequency: (freq: string) => void
+  setMdblistLastSyncTime: (time: string) => void
   setPmdBSyncFrequency: (freq: string) => void
   setPmdBLastSyncTime: (time: string) => void
   setTraktSaveResumePosition: (val: boolean) => void
@@ -418,10 +428,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   scrobbleSimkl: localStorage.getItem('scrobble_simkl') !== 'false',
   scrobbleTrakt: localStorage.getItem('scrobble_trakt') !== 'false',
   scrobblePmdb: localStorage.getItem('scrobble_pmdb') !== 'false',
+  scrobbleMdblist: localStorage.getItem('scrobble_mdblist') !== 'false',
   scrobbleAnilist: localStorage.getItem('scrobble_anilist') !== 'false',
   setScrobbleSimkl: (enabled) => { localStorage.setItem('scrobble_simkl', String(enabled)); set({ scrobbleSimkl: enabled }) },
   setScrobbleTrakt: (enabled) => { localStorage.setItem('scrobble_trakt', String(enabled)); set({ scrobbleTrakt: enabled }) },
   setScrobblePmdb: (enabled) => { localStorage.setItem('scrobble_pmdb', String(enabled)); set({ scrobblePmdb: enabled }) },
+  setScrobbleMdblist: (enabled) => { localStorage.setItem('scrobble_mdblist', String(enabled)); set({ scrobbleMdblist: enabled }) },
   setScrobbleAnilist: (enabled) => { localStorage.setItem('scrobble_anilist', String(enabled)); set({ scrobbleAnilist: enabled }) },
 
   simklConnected: !!localStorage.getItem('simkl_token'),
@@ -536,18 +548,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ preferredAudio: langs })
   },
 
-  continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
+  continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
   watchedCheckmarkSources: (() => {
     try {
       const raw = localStorage.getItem('aurales_watched_checkmark_sources')
-      if (raw) return JSON.parse(raw) as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
+      if (raw) return JSON.parse(raw) as ProgressProvider[]
     } catch (_) { /* ignore */ }
-    return ['local'] as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
+    return ['local'] as ProgressProvider[]
   })(),
-  watchlistButtonTarget: (localStorage.getItem('aurales_watchlist_target') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
+  watchlistButtonTarget: (localStorage.getItem('aurales_watchlist_target') || 'local') as ProgressProvider,
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
+  mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
+  mdblistSyncFrequency: localStorage.getItem('mdblist_sync_freq') || 'every_5',
+  mdblistLastSyncTime: localStorage.getItem('mdblist_last_sync') || '',
   pmdbSyncFrequency: localStorage.getItem('pmdb_sync_freq') || 'every_minute',
   pmdbLastSyncTime: localStorage.getItem('pmdb_last_sync') || '',
   traktSaveResumePosition: localStorage.getItem('trakt_save_resume') !== 'false',
@@ -605,6 +620,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWatchlistButtonTarget: (target) => { localStorage.setItem('aurales_watchlist_target', target); set({ watchlistButtonTarget: target }) },
   setPmdBApiKey: (key) => { localStorage.setItem('pmdb_api_key', key); set({ pmdbApiKey: key }) },
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
+  setMdblistSaveResumePosition: (val) => { localStorage.setItem('mdblist_save_resume', String(val)); set({ mdblistSaveResumePosition: val }) },
+  setMdblistSyncFrequency: (freq) => { localStorage.setItem('mdblist_sync_freq', freq); set({ mdblistSyncFrequency: freq }) },
+  setMdblistLastSyncTime: (time) => { localStorage.setItem('mdblist_last_sync', time); set({ mdblistLastSyncTime: time }) },
   setPmdBSyncFrequency: (freq) => { localStorage.setItem('pmdb_sync_freq', freq); set({ pmdbSyncFrequency: freq }) },
   setPmdBLastSyncTime: (time) => { localStorage.setItem('pmdb_last_sync', time); set({ pmdbLastSyncTime: time }) },
   setTraktSaveResumePosition: (val) => { localStorage.setItem('trakt_save_resume', String(val)); set({ traktSaveResumePosition: val }) },

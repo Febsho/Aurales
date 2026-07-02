@@ -16,6 +16,11 @@ import {
   getPMDBWatchlistItems,
 } from '../services/pmdb'
 import {
+  addToMdblistWatchlist,
+  removeFromMdblistWatchlist,
+  getMdblistWatchlistItems,
+} from '../services/mdblist'
+import {
   isAniListConnected,
   addToAniListPlanning,
   removeFromAniListList,
@@ -24,7 +29,7 @@ import {
 import { resolveAnimeIds } from '../services/animeLists'
 import type { MediaRef } from '../services/simkl/mappings'
 
-type Provider = 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+type Provider = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 interface ProviderState {
   inList: boolean
@@ -36,6 +41,7 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   trakt: 'Trakt',
   simkl: 'Simkl',
   pmdb: 'PMDB',
+  mdblist: 'MDBList',
   anilist: 'AniList',
 }
 
@@ -52,6 +58,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
 
   const [animeIds, setAnimeIds] = useState<{ anilistId?: number; malId?: number }>({
     anilistId: anilistId ? Number(anilistId) : undefined,
@@ -64,6 +71,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
     trakt: { inList: false, loading: false, checking: true },
     simkl: { inList: false, loading: false, checking: true },
     pmdb: { inList: false, loading: false, checking: true },
+    mdblist: { inList: false, loading: false, checking: true },
     anilist: { inList: false, loading: false, checking: true },
   })
   const menuRef = useRef<HTMLDivElement>(null)
@@ -72,6 +80,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
   if (traktConnected) connectedProviders.push('trakt')
   if (simklConnected) connectedProviders.push('simkl')
   if (pmdbApiKey) connectedProviders.push('pmdb')
+  if (mdblistApiKey) connectedProviders.push('mdblist')
   if (anilistActive) connectedProviders.push('anilist')
 
   const anyInList = connectedProviders.some((p) => states[p].inList)
@@ -141,6 +150,21 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
         })())
       }
 
+      if (mdblistApiKey) {
+        checks.push((async () => {
+          try {
+            const items = await getMdblistWatchlistItems()
+            const found = items.some((i) =>
+              (mediaRef.imdbId && i.imdbId === mediaRef.imdbId) ||
+              (mediaRef.tmdbId && Number(i.tmdbId) === mediaRef.tmdbId)
+            )
+            if (!cancelled) setStates((prev) => ({ ...prev, mdblist: { inList: found, loading: false, checking: false } }))
+          } catch (_) {
+            if (!cancelled) setStates((prev) => ({ ...prev, mdblist: { inList: false, loading: false, checking: false } }))
+          }
+        })())
+      }
+
       // AniList checking not implemented yet — just mark done
       if (anilistActive) {
         checks.push((async () => {
@@ -160,7 +184,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
 
     checkAll()
     return () => { cancelled = true }
-  }, [mediaRef.localId, mediaRef.imdbId, mediaRef.tmdbId, mediaType, traktConnected, simklConnected, pmdbApiKey, anilistActive, animeIds.anilistId, animeIds.malId])
+  }, [mediaRef.localId, mediaRef.imdbId, mediaRef.tmdbId, mediaType, traktConnected, simklConnected, pmdbApiKey, mdblistApiKey, anilistActive, animeIds.anilistId, animeIds.malId])
 
   useEffect(() => {
     if (!open) return
@@ -191,6 +215,9 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
         const pmdbType = mediaType === 'series' ? 'tv' : 'movie'
         if (current.inList) await removeFromPMDBWatchlist(mediaRef.tmdbId, pmdbType)
         else await addToPMDBWatchlist(mediaRef.tmdbId, pmdbType)
+      } else if (provider === 'mdblist' && mediaRef.tmdbId) {
+        if (current.inList) await removeFromMdblistWatchlist(mediaRef.tmdbId, mediaType, mediaRef.imdbId)
+        else await addToMdblistWatchlist(mediaRef.tmdbId, mediaType, mediaRef.imdbId)
       } else if (provider === 'anilist') {
         if (current.inList) await removeFromAniListList(animeIds.anilistId, animeIds.malId)
         else await addToAniListPlanning(animeIds.anilistId, animeIds.malId)

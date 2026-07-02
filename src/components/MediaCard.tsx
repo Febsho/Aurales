@@ -115,46 +115,41 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
 
   useEffect(() => {
     if (!isVisible) return
-    if (layout !== 'landscape' || displayItem.backdrop) return
-    const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
-    if (!tmdbId) return
-
-    let cancelled = false
-    getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
-      .then((backdrop) => {
-        if (!cancelled && backdrop) setResolvedBackdrop(backdrop)
-      })
-      .catch(() => undefined)
-    return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.type, displayItem.backdrop])
-
-  useEffect(() => {
-    if (!isVisible) return
     let cancelled = false
     const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
 
-    const needsVisibleArtwork = layout === 'landscape' ? !displayItem.backdrop : !displayItem.poster
-    if (needsVisibleArtwork || (showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length)) {
-      (async () => {
-        try {
-          let resolvedTmdbId = tmdbId
-          if (!resolvedTmdbId && imdbId) {
-            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
-            const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
-            if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
-          }
-          if (resolvedTmdbId) {
-            const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId)
-            if (!cancelled) {
-              if (meta.poster) setResolvedPoster(meta.poster)
-              if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
-              if (meta.genre) setResolvedGenre(meta.genre)
-            }
-          }
-        } catch (_) { /* ignore */ }
-      })()
+    const needsPoster = layout !== 'landscape' && !displayItem.poster
+    const needsBackdrop = layout === 'landscape' && !displayItem.backdrop
+    const needsGenre = showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length
+
+    if (!needsPoster && !needsBackdrop && !needsGenre) {
+      if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
+        getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
+          .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
+          .catch(() => undefined)
+      }
+      return () => { cancelled = true }
     }
+
+    ;(async () => {
+      try {
+        let resolvedTmdbId = tmdbId
+        if (!resolvedTmdbId && imdbId) {
+          const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+          const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
+          if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
+        }
+        if (resolvedTmdbId) {
+          const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId)
+          if (!cancelled) {
+            if (meta.poster) setResolvedPoster(meta.poster)
+            if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
+            if (meta.genre) setResolvedGenre(meta.genre)
+          }
+        }
+      } catch (_) { /* ignore */ }
+    })()
     return () => { cancelled = true }
   }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type, showGenreOnCards])
 

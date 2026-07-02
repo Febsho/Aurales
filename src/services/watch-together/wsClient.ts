@@ -514,6 +514,17 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'PLAYBACK_UPDATED':
       store.updatePlayback(msg.playback)
+      if (!store.isHost && msg.playback.status !== 'stopped' && msg.playback.status !== 'idle') {
+        window.dispatchEvent(
+          new CustomEvent('wt:sync_request', {
+            detail: {
+              time: msg.playback.currentTime,
+              isPlaying: msg.playback.isPlaying,
+              sentAt: msg.playback.lastUpdatedAt,
+            },
+          }),
+        )
+      }
       break
 
     case 'CHAT_RECEIVED':

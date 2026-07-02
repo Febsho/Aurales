@@ -385,7 +385,7 @@ export default function DiscoverPage() {
               <div className="flex items-center justify-between mb-3.5">
                 <h2 className="text-lg font-bold text-white/90 tracking-tight">Platforms</h2>
               </div>
-              <div className="flex gap-4 overflow-x-auto pb-3 scrollbar-none">
+              <div className="flex gap-4 overflow-x-auto pb-3 scrollbar-none scroll-gpu">
                 {SERVICES.map((service) => (
                   <ServiceCard
                     key={service.id}
@@ -406,11 +406,21 @@ export default function DiscoverPage() {
             layout="landscape"
             disableArtOverride={false}
           />
-          <MediaRow title={`Tonight's Mood · ${mood.title}`} items={moodItems} layout="poster" disableArtOverride={false} />
-          <MediaRow title={`Trending ${tab === 'movies' ? 'Movies' : tab === 'series' ? 'Series' : 'Anime'}`} items={trending} layout="landscape" disableArtOverride={false} />
-          <MediaRow title="Highly Rated, Quietly Loved" items={hiddenGems} layout="poster" disableArtOverride={false} />
-          <MediaRow title={contentType === 'movie' ? 'Quick Watches · Under 100 Minutes' : tab === 'anime' ? 'Quick Episodes · Around 25 Minutes' : 'Quick Episodes · Around 35 Minutes'} items={quickWatches} layout="poster" disableArtOverride={false} />
-          <MediaRow title="Critically Loved" items={topRated} layout="poster" disableArtOverride={false} />
+          <div className="row-contain">
+            <MediaRow title={`Tonight's Mood · ${mood.title}`} items={moodItems} layout="poster" disableArtOverride={false} />
+          </div>
+          <div className="row-contain">
+            <MediaRow title={`Trending ${tab === 'movies' ? 'Movies' : tab === 'series' ? 'Series' : 'Anime'}`} items={trending} layout="landscape" disableArtOverride={false} />
+          </div>
+          <div className="row-contain">
+            <MediaRow title="Highly Rated, Quietly Loved" items={hiddenGems} layout="poster" disableArtOverride={false} />
+          </div>
+          <div className="row-contain">
+            <MediaRow title={contentType === 'movie' ? 'Quick Watches · Under 100 Minutes' : tab === 'anime' ? 'Quick Episodes · Around 25 Minutes' : 'Quick Episodes · Around 35 Minutes'} items={quickWatches} layout="poster" disableArtOverride={false} />
+          </div>
+          <div className="row-contain">
+            <MediaRow title="Critically Loved" items={topRated} layout="poster" disableArtOverride={false} />
+          </div>
         </>
       )}
     </div>

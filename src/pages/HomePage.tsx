@@ -7,20 +7,9 @@ import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
-  getSimklWatchlist,
-  getSimklWatching,
-  getSimklCompleted,
-  getSimklAnimeWatchlist,
-  getSimklMoviesWatchlist,
-  getSimklMoviesWatching,
-  getSimklMoviesCompleted,
-  getSimklShowsWatchlist,
-  getSimklShowsWatching,
-  getSimklShowsCompleted,
-  getSimklAnimeWatching,
-  getSimklAnimeCompleted,
-  getSimklOnHold,
-  getSimklDropped,
+  getSimklWatchStatusList,
+  getSimklDerivedCatalogItems,
+  isSimklDerivedCatalogId,
 } from '../services/simkl/lists'
 import { getSimklWatchedMovies } from '../services/simkl/history'
 import type { SearchResult, HomeRowConfig } from '../types'
@@ -169,27 +158,11 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     const load = async () => {
       try {
         const fetcher = async () => {
-          let raw: SimklWatchlistItem[] = []
-          switch (row.providerListId) {
-            case 'watching':          raw = await getSimklWatching(); break
-            case 'completed':         raw = await getSimklCompleted(); break
-            case 'anime':             raw = await getSimklAnimeWatchlist(); break
-            case 'history':           raw = await getSimklWatchedMovies(); break
-            case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
-            case 'movies-watching':   raw = await getSimklMoviesWatching(); break
-            case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
-            case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
-            case 'shows-watching':    raw = await getSimklShowsWatching(); break
-            case 'shows-completed':   raw = await getSimklShowsCompleted(); break
-            case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
-            case 'anime-watching':    raw = await getSimklAnimeWatching(); break
-            case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
-            case 'on-hold':           raw = await getSimklOnHold(); break
-            case 'dropped':           raw = await getSimklDropped(); break
-            case 'watchlist':
-            default:                  raw = await getSimklWatchlist(); break
-          }
-          const canonicalized = await canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
+          const listId = row.providerListId || 'watchlist'
+          const rawResults = isSimklDerivedCatalogId(listId)
+            ? await getSimklDerivedCatalogItems(listId)
+            : (listId === 'history' ? await getSimklWatchedMovies() : await getSimklWatchStatusList(listId)).map(simklItemToSearchResult)
+          const canonicalized = await canonicalizeCatalogItemsWithTvdb(rawResults)
           const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
           const results = await enrichSearchResultsWithAppMetadata(canonicalized)
           if (row.sortBy === 'alphabetical') {
@@ -259,6 +232,8 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
       items={items}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      forceShowAll={items.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
     />
@@ -319,12 +294,13 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      forceShowAll={items.length >= 20}
     />
   )
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `home:addon:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
+  const cacheKey = `home:addon:v2:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
   const memCache = useHomeCatalogCache()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
@@ -360,7 +336,20 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     const load = async () => {
       try {
         const fetcher = async () => {
-          return getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+          const firstPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+          if (firstPage.length < 20 || row.catalogExtra?.skip) return firstPage
+
+          const secondPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, {
+            ...(row.catalogExtra || {}),
+            skip: '20',
+          }, row.addonId)
+
+          const seen = new Set<string>()
+          return [...firstPage, ...secondPage].filter((item) => {
+            if (seen.has(item.id)) return false
+            seen.add(item.id)
+            return true
+          })
         }
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
@@ -432,6 +421,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
     />
@@ -531,6 +521,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
     />
@@ -558,28 +549,12 @@ function HeroCatalogSection({ row, onBackdropChange }: { row: HomeRowConfig; onB
 
         const fetcher = async (): Promise<SearchResult[]> => {
           if (row.sourceType === 'simkl') {
-            let raw: SimklWatchlistItem[] = []
-            switch (row.providerListId) {
-              case 'watching':          raw = await getSimklWatching(); break
-              case 'completed':         raw = await getSimklCompleted(); break
-              case 'anime':             raw = await getSimklAnimeWatchlist(); break
-              case 'history':           raw = await getSimklWatchedMovies(); break
-              case 'movies-watchlist':  raw = await getSimklMoviesWatchlist(); break
-              case 'movies-watching':   raw = await getSimklMoviesWatching(); break
-              case 'movies-completed':  raw = await getSimklMoviesCompleted(); break
-              case 'shows-watchlist':   raw = await getSimklShowsWatchlist(); break
-              case 'shows-watching':    raw = await getSimklShowsWatching(); break
-              case 'shows-completed':   raw = await getSimklShowsCompleted(); break
-              case 'anime-watchlist':   raw = await getSimklAnimeWatchlist(); break
-              case 'anime-watching':    raw = await getSimklAnimeWatching(); break
-              case 'anime-completed':   raw = await getSimklAnimeCompleted(); break
-              case 'on-hold':           raw = await getSimklOnHold(); break
-              case 'dropped':           raw = await getSimklDropped(); break
-              case 'watchlist':
-              default:                  raw = await getSimklWatchlist(); break
-            }
-            return canonicalizeCatalogItemsWithTvdb(raw.map(simklItemToSearchResult))
-          } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+            const listId = row.providerListId || 'watchlist'
+            const rawResults = isSimklDerivedCatalogId(listId)
+              ? await getSimklDerivedCatalogItems(listId)
+              : (listId === 'history' ? await getSimklWatchedMovies() : await getSimklWatchStatusList(listId)).map(simklItemToSearchResult)
+            return canonicalizeCatalogItemsWithTvdb(rawResults)
+          } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
             return getProviderListItems(row)
           } else if (row.sourceType === 'discover') {
             if (row.discoverConfig) {
@@ -777,7 +752,7 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
     return <ContinueWatchingRow key={row.id} row={row} />;
   } else if (row.sourceType === 'simkl') {
     return <SimklRow key={row.id} row={row} />;
-  } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+  } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
     return <ProviderListRow key={row.id} row={row} />;
   } else if (row.sourceType === 'discover') {
     return <DiscoverRow key={row.id} row={row} />;
@@ -787,52 +762,70 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
   return null
 }
 
-const STAGGER_BATCH = 3;
-const STAGGER_DELAY = 80;
+const INITIAL_VISIBLE = 3;
 
-function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void }) {
-  const [visibleCount, setVisibleCount] = useState(STAGGER_BATCH)
-
-  useEffect(() => {
-    if (visibleCount >= rows.length) return
-    const timer = setTimeout(() => {
-      setVisibleCount((c) => Math.min(c + STAGGER_BATCH, rows.length))
-    }, STAGGER_DELAY)
-    return () => clearTimeout(timer)
-  }, [visibleCount, rows.length])
+function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean }) {
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const [activated, setActivated] = useState(eager ?? false)
 
   useEffect(() => {
-    setVisibleCount(STAGGER_BATCH)
-  }, [rows.length])
+    if (activated) return
+    const el = sentinelRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setActivated(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '400px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [activated])
+
+  if (!activated) {
+    return (
+      <div ref={sentinelRef} className="row-contain">
+        <MediaRowSkeleton
+          title={row.title}
+          layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
+        />
+      </div>
+    )
+  }
+
+  const element = buildRowElement(row)
+  if (!element) return null
 
   return (
+    <div className="row-contain">
+      <ErrorBoundary key={row.id} label={row.title}>
+        <SortableRowContainer
+          row={row}
+          isEditing={isEditing}
+          onRemove={onRemove}
+        >
+          {element}
+        </SortableRowContainer>
+      </ErrorBoundary>
+    </div>
+  )
+}
+
+function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void }) {
+  return (
     <div className="space-y-4">
-      {rows.slice(0, visibleCount).map((row) => {
-        const element = buildRowElement(row)
-        if (!element) return null
-        return (
-          <ErrorBoundary key={row.id} label={row.title}>
-            <SortableRowContainer
-              row={row}
-              isEditing={isEditing}
-              onRemove={onRemove}
-            >
-              {element}
-            </SortableRowContainer>
-          </ErrorBoundary>
-        )
-      })}
-      {visibleCount < rows.length && (
-        <div className="space-y-4">
-          {rows.slice(visibleCount).map((row) => (
-            <MediaRowSkeleton
-              key={row.id}
-              title={row.title}
-              layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
-            />
-          ))}
-        </div>
-      )}
+      {rows.map((row, idx) => (
+        <LazyRow
+          key={row.id}
+          row={row}
+          isEditing={isEditing}
+          onRemove={onRemove}
+          eager={idx < INITIAL_VISIBLE}
+        />
+      ))}
     </div>
   )
 }

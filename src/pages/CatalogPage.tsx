@@ -22,6 +22,7 @@ export default function CatalogPage() {
   const catalogGetCache = useCatalogStore((s) => s.getCache)
   const pageRef = useRef(0)
   const restoredRef = useRef(false)
+  const loadMoreRef = useRef<(() => void) | null>(null)
 
   const region = useAppStore((s) => s.discoveryRegion)
   const minRating = useAppStore((s) => s.discoveryMinRating)
@@ -106,9 +107,10 @@ export default function CatalogPage() {
   useEffect(() => {
     if (!rowId) return
     restoredRef.current = false
+    loadMoreRef.current = null
 
     const cached = catalogGetCache(rowId)
-    if (cached && cached.items.length > 0) {
+    if (cached && cached.items.length > 0 && !cached.hasMore) {
       setItems(cached.items)
       setHasMore(cached.hasMore)
       pageRef.current = cached.page
@@ -199,6 +201,7 @@ export default function CatalogPage() {
         if (distanceFromBottom < 900) loadNextPage(false)
       }
 
+      loadMoreRef.current = () => loadNextPage(false)
       loadNextPage(true).then(() => {
         if (!cancelled) window.setTimeout(onScroll, 0)
       })
@@ -206,11 +209,12 @@ export default function CatalogPage() {
 
       return () => {
         cancelled = true
+        loadMoreRef.current = null
         scrollRoot.removeEventListener('scroll', onScroll)
       }
     }
 
-    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'anilist') {
+    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
       let cancelled = false
       getProviderListItems(row)
         .then((results) => {
@@ -302,6 +306,7 @@ export default function CatalogPage() {
       if (distanceFromBottom < 900) loadNextPage(false)
     }
 
+    loadMoreRef.current = () => loadNextPage(false)
     loadNextPage(true).then(() => {
       if (!cancelled) window.setTimeout(onScroll, 0)
     })
@@ -309,6 +314,7 @@ export default function CatalogPage() {
 
     return () => {
       cancelled = true
+      loadMoreRef.current = null
       scrollRoot.removeEventListener('scroll', onScroll)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,7 +336,7 @@ export default function CatalogPage() {
         </div>
       ) : (
         <>
-          <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})` }}>
+          <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
             {items.map((item) => (
               <MediaCard key={item.id} item={item} disableArtOverride={true} />
             ))}
@@ -338,6 +344,17 @@ export default function CatalogPage() {
           {loadingMore && (
             <div className="flex justify-center py-10">
               <div className="w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+          {hasMore && !loadingMore && (
+            <div className="flex justify-center py-10">
+              <button
+                type="button"
+                onClick={() => loadMoreRef.current?.()}
+                className="rounded-full border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/10"
+              >
+                Load more
+              </button>
             </div>
           )}
           {!hasMore && items.length > 0 && (

@@ -3,13 +3,14 @@ import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatch
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
+import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
 import { getAniListProgress, getAniListTrackedProgress, hasAnyAniListExactEpisodeMarks, isAniListEpisodeMarkedExact, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
 
-export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 export interface WatchedLookupItem {
   id: string
@@ -32,6 +33,7 @@ export interface WatchedLookupItem {
 interface TraktCacheData { movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
 interface SimklCacheData { items: SimklWatchlistItem[] }
 interface PmdbCacheData { items: PMDBWatchedItem[] }
+interface MdblistCacheData { items: MdblistWatchedItem[] }
 
 export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
   return {
@@ -97,6 +99,7 @@ export async function isWatchedFromProviders(
         if (source === 'trakt') return isTraktWatched(item)
         if (source === 'simkl') return isSimklWatched(item)
         if (source === 'pmdb') return isPmdbWatched(item)
+        if (source === 'mdblist') return isMdblistWatched(item)
         if (source === 'anilist') return isAniListWatched(item)
         return false
       })
@@ -130,10 +133,11 @@ export async function batchIsWatchedFromProviders(
   const providerSources = sources.filter((s) => s !== 'local')
   if (providerSources.length === 0) return result
 
-  const [traktData, simklData, pmdbData] = await Promise.all([
+  const [traktData, simklData, pmdbData, mdblistData] = await Promise.all([
     providerSources.includes('trakt') ? getTraktCache().catch(() => ({ movies: [], shows: [] } as TraktCacheData)) : null,
     providerSources.includes('simkl') ? getSimklCache().catch(() => ({ items: [] } as SimklCacheData)) : null,
     providerSources.includes('pmdb') ? getPmdbCache().catch(() => ({ items: [] } as PmdbCacheData)) : null,
+    providerSources.includes('mdblist') ? getMdblistCache().catch(() => ({ items: [] } as MdblistCacheData)) : null,
   ])
 
   const checkPromises = remaining.map(async (item) => {
@@ -145,6 +149,9 @@ export async function batchIsWatchedFromProviders(
     }
     if (pmdbData) {
       if (await isPmdbWatched(item).catch(() => false)) { result.add(toKey(item)); return }
+    }
+    if (mdblistData) {
+      if (await isMdblistWatched(item).catch(() => false)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('anilist')) {
       if (await isAniListWatched(item).catch(() => false)) { result.add(toKey(item)); return }
@@ -473,6 +480,27 @@ async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
   }
 }
 
+async function isMdblistWatched(item: WatchedLookupItem): Promise<boolean> {
+  try {
+    const data = await getMdblistCache()
+    return data.items.some((entry) => {
+      if (item.type === 'movie' && entry.media_type !== 'movie') return false
+      if (item.type === 'series' && entry.media_type !== 'show') return false
+      const matches =
+        sameString(item.imdbId, entry.imdb_id) ||
+        sameNumber(item.tmdbId, entry.tmdb_id) ||
+        sameNumber(item.tvdbId, entry.tvdb_id)
+      if (!matches) return false
+      if (item.type === 'movie') return true
+      if (item.season == null) return false
+      if (item.episode == null) return true
+      return entry.season === item.season && entry.episode === item.episode
+    })
+  } catch (_) {
+    return false
+  }
+}
+
 async function getTraktCache(): Promise<TraktCacheData> {
   return cachedFetch<TraktCacheData>('watched:trakt', async () => {
     const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
@@ -490,6 +518,13 @@ async function getSimklCache(): Promise<SimklCacheData> {
 async function getPmdbCache(): Promise<PmdbCacheData> {
   return cachedFetch<PmdbCacheData>('watched:pmdb', async () => {
     const items = await getPMDBWatched()
+    return { items }
+  }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+}
+
+async function getMdblistCache(): Promise<MdblistCacheData> {
+  return cachedFetch<MdblistCacheData>('watched:mdblist', async () => {
+    const items = await getMdblistWatched()
     return { items }
   }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
 }

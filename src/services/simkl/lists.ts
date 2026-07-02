@@ -3,9 +3,10 @@
  */
 
 import { simklRequest, MOCK_WATCHLIST } from './client'
-import { isSimklMockMode } from './auth'
+import { getSimklClientId, isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
 import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklWatchStatus } from './types'
+import type { SearchResult } from '../../types'
 
 const LS_WATCHLIST_CACHE = 'simkl_watchlist_cache'
 const LS_WATCHING_CACHE  = 'simkl_watching_cache'
@@ -143,6 +144,280 @@ export async function getSimklDropped(): Promise<SimklWatchlistItem[]> {
     const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/dropped?extended=full')
     return toWatchlistItems(data ?? [])
   } catch (_) { return [] }
+}
+
+export async function getSimklWatchStatusList(listId: string): Promise<SimklWatchlistItem[]> {
+  switch (listId) {
+    case 'watching':          return getSimklWatching()
+    case 'plantowatch':
+    case 'watchlist':         return getSimklWatchlist()
+    case 'completed':         return getSimklCompleted()
+    case 'hold':
+    case 'on-hold':           return getSimklOnHold()
+    case 'dropped':           return getSimklDropped()
+    case 'movies-watchlist':  return getSimklTypedStatusList('movies', 'plantowatch')
+    case 'movies-watching':   return getSimklTypedStatusList('movies', 'watching')
+    case 'movies-completed':  return getSimklTypedStatusList('movies', 'completed')
+    case 'movies-on-hold':    return getSimklTypedStatusList('movies', 'hold')
+    case 'movies-dropped':    return getSimklTypedStatusList('movies', 'dropped')
+    case 'shows-watchlist':   return getSimklTypedStatusList('shows', 'plantowatch')
+    case 'shows-watching':    return getSimklTypedStatusList('shows', 'watching')
+    case 'shows-completed':   return getSimklTypedStatusList('shows', 'completed')
+    case 'shows-on-hold':     return getSimklTypedStatusList('shows', 'hold')
+    case 'shows-dropped':     return getSimklTypedStatusList('shows', 'dropped')
+    case 'anime-watchlist':   return getSimklTypedStatusList('anime', 'plantowatch')
+    case 'anime-watching':    return getSimklTypedStatusList('anime', 'watching')
+    case 'anime-completed':   return getSimklTypedStatusList('anime', 'completed')
+    case 'anime-on-hold':     return getSimklTypedStatusList('anime', 'hold')
+    case 'anime-dropped':     return getSimklTypedStatusList('anime', 'dropped')
+    default:                  return getSimklWatchlist()
+  }
+}
+
+const SIMKL_DERIVED_CATALOG_IDS = new Set([
+  'trending-movies',
+  'trending-shows',
+  'trending-anime',
+  'anime-airing-soon',
+  'anime-airing-soon-earlier',
+  'dvd-releases',
+  'hidden-gems-movies',
+  'hidden-gems-shows',
+  'hidden-gems-anime',
+  'binge-worthy-shows',
+  'binge-worthy-anime',
+  'quick-watches',
+  'box-office-hits',
+])
+
+export function isSimklDerivedCatalogId(listId?: string): boolean {
+  return !!listId && SIMKL_DERIVED_CATALOG_IDS.has(listId)
+}
+
+export async function getSimklDerivedCatalogItems(listId: string): Promise<SearchResult[]> {
+  let items: SimklDataItem[] = []
+  let type: SimklDataType = 'movies'
+
+  switch (listId) {
+    case 'trending-movies':
+      type = 'movies'
+      items = await fetchSimklDataFile('discover/trending/movies/today_100.json')
+      break
+    case 'trending-shows':
+      type = 'tv'
+      items = await fetchSimklDataFile('discover/trending/tv/today_100.json')
+      break
+    case 'trending-anime':
+      type = 'anime'
+      items = await fetchSimklDataFile('discover/trending/anime/today_100.json')
+      break
+    case 'anime-airing-soon':
+      type = 'anime'
+      items = (await fetchSimklDataFile('calendar/anime.json')).filter((item) => isFutureDate(item.date))
+      break
+    case 'anime-airing-soon-earlier':
+      type = 'anime'
+      items = (await fetchSimklDataFile('calendar/anime.json')).filter((item) => !isFutureDate(item.date))
+      break
+    case 'dvd-releases':
+      type = 'movies'
+      items = await fetchSimklDataFile('discover/dvd/releases_100.json')
+      break
+    case 'hidden-gems-movies':
+      type = 'movies'
+      items = hiddenGems(await fetchSimklDataFile('discover/trending/movies/today_500.json'))
+      break
+    case 'hidden-gems-shows':
+      type = 'tv'
+      items = hiddenGems(await fetchSimklDataFile('discover/trending/tv/today_500.json'))
+      break
+    case 'hidden-gems-anime':
+      type = 'anime'
+      items = hiddenGems(await fetchSimklDataFile('discover/trending/anime/today_500.json'), 'mal')
+      break
+    case 'binge-worthy-shows':
+      type = 'tv'
+      items = marathonWorthy(await fetchSimklDataFile('discover/trending/tv/today_500.json'))
+      break
+    case 'binge-worthy-anime':
+      type = 'anime'
+      items = marathonWorthy(await fetchSimklDataFile('discover/trending/anime/today_500.json'))
+      break
+    case 'quick-watches':
+      type = 'movies'
+      items = quickWatches(await fetchSimklDataFile('discover/trending/movies/today_500.json'))
+      break
+    case 'box-office-hits':
+      type = 'movies'
+      items = boxOfficeHits(await fetchSimklDataFile('discover/trending/movies/today_500.json'))
+      break
+    default:
+      return []
+  }
+
+  return items.map((item) => simklDataItemToSearchResult(item, type))
+}
+
+async function getSimklTypedStatusList(mediaType: 'movies' | 'shows' | 'anime', status: SimklWatchStatus | 'hold'): Promise<SimklWatchlistItem[]> {
+  if (isSimklMockMode()) {
+    const expectedType = mediaType === 'movies' ? 'movie' : mediaType === 'shows' ? 'show' : 'anime'
+    return toWatchlistItems(MOCK_WATCHLIST.filter((item: any) => {
+      const rawType = item.movie ? 'movie' : item.show ? 'show' : 'anime'
+      return rawType === expectedType && item.status === status
+    }))
+  }
+
+  try {
+    const data = await simklRequest<SimklApiItem[]>(`/sync/all-items/${mediaType}/${status}?extended=full`)
+    return toWatchlistItems(data ?? [])
+  } catch (_) {
+    return []
+  }
+}
+
+type SimklDataType = 'movies' | 'tv' | 'anime'
+
+interface SimklDataItem {
+  title?: string
+  poster?: string | null
+  fanart?: string | null
+  url?: string
+  ids?: {
+    simkl?: number | string
+    simkl_id?: number | string
+    imdb?: string
+    tmdb?: number | string | null
+    tvdb?: number | string | null
+    mal?: number | string | null
+    anilist?: number | string | null
+  }
+  release_date?: string
+  date?: string
+  rank?: number
+  ratings?: Record<string, { rating?: number; votes?: number } | undefined>
+  runtime?: string
+  status?: string
+  genres?: string[]
+  overview?: string
+  metadata?: string
+  total_episodes?: number
+}
+
+async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
+  const clientId = getSimklClientId()
+  const params = new URLSearchParams({
+    client_id: clientId || 'aurales',
+    'app-name': 'Aurales',
+    'app-version': '0.1.0',
+  })
+  const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
+    headers: { 'User-Agent': 'Aurales/0.1.0' },
+  })
+  if (!res.ok) return []
+  const data = await res.json()
+  return Array.isArray(data) ? data : []
+}
+
+function simklDataItemToSearchResult(item: SimklDataItem, type: SimklDataType): SearchResult {
+  const ids = item.ids || {}
+  const tmdbId = toNumber(ids.tmdb)
+  const tvdbId = toNumber(ids.tvdb)
+  const malId = toNumber(ids.mal)
+  const anilistId = toNumber(ids.anilist)
+  const simklId = toNumber(ids.simkl_id ?? ids.simkl)
+
+  return {
+    id: ids.imdb || (tmdbId ? `tmdb-${tmdbId}` : tvdbId ? `tvdb-${tvdbId}` : simklId ? `simkl-${simklId}` : item.title || crypto.randomUUID()),
+    title: item.title || 'Untitled',
+    type: type === 'movies' ? 'movie' : 'series',
+    year: parseYear(item.release_date || item.date),
+    poster: simklImageUrl('posters', item.poster),
+    backdrop: simklImageUrl('fanart', item.fanart),
+    overview: item.overview,
+    rating: item.ratings?.simkl?.rating ?? item.ratings?.imdb?.rating ?? item.ratings?.mal?.rating,
+    genres: item.genres,
+    provider: 'simkl',
+    imdbId: ids.imdb,
+    tmdbId,
+    tvdbId,
+    malId,
+    anilistId,
+    simklId,
+  }
+}
+
+function hiddenGems(items: SimklDataItem[], ratingSource = 'simkl'): SimklDataItem[] {
+  return [...items]
+    .filter((item) => (item.rank || 0) > 2000 && rating(item, ratingSource) >= 7.5 && votes(item, ratingSource) >= 500)
+    .sort((a, b) => rating(b, ratingSource) - rating(a, ratingSource))
+}
+
+function marathonWorthy(items: SimklDataItem[]): SimklDataItem[] {
+  return [...items]
+    .filter((item) => item.status === 'ended' && (item.total_episodes || 0) >= 20 && (item.total_episodes || 0) <= 100)
+    .sort((a, b) => rating(b) - rating(a))
+}
+
+function quickWatches(items: SimklDataItem[]): SimklDataItem[] {
+  return [...items]
+    .filter((item) => runtimeMinutes(item.runtime) > 0 && runtimeMinutes(item.runtime) <= 90)
+    .sort((a, b) => rating(b) - rating(a))
+}
+
+function boxOfficeHits(items: SimklDataItem[]): SimklDataItem[] {
+  return [...items]
+    .filter((item) => boxOfficeValue(item.metadata) > 0)
+    .sort((a, b) => boxOfficeValue(b.metadata) - boxOfficeValue(a.metadata))
+}
+
+function rating(item: SimklDataItem, source = 'simkl'): number {
+  return item.ratings?.[source]?.rating ?? item.ratings?.simkl?.rating ?? 0
+}
+
+function votes(item: SimklDataItem, source = 'simkl'): number {
+  return item.ratings?.[source]?.votes ?? item.ratings?.simkl?.votes ?? 0
+}
+
+function runtimeMinutes(runtime?: string): number {
+  if (!runtime) return 0
+  const hours = Number(runtime.match(/(\d+)\s*h/)?.[1] || 0)
+  const minutes = Number(runtime.match(/(\d+)\s*m/)?.[1] || 0)
+  return hours * 60 + minutes
+}
+
+function boxOfficeValue(metadata?: string): number {
+  const match = metadata?.match(/Box office \$([\d.]+)([MBK])/i)
+  if (!match) return 0
+  const value = Number(match[1] || 0)
+  const unit = match[2]?.toUpperCase()
+  if (unit === 'B') return value * 1_000_000_000
+  if (unit === 'M') return value * 1_000_000
+  if (unit === 'K') return value * 1_000
+  return value
+}
+
+function isFutureDate(value?: string): boolean {
+  if (!value) return false
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) && time >= Date.now()
+}
+
+function parseYear(value?: string): number | undefined {
+  const year = value?.match(/\d{4}/)?.[0]
+  return year ? Number(year) : undefined
+}
+
+function toNumber(value: unknown): number | undefined {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+function simklImageUrl(kind: 'posters' | 'fanart', path?: string | null): string | undefined {
+  if (!path) return undefined
+  if (path.startsWith('http')) return path
+  const clean = path.startsWith('/') ? path.slice(1) : path
+  const suffix = kind === 'posters' ? '_m.webp' : '_medium.jpg'
+  return `https://wsrv.nl/?url=https://simkl.in/${kind}/${clean}${suffix}&q=90`
 }
 
 // ─── Mutations ─────────────────────────────────────────────────────────────────

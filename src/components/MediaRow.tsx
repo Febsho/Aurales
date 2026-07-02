@@ -11,13 +11,14 @@ interface MediaRowProps {
   items: SearchResult[]
   layout?: 'poster' | 'landscape' | 'list'
   showAllPath?: string
+  forceShowAll?: boolean
   disableArtOverride?: boolean
   showRank?: boolean
   headerLeftControls?: React.ReactNode
   headerRightControls?: React.ReactNode
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOverride = true, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = true, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const posterSize = useAppStore((s) => s.posterSize)
@@ -52,7 +53,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
   }
 
   const visibleItems = items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)
-  const shouldShowAll = Boolean(showAllPath && visibleItems.length > CATALOG_PREVIEW_LIMIT)
+  const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > CATALOG_PREVIEW_LIMIT || items.length > CATALOG_PREVIEW_LIMIT))
   const rowItems = shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems
 
   if (visibleItems.length === 0) return null
@@ -111,7 +112,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, disableArtOver
       </div>
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none"
+        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none scroll-gpu"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {rowItems.map((item, idx) => (
