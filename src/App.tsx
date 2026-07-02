@@ -1,11 +1,8 @@
 import { useEffect, lazy, Suspense } from 'react'
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
+import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
-import { syncAddonsFromStore } from './services/addons'
-import { setDiscordActivity, clearDiscordActivity } from './services/discord'
-import { startWatchedCacheSync, stopWatchedCacheSync } from './services/watchedCacheSync'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -19,6 +16,34 @@ const CollectionsPage = lazy(() => import('./pages/CollectionsPage'))
 const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 const PersonPage = lazy(() => import('./pages/PersonPage'))
 
+type IdleWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  cancelIdleCallback?: (handle: number) => void
+}
+
+function scheduleIdleWork(callback: () => void, timeout = 1500) {
+  let cancelled = false
+  const idleWindow = window as IdleWindow
+
+  const run = () => {
+    if (!cancelled) callback()
+  }
+
+  if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+    const idleId = idleWindow.requestIdleCallback(run, { timeout })
+    return () => {
+      cancelled = true
+      idleWindow.cancelIdleCallback?.(idleId)
+    }
+  }
+
+  const timeoutId = window.setTimeout(run, timeout)
+  return () => {
+    cancelled = true
+    window.clearTimeout(timeoutId)
+  }
+}
+
 export default function App() {
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
@@ -30,31 +55,72 @@ export default function App() {
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
 
-  const navigate = useNavigate()
-  const location = useLocation()
-
   useEffect(() => {
-    syncAddonsFromStore(addons)
+    let cancelled = false
+    const cancelIdle = scheduleIdleWork(() => {
+      import('./services/addons')
+        .then(({ syncAddonsFromStore }) => {
+          if (!cancelled) syncAddonsFromStore(addons)
+        })
+        .catch(() => {})
+    }, 500)
+
+    return () => {
+      cancelled = true
+      cancelIdle()
+    }
   }, [addons])
 
   useEffect(() => {
-    startWatchedCacheSync(watchedCheckmarkSources)
-    return () => stopWatchedCacheSync()
+    let cancelled = false
+    let stopSync: (() => void) | undefined
+
+    const cancelIdle = scheduleIdleWork(() => {
+      import('./services/watchedCacheSync')
+        .then((watchedCacheSync) => {
+          if (cancelled) return
+          watchedCacheSync.startWatchedCacheSync(watchedCheckmarkSources)
+          stopSync = watchedCacheSync.stopWatchedCacheSync
+        })
+        .catch(() => {})
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      cancelIdle()
+      stopSync?.()
+    }
   }, [watchedCheckmarkSources])
 
   // Discord idle presence — set "Browsing" when no player is active
   useEffect(() => {
-    if (!discordRichPresence) {
-      clearDiscordActivity().catch(() => {})
-      return
+    let cancelled = false
+    let clearActivity: (() => Promise<void>) | undefined
+
+    const cancelIdle = scheduleIdleWork(() => {
+      import('./services/discord')
+        .then(({ clearDiscordActivity, setDiscordActivity }) => {
+          clearActivity = clearDiscordActivity
+          if (cancelled) return
+          if (!discordRichPresence) {
+            clearDiscordActivity().catch(() => {})
+            return
+          }
+          setDiscordActivity({
+            details: 'Browsing',
+            largeImage: 'aurales_logo',
+            largeText: 'Aurales',
+            activityType: 3,
+          }).catch(() => {})
+        })
+        .catch(() => {})
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      cancelIdle()
+      clearActivity?.().catch(() => {})
     }
-    setDiscordActivity({
-      details: 'Browsing',
-      largeImage: 'aurales_logo',
-      largeText: 'Aurales',
-      activityType: 3,
-    }).catch(() => {})
-    return () => { clearDiscordActivity().catch(() => {}) }
   }, [discordRichPresence])
 
   useEffect(() => {
@@ -67,24 +133,21 @@ export default function App() {
     document.documentElement.style.setProperty('--sub-color', subtitleColor)
   }, [subtitleFontSize, subtitleBgOpacity, subtitleColor])
 
-  useEffect(() => {
-    if (location.pathname === '/' && defaultStartPage !== 'home') {
-      if (defaultStartPage === 'collections') {
-        navigate('/collections', { replace: true })
-      } else if (defaultStartPage === 'discover') {
-        navigate('/discover', { replace: true })
-      } else if (defaultStartPage === 'search') {
-        navigate('/search', { replace: true })
-      }
-    }
-  }, [location.pathname, defaultStartPage, navigate])
+  const startPagePath =
+    defaultStartPage === 'collections'
+      ? '/collections'
+      : defaultStartPage === 'discover'
+        ? '/discover'
+        : defaultStartPage === 'search'
+          ? '/search'
+          : '/'
 
   return (
     <ErrorBoundary label="App">
       <Suspense fallback={<div className="flex items-center justify-center h-screen bg-black" />}>
         <Routes>
           <Route element={<Layout />}>
-            <Route path="/" element={<HomePage />} />
+            <Route path="/" element={startPagePath === '/' ? <HomePage /> : <Navigate to={startPagePath} replace />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/movie/:id" element={<MovieDetailPage />} />
             <Route path="/series/:id" element={<SeriesDetailPage />} />

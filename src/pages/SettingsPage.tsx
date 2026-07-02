@@ -22,15 +22,9 @@ import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
+import { checkMdblistConnection, type MdblistUser } from '../services/mdblist'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
-import {
-  loadStreamRegexFilterConfig,
-  resetStreamRegexFilterConfig,
-  saveStreamRegexFilterConfig,
-  validateStreamRegexFilterConfig,
-  cssColorFromFilterColor,
-} from '../services/streamRegexFilters'
 import type { TraktDeviceCode } from '../types'
 import NativeMpvPlayer from '../components/NativeMpvPlayer'
 import { cacheStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
@@ -350,25 +344,29 @@ function AppUpdateSection() {
 
 function CacheManagementSection() {
   const [stats, setStats] = useState<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> } | null>(null)
+  const [cacheMessage, setCacheMessage] = useState('')
 
   useEffect(() => { cacheStats().then(setStats) }, [])
 
   const handleClearCategory = async (category: string) => {
     const cleared = await cacheClearCategory(category)
-    alert(`Cleared ${cleared} entries from ${category}`)
+    setCacheMessage(`Cleared ${cleared} entries from ${categoryLabels[category] || category}`)
     cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
   }
 
   const handleClearExpired = async () => {
     const cleared = await cacheClearExpired()
-    alert(`Cleared ${cleared} expired entries`)
+    setCacheMessage(`Cleared ${cleared} expired entries`)
     cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
   }
 
   const handleClearAll = async () => {
     const cleared = await cacheClearAll()
-    alert(`Cleared ${cleared} total entries`)
+    setCacheMessage(`Cleared ${cleared} total entries`)
     cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
   }
 
   const categoryLabels: Record<string, string> = {
@@ -389,6 +387,11 @@ function CacheManagementSection() {
 
   return (
     <SettingSection title="Performance & Cache" description="SQLite-backed cache for instant page loads.">
+      {cacheMessage && (
+        <div className="mx-6 mt-4 px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl">
+          <p className="text-xs text-accent font-semibold">{cacheMessage}</p>
+        </div>
+      )}
       {stats && (
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
@@ -433,8 +436,8 @@ function AnimeIdMappingsSection() {
   useEffect(() => { refresh() }, [])
 
   return (
-    <SettingSection title="Anime ID Mappings" description="Local anime mapping data used to connect anime across AniList, MAL, TMDB, Trakt, and Simkl.">
-      <SettingRow label="Anime-list index entries" description="Number of Fribb anime-list mapping entries stored in the browser cache.">
+    <SettingSection>
+      <SettingRow label="Anime-list index entries" description="Fribb anime-list mapping entries stored in browser cache.">
         <div className="flex items-center gap-3">
           <span className="text-sm font-bold text-white tabular-nums">
             {animeListCount == null ? 'Loading...' : animeListCount.toLocaleString()}
@@ -447,7 +450,7 @@ function AnimeIdMappingsSection() {
           </button>
         </div>
       </SettingRow>
-      <SettingRow label="Anime lookup cache entries" description="SQLite cached lookup results from IDs.moe, anime-api, Jikan, and related anime mapping calls. This can be 0 until a fallback lookup is needed.">
+      <SettingRow label="Anime lookup cache" description="Cached results from anime ID lookup services.">
         <div className="flex items-center gap-3">
           <span className="text-sm font-bold text-white tabular-nums">
             {lookupCacheCount == null ? 'Loading...' : lookupCacheCount.toLocaleString()}
@@ -553,9 +556,7 @@ function SearchSettingsSection() {
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'subtitles' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
-  const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
-  const [filterSearch, setFilterSearch] = useState('')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
@@ -583,11 +584,12 @@ export default function SettingsPage() {
   const [stremioLoading, setStremioLoading] = useState(false)
   const [stremioError, setStremioError] = useState('')
   const [stremioAuth, setStremioAuth] = useState(getStremioAuth)
-  const [streamRegexJson, setStreamRegexJson] = useState(() => JSON.stringify(loadStreamRegexFilterConfig(), null, 2))
-  const [streamRegexMessage, setStreamRegexMessage] = useState('')
+  const [backdropCacheMessage, setBackdropCacheMessage] = useState('')
 
   const [pmdbConnStatus, setPmdbConnStatus] = useState<PMDBConnectionStatus | null>(null)
   const [pmdbConnChecking, setPmdbConnChecking] = useState(false)
+  const [mdblistConnStatus, setMdblistConnStatus] = useState<{ connected: boolean; user?: MdblistUser; error?: string } | null>(null)
+  const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
@@ -598,6 +600,14 @@ export default function SettingsPage() {
     const status = await checkPMDBConnection()
     setPmdbConnStatus(status)
     setPmdbConnChecking(false)
+  }
+
+  const testMdblistConnection = async () => {
+    setMdblistConnChecking(true)
+    setMdblistConnStatus(null)
+    const status = await checkMdblistConnection()
+    setMdblistConnStatus(status)
+    setMdblistConnChecking(false)
   }
 
   const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || ''
@@ -900,7 +910,8 @@ export default function SettingsPage() {
       try {
         const data = JSON.parse(event.target?.result as string)
         if (typeof data !== 'object' || data === null) {
-          alert('Invalid backup file format.')
+          setBackdropCacheMessage('Invalid backup file format.')
+          setTimeout(() => setBackdropCacheMessage(''), 3000)
           return
         }
         for (const [key, value] of Object.entries(data)) {
@@ -910,10 +921,10 @@ export default function SettingsPage() {
             localStorage.removeItem(key)
           }
         }
-        alert('Configuration imported successfully! The app will now reload.')
         window.location.reload()
       } catch (err) {
-        alert('Failed to import configuration: ' + (err instanceof Error ? err.message : String(err)))
+        setBackdropCacheMessage('Failed to import: ' + (err instanceof Error ? err.message : String(err)))
+        setTimeout(() => setBackdropCacheMessage(''), 4000)
       }
     }
     reader.readAsText(file)
@@ -928,41 +939,10 @@ export default function SettingsPage() {
         clearedCount++
       }
     }
-    alert(`Backdrop cache cleared! Wiped ${clearedCount} local keys.`)
+    setBackdropCacheMessage(`Cleared ${clearedCount} cached image entries.`)
+    setTimeout(() => setBackdropCacheMessage(''), 3000)
   }
 
-  const handleSaveStreamRegexFilters = () => {
-    try {
-      const parsed = validateStreamRegexFilterConfig(JSON.parse(streamRegexJson))
-      saveStreamRegexFilterConfig(parsed)
-      setStreamRegexJson(JSON.stringify(parsed, null, 2))
-      setStreamRegexMessage(`Saved ${parsed.filters.length} filters in ${parsed.groups.length} groups.`)
-    } catch (e) {
-      setStreamRegexMessage(`Invalid filter JSON: ${e instanceof Error ? e.message : e}`)
-    }
-  }
-
-  const handleResetStreamRegexFilters = () => {
-    const defaults = resetStreamRegexFilterConfig()
-    setStreamRegexJson(JSON.stringify(defaults, null, 2))
-    setStreamRegexMessage('Reset stream regex filters to defaults.')
-  }
-
-  const handleToggleFilter = (filterId: string) => {
-    const nextFilters = filterConfig.filters.map((f) =>
-      f.id === filterId ? { ...f, isEnabled: !f.isEnabled } : f
-    )
-    const nextConfig = { ...filterConfig, filters: nextFilters }
-    setFilterConfig(nextConfig)
-    saveStreamRegexFilterConfig(nextConfig)
-    setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-  }
-
-  const handleResetFilters = () => {
-    const nextConfig = resetStreamRegexFilterConfig()
-    setFilterConfig(nextConfig)
-    setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-  }
 
   const handleAddAddon = async () => {
     if (!addonUrl.trim()) return
@@ -1164,33 +1144,13 @@ export default function SettingsPage() {
           )
         },
         {
-          id: 'languages',
-          label: 'Languages',
-          description: 'Preferred audio and subtitle language auto-selection.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
-            </svg>
-          )
-        },
-        {
           id: 'subtitles',
-          label: 'Subtitles',
-          description: 'Subtitle styling, translation, and display preferences.',
+          label: 'Audio & Subtitles',
+          description: 'Language preferences, subtitle styling, and live translation.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <rect x="2" y="4" width="20" height="16" rx="2.5" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M6 11h6M6 15h10" strokeLinecap="round" />
-            </svg>
-          )
-        },
-        {
-          id: 'filters',
-          label: 'Stream Filters',
-          description: 'Regex pattern matching for stream attribute detection.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v3.059a1.875 1.875 0 01-.5 1.25l-3.937 4.135a3 3 0 00-.813 2.106v2.106a3 3 0 01-.738 1.986l-2.22 2.58a.6.6 0 01-1.052-.4v-6.272a3 3 0 00-.813-2.106L3.92 9.083a1.875 1.875 0 01-.5-1.25V4.774c0-.54.384-1.006.917-1.096A50.06 50.06 0 0112 3z" />
             </svg>
           )
         },
@@ -1588,20 +1548,61 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* MDBList */}
-              <SettingSection title="MDBList Ratings" description="IMDb, Rotten Tomatoes, Metacritic, and more.">
-                <div className="px-6 py-4">
-                  <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
-                  <input
-                    type="password"
-                    value={store.mdblistApiKey}
-                    onChange={(e) => store.setMdblistApiKey(e.target.value)}
-                    placeholder="Enter your MDBList API key"
-                    className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                  />
-                  <p className="text-[11px] text-white/30 mt-1">
-                    API docs:{' '}
-                    <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
-                  </p>
+              <SettingSection title="MDBList" description="Ratings, watchlist, lists, continue watching, watched history, and scrobbling.">
+                <div className="px-6 py-4 space-y-3">
+                  <div>
+                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
+                    <input
+                      type="password"
+                      value={store.mdblistApiKey}
+                      onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }}
+                      placeholder="Enter your MDBList API key"
+                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
+                    />
+                    <p className="text-[11px] text-white/30 mt-1">
+                      Empty key still uses Aurales' built-in MDBList key for ratings only. Account features need your own key. API docs:{' '}
+                      <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={testMdblistConnection}
+                      disabled={!store.mdblistApiKey || mdblistConnChecking}
+                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
+                    >
+                      {mdblistConnChecking ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
+                          Testing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          Test Connection
+                        </>
+                      )}
+                    </button>
+
+                    {mdblistConnStatus && !mdblistConnChecking && (
+                      mdblistConnStatus.connected ? (
+                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          Connected
+                          {mdblistConnStatus.user?.username && <span className="text-white/30 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 text-sm text-red-400">
+                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
+                          </svg>
+                          <span>{mdblistConnStatus.error}</span>
+                        </span>
+                      )
+                    )}
+                  </div>
                 </div>
               </SettingSection>
 
@@ -1965,10 +1966,22 @@ export default function SettingsPage() {
                   <select
                     value={store.discoveryRegion}
                     onChange={(e) => store.setDiscoveryRegion(e.target.value)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
                   >
-                    {['US', 'GB', 'DE', 'FR', 'ES', 'IT', 'CA', 'AU', 'JP', 'KR', 'IN', 'BR'].map((region) => (
-                      <option key={region} value={region}>{region}</option>
+                    {[
+                      { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' }, { code: 'CA', name: 'Canada' },
+                      { code: 'AU', name: 'Australia' }, { code: 'NZ', name: 'New Zealand' },
+                      { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' }, { code: 'ES', name: 'Spain' },
+                      { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' }, { code: 'BE', name: 'Belgium' },
+                      { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' }, { code: 'DK', name: 'Denmark' },
+                      { code: 'FI', name: 'Finland' }, { code: 'PT', name: 'Portugal' }, { code: 'PL', name: 'Poland' },
+                      { code: 'AT', name: 'Austria' }, { code: 'CH', name: 'Switzerland' },
+                      { code: 'JP', name: 'Japan' }, { code: 'KR', name: 'South Korea' }, { code: 'IN', name: 'India' },
+                      { code: 'BR', name: 'Brazil' }, { code: 'MX', name: 'Mexico' }, { code: 'AR', name: 'Argentina' },
+                      { code: 'ZA', name: 'South Africa' }, { code: 'TR', name: 'Turkey' }, { code: 'RU', name: 'Russia' },
+                      { code: 'PH', name: 'Philippines' }, { code: 'TH', name: 'Thailand' },
+                    ].map((region) => (
+                      <option key={region.code} value={region.code}>{region.name}</option>
                     ))}
                   </select>
                 </SettingRow>
@@ -2108,9 +2121,9 @@ export default function SettingsPage() {
                     })}
                   </div>
                 </div>
-                <SettingRow label="Clear all saved frames" description={`${store.savedFramesCount} frames stored.`}>
+                <SettingRow label="Clear all saved frames" description={store.savedFramesCount > 0 ? `${store.savedFramesCount} frames stored.` : 'No frames saved.'}>
                   <button
-                    onClick={() => { store.setSavedFramesCount(0); alert('Cleared all saved frames.') }}
+                    onClick={() => store.setSavedFramesCount(0)}
                     disabled={store.savedFramesCount === 0}
                     className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-white/[0.06]"
                   >
@@ -2126,9 +2139,8 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'metadata' && (
             <>
-              <h3 className="text-sm font-bold text-amber-400/80 mb-3">Metadata Ownership</h3>
-              <SettingSection description="Addons provide streams and catalogs. Aurales resolves and displays clean metadata itself.">
-                <SettingRow label="App-managed metadata" description="Use Aurales providers as the authority for titles, artwork, descriptions, IDs, and media type.">
+              <SettingSection title="Metadata Source" description="Aurales resolves titles, artwork, and descriptions from its own providers instead of using addon metadata.">
+                <SettingRow label="Use Aurales metadata" description="Prefer Aurales providers over addon-supplied titles, artwork, and descriptions.">
                   <SettingToggle checked={store.appManagedMetadata} onChange={store.setAppManagedMetadata} />
                 </SettingRow>
                 <SettingRow label="Use addon metadata fallback" description="Only display addon metadata when app provider lookup fails.">
@@ -2237,7 +2249,6 @@ export default function SettingsPage() {
                     className="px-4 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 text-sm font-semibold rounded-xl transition-all border border-amber-500/20"
                     onClick={async () => {
                       await store.clearAnimeCache()
-                      alert('Anime cache cleared. Re-open any anime to re-fetch metadata.')
                     }}
                   >
                     Clear Cache
@@ -2266,7 +2277,7 @@ export default function SettingsPage() {
                 <div className="px-6 py-4">
                   <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Source</label>
                   <div className="flex gap-1.5 bg-white/[0.03] rounded-xl p-1 border border-white/[0.06]">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => (
+                    {(['local', 'trakt', 'simkl', 'pmdb', 'mdblist', 'anilist'] as const).map((src) => (
                       <button
                         key={src}
                         onClick={() => store.setContinueWatchingSource(src)}
@@ -2278,7 +2289,7 @@ export default function SettingsPage() {
                       >
                         <span className="inline-flex items-center justify-center gap-1.5">
                           <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'anilist' ? 'AniList' : src}
+                          {src === 'pmdb' ? 'PMDB' : src === 'mdblist' ? 'MDBList' : src === 'anilist' ? 'AniList' : src}
                         </span>
                       </button>
                     ))}
@@ -2287,16 +2298,16 @@ export default function SettingsPage() {
                 </div>
 
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
-                  <button
-                    onClick={() => {
-                      const current = store.continueWatchingLimit
-                      const next = current === 5 ? 10 : current === 10 ? 20 : current === 20 ? 50 : 5
-                      store.setContinueWatchingLimit(next)
-                    }}
-                    className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-sm text-white font-semibold cursor-pointer hover:bg-white/[0.08] transition-colors"
+                  <select
+                    value={store.continueWatchingLimit}
+                    onChange={(e) => store.setContinueWatchingLimit(Number(e.target.value))}
+                    className="w-28 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
-                    {store.continueWatchingLimit} items
-                  </button>
+                    <option value={5}>5 items</option>
+                    <option value={10}>10 items</option>
+                    <option value={20}>20 items</option>
+                    <option value={50}>50 items</option>
+                  </select>
                 </SettingRow>
 
                 <div className="px-6 py-4">
@@ -2305,7 +2316,7 @@ export default function SettingsPage() {
                     <p className="text-[12px] text-white/35 mt-0.5">Choose which providers mark movies and episodes as watched.</p>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => {
+                    {(['local', 'trakt', 'simkl', 'pmdb', 'mdblist', 'anilist'] as const).map((src) => {
                       const enabled = store.watchedCheckmarkSources.includes(src)
                       return (
                         <button
@@ -2326,7 +2337,7 @@ export default function SettingsPage() {
                             </svg>
                           )}
                           <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
+                          {src === 'pmdb' ? 'PMDB' : src === 'mdblist' ? 'MDBList' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
                         </button>
                       )
                     })}
@@ -2459,6 +2470,22 @@ export default function SettingsPage() {
                   exportAction: null,
                   clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
                 },
+                {
+                  id: 'mdblist' as const,
+                  label: 'MDBList',
+                  scrobbleKey: 'mdblist',
+                  scrobbleValue: store.scrobbleMdblist,
+                  setScrobble: store.setScrobbleMdblist,
+                  saveResumeValue: store.mdblistSaveResumePosition,
+                  setSaveResume: store.setMdblistSaveResumePosition,
+                  syncFreqValue: store.mdblistSyncFrequency,
+                  setSyncFreq: store.setMdblistSyncFrequency,
+                  syncAction: () => { store.setMdblistLastSyncTime(new Date().toLocaleString()) },
+                  syncLoading: false,
+                  lastSync: store.mdblistLastSyncTime || null,
+                  exportAction: null,
+                  clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
+                },
               ]).map((svc) => (
                 <SettingSection key={svc.id} title={svc.label} description={svc.id === 'local' ? 'Progress stored on this device.' : undefined}>
                   <div className="flex items-center gap-3 px-6 pt-4 pb-2">
@@ -2540,8 +2567,46 @@ export default function SettingsPage() {
           {/* ═══════════════════════════════════════════════
               LANGUAGES TAB
               ═══════════════════════════════════════════════ */}
-          {activeTab === 'languages' && (
+          {/* ═══════════════════════════════════════════════
+              AUDIO & SUBTITLES TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'subtitles' && (
             <>
+              {/* Audio Languages */}
+              <SettingSection title="Audio Languages" description="Auto-switch to the best audio track match. Primary language first.">
+                <div className="px-6 py-4 space-y-4">
+                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
+                    {store.preferredAudio.length === 0 ? (
+                      <span className="text-xs text-white/30 italic">No preferred audio languages. System default will be used.</span>
+                    ) : (
+                      store.preferredAudio.map((code) => {
+                        const lang = APP_LANGUAGES.find((l) => l.code === code)
+                        if (!lang) return null
+                        return (
+                          <span key={code} className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent/15 border border-accent/30 text-accent font-semibold rounded-full text-xs">
+                            <span>{lang.flag} {lang.name}</span>
+                            <button onClick={() => store.setPreferredAudio(store.preferredAudio.filter((c) => c !== code))} className="hover:text-white transition-colors cursor-pointer">x</button>
+                          </span>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                    {APP_LANGUAGES.filter((lang) => !store.preferredAudio.includes(lang.code)).map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => store.setPreferredAudio([...store.preferredAudio, lang.code])}
+                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
+                      >
+                        <span>{lang.flag}</span>
+                        <span>{lang.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </SettingSection>
+
               {/* Subtitle Languages */}
               <SettingSection title="Subtitle Languages" description="Auto-select subtitle tracks on playback. First match wins.">
                 <div className="px-6 py-4 space-y-4">
@@ -2577,48 +2642,6 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* Audio Languages */}
-              <SettingSection title="Audio Languages" description="Auto-switch to the best audio track match. Primary language first.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
-                    {store.preferredAudio.length === 0 ? (
-                      <span className="text-xs text-white/30 italic">No preferred audio languages. System default will be used.</span>
-                    ) : (
-                      store.preferredAudio.map((code) => {
-                        const lang = APP_LANGUAGES.find((l) => l.code === code)
-                        if (!lang) return null
-                        return (
-                          <span key={code} className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent/15 border border-accent/30 text-accent font-semibold rounded-full text-xs">
-                            <span>{lang.flag} {lang.name}</span>
-                            <button onClick={() => store.setPreferredAudio(store.preferredAudio.filter((c) => c !== code))} className="hover:text-white transition-colors cursor-pointer">x</button>
-                          </span>
-                        )
-                      })
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-                    {APP_LANGUAGES.filter((lang) => !store.preferredAudio.includes(lang.code)).map((lang) => (
-                      <button
-                        key={lang.code}
-                        onClick={() => store.setPreferredAudio([...store.preferredAudio, lang.code])}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
-                      >
-                        <span>{lang.flag}</span>
-                        <span>{lang.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </SettingSection>
-            </>
-          )}
-
-          {/* ═══════════════════════════════════════════════
-              SUBTITLES TAB
-              ═══════════════════════════════════════════════ */}
-          {activeTab === 'subtitles' && (
-            <>
               {/* Subtitle Styling */}
               <SettingSection title="Appearance" description="These styles apply to all subtitles including live translation.">
                 <div className="px-6 py-4 space-y-6">
@@ -2757,156 +2780,6 @@ export default function SettingsPage() {
           )}
 
           {/* ═══════════════════════════════════════════════
-              FILTERS TAB
-              ═══════════════════════════════════════════════ */}
-          {activeTab === 'filters' && (
-            <>
-              <div className="flex items-center justify-between gap-4 mb-2 -mt-2">
-                <div className="relative flex-1 max-w-md">
-                  <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                    <circle cx="11" cy="11" r="8" />
-                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <input
-                    type="text"
-                    value={filterSearch}
-                    onChange={(e) => setFilterSearch(e.target.value)}
-                    placeholder="Search filters..."
-                    className="w-full pl-10 pr-4 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/30 focus:outline-none focus:border-accent/50 transition-all"
-                  />
-                </div>
-                <button
-                  onClick={handleResetFilters}
-                  className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white border border-white/[0.08] rounded-xl text-sm font-semibold transition-colors cursor-pointer flex-shrink-0"
-                >
-                  Reset to Defaults
-                </button>
-              </div>
-
-              {filterConfig.groups.map((group) => {
-                const groupFilters = filterConfig.filters.filter(
-                  (f) => f.groupId === group.id &&
-                  (f.name.toLowerCase().includes(filterSearch.toLowerCase()) || f.pattern.toLowerCase().includes(filterSearch.toLowerCase()))
-                )
-                if (groupFilters.length === 0) return null
-
-                const allEnabled = groupFilters.every((f) => f.isEnabled)
-                const toggleAllInGroup = () => {
-                  const targetState = !allEnabled
-                  const nextFilters = filterConfig.filters.map((f) =>
-                    f.groupId === group.id ? { ...f, isEnabled: targetState } : f
-                  )
-                  const nextConfig = { ...filterConfig, filters: nextFilters }
-                  setFilterConfig(nextConfig)
-                  saveStreamRegexFilterConfig(nextConfig)
-                  setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-                }
-
-                // Score group: compact pill grid
-                if (group.id === 'gp') {
-                  return (
-                    <SettingSection key={group.id}>
-                      <div className="px-6 py-4">
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: group.color }} />
-                            <h3 className="text-[15px] font-semibold text-white">{group.name} Filters</h3>
-                          </div>
-                          <button onClick={toggleAllInGroup} className="text-xs text-accent hover:underline font-semibold cursor-pointer">
-                            {allEnabled ? 'Disable All' : 'Enable All'}
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
-                          {groupFilters.map((filter) => {
-                            const filled = filter.tagStyle.includes('filled')
-                            const bordered = filter.tagStyle.includes('bordered')
-                            const bg = filled ? cssColorFromFilterColor(filter.tagColor, 'transparent') : 'transparent'
-                            const border = bordered ? cssColorFromFilterColor(filter.borderColor, group.color) : 'transparent'
-                            const textCol = cssColorFromFilterColor(filter.textColor, '#FFFFFF')
-
-                            return (
-                              <button
-                                key={filter.id}
-                                onClick={() => handleToggleFilter(filter.id)}
-                                className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer ${
-                                  filter.isEnabled
-                                    ? 'bg-accent/10 border-accent/40 text-white'
-                                    : 'bg-white/[0.02] border-white/[0.06] text-white/40 hover:bg-white/[0.04]'
-                                }`}
-                              >
-                                <span
-                                  className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-black leading-none shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] mb-1"
-                                  style={{ backgroundColor: filter.isEnabled ? bg : 'transparent', border: `1px solid ${filter.isEnabled ? border : '#ffffff20'}`, color: filter.isEnabled ? textCol : 'inherit' }}
-                                >
-                                  {filter.name}
-                                </span>
-                                <span className="text-[9px] font-mono opacity-50 truncate max-w-full">{filter.name}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    </SettingSection>
-                  )
-                }
-
-                // Other groups: detailed rows
-                return (
-                  <SettingSection key={group.id}>
-                    <div className="px-6 pt-4 pb-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: group.color }} />
-                          <h3 className="text-[15px] font-semibold text-white">{group.name} Filters</h3>
-                        </div>
-                        <button onClick={toggleAllInGroup} className="text-xs text-accent hover:underline font-semibold cursor-pointer">
-                          {allEnabled ? 'Disable All' : 'Enable All'}
-                        </button>
-                      </div>
-                    </div>
-                    {groupFilters.map((filter) => {
-                      const filled = filter.tagStyle.includes('filled')
-                      const bordered = filter.tagStyle.includes('bordered')
-                      const bg = filled ? cssColorFromFilterColor(filter.tagColor, 'transparent') : 'transparent'
-                      const border = bordered ? cssColorFromFilterColor(filter.borderColor, group.color) : 'transparent'
-                      const textCol = cssColorFromFilterColor(filter.textColor, '#FFFFFF')
-
-                      return (
-                        <div key={filter.id} className="flex items-center justify-between px-6 py-3.5">
-                          <div className="flex items-center gap-4 min-w-0 mr-4">
-                            <SettingToggle checked={filter.isEnabled} onChange={() => handleToggleFilter(filter.id)} />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2.5 flex-wrap">
-                                <span className="text-sm font-semibold text-white">{filter.name}</span>
-                                <span
-                                  className="inline-flex h-6.5 items-center gap-1 rounded-lg px-2 text-[10px] font-black leading-none shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]"
-                                  style={{ backgroundColor: bg, border: `1.5px solid ${border}`, color: textCol }}
-                                >
-                                  {filter.imageURL ? (
-                                    <img src={filter.imageURL} alt="" className="h-3 max-w-[40px] object-contain" />
-                                  ) : (
-                                    <span>{filter.name}</span>
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                            filter.isEnabled ? 'bg-accent/15 text-accent border border-accent/20' : 'bg-white/5 text-white/35 border border-white/5'
-                          }`}>
-                            {filter.isEnabled ? 'Enabled' : 'Disabled'}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </SettingSection>
-                )
-              })}
-            </>
-          )}
-
-          {/* ═══════════════════════════════════════════════
               PLAYER TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'player' && (
@@ -2919,70 +2792,72 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              <SettingSection
-                title="Developer / Player Debug"
-                description="Run mpv through a minimal path with no scrobbling, progress polling, metadata work, custom arguments, or automatic restart."
-              >
-                <SettingRow
-                  label="Isolated Playback Mode"
-                  description="Use this to determine whether freezes originate in mpv/the stream or in Aurales' full player integration."
-                >
-                  <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
-                </SettingRow>
-                <SettingRow label="Isolated hardware decoding" description="Compare auto-safe GPU decoding against software decoding.">
-                  <select
-                    value={store.isolatedPlaybackHwdec}
-                    onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
-                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="auto-safe">Auto-safe</option>
-                    <option value="no">Software only</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
-                  <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
-                </SettingRow>
-                <div className="flex gap-3 px-6 py-4">
-                  <button
-                    onClick={async () => {
-                      const path = await invoke<string | null>('select_local_video_file')
-                      if (!path) return
-                      store.setIsolatedPlaybackMode(true)
-                      setPlayerDebugTest({ url: path, title: 'Local isolation test' })
-                    }}
-                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
-                  >
-                    Test Local File
-                  </button>
-                  <button
-                    onClick={() => {
-                      store.setIsolatedPlaybackMode(true)
-                      setPlayerDebugTest({
-                        url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-                        title: 'Stable HTTP isolation test',
-                      })
-                    }}
-                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
-                  >
-                    Test Direct HTTP
-                  </button>
-                  <button
-                    onClick={async () => {
-                      const logs = await invoke<string[]>('get_player_debug_logs')
-                      await navigator.clipboard.writeText(logs.join('\n'))
-                    }}
-                    className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1]"
-                  >
-                    Copy Player Logs
-                  </button>
-                  <button
-                    onClick={() => invoke('clear_player_debug_logs')}
-                    className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-semibold text-white/65 hover:text-white"
-                  >
-                    Clear Logs
-                  </button>
-                </div>
-              </SettingSection>
+              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
+                <details className="group">
+                  <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[15px] font-semibold text-white">Troubleshooting</h3>
+                      <p className="text-[13px] text-white/40 mt-0.5">Isolated playback mode for diagnosing player issues.</p>
+                    </div>
+                    <svg className="w-4 h-4 text-white/40 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                  </summary>
+                  <div className="divide-y divide-white/[0.04]">
+                    <SettingRow
+                      label="Isolated Playback Mode"
+                      description="Runs mpv without scrobbling, progress polling, or metadata to isolate player issues."
+                    >
+                      <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
+                    </SettingRow>
+                    <SettingRow label="Isolated hardware decoding" description="Compare GPU decoding against software decoding.">
+                      <select
+                        value={store.isolatedPlaybackHwdec}
+                        onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
+                        className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                      >
+                        <option value="auto-safe">Auto-safe</option>
+                        <option value="no">Software only</option>
+                      </select>
+                    </SettingRow>
+                    <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
+                      <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
+                    </SettingRow>
+                    <div className="flex flex-wrap gap-3 px-6 py-4">
+                      <button
+                        onClick={async () => {
+                          const path = await invoke<string | null>('select_local_video_file')
+                          if (!path) return
+                          store.setIsolatedPlaybackMode(true)
+                          setPlayerDebugTest({ url: path, title: 'Local isolation test' })
+                        }}
+                        className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer"
+                      >
+                        Test Local File
+                      </button>
+                      <button
+                        onClick={() => {
+                          store.setIsolatedPlaybackMode(true)
+                          setPlayerDebugTest({
+                            url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+                            title: 'Stable HTTP isolation test',
+                          })
+                        }}
+                        className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer"
+                      >
+                        Test Direct HTTP
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const logs = await invoke<string[]>('get_player_debug_logs')
+                          await navigator.clipboard.writeText(logs.join('\n'))
+                        }}
+                        className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1] cursor-pointer"
+                      >
+                        Copy Player Logs
+                      </button>
+                    </div>
+                  </div>
+                </details>
+              </div>
 
               {/* Hardware Decoding */}
               <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
@@ -3226,9 +3101,17 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* Clear Image Cache */}
-              <SettingSection title="Backdrop Cache" description="Clear cached backdrop and poster image URLs.">
-                <SettingRow label="Clear Image Cache" description="Wipe backdrop cache items to force fresh links.">
+              {/* Cache Management */}
+              <CacheManagementSection />
+
+              {backdropCacheMessage && (
+                <div className="px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl">
+                  <p className="text-xs text-accent font-semibold">{backdropCacheMessage}</p>
+                </div>
+              )}
+
+              <SettingSection title="Image Cache" description="Clear cached backdrop and poster image URLs stored in localStorage.">
+                <SettingRow label="Clear Image Cache" description="Force fresh image links on next load.">
                   <button
                     onClick={handleClearBackdropCache}
                     className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
@@ -3238,9 +3121,21 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              {/* Cache Management */}
-              <AnimeIdMappingsSection />
-              <CacheManagementSection />
+              {/* Anime ID Mappings (collapsible) */}
+              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
+                <details className="group">
+                  <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[15px] font-semibold text-white">Anime ID Mappings</h3>
+                      <p className="text-[13px] text-white/40 mt-0.5">Local mapping data connecting anime across services.</p>
+                    </div>
+                    <svg className="w-4 h-4 text-white/40 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                  </summary>
+                  <div className="divide-y divide-white/[0.04]">
+                    <AnimeIdMappingsSection />
+                  </div>
+                </details>
+              </div>
 
               {/* Factory Reset */}
               <SettingSection title="Danger Zone" description="Irreversible actions. Proceed with caution.">
