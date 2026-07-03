@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getSelfhstIconUrl } from './serviceIcons'
 import type { SearchResult } from '../types'
@@ -22,6 +23,9 @@ interface RatingRequest {
 
 const BASE_URL = 'https://api.mdblist.com'
 const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
+const BUILTIN_MDBLIST_CLIENT_ID = '1QZNjkmxhfpFEWOsOmAmkphArnbfoKeWlmbJZMOC'
+const MDBLIST_CLIENT_ID = import.meta.env.VITE_MDBLIST_CLIENT_ID || BUILTIN_MDBLIST_CLIENT_ID
+const MDBLIST_TOKEN_KEY = 'mdblist_oauth_tokens'
 
 type MdblistMediaType = 'movie' | 'show'
 
@@ -73,6 +77,23 @@ export interface MdblistWatchedItem {
   episode?: number
 }
 
+export interface MdblistOAuthTokens {
+  accessToken: string
+  refreshToken?: string
+  tokenType: string
+  scope?: string
+  expiresAt: number
+  createdAt: number
+}
+
+export interface MdblistDeviceCode {
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  expiresIn: number
+  interval: number
+}
+
 const PROVIDER_LABELS: Record<string, string> = {
   imdb: 'IMDb',
   tomatoesaudience: 'TOMATOES',
@@ -109,12 +130,151 @@ function userApiKey(): string {
   return useAppStore.getState().mdblistApiKey.trim()
 }
 
+export function getMdblistClientId(): string {
+  return localStorage.getItem('mdblist_client_id') || MDBLIST_CLIENT_ID
+}
+
+export function setMdblistClientId(clientId: string): void {
+  localStorage.setItem('mdblist_client_id', clientId.trim())
+}
+
+export function getStoredMdblistTokens(): MdblistOAuthTokens | null {
+  try {
+    const raw = localStorage.getItem(MDBLIST_TOKEN_KEY)
+    return raw ? JSON.parse(raw) as MdblistOAuthTokens : null
+  } catch (_) {
+    return null
+  }
+}
+
+function storeMdblistTokens(data: any): MdblistOAuthTokens {
+  const createdAt = Math.floor(Date.now() / 1000)
+  const tokens: MdblistOAuthTokens = {
+    accessToken: String(data.access_token || ''),
+    refreshToken: data.refresh_token ? String(data.refresh_token) : undefined,
+    tokenType: String(data.token_type || 'Bearer'),
+    scope: data.scope ? String(data.scope) : undefined,
+    expiresAt: createdAt + Number(data.expires_in || 2592000),
+    createdAt,
+  }
+  if (!tokens.accessToken) throw new Error('MDBList did not return an access token')
+  localStorage.setItem(MDBLIST_TOKEN_KEY, JSON.stringify(tokens))
+  return tokens
+}
+
+export function clearMdblistOAuth(): void {
+  localStorage.removeItem(MDBLIST_TOKEN_KEY)
+}
+
+async function postMdblistOAuthForm(path: string, params: Record<string, string>): Promise<any> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+    body: new URLSearchParams(params),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${res.status})`
+    const err = new Error(String(message)) as Error & { code?: string }
+    err.code = data?.error
+    throw err
+  }
+  return data
+}
+
+async function refreshMdblistAccessToken(tokens: MdblistOAuthTokens): Promise<MdblistOAuthTokens | null> {
+  const clientId = getMdblistClientId()
+  if (!clientId || !tokens.refreshToken) return null
+  try {
+    const data = await postMdblistOAuthForm('/oauth/token/', {
+      grant_type: 'refresh_token',
+      refresh_token: tokens.refreshToken,
+      client_id: clientId,
+    })
+    return storeMdblistTokens(data)
+  } catch (_) {
+    clearMdblistOAuth()
+    return null
+  }
+}
+
+async function getValidMdblistAccessToken(): Promise<string> {
+  const tokens = getStoredMdblistTokens()
+  if (!tokens) return ''
+  if (Date.now() / 1000 < tokens.expiresAt - 86400) return tokens.accessToken
+  const refreshed = await refreshMdblistAccessToken(tokens)
+  return refreshed?.accessToken || ''
+}
+
+export function hasMdblistOAuth(): boolean {
+  return Boolean(getStoredMdblistTokens()?.accessToken)
+}
+
+function generateCodeVerifier(): string {
+  const array = new Uint8Array(64)
+  crypto.getRandomValues(array)
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+  const data = new TextEncoder().encode(verifier)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+const MDBLIST_REDIRECT_URI = 'http://localhost:42814/'
+
+export interface MdblistPKCESession {
+  codeVerifier: string
+  state: string
+}
+
+export async function startMdblistPKCELogin(): Promise<{ authUrl: string; session: MdblistPKCESession }> {
+  const clientId = getMdblistClientId()
+  if (!clientId) throw new Error('MDBList OAuth Client ID is required')
+  const codeVerifier = generateCodeVerifier()
+  const codeChallenge = await generateCodeChallenge(codeVerifier)
+  const state = crypto.randomUUID()
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: MDBLIST_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'write',
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  })
+  return {
+    authUrl: `https://mdblist.com/oauth/authorize/?${params}`,
+    session: { codeVerifier, state },
+  }
+}
+
+export async function exchangeMdblistPKCEToken(code: string, session: MdblistPKCESession): Promise<MdblistOAuthTokens> {
+  const clientId = getMdblistClientId()
+  if (!clientId) throw new Error('MDBList OAuth Client ID is required')
+  const data = await postMdblistOAuthForm('/oauth/token/', {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: MDBLIST_REDIRECT_URI,
+    client_id: clientId,
+    code_verifier: session.codeVerifier,
+  })
+  return storeMdblistTokens(data)
+}
+
+export async function waitForMdblistCallback(): Promise<string> {
+  return invoke<string>('start_anilist_callback_server')
+}
+
 function ratingsApiKey(): string {
   return userApiKey() || BUILTIN_KEY
 }
 
 export function hasMdblistUserApiKey(): boolean {
-  return Boolean(userApiKey())
+  return Boolean(userApiKey() || hasMdblistOAuth())
 }
 
 async function mdblistFetch<T>(
@@ -123,14 +283,48 @@ async function mdblistFetch<T>(
   body?: unknown,
   options?: { allowBuiltinForRatings?: boolean }
 ): Promise<T> {
-  const key = options?.allowBuiltinForRatings ? ratingsApiKey() : userApiKey()
-  if (!key) throw new Error('MDBList API key is required')
+  const token = options?.allowBuiltinForRatings ? '' : await getValidMdblistAccessToken()
+  const key = token ? '' : options?.allowBuiltinForRatings ? ratingsApiKey() : userApiKey()
+  if (!token && !key) throw new Error('MDBList account auth is required')
 
   const url = new URL(`${BASE_URL}${path}`)
-  url.searchParams.set('apikey', key)
+  if (key) url.searchParams.set('apikey', key)
+
+  if (token) {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    }
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    const raw = await invoke<string>('http_request', {
+      method,
+      url: url.toString(),
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : null,
+    })
+    if (!raw) return undefined as T
+    const statusMatch = raw.match(/^(\d{3}):/)
+    if (statusMatch) {
+      const code = Number(statusMatch[1])
+      if (code >= 400) {
+        const respBody = raw.slice(statusMatch[0].length)
+        try {
+          const data = JSON.parse(respBody)
+          throw new Error(String(data?.detail || data?.error || `MDBList ${method} ${path} failed (${code})`))
+        } catch (e) {
+          if (e instanceof Error && !e.message.startsWith('MDBList')) throw e
+          throw new Error(`MDBList ${method} ${path} failed (${code})`)
+        }
+      }
+    }
+    return JSON.parse(raw) as T
+  }
+
   const res = await fetch(url.toString(), {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers: {
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -224,7 +418,7 @@ function scrobblePayload(
 }
 
 export async function checkMdblistConnection(): Promise<{ connected: boolean; user?: MdblistUser; error?: string }> {
-  if (!userApiKey()) return { connected: false, error: 'No MDBList API key entered' }
+  if (!userApiKey() && !hasMdblistOAuth()) return { connected: false, error: 'No MDBList account auth configured' }
   try {
     const user = await mdblistFetch<MdblistUser>('GET', '/user')
     return { connected: true, user }
@@ -234,7 +428,7 @@ export async function checkMdblistConnection(): Promise<{ connected: boolean; us
 }
 
 export async function getMdblistUserLists(): Promise<MdblistList[]> {
-  if (!userApiKey()) return []
+  if (!hasMdblistUserApiKey()) return []
   const data = await mdblistFetch<unknown>('GET', '/lists/user/?sort=rank&unified=false')
   return pickArray(data).map((list: any) => ({
     id: String(list.id),
@@ -363,7 +557,7 @@ function decodeHtmlEntities(text: string): string {
 }
 
 export async function createMdblistList(name: string, isPrivate = false): Promise<MdblistList | null> {
-  if (!userApiKey() || !name.trim()) return null
+  if (!hasMdblistUserApiKey() || !name.trim()) return null
   const data = await mdblistFetch<any>('POST', '/lists/user/add', { name: name.trim(), private: isPrivate })
   return data ? { id: String(data.id), name: String(data.name || name), slug: data.slug, private: Boolean(data.private) } : null
 }
@@ -374,12 +568,15 @@ async function getMdblistListPage(path: string, offset: number): Promise<{ data:
     offset: String(offset),
     append_to_response: 'genre',
   })
-  const key = userApiKey()
-  if (!key) throw new Error('MDBList API key is required')
+  const token = await getValidMdblistAccessToken()
+  const key = token ? '' : userApiKey()
+  if (!token && !key) throw new Error('MDBList account auth is required')
   const url = new URL(`${BASE_URL}${path}`)
-  url.searchParams.set('apikey', key)
+  if (key) url.searchParams.set('apikey', key)
   for (const [k, v] of qs) url.searchParams.set(k, v)
-  const response = await fetch(url.toString())
+  const response = await fetch(url.toString(), {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
   if (!response.ok) throw new Error(`MDBList GET ${path} failed (${response.status})`)
   const data = await response.json()
   return { data, response }
@@ -401,7 +598,7 @@ function hasMoreItems(response: Response, payload: unknown): boolean {
 }
 
 export async function getMdblistListItems(listId: string): Promise<SearchResult[]> {
-  if (!userApiKey() || !listId) return []
+  if (!hasMdblistUserApiKey() || !listId) return []
   const items: SearchResult[] = []
   let offset = 0
   const limit = 200
@@ -419,7 +616,7 @@ export async function getMdblistListItems(listId: string): Promise<SearchResult[
 }
 
 export async function getMdblistWatchlistItems(): Promise<SearchResult[]> {
-  if (!userApiKey()) return []
+  if (!hasMdblistUserApiKey()) return []
   const items: SearchResult[] = []
   let offset = 0
   const limit = 200
@@ -437,28 +634,28 @@ export async function getMdblistWatchlistItems(): Promise<SearchResult[]> {
 }
 
 export async function addToMdblistWatchlist(tmdbId: number, mediaType: 'movie' | 'series', imdbId?: string): Promise<boolean> {
-  if (!userApiKey()) return false
+  if (!hasMdblistUserApiKey()) return false
   const key = mediaType === 'movie' ? 'movies' : 'shows'
   await mdblistFetch('POST', '/watchlist/items/add', { [key]: [itemIds(tmdbId, imdbId)] })
   return true
 }
 
 export async function removeFromMdblistWatchlist(tmdbId: number, mediaType: 'movie' | 'series', imdbId?: string): Promise<boolean> {
-  if (!userApiKey()) return false
+  if (!hasMdblistUserApiKey()) return false
   const key = mediaType === 'movie' ? 'movies' : 'shows'
   await mdblistFetch('POST', '/watchlist/items/remove', { [key]: [itemIds(tmdbId, imdbId)] })
   return true
 }
 
 export async function addToMdblistList(listId: string, tmdbId: number, mediaType: 'movie' | 'series', imdbId?: string): Promise<boolean> {
-  if (!userApiKey() || !listId) return false
+  if (!hasMdblistUserApiKey() || !listId) return false
   const key = mediaType === 'movie' ? 'movies' : 'shows'
   await mdblistFetch('POST', `/lists/${encodeURIComponent(listId)}/items/add`, { [key]: [itemIds(tmdbId, imdbId)] })
   return true
 }
 
 export async function getMdblistPlaybackProgress(): Promise<MdblistPlaybackItem[]> {
-  if (!userApiKey()) return []
+  if (!hasMdblistUserApiKey()) return []
   const data = await mdblistFetch<unknown>('GET', '/sync/playback')
   return pickArray(data).map((item: any) => ({
     id: String(item.id),
@@ -485,7 +682,7 @@ export interface MdblistUpNextItem {
 }
 
 export async function getMdblistUpNext(): Promise<MdblistUpNextItem[]> {
-  if (!userApiKey()) return []
+  if (!hasMdblistUserApiKey()) return []
   const watched = await getMdblistWatched()
   const shows = watched.filter((i) => i.media_type === 'show' && (i.season != null || i.episode != null))
   const grouped = new Map<string, { item: MdblistWatchedItem; maxSeason: number; maxEpisode: number; watchedAt?: string }>()
@@ -525,7 +722,7 @@ export async function scrobbleMdblist(
   imdbId?: string,
   tvdbId?: number
 ): Promise<void> {
-  if (!userApiKey()) return
+  if (!hasMdblistUserApiKey()) return
   await mdblistFetch('POST', `/scrobble/${action}`, scrobblePayload(tmdbId, mediaType, progress, season, episode, imdbId, tvdbId))
 }
 
@@ -537,7 +734,7 @@ export async function markMdblistWatched(
   imdbId?: string,
   tvdbId?: number
 ): Promise<void> {
-  if (!userApiKey()) return
+  if (!hasMdblistUserApiKey()) return
   const watchedAt = new Date().toISOString()
   if (mediaType === 'movie') {
     await mdblistFetch('POST', '/sync/watched', { movies: [{ ids: itemIds(tmdbId, imdbId, tvdbId), watched_at: watchedAt }] })
@@ -559,7 +756,7 @@ export async function removeMdblistWatched(
   imdbId?: string,
   tvdbId?: number
 ): Promise<void> {
-  if (!userApiKey()) return
+  if (!hasMdblistUserApiKey()) return
   if (mediaType === 'movie') {
     await mdblistFetch('POST', '/sync/watched/remove', { movies: [{ ids: itemIds(tmdbId, imdbId, tvdbId) }] })
     return
@@ -573,7 +770,7 @@ export async function removeMdblistWatched(
 }
 
 export async function getMdblistWatched(): Promise<MdblistWatchedItem[]> {
-  if (!userApiKey()) return []
+  if (!hasMdblistUserApiKey()) return []
   const items: MdblistWatchedItem[] = []
   let cursor: string | null = null
   for (let page = 0; page < 20; page++) {
@@ -625,6 +822,16 @@ function dedupeSearchResults(items: SearchResult[]): SearchResult[] {
 }
 
 export async function getMdblistRatings(req: RatingRequest): Promise<MdblistRating[]> {
+  const cacheKey = `mdblist_ratings:${req.mediaType}:${req.imdbId || ''}:${req.tmdbId || ''}:${req.tvdbId || ''}:${req.malId || ''}:${req.season ?? ''}:${req.episode ?? ''}`
+  const { cachedFetch } = await import('./cache/sqliteCache')
+  return cachedFetch<MdblistRating[]>(
+    cacheKey,
+    () => fetchMdblistRatingsRaw(req),
+    { category: 'MDBLIST_RATINGS', ttlSeconds: 86400 },
+  )
+}
+
+async function fetchMdblistRatingsRaw(req: RatingRequest): Promise<MdblistRating[]> {
   const apiKey = ratingsApiKey()
 
   const media = req.mediaType === 'movie' ? 'movie' : 'show'

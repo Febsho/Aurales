@@ -60,9 +60,8 @@ jobs:
           VITE_TVDB_API_KEY: ${{ secrets.VITE_TVDB_API_KEY }}
           VITE_SIMKL_CLIENT_ID: ${{ secrets.VITE_SIMKL_CLIENT_ID }}
           VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
-          VITE_TRAKT_CLIENT_SECRET: ${{ secrets.VITE_TRAKT_CLIENT_SECRET }}
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
-          VITE_ANILIST_CLIENT_SECRET: ${{ secrets.VITE_ANILIST_CLIENT_SECRET }}
+          VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
         with:
           tagName: v__VERSION__
           releaseName: 'Aurales v__VERSION__'

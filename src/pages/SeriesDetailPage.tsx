@@ -27,6 +27,7 @@ import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metad
 import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
+import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 
 interface LocationState {
   poster?: string
@@ -1423,6 +1424,7 @@ export default function SeriesDetailPage() {
   }
 
 
+  useGlobalBackdrop(show?.backdrop || show?.poster)
 
   if (isAnime && metadataStatus === 'resolving') {
     return (

@@ -4,6 +4,7 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import NativeMpvPlayer from '../NativeMpvPlayer'
 import InAppPlayer from '../InAppPlayer'
 import type { PlaybackItem } from '../../services/simkl/playback'
+import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
 
 export default function WatchTogetherAutoPlayer() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
@@ -30,7 +31,7 @@ export default function WatchTogetherAutoPlayer() {
   if (!active || !media || !selectedLocalStream) return null
 
   const stream = selectedLocalStream.stream
-  const url = stream.url || stream.externalUrl
+  const url = getPlayableStreamUrl(stream)
   if (!url) return null
 
   const mediaType = media.type === 'movie' ? 'movie' : 'series'

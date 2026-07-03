@@ -33,7 +33,7 @@ import {
 import { MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { ANILIST_LIST_SOURCES } from '../services/anilist'
 import { canonicalizeCatalogItemsWithTvdb, getAvailableMdblistSources, getAvailablePmdbListSources, getAvailablePmdbPickSources, getAvailableTraktListSources, getProviderListItems, searchTraktPublicListSources, MDBLIST_LIST_SOURCES, PMDB_LIST_SOURCES, TRAKT_LIST_SOURCES } from '../services/providerLists'
-import { createMdblistList } from '../services/mdblist'
+import { createMdblistList, hasMdblistOAuth } from '../services/mdblist'
 import {
   DndContext,
   closestCenter,
@@ -413,7 +413,7 @@ function HeroBannerSection({
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
 
   type CatalogOption = {
     group: string
@@ -742,7 +742,7 @@ function AddWidgetOverlay({
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const [traktLists, setTraktLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(TRAKT_LIST_SOURCES)
   const [pmdbLists, setPmdbLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(PMDB_LIST_SOURCES)
   const [pmdbPicks, setPmdbPicks] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])

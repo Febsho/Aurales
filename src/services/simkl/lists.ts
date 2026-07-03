@@ -5,6 +5,7 @@
 import { simklRequest, MOCK_WATCHLIST } from './client'
 import { getSimklClientId, isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
+import { cachedFetch } from '../cache/sqliteCache'
 import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklWatchStatus } from './types'
 import type { SearchResult } from '../../types'
 
@@ -16,46 +17,50 @@ const LS_COMPLETED_CACHE = 'simkl_completed_cache'
 
 export async function getSimklWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'plantowatch'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/plantowatch?extended=full')
-    const items = toWatchlistItems(data ?? [])
-    localStorage.setItem(LS_WATCHLIST_CACHE, JSON.stringify(items))
-    return items
-  } catch (_) {
-    return getCached(LS_WATCHLIST_CACHE)
-  }
+  return cachedFetch<SimklWatchlistItem[]>(
+    'simkl_list:plantowatch',
+    async () => {
+      const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/plantowatch?extended=full')
+      return toWatchlistItems(data ?? [])
+    },
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
 }
 
 export async function getSimklWatching(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'watching'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/watching?extended=full')
-    const items = toWatchlistItems(data ?? [])
-    localStorage.setItem(LS_WATCHING_CACHE, JSON.stringify(items))
-    return items
-  } catch (_) {
-    return getCached(LS_WATCHING_CACHE)
-  }
+  return cachedFetch<SimklWatchlistItem[]>(
+    'simkl_list:watching',
+    async () => {
+      const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/watching?extended=full')
+      return toWatchlistItems(data ?? [])
+    },
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
 }
 
 export async function getSimklCompleted(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'completed'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/completed?extended=full')
-    const items = toWatchlistItems(data ?? [])
-    localStorage.setItem(LS_COMPLETED_CACHE, JSON.stringify(items))
-    return items
-  } catch (_) {
-    return getCached(LS_COMPLETED_CACHE)
-  }
+  return cachedFetch<SimklWatchlistItem[]>(
+    'simkl_list:completed',
+    async () => {
+      const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/completed?extended=full')
+      return toWatchlistItems(data ?? [])
+    },
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
 }
 
 export async function getSimklAnimeWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.anime))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/plantowatch?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return cachedFetch<SimklWatchlistItem[]>(
+    'simkl_list:anime:plantowatch',
+    async () => {
+      const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/plantowatch?extended=full')
+      return toWatchlistItems(data ?? [])
+    },
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
 }
 
 export async function getSimklCustomLists(): Promise<{ id: string; name: string; items: SimklWatchlistItem[] }[]> {
@@ -68,82 +73,52 @@ export async function getSimklCustomLists(): Promise<{ id: string; name: string;
 
 export async function getSimklMoviesWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.movie && i.status === 'plantowatch'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/plantowatch?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('movies', 'plantowatch')
 }
 
 export async function getSimklShowsWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.show && i.status === 'plantowatch'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/plantowatch?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('shows', 'plantowatch')
 }
 
 export async function getSimklMoviesWatching(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.movie && i.status === 'watching'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/watching?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('movies', 'watching')
 }
 
 export async function getSimklShowsWatching(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.show && i.status === 'watching'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/watching?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('shows', 'watching')
 }
 
 export async function getSimklAnimeWatching(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.anime && i.status === 'watching'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/watching?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('anime', 'watching')
 }
 
 export async function getSimklMoviesCompleted(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.movie && i.status === 'completed'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/completed?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('movies', 'completed')
 }
 
 export async function getSimklShowsCompleted(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.show && i.status === 'completed'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/shows/completed?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('shows', 'completed')
 }
 
 export async function getSimklAnimeCompleted(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.anime && i.status === 'completed'))
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/completed?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('anime', 'completed')
 }
 
 export async function getSimklOnHold(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return []
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/hold?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('movies,shows,anime' as any, 'hold')
 }
 
 export async function getSimklDropped(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return []
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/dropped?extended=full')
-    return toWatchlistItems(data ?? [])
-  } catch (_) { return [] }
+  return getSimklTypedStatusList('movies,shows,anime' as any, 'dropped')
 }
 
 export async function getSimklWatchStatusList(listId: string): Promise<SimklWatchlistItem[]> {
@@ -267,12 +242,14 @@ async function getSimklTypedStatusList(mediaType: 'movies' | 'shows' | 'anime', 
     }))
   }
 
-  try {
-    const data = await simklRequest<SimklApiItem[]>(`/sync/all-items/${mediaType}/${status}?extended=full`)
-    return toWatchlistItems(data ?? [])
-  } catch (_) {
-    return []
-  }
+  return cachedFetch<SimklWatchlistItem[]>(
+    `simkl_list:${mediaType}:${status}`,
+    async () => {
+      const data = await simklRequest<SimklApiItem[]>(`/sync/all-items/${mediaType}/${status}?extended=full`)
+      return toWatchlistItems(data ?? [])
+    },
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
 }
 
 type SimklDataType = 'movies' | 'tv' | 'anime'
@@ -304,18 +281,24 @@ interface SimklDataItem {
 }
 
 async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
-  const clientId = getSimklClientId()
-  const params = new URLSearchParams({
-    client_id: clientId || 'aurales',
-    'app-name': 'Aurales',
-    'app-version': '0.1.0',
-  })
-  const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
-    headers: { 'User-Agent': 'Aurales/0.1.0' },
-  })
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data) ? data : []
+  return cachedFetch<SimklDataItem[]>(
+    `simkl_data:${path}`,
+    async () => {
+      const clientId = getSimklClientId()
+      const params = new URLSearchParams({
+        client_id: clientId || 'aurales',
+        'app-name': 'Aurales',
+        'app-version': '0.1.0',
+      })
+      const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
+        headers: { 'User-Agent': 'Aurales/0.1.0' },
+      })
+      if (!res.ok) return []
+      const data = await res.json()
+      return Array.isArray(data) ? data : []
+    },
+    { category: 'SIMKL_DATA', ttlSeconds: 3600 },
+  )
 }
 
 function simklDataItemToSearchResult(item: SimklDataItem, type: SimklDataType): SearchResult {

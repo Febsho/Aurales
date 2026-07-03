@@ -456,9 +456,10 @@ export async function autoResolveStream(
   const m = media ?? store.currentRoom?.selectedMedia
   const ep = episode ?? store.currentRoom?.selectedEpisode
   if (!m) return false
+  store.setSelectedLocalStream(null)
   try {
     logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, hostStream: !!hostStream })
-    const match = await findMatchingLocalStream(m, ep, hostStream)
+    const match = await findMatchingLocalStream(m, ep, hostStream, store.allowGuestDifferentStream)
     if (match) {
       store.setSelectedLocalStream(match)
       selectStream({
@@ -478,6 +479,7 @@ export async function autoResolveStream(
       return false
     }
   } catch (_) {
+    store.setSelectedLocalStream(null)
     logDebug('in', 'AUTO_RESOLVE_ERROR', { media: m.title })
     return false
   }

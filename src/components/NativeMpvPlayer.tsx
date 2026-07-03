@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -25,7 +25,7 @@ import {
   removePMDBWatched,
   lookupTmdbId
 } from '../services/pmdb'
-import { scrobbleMdblist } from '../services/mdblist'
+import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
 import { saveAniListProgress, saveAniListProgressMapped } from '../services/anilist'
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
@@ -69,6 +69,7 @@ interface MpvTrack {
   forced?: boolean
   external?: boolean
   'external-filename'?: string
+  filename?: string
 }
 
 interface TrackOption {
@@ -85,6 +86,12 @@ interface NextEpInfo {
   overview?: string
   runtime?: number
   stillPath?: string
+}
+
+interface SubtitleSource {
+  originalUrl: string
+  localPath: string
+  label: string
 }
 
 
@@ -110,6 +117,27 @@ function trackPriority(track: MpvTrack): number {
   if (!track.external) return 1
   if (track.title?.includes(' · Stream · ')) return 2
   return 3
+}
+
+function normalizeSubtitlePath(path?: string): string {
+  return (path || '').replace(/\\/g, '/').toLowerCase()
+}
+
+function stripAiSubtitleResponse(value: string): string {
+  return value
+    .trim()
+    .replace(/^```(?:srt|vtt|ass|ssa|text)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+}
+
+function formatSrtTimestamp(seconds: number): string {
+  const safe = Math.max(0, seconds)
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const wholeSeconds = Math.floor(safe % 60)
+  const millis = Math.floor((safe - Math.floor(safe)) * 1000)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
 }
 
 function buildVideoViewport() {
@@ -489,7 +517,10 @@ function FullNativeMpvPlayer({
   const trackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const loadedSubtitleUrlsRef = useRef<Set<string>>(new Set())
   const autoSkippedSegmentsRef = useRef<Set<string>>(new Set())
-  const subtitleSourcesRef = useRef<Map<string, { originalUrl: string; localPath: string; label: string }>>(new Map())
+  const subtitleSourcesRef = useRef<Map<string, SubtitleSource>>(new Map())
+  const subtitleTrackSourcesRef = useRef<Map<number, SubtitleSource>>(new Map())
+  const aiSubtitleTrackIdRef = useRef<number | null>(null)
+  const aiSubtitleSourceTrackIdRef = useRef<number | null>(null)
   const progressRef = useRef({ currentTime: 0, duration: 0 })
   const lastSavedTimeRef = useRef(0)
   const lastSimklPlaybackSaveRef = useRef(0)
@@ -562,12 +593,17 @@ function FullNativeMpvPlayer({
   const [upNextCountdown, setUpNextCountdown] = useState(10)
   const [isAutoSearching, setIsAutoSearching] = useState(false)
 
-  // Live subtitle translation overlay
+  // AI subtitle track generation
   const [liveTranslateOn, setLiveTranslateOn] = useState(false)
+  const [translatingSubtitles, setTranslatingSubtitles] = useState(false)
   const [translatedText, setTranslatedText] = useState('')
   const [currentSubText, setCurrentSubText] = useState('')
   const liveTranslateCacheRef = useRef<Map<string, string>>(new Map())
   const liveTranslatePendingRef = useRef<string>('')
+  const liveAiSubtitlePathRef = useRef<string | null>(null)
+  const liveAiSubtitleContentRef = useRef('')
+  const liveAiCueIndexRef = useRef(0)
+  const liveAiLastCueRef = useRef('')
 
   // Current display title/subtitle — updated when autoplay transitions episodes
   const [currentDisplayTitle, setCurrentDisplayTitle] = useState(title)
@@ -597,7 +633,7 @@ function FullNativeMpvPlayer({
   const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
   const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
   const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
   const autoSkipSegments = useAppStore((s) => s.autoSkipSegments)
@@ -876,6 +912,19 @@ function FullNativeMpvPlayer({
   const refreshTracks = useCallback(async () => {
     const data = await getPlayerProperty('track-list') as MpvTrack[]
     if (!Array.isArray(data)) return false
+    const trackSources = new Map<number, SubtitleSource>()
+    data
+      .filter((t) => t.type === 'sub')
+      .forEach((track) => {
+        const trackPath = normalizeSubtitlePath(track['external-filename'] || track.filename)
+        if (!trackPath) return
+        const source = [...subtitleSourcesRef.current.values()].find((candidate) => {
+          const sourcePath = normalizeSubtitlePath(candidate.localPath)
+          return sourcePath === trackPath || trackPath.endsWith(sourcePath) || sourcePath.endsWith(trackPath)
+        })
+        if (source) trackSources.set(track.id, source)
+      })
+    subtitleTrackSourcesRef.current = trackSources
     const audio = data
       .filter((t) => t.type === 'audio')
       .map((t) => ({ id: t.id, label: trackLabel(t, `Audio ${t.id}`), lang: t.lang, priority: 0 }))
@@ -949,8 +998,8 @@ function FullNativeMpvPlayer({
   // Fast 200ms poll. Translation fires concurrently (non-blocking) so the poll
   // never stalls waiting for the API. Cached lines display instantly.
   useEffect(() => {
-    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang) return
-    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang || liveAiSubtitlePathRef.current) return
+    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)!
     if (!lang) return
 
     let cancelled = false
@@ -1021,6 +1070,92 @@ function FullNativeMpvPlayer({
       liveTranslatePendingRef.current = ''
     }
   }, [liveTranslateOn])
+
+  useEffect(() => {
+    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang || !liveAiSubtitlePathRef.current) return
+    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+    if (!lang) return
+
+    let cancelled = false
+    const inflight = new Set<string>()
+
+    const appendTranslatedCue = async (text: string, start: number, end: number) => {
+      const path = liveAiSubtitlePathRef.current
+      if (!path || cancelled) return
+      liveAiCueIndexRef.current += 1
+      const cue = [
+        String(liveAiCueIndexRef.current),
+        `${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(Math.max(end, start + 1.5))}`,
+        text,
+        '',
+        '',
+      ].join('\n')
+      liveAiSubtitleContentRef.current += cue
+      await updateTempSubtitle(path, liveAiSubtitleContentRef.current)
+      await sendPlayerCommand('sub-reload').catch(() => {})
+    }
+
+    const translateCue = async (line: string, start: number, end: number) => {
+      const cueKey = `${start.toFixed(2)}-${end.toFixed(2)}-${line}`
+      if (inflight.has(cueKey) || liveAiLastCueRef.current === cueKey) return
+      inflight.add(cueKey)
+      liveAiLastCueRef.current = cueKey
+      try {
+        let result = liveTranslateCacheRef.current.get(line)
+        if (!result) {
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${openrouterApiKey}`,
+              'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
+              'X-Title': 'Aurales Media Player',
+            },
+            body: JSON.stringify({
+              model: openrouterModel || 'google/gemini-2.5-flash',
+              messages: [
+                { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
+                { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
+              ]
+            })
+          })
+          if (!response.ok || cancelled) return
+          const data = await response.json()
+          result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
+          if (!result) return
+          liveTranslateCacheRef.current.set(line, result)
+        }
+        await appendTranslatedCue(result, start, end)
+      } catch (_) {
+        liveAiLastCueRef.current = ''
+      } finally {
+        inflight.delete(cueKey)
+      }
+    }
+
+    const poll = setInterval(async () => {
+      if (cancelled) return
+      try {
+        const text = await getPlayerProperty('secondary-sub-text') as string | null
+        const trimmed = (text || '').trim()
+        if (!trimmed) return
+
+        const startProp = await getPlayerProperty('secondary-sub-start').catch(() => null)
+        const endProp = await getPlayerProperty('secondary-sub-end').catch(() => null)
+        const fallbackStart = progressRef.current.currentTime
+        const start = typeof startProp === 'number' && Number.isFinite(startProp) ? startProp : fallbackStart
+        const end = typeof endProp === 'number' && Number.isFinite(endProp) ? endProp : start + 4
+        translateCue(trimmed, start, end)
+      } catch (_) {
+        // Poll again on the next tick.
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+    }
+  }, [contextAwareTranslation, currentDisplayTitle, liveTranslateOn, openrouterApiKey, openrouterModel, subtitleTranslationLang])
 
   // Addon subtitle requests can finish after playback has already started.
   // Load every newly received URL and refresh MPV tracks without requiring the
@@ -2004,14 +2139,89 @@ function FullNativeMpvPlayer({
     command('set_property', ['aid', id])
     setTrackMenu(null)
   }
+
+  const startLiveAiSubtitles = useCallback(async () => {
+    if (!openrouterApiKey || !subtitleTranslationLang) {
+      setError('Set an OpenRouter key and target subtitle language first.')
+      return
+    }
+
+    setTranslatingSubtitles(true)
+    setError('')
+    try {
+      await loadAddonSubtitles()
+      await refreshTracks().catch(() => false)
+
+      const sourceTrackId = selectedSub !== 'no' && selectedSub !== aiSubtitleTrackIdRef.current
+        ? selectedSub
+        : (subTracks.find((track) => track.id !== aiSubtitleTrackIdRef.current)?.id)
+      if (sourceTrackId == null) {
+        setError('AI subtitles need a subtitle track to translate from.')
+        return
+      }
+
+      liveAiCueIndexRef.current = 0
+      liveAiLastCueRef.current = ''
+      liveAiSubtitleContentRef.current = '1\n00:00:00,000 --> 00:00:00,100\n.\n\n'
+      const translatedPath = await writeTempSubtitle(liveAiSubtitleContentRef.current, 'srt')
+      liveAiSubtitlePathRef.current = translatedPath
+
+      const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+      const label = `AI ${lang?.name || subtitleTranslationLang} (Translated)`
+      await sendPlayerCommand('sub-add', [translatedPath, 'select', label, subtitleTranslationLang])
+      await sendPlayerCommand('set_property', ['secondary-sid', sourceTrackId])
+      await sendPlayerCommand('set_property', ['secondary-sub-visibility', false]).catch(() => {})
+      await sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
+      await sendPlayerCommand('set_property', ['sub-visibility', true])
+      await refreshTracks().catch(() => false)
+
+      const selected = await getPlayerProperty('sid').catch(() => null)
+      if (typeof selected === 'number') {
+        setSelectedSub(selected)
+        aiSubtitleTrackIdRef.current = selected
+      }
+      aiSubtitleSourceTrackIdRef.current = sourceTrackId
+      setLiveTranslateOn(true)
+    } catch (e) {
+      setError(`AI subtitle translation failed: ${String(e)}`)
+    } finally {
+      setTranslatingSubtitles(false)
+    }
+  }, [loadAddonSubtitles, openrouterApiKey, refreshTracks, selectedSub, subTracks, subtitleTranslationLang])
+
+  const toggleAiSubtitleTrack = useCallback(async () => {
+    if (translatingSubtitles) return
+    if (!liveTranslateOn) {
+      await startLiveAiSubtitles()
+      return
+    }
+
+    setLiveTranslateOn(false)
+    await sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
+    const sourceTrackId = aiSubtitleSourceTrackIdRef.current
+    if (sourceTrackId != null) {
+      setSelectedSub(sourceTrackId)
+      command('set_property', ['sid', sourceTrackId])
+      command('set_property', ['sub-visibility', true])
+    } else {
+      setSelectedSub('no')
+      command('set_property', ['sub-visibility', false])
+    }
+  }, [command, liveTranslateOn, startLiveAiSubtitles, translatingSubtitles])
+
   const changeSub = (id: number | 'no') => {
     setSelectedSub(id)
+    setLiveTranslateOn(id !== 'no' && id === aiSubtitleTrackIdRef.current)
     if (id === 'no') {
+      sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
       command('set_property', ['sub-visibility', false])
     } else {
+      if (id !== aiSubtitleTrackIdRef.current) {
+        sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
+      }
       command('set_property', ['sid', id])
       sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
-      command('set_property', ['sub-visibility', !liveTranslateOn])
+      command('set_property', ['sub-visibility', true])
     }
     setTrackMenu(null)
   }
@@ -2174,41 +2384,7 @@ function FullNativeMpvPlayer({
                     selected={selectedSub}
                     onSelect={changeSub}
                     onClose={() => setTrackMenu(null)}
-                    onToggleTranslate={() => {
-                      setLiveTranslateOn((prev) => {
-                        const next = !prev
-                        if (next) {
-                          if (selectedSub === 'no' && subTracks.length > 0) {
-                            const firstTrack = subTracks[0].id
-                            setSelectedSub(firstTrack)
-                            sendPlayerCommand('set_property', ['sid', firstTrack]).catch(() => {})
-                          }
-                          const subState = useAppStore.getState()
-                          sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
-                          sendPlayerCommand('set_property', ['sub-font-size', subState.subtitleFontSize]).catch(() => {})
-                          sendPlayerCommand('set_property', ['sub-color', subState.subtitleColor]).catch(() => {})
-                          const bgAlpha = Math.round(Number(subState.subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
-                          sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
-                          if (subState.subtitleBorderStyle === 'outline') {
-                            sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
-                            sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
-                          } else if (subState.subtitleBorderStyle === 'shadow') {
-                            sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
-                            sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
-                            sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
-                          } else {
-                            sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
-                            sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
-                          }
-                          sendPlayerCommand('set_property', ['sub-visibility', false]).catch(() => {})
-                        } else {
-                          if (selectedSub !== 'no') {
-                            command('set_property', ['sub-visibility', true])
-                          }
-                        }
-                        return next
-                      })
-                    }}
+                    onToggleTranslate={toggleAiSubtitleTrack}
                     translateActive={liveTranslateOn}
                     hasTranslateKey={!!openrouterApiKey && !!subtitleTranslationLang}
                   />
@@ -2486,7 +2662,7 @@ function FullNativeMpvPlayer({
       </div>
 
       {/* Live translated subtitle overlay */}
-      {liveTranslateOn && currentSubText && (() => {
+      {false && liveTranslateOn && currentSubText && (() => {
         const subTextShadow = subtitleBorderStyle === 'outline'
           ? `0 0 3px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.8), -1px -1px 0 rgba(0,0,0,0.8)`
           : subtitleBorderStyle === 'shadow'

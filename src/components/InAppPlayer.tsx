@@ -12,7 +12,7 @@ import {
   buildEpisodeScrobble,
   buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
-import { scrobbleMdblist } from '../services/mdblist'
+import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -84,7 +84,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
   const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   const [showTranslateModal, setShowTranslateModal] = useState(false)

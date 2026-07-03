@@ -19,6 +19,7 @@ import {
   addToMdblistWatchlist,
   removeFromMdblistWatchlist,
   getMdblistWatchlistItems,
+  hasMdblistOAuth,
 } from '../services/mdblist'
 import {
   isAniListConnected,
@@ -58,7 +59,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
 
   const [animeIds, setAnimeIds] = useState<{ anilistId?: number; malId?: number }>({
     anilistId: anilistId ? Number(anilistId) : undefined,
