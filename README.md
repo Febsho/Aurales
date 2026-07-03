@@ -31,7 +31,7 @@
 - **AI-Powered Search** — natural language queries via OpenRouter (optional)
 - **Region & Rating Filters** — filter by country and content certification
 
-![Discover](screenshots/discover.png)
+
 
 ### Streaming & Playback
 
