@@ -10,6 +10,7 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { selectStream as wtSelectStream, play as wtPlay } from '../services/watch-together/wsClient'
 import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
 import type { RoomStream } from '../services/watch-together/types'
+import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -224,10 +225,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId])
 
   const getPlayableUrl = (stream: AddonStream): string | null => {
-    if (stream.url) return stream.url
-    if (stream.externalUrl) return stream.externalUrl
-    if (stream.ytId) return `https://www.youtube.com/watch?v=${stream.ytId}`
-    return null
+    return getPlayableStreamUrl(stream)
   }
 
   const getStreamHeading = (stream: AddonStream, index: number): string => {
@@ -403,7 +401,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const handlePlay = async (stream: AddonStream, index: number) => {
     const url = getPlayableUrl(stream)
     if (!url) {
-      setPlayError('This stream is torrent-only. Aurales can only play direct HTTP/HLS/DASH streams in the embedded player right now.')
+      setPlayError('This stream is not a direct playable video URL. Pick a direct HTTP/HLS/DASH stream instead.')
       return
     }
 

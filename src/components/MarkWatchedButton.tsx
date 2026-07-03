@@ -17,7 +17,7 @@ import {
 } from '../services/simkl/history'
 import { markAniListEpisodeExact, removeFromAniListList, saveAniListProgress, unmarkAniListEpisodeExact } from '../services/anilist'
 import { scrobblePMDB, removePMDBWatched } from '../services/pmdb'
-import { markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
+import { markMdblistWatched, removeMdblistWatched, hasMdblistOAuth } from '../services/mdblist'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { useAppStore } from '../stores/appStore'
@@ -70,7 +70,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   const traktConnected = isTraktConnected()
   const simklConnected = !!getStoredSimklToken()?.accessToken
   const pmdbConnected = !!useAppStore((s) => s.pmdbApiKey)
-  const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey)
+  const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const anilistConnected = isAniListConnected()
   const tmdbId = mediaRef.tmdbId != null ? Number(mediaRef.tmdbId) : undefined
 

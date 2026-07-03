@@ -20,6 +20,7 @@ import { cachedFetch, cacheClearExpired } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { taskQueue } from '../services/cache/backgroundTaskQueue'
 import { useHomeCatalogCache } from '../stores/homeCatalogCache'
+import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -854,22 +855,7 @@ export default function HomePage() {
     })
   }, [])
 
-  // Set blurred hero backdrop as page background via CSS custom property
-  useEffect(() => {
-    const root = document.documentElement
-    if (heroBackdrop) {
-      const url = heroBackdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')
-      root.style.setProperty('--hero-bg', `url(${url})`)
-      root.classList.add('hero-bg-active')
-    } else {
-      root.classList.remove('hero-bg-active')
-      root.style.removeProperty('--hero-bg')
-    }
-    return () => {
-      root.classList.remove('hero-bg-active')
-      root.style.removeProperty('--hero-bg')
-    }
-  }, [heroBackdrop])
+  useGlobalBackdrop(heroBackdrop)
 
   const setIsEditing = (val: boolean) => {
     if (val) {

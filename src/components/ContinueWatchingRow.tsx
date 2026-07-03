@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/appStore'
 import { getSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
-import { getMdblistUpNext } from '../services/mdblist'
+import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 import StreamSelector from './StreamSelector'
@@ -311,42 +311,86 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             list = resolvedList
           }
         } else if (source === 'mdblist') {
-          const upNextRaw = await getMdblistUpNext()
-          const upNextItems: ContinueWatchingItem[] = await Promise.all(
-            upNextRaw.map(async (u) => {
-              let poster: string | undefined
-              let backdrop: string | undefined
-              let imdbId = u.imdbId
-              let title = u.title
-              if (u.tmdbId) {
-                try {
-                  const meta = await tmdbProvider.getShow(`tmdb-${u.tmdbId}`)
-                  poster = meta.poster
-                  backdrop = meta.backdrop
-                  if (!imdbId) imdbId = meta.imdbId
-                  if (title === 'Show') title = meta.title || title
-                } catch (_) { /* keep what we have */ }
-              }
+          const [playbackRaw, upNextRaw] = await Promise.all([
+            getMdblistPlaybackProgress(),
+            getMdblistUpNext(),
+          ])
+
+          const playbackItems: ContinueWatchingItem[] = playbackRaw
+            .filter((i) => i.progress > 0 && i.progress < 85)
+            .map((i) => {
+              const media = i.movie || i.show || {}
+              const ids = media.ids || {}
+              const isMovie = i.type === 'movie'
+              const ep = i.episode as any
+              const defaultDuration = i.runtime ? i.runtime * 60 : (isMovie ? 120 * 60 : 45 * 60)
+              const progressSec = Math.floor((i.progress / 100) * defaultDuration)
+              const imdbId = ids.imdb || media.imdb_id
+              const tmdbId = ids.tmdb ? Number(ids.tmdb) : (media.tmdb_id ? Number(media.tmdb_id) : undefined)
+
               return {
-                id: `mdblist-upnext-${u.showId}-${u.season}-${u.episode}`,
-                mediaId: imdbId || (u.tmdbId ? `tmdb-${u.tmdbId}` : u.showId),
-                mediaType: 'series' as const,
-                title,
-                subtitle: `S${u.season} E${u.episode}`,
-                poster,
-                backdrop,
-                season: u.season,
-                episode: u.episode,
-                progressSeconds: 0,
-                durationSeconds: 0,
-                progressPct: 0,
+                id: `mdblist-pb-${i.id}`,
+                mediaId: String(imdbId || (tmdbId ? `tmdb-${tmdbId}` : i.id)),
+                mediaType: (isMovie ? 'movie' : 'series') as 'movie' | 'series',
+                title: media.title || (isMovie ? 'Movie' : 'Show'),
+                subtitle: ep ? `S${ep.season} E${ep.number}` : undefined,
+                season: ep?.season,
+                episode: ep?.number,
+                progressSeconds: progressSec,
+                durationSeconds: defaultDuration,
+                progressPct: i.progress,
                 imdbId,
-                tmdbId: u.tmdbId,
-                updatedAt: u.lastWatchedAt || new Date().toISOString(),
+                tmdbId,
+                updatedAt: i.paused_at || i.updated_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          )
-          list = upNextItems
+
+          const upNextItems: ContinueWatchingItem[] = upNextRaw.map((u) => ({
+            id: `mdblist-upnext-${u.showId}-${u.season}-${u.episode}`,
+            mediaId: u.imdbId || (u.tmdbId ? `tmdb-${u.tmdbId}` : u.showId),
+            mediaType: 'series' as const,
+            title: u.title,
+            subtitle: `S${u.season} E${u.episode}`,
+            season: u.season,
+            episode: u.episode,
+            progressSeconds: 0,
+            durationSeconds: 0,
+            progressPct: 0,
+            imdbId: u.imdbId,
+            tmdbId: u.tmdbId,
+            updatedAt: u.lastWatchedAt || new Date().toISOString(),
+          }))
+
+          const seenIds = new Set(playbackItems.map((i) => i.mediaId))
+          const merged = [
+            ...playbackItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+            ...upNextItems.filter((i) => !seenIds.has(i.mediaId)),
+          ]
+
+          if (!cancelled && merged.length > 0) {
+            list = await Promise.all(
+              merged.map(async (item) => {
+                if (item.poster && item.backdrop) return item
+                const id = item.tmdbId
+                if (!id) return item
+                try {
+                  const meta = item.mediaType === 'movie'
+                    ? await tmdbProvider.getMovie(`tmdb-${id}`)
+                    : await tmdbProvider.getShow(`tmdb-${id}`)
+                  return {
+                    ...item,
+                    mediaId: meta.imdbId || item.mediaId,
+                    imdbId: meta.imdbId || item.imdbId,
+                    title: meta.title || item.title,
+                    poster: meta.poster || item.poster,
+                    backdrop: meta.backdrop || item.backdrop,
+                  }
+                } catch (_) { return item }
+              })
+            )
+          } else {
+            list = merged
+          }
         } else if (source === 'anilist') {
           list = await getAniListContinueWatching()
         }
@@ -401,7 +445,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
 
   const visibleSources = SOURCE_OPTIONS.filter((opt) => {
     switch (opt.value) {
@@ -410,7 +454,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       case 'trakt': return traktConnected
       case 'anilist': return anilistConnected
       case 'pmdb': return !!pmdbApiKey
-      case 'mdblist': return !!mdblistApiKey
+      case 'mdblist': return mdblistConnected
       default: return false
     }
   })
@@ -433,7 +477,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     </div>
   )
 
-  const displayTitle = source === 'mdblist' ? 'Up Next' : row.title
+  const displayTitle = row.title
 
   if (loading) {
     return (
@@ -474,7 +518,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
-                <span className="text-[11px] text-white/15 select-none">{source === 'mdblist' ? 'No shows to catch up on' : 'Nothing in progress'}</span>
+                <span className="text-[11px] text-white/15 select-none">Nothing in progress</span>
               </div>
             ))}
           </div>

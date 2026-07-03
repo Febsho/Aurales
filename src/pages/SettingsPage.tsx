@@ -22,7 +22,7 @@ import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
-import { checkMdblistConnection, type MdblistUser } from '../services/mdblist'
+import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
@@ -692,6 +692,7 @@ export default function SettingsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+
   const simklStatus = getSimklConnectionStatus()
   const [simklLoading, setSimklLoading] = useState(false)
   const [simklError, setSimklError] = useState('')
@@ -714,6 +715,8 @@ export default function SettingsPage() {
   const [pmdbConnChecking, setPmdbConnChecking] = useState(false)
   const [mdblistConnStatus, setMdblistConnStatus] = useState<{ connected: boolean; user?: MdblistUser; error?: string } | null>(null)
   const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
+  const [mdblistClientIdInput, setMdblistClientIdInput] = useState(getMdblistClientId)
+  const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
@@ -734,7 +737,39 @@ export default function SettingsPage() {
     setMdblistConnChecking(false)
   }
 
-  const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || ''
+  const handleMdblistOAuthConnect = async () => {
+    setMdblistConnChecking(true)
+    setMdblistConnStatus(null)
+    try {
+      setMdblistClientId(mdblistClientIdInput)
+      const { authUrl, session } = await startMdblistPKCELogin()
+      setMdblistOAuthPolling(true)
+
+      const callbackPromise = waitForMdblistCallback()
+      await invoke('open_simkl_auth', { url: authUrl })
+
+      const code = await callbackPromise
+      if (!code) throw new Error('MDBList did not return an authorization code.')
+
+      await exchangeMdblistPKCEToken(code, session)
+      setMdblistOAuthPolling(false)
+      const status = await checkMdblistConnection()
+      setMdblistConnStatus(status)
+    } catch (err: any) {
+      setMdblistOAuthPolling(false)
+      setMdblistConnStatus({ connected: false, error: err?.message || 'MDBList OAuth failed' })
+    } finally {
+      setMdblistConnChecking(false)
+    }
+  }
+
+  const handleMdblistOAuthDisconnect = () => {
+    clearMdblistOAuth()
+    setMdblistOAuthPolling(false)
+    setMdblistConnStatus(null)
+  }
+
+  const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
   const getAnilistClientSecret = () => localStorage.getItem('anilist_client_secret') || import.meta.env.VITE_ANILIST_CLIENT_SECRET || ''
 
   const handleAnilistConnect = async () => {
@@ -743,31 +778,37 @@ export default function SettingsPage() {
     try {
       const clientId = getAnilistClientId()
       const clientSecret = getAnilistClientSecret()
-      if (!clientId || !clientSecret) {
-        throw new Error('AniList credentials not configured.')
+      if (!clientId) {
+        throw new Error('AniList client ID not configured.')
       }
 
       setAnilistMessage('Waiting for browser authorization callback...')
       const callbackServerPromise = invoke<string>('start_anilist_callback_server')
 
       const redirectUri = 'http://localhost:42814/'
-      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`
+      const responseType = clientSecret ? 'code' : 'token'
+      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=${responseType}`
       await invoke('open_simkl_auth', { url: authUrl })
 
-      const code = await callbackServerPromise
+      setAnilistMessage('Waiting for AniList authorization...')
+      const callbackResult = await callbackServerPromise
+      if (!callbackResult) {
+        throw new Error('AniList did not return a response.')
+      }
 
-      setAnilistMessage('Exchanging authorization code for access token...')
-      const tokenJson = await invoke<string>('exchange_anilist_token', {
-        code,
-        clientId,
-        clientSecret,
-        redirectUri,
-      })
-
-      const tokenData = JSON.parse(tokenJson)
-      const token = tokenData.access_token
-      if (!token) {
-        throw new Error('AniList did not return an access token.')
+      let token: string
+      if (clientSecret) {
+        const tokenJson = await invoke<string>('exchange_anilist_token', {
+          code: callbackResult,
+          clientId,
+          clientSecret,
+          redirectUri,
+        })
+        const tokenData = JSON.parse(tokenJson)
+        token = tokenData.access_token
+        if (!token) throw new Error('AniList token exchange did not return an access token.')
+      } else {
+        token = callbackResult
       }
 
       setAniListToken(token)
@@ -886,7 +927,7 @@ export default function SettingsPage() {
 
   const handleTraktConnect = async () => {
     if (!hasTraktClientCredentials()) {
-      setTraktError('This build does not include Trakt app credentials. Add a Client ID and Client Secret below, or rebuild with VITE_TRAKT_CLIENT_ID and VITE_TRAKT_CLIENT_SECRET.')
+      setTraktError('Trakt requires app credentials for device authorization. Add your Trakt Client ID and Client Secret below.')
       setShowTraktAdvanced(true)
       return
     }
@@ -1601,7 +1642,7 @@ export default function SettingsPage() {
                       ) : (
                         <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
                           <p className="text-sm text-yellow-200">
-                            This executable was built without Aurales Trakt app credentials, so Trakt requires manual app credentials for now.
+                            Trakt's device token flow requires a client secret. Aurales does not bundle that secret, so add your own Trakt app credentials to connect.
                           </p>
                         </div>
                       )}
@@ -1672,7 +1713,7 @@ export default function SettingsPage() {
                               className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
                             />
                             <p className="text-xs text-white/35 mt-1.5">
-                              To remove this requirement for users, build Aurales with `VITE_TRAKT_CLIENT_ID` and `VITE_TRAKT_CLIENT_SECRET`.
+                              This is stored locally on this device. Bundling a shared Trakt client secret would expose it in the released app.
                             </p>
                           </div>
                         </div>
@@ -1686,6 +1727,25 @@ export default function SettingsPage() {
               {/* MDBList */}
               <SettingSection title="MDBList" description="Ratings, watchlist, lists, continue watching, watched history, and scrobbling.">
                 <div className="px-6 py-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={handleMdblistOAuthConnect}
+                      disabled={mdblistConnChecking || mdblistOAuthPolling || !mdblistClientIdInput}
+                      className="px-4 py-2 bg-accent text-black hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
+                    >
+                      {mdblistOAuthPolling ? 'Waiting for MDBList...' : getStoredMdblistTokens() ? 'Reconnect MDBList' : 'Connect MDBList'}
+                    </button>
+                    {getStoredMdblistTokens() && (
+                      <button
+                        onClick={handleMdblistOAuthDisconnect}
+                        className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-sm font-semibold transition-colors"
+                      >
+                        Disconnect OAuth
+                      </button>
+                    )}
+                  </div>
+
+
                   <div>
                     <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
                     <input
@@ -1696,7 +1756,7 @@ export default function SettingsPage() {
                       className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
                     />
                     <p className="text-[11px] text-white/30 mt-1">
-                      Empty key still uses Aurales' built-in MDBList key for ratings only. Account features need your own key. API docs:{' '}
+                      Optional fallback. Empty key still uses Aurales' built-in MDBList key for ratings only. Account features use OAuth or your own key. API docs:{' '}
                       <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
                     </p>
                   </div>
@@ -1704,7 +1764,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-3">
                     <button
                       onClick={testMdblistConnection}
-                      disabled={!store.mdblistApiKey || mdblistConnChecking}
+                      disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking}
                       className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
                     >
                       {mdblistConnChecking ? (

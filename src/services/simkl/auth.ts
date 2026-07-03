@@ -21,9 +21,10 @@ const LS_ACCOUNT = 'simkl_account'
 const LS_LAST_SYNC = 'simkl_last_sync'
 
 const DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
+const BUILTIN_SIMKL_CLIENT_ID = '41909722c07fbb1a25cdca36ac9223cf0bca362b5081b18669c71189eb8027dc'
 
 export function getSimklClientId(): string {
-  return localStorage.getItem('simkl_client_id') || import.meta.env.VITE_SIMKL_CLIENT_ID || ''
+  return localStorage.getItem('simkl_client_id') || import.meta.env.VITE_SIMKL_CLIENT_ID || BUILTIN_SIMKL_CLIENT_ID
 }
 
 export async function getSimklConfig(): Promise<SimklConfig> {

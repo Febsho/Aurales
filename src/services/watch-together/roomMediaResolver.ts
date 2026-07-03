@@ -1,6 +1,7 @@
 import type { SearchResult, StreamResult } from '../../types'
 import type { RoomMedia, RoomEpisode } from './types'
 import { getAddonStreams, getStreamAddons } from '../addons'
+import { isPlayableStream } from '../streams/playableUrl'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,11 +69,13 @@ export async function resolveRoomMediaLocally(
   const results = await Promise.allSettled(
     streamAddons.map(async (addon) => {
       const streams = await getAddonStreams(addon.url, stremioType, stremioId)
-      return streams.map((s) => ({
-        ...s,
-        addonId: addon.manifest.id,
-        addonName: addon.manifest.name,
-      }))
+      return streams
+        .filter(isPlayableStream)
+        .map((s) => ({
+          ...s,
+          addonId: addon.manifest.id,
+          addonName: addon.manifest.name,
+        }))
     }),
   )
 

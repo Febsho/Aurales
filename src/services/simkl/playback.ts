@@ -90,9 +90,12 @@ export async function onSimklPlaybackStop(item: PlaybackItem, progress: number):
 /** Get all current playback progress items from Simkl. */
 export async function getSimklPlaybackProgress(): Promise<SimklPlaybackProgressItem[]> {
   if (isSimklMockMode()) return []
-  try {
-    return await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback') ?? []
-  } catch (_) { return [] }
+  const { cachedFetch } = await import('../cache/sqliteCache')
+  return cachedFetch<SimklPlaybackProgressItem[]>(
+    'simkl_playback',
+    async () => (await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback')) ?? [],
+    { category: 'SIMKL_LISTS', ttlSeconds: 120 },
+  )
 }
 
 /** Save/update playback progress to Simkl for cross-device resume. */
