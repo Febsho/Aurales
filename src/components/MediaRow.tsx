@@ -18,7 +18,7 @@ interface MediaRowProps {
   headerRightControls?: React.ReactNode
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = true, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const posterSize = useAppStore((s) => s.posterSize)

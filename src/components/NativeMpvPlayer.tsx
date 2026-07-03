@@ -1364,7 +1364,11 @@ function FullNativeMpvPlayer({
         await new Promise((r) => setTimeout(r, 500))
         const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
         const reversed = [...logs].reverse()
-        const stderrLines = reversed.filter((line) => line.includes('[MPV STDERR]'))
+        const stderrLines = reversed.filter((line) =>
+          line.includes('[MPV STDERR]') &&
+          !line.includes('Ignoring unterminated command on disconnect') &&
+          !line.includes('ipc_0')
+        )
         const detail = stderrLines[0]
           ?? reversed.find((line) => line.includes('[MPV OUTPUT]'))
           ?? reversed.find((line) => line.includes('[PLAYER EXIT]'))
