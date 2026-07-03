@@ -397,9 +397,27 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   }, [source, watchProgress, continueWatchingLimit, streamSelectorData])
 
   // ── Source selector (always rendered in header) ─────────────────────────────
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+
+  const visibleSources = SOURCE_OPTIONS.filter((opt) => {
+    switch (opt.value) {
+      case 'local': return true
+      case 'simkl': return simklConnected
+      case 'trakt': return traktConnected
+      case 'anilist': return anilistConnected
+      case 'pmdb': return !!pmdbApiKey
+      case 'mdblist': return !!mdblistApiKey
+      default: return false
+    }
+  })
+
   const sourceSelector = (
     <div className="flex items-center gap-0.5 bg-white/5 rounded-lg p-0.5">
-      {SOURCE_OPTIONS.map((opt) => (
+      {visibleSources.map((opt) => (
         <button
           key={opt.value}
           onClick={() => changeSource(opt.value)}
