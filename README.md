@@ -17,7 +17,7 @@
 
 ---
 
-![Home](screenshots/home.png)
+
 
 ## Features
 
@@ -43,7 +43,7 @@
 - **Auto Skip** — skip intros and outros automatically via IntroDB integration
 - **Continue Watching** — resume from where you left off across all synced services
 
-![Streams](screenshots/streams.png)
+
 
 ### Watch Tracking & Sync
 
@@ -57,7 +57,7 @@ Aurales syncs watch history, watchlists, and progress across multiple services:
 | **MDBList** | ✓ | ✓ | ✓ | ✓ |
 | **PMDB** | ✓ | ✓ | ✓ | ✓ |
 
-![Settings](screenshots/settings.png)
+
 
 ### Library Management
 
@@ -65,7 +65,7 @@ Aurales syncs watch history, watchlists, and progress across multiple services:
 - **Multi-Service Collections** — browse Simkl, Trakt, AniList, and MDBList watchlists in one place
 - **Shelf Management** — add, reorder, and remove shelves from your home screen
 
-![Library](screenshots/library.png)
+
 
 ### Rich Media Details
 
@@ -75,7 +75,7 @@ Aurales syncs watch history, watchlists, and progress across multiple services:
 - **Recommendations** — "More Like This" suggestions
 - **Person Pages** — cast and crew profiles with filmography
 
-![Episodes](screenshots/episodes.png)
+
 
 ### Subtitles
 
