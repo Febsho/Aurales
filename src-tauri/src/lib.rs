@@ -75,6 +75,7 @@ pub fn run() {
             commands::stop_embedded_mpv,
             commands::pmdb_request,
             commands::http_get_text,
+            commands::http_request,
             commands::openrouter_chat,
             commands::download_subtitle,
             commands::write_temp_subtitle,

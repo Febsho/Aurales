@@ -1805,6 +1805,47 @@ pub async fn http_get_text(url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn http_request(
+    method: String,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+) -> Result<String, String> {
+    validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let mut req = match method.to_uppercase().as_str() {
+            "GET" => ureq::get(&url),
+            "POST" => ureq::post(&url),
+            "PUT" => ureq::put(&url),
+            "DELETE" => ureq::delete(&url),
+            "PATCH" => ureq::patch(&url),
+            _ => return Err(format!("Unsupported HTTP method: {method}")),
+        };
+        for (k, v) in &headers {
+            req = req.set(k, v);
+        }
+        let response = if let Some(b) = body {
+            req.send_string(&b)
+        } else {
+            req.call()
+        }
+        .map_err(|e| {
+            if let ureq::Error::Status(code, resp) = e {
+                let body = resp.into_string().unwrap_or_default();
+                format!("{code}:{body}")
+            } else {
+                format!("HTTP request failed: {e}")
+            }
+        })?;
+        response
+            .into_string()
+            .map_err(|e| format!("Failed to read response: {e}"))
+    })
+    .await
+    .map_err(|e| format!("HTTP request task failed: {e}"))?
+}
+
+#[tauri::command]
 pub async fn openrouter_chat(
     api_key: String,
     request_body: serde_json::Value,
@@ -2123,16 +2164,38 @@ pub async fn start_simkl_callback_server() -> Result<String, String> {
 }
 
 fn parse_oauth_code(request: &str) -> Option<String> {
+    parse_oauth_param(request, "code")
+}
+
+fn parse_oauth_param(request: &str, key: &str) -> Option<String> {
     // First line of an HTTP request: "GET /path?code=xxxx&state=... HTTP/1.1"
     let first_line = request.lines().next()?;
     let path = first_line.split_whitespace().nth(1)?;
     let query = path.split('?').nth(1)?;
     for param in query.split('&') {
-        if let Some(value) = param.strip_prefix("code=") {
-            return Some(value.to_string());
+        if let Some(value) = param.strip_prefix(&format!("{key}=")) {
+            return Some(percent_decode(value));
         }
     }
     None
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = u8::from_str_radix(&value[i + 1..i + 3], 16) {
+                decoded.push(hex);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
 }
 
 /// Exchanges a Simkl authorization code for an access token.
@@ -2207,15 +2270,18 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
     }
     let _guard = AnilistCallbackGuard;
 
-    let listener = TcpListener::bind("127.0.0.1:42814")
-        .await
-        .map_err(|e| format!("Failed to bind AniList callback port 42814: {}", e))?;
+    let listener = match TcpListener::bind("[::1]:42814").await {
+        Ok(l) => l,
+        Err(_) => TcpListener::bind("127.0.0.1:42814")
+            .await
+            .map_err(|e| format!("Failed to bind callback port 42814: {}", e))?,
+    };
 
     let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), listener.accept())
+        tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
             .await
-            .map_err(|_| "Timed out waiting for AniList OAuth callback.".to_string())?
-            .map_err(|e| format!("Failed to accept AniList OAuth callback: {}", e))?;
+            .map_err(|_| "Timed out waiting for OAuth callback.".to_string())?
+            .map_err(|e| format!("Failed to accept OAuth callback: {}", e))?;
 
     let mut buf = vec![0u8; 4096];
     let n = stream
@@ -2224,15 +2290,26 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
         .map_err(|e| format!("Failed to read AniList callback request: {}", e))?;
 
     let request = String::from_utf8_lossy(&buf[..n]);
-    let code = parse_oauth_code(&request)
-        .ok_or_else(|| "AniList OAuth callback did not contain a 'code' parameter".to_string())?;
+    if let Some(token) = parse_oauth_param(&request, "access_token") {
+        write_oauth_success_response(&mut stream, "Connected!").await;
+        return Ok(token);
+    }
+    if let Some(code) = parse_oauth_code(&request) {
+        write_oauth_success_response(&mut stream, "Connected!").await;
+        return Ok(code);
+    }
 
-    // Respond with a friendly page so the user knows they can close the tab.
     let html = concat!(
         "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
+        "<script>",
+        "const params = new URLSearchParams(location.hash.slice(1));",
+        "const token = params.get('access_token');",
+        "if (token) fetch('/token?access_token=' + encodeURIComponent(token)).then(() => {",
+        "document.body.innerHTML = '<h2>Connected!</h2><p>You can close this tab and return to Aurales.</p>';",
+        "});",
+        "</script>",
         "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
-        "<h2>Connected to AniList!</h2>",
-        "<p>You can close this tab and return to Aurales.</p>",
+        "<h2>Finishing connection...</h2>",
         "</body></html>",
     );
     let response = format!(
@@ -2242,10 +2319,42 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
     );
     let _ = stream.write_all(response.as_bytes()).await;
 
-    Ok(code)
+    let (mut stream, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
+            .await
+            .map_err(|_| "Timed out waiting for AniList access token relay.".to_string())?
+            .map_err(|e| format!("Failed to accept AniList token relay: {}", e))?;
+
+    let mut buf = vec![0u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Failed to read AniList token relay request: {}", e))?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let token = parse_oauth_param(&request, "access_token")
+        .ok_or_else(|| "AniList OAuth callback did not contain an access token.".to_string())?;
+    write_oauth_success_response(&mut stream, "Connected!").await;
+    Ok(token)
+}
+
+async fn write_oauth_success_response(stream: &mut tokio::net::TcpStream, title: &str) {
+    use tokio::io::AsyncWriteExt;
+    let html = format!(
+        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>\
+         <body style=\"font-family:sans-serif;text-align:center;padding:60px\">\
+         <h2>{title}</h2><p>You can close this tab and return to Aurales.</p>\
+         </body></html>"
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html.len(),
+        html,
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
 }
 
 /// Exchanges an AniList authorization code for an access token.
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn exchange_anilist_token(
     code: String,

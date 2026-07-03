@@ -2,9 +2,10 @@ import type { TraktTokens, TraktDeviceCode, TraktAccount } from '../../types'
 
 const TRAKT_API = 'https://api.trakt.tv'
 const LS_ACCOUNT = 'trakt_account'
+const BUILTIN_TRAKT_CLIENT_ID = '3649670f0821f9da74ec71ac83ec7b37c71397d22aaa3c44997bb46477262010'
 
 export function getClientId(): string {
-  return localStorage.getItem('trakt_client_id') || import.meta.env.VITE_TRAKT_CLIENT_ID || ''
+  return localStorage.getItem('trakt_client_id') || import.meta.env.VITE_TRAKT_CLIENT_ID || BUILTIN_TRAKT_CLIENT_ID
 }
 
 function getClientSecret(): string {
@@ -12,11 +13,11 @@ function getClientSecret(): string {
 }
 
 export function hasTraktClientCredentials(): boolean {
-  return !!getClientId() && !!getClientSecret()
+  return !!getClientId()
 }
 
 export function hasBundledTraktClientCredentials(): boolean {
-  return !!import.meta.env.VITE_TRAKT_CLIENT_ID && !!import.meta.env.VITE_TRAKT_CLIENT_SECRET
+  return !!(BUILTIN_TRAKT_CLIENT_ID && (import.meta.env.VITE_TRAKT_CLIENT_SECRET || ''))
 }
 
 export function getStoredTokens(): TraktTokens | null {
@@ -77,17 +78,19 @@ export async function getDeviceCode(): Promise<TraktDeviceCode> {
 
 export async function pollForToken(deviceCode: string): Promise<TraktTokens | null> {
   const clientId = getClientId()
+  if (!clientId) throw new Error('Trakt client ID not configured')
+
+  const body: Record<string, string> = {
+    code: deviceCode,
+    client_id: clientId,
+  }
   const clientSecret = getClientSecret()
-  if (!clientId || !clientSecret) throw new Error('Trakt client credentials not configured')
+  if (clientSecret) body.client_secret = clientSecret
 
   const res = await fetch(`${TRAKT_API}/oauth/device/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      code: deviceCode,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
+    body: JSON.stringify(body),
   })
 
   if (res.status === 400) return null
@@ -109,16 +112,19 @@ export async function refreshAccessToken(): Promise<TraktTokens | null> {
   const tokens = getStoredTokens()
   if (!tokens) return null
 
+  const body: Record<string, string> = {
+    refresh_token: tokens.refreshToken,
+    client_id: getClientId(),
+    redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
+    grant_type: 'refresh_token',
+  }
+  const secret = getClientSecret()
+  if (secret) body.client_secret = secret
+
   const res = await fetch(`${TRAKT_API}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      refresh_token: tokens.refreshToken,
-      client_id: getClientId(),
-      client_secret: getClientSecret(),
-      redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
-      grant_type: 'refresh_token',
-    }),
+    body: JSON.stringify(body),
   })
 
   if (!res.ok) {

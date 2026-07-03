@@ -21,6 +21,7 @@ import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
+import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 
 interface LocationState {
   poster?: string
@@ -418,6 +419,8 @@ export default function MovieDetailPage() {
       })
       .catch(() => setFallbackRecommendations(rotateFallback(MOCK_TRENDING, movie.id).map(applySearchResultArt)))
   }, [movie])
+
+  useGlobalBackdrop(movie?.backdrop || movie?.poster)
 
   if (loading || !movie) {
     return (

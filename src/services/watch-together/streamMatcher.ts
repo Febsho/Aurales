@@ -1,6 +1,7 @@
 import type { StreamResult } from '../../types'
 import type { RoomMedia, RoomEpisode, RoomStream } from './types'
 import { getAddonStreams, getStreamAddons } from '../addons'
+import { isPlayableStream } from '../streams/playableUrl'
 
 // ── Fingerprinting ──────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ export async function findMatchingLocalStream(
   roomMedia: RoomMedia,
   roomEpisode?: RoomEpisode,
   hostStream?: RoomStream,
+  allowDifferentStream = false,
 ): Promise<{ stream: StreamResult; addonId: string; addonName: string } | null> {
   const stremioType = mediaTypeToStremio(roomMedia.type)
   const stremioId = buildStremioId(roomMedia, roomEpisode)
@@ -58,7 +60,9 @@ export async function findMatchingLocalStream(
     try {
       const results = await getAddonStreams(addon.url, stremioType, stremioId)
       for (const s of results) {
-        allStreams.push({ ...s, addonId: addon.manifest.id, addonName: addon.manifest.name })
+        if (isPlayableStream(s)) {
+          allStreams.push({ ...s, addonId: addon.manifest.id, addonName: addon.manifest.name })
+        }
       }
     } catch (_) {
       // addon unavailable, skip
@@ -70,9 +74,10 @@ export async function findMatchingLocalStream(
   if (hostStream) {
     const matched = matchStreamToHost(allStreams, hostStream)
     if (matched) return matched
+    if (!allowDifferentStream) return null
   }
 
-  // No host stream or no match — return first available
+  // No host stream, or the room allows guests to use a different stream.
   const first = allStreams[0]
   return { stream: first, addonId: first.addonId, addonName: first.addonName }
 }
