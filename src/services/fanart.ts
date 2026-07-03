@@ -1,0 +1,64 @@
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { useAppStore } from '../stores/appStore'
+
+const BASE = 'https://webservice.fanart.tv/v3'
+
+interface FanartImage {
+  url: string
+  likes: string
+  lang: string
+}
+
+interface FanartMovieResponse {
+  movieposter?: FanartImage[]
+  moviebackground?: FanartImage[]
+  hdmovielogo?: FanartImage[]
+  movielogo?: FanartImage[]
+}
+
+interface FanartShowResponse {
+  tvposter?: FanartImage[]
+  showbackground?: FanartImage[]
+  hdtvlogo?: FanartImage[]
+  tvbanner?: FanartImage[]
+}
+
+function pickBest(images?: FanartImage[]): string | undefined {
+  if (!images?.length) return undefined
+  const en = images.filter((i) => i.lang === 'en' || i.lang === '')
+  const sorted = (en.length ? en : images).sort((a, b) => Number(b.likes) - Number(a.likes))
+  return sorted[0]?.url
+}
+
+export async function getFanartMovieArt(tmdbId: string | number): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
+  const apiKey = useAppStore.getState().fanartApiKey
+  if (!apiKey || !tmdbId) return {}
+
+  return cachedFetch(`fanart_movie:${tmdbId}`, async () => {
+    const res = await fetch(`${BASE}/movies/${tmdbId}?api_key=${apiKey}`)
+    if (!res.ok) return {}
+    const data = await res.json() as FanartMovieResponse
+    return {
+      poster: pickBest(data.movieposter),
+      backdrop: pickBest(data.moviebackground),
+      logo: pickBest(data.hdmovielogo) || pickBest(data.movielogo),
+    }
+  }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
+}
+
+export async function getFanartShowArt(tvdbId: string | number): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
+  const apiKey = useAppStore.getState().fanartApiKey
+  if (!apiKey || !tvdbId) return {}
+
+  return cachedFetch(`fanart_show:${tvdbId}`, async () => {
+    const res = await fetch(`${BASE}/tv/${tvdbId}?api_key=${apiKey}`)
+    if (!res.ok) return {}
+    const data = await res.json() as FanartShowResponse
+    return {
+      poster: pickBest(data.tvposter),
+      backdrop: pickBest(data.showbackground),
+      logo: pickBest(data.hdtvlogo),
+    }
+  }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
+}

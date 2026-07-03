@@ -8,7 +8,9 @@ export default function RoomControls() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const isHost = useWatchTogetherStore((s) => s.isHost)
   const currentUserId = useWatchTogetherStore((s) => s.currentUserId)
+  const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
   const [transferOpen, setTransferOpen] = useState(false)
+  const [resolving, setResolving] = useState(false)
 
   if (!currentRoom || !currentRoom.selectedMedia) return null
 
@@ -18,11 +20,17 @@ export default function RoomControls() {
   const playback = currentRoom.playback
   const isPlaying = playback.isPlaying
 
-  const handlePlayPause = () => {
+  const handlePlayPause = async () => {
     const time = playback.currentTime
     if (isPlaying) {
       wsClient.pause(time)
     } else {
+      if (!selectedLocalStream) {
+        setResolving(true)
+        const found = await wsClient.autoResolveStream()
+        setResolving(false)
+        if (!found) return
+      }
       wsClient.play(time)
     }
   }
@@ -50,9 +58,15 @@ export default function RoomControls() {
           variant="glass"
           size="sm"
           onClick={handlePlayPause}
+          disabled={resolving}
           className="flex-1"
           icon={
-            isPlaying ? (
+            resolving ? (
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : isPlaying ? (
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <rect x="6" y="4" width="4" height="16" rx="1" />
                 <rect x="14" y="4" width="4" height="16" rx="1" />
@@ -64,7 +78,7 @@ export default function RoomControls() {
             )
           }
         >
-          {isPlaying ? 'Pause' : 'Play'}
+          {resolving ? 'Finding...' : isPlaying ? 'Pause' : 'Play'}
         </Button>
 
         <Button

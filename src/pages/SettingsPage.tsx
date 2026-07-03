@@ -40,6 +40,7 @@ const BACKUP_KEYS = [
   'trakt_tokens',
   'trakt_account',
   'mdblist_api_key',
+  'fanart_api_key',
   'orynt_addons',
   'orynt_home_rows',
   'orynt_watch_progress',
@@ -467,6 +468,129 @@ function AnimeIdMappingsSection() {
   )
 }
 
+function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+    >
+      <option value="default">Default</option>
+      <option value="tmdb">TMDb</option>
+      <option value="tvdb">TVDb</option>
+      <option value="fanart">Fanart.tv</option>
+    </select>
+  )
+}
+
+function ArtworkSettingsSection() {
+  const artProviders = useAppStore((s) => s.artProviders)
+  const setArtProviders = useAppStore((s) => s.setArtProviders)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const setCustomArtUrls = useAppStore((s) => s.setCustomArtUrls)
+
+  const updateProvider = (key: string, value: string) => {
+    setArtProviders({ ...artProviders, [key]: value })
+  }
+
+  const updateCustomUrl = (key: string, value: string) => {
+    setCustomArtUrls({ ...customArtUrls, [key]: value })
+  }
+
+  const sections = [
+    { title: 'Movies', color: 'text-amber-400/80', prefix: 'movie' },
+    { title: 'Series', color: 'text-blue-400/80', prefix: 'series' },
+    { title: 'Anime', color: 'text-pink-400/80', prefix: 'anime' },
+  ] as const
+
+  return (
+    <>
+      {sections.map(({ title, color, prefix }) => (
+        <div key={prefix}>
+          <h3 className={`text-sm font-bold ${color} ${prefix !== 'movie' ? 'mt-8' : ''} mb-3`}>{title}</h3>
+          <SettingSection>
+            <SettingRow label="Poster provider" description={`Source for ${title.toLowerCase()} poster artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Poster`]}
+                onChange={(v) => updateProvider(`${prefix}Poster`, v)}
+              />
+            </SettingRow>
+            <SettingRow label="Background provider" description={`Source for ${title.toLowerCase()} backdrop/background artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Backdrop`]}
+                onChange={(v) => updateProvider(`${prefix}Backdrop`, v)}
+              />
+            </SettingRow>
+            <SettingRow label="Logo provider" description={`Source for ${title.toLowerCase()} title logo artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Logo`]}
+                onChange={(v) => updateProvider(`${prefix}Logo`, v)}
+              />
+            </SettingRow>
+          </SettingSection>
+        </div>
+      ))}
+
+      <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Custom Art URL Overrides</h3>
+      <SettingSection description="Custom URL patterns replace the default artwork everywhere. Use placeholders: {imdb_id}, {tmdb_id}, {tvdb_id}, {mal_id}, {anilist_id}, {type}, {season}, {episode}">
+        <SettingRow label="Poster URL pattern" description="e.g. https://example.com/poster/{imdb_id}.jpg">
+          <input
+            type="text"
+            value={customArtUrls.posterUrl}
+            onChange={(e) => updateCustomUrl('posterUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+        <SettingRow label="Background URL pattern" description="e.g. https://example.com/backdrop/{tmdb_id}.jpg">
+          <input
+            type="text"
+            value={customArtUrls.backdropUrl}
+            onChange={(e) => updateCustomUrl('backdropUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+        <SettingRow label="Logo URL pattern" description="e.g. https://example.com/logo/{tmdb_id}.png">
+          <input
+            type="text"
+            value={customArtUrls.logoUrl}
+            onChange={(e) => updateCustomUrl('logoUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+        <SettingRow label="Episode thumbnail URL pattern" description="e.g. https://example.com/ep/{tmdb_id}/S{season}E{episode}.jpg">
+          <input
+            type="text"
+            value={customArtUrls.episodeThumbnailUrl}
+            onChange={(e) => updateCustomUrl('episodeThumbnailUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+      </SettingSection>
+
+      <div className="mt-4 px-1">
+        <p className="text-xs text-white/30">Custom URL patterns take priority over all providers. If a pattern is set and resolves successfully (all placeholders filled, valid URL), it replaces the default art everywhere — home, discover, detail pages, and cards.</p>
+        <div className="mt-3 bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+          <p className="text-xs font-semibold text-white/50 mb-2">Available placeholders</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-white/40">
+            <span><code className="text-accent/70">{'{imdb_id}'}</code> — IMDb ID (tt1234567)</span>
+            <span><code className="text-accent/70">{'{tmdb_id}'}</code> — TMDb numeric ID</span>
+            <span><code className="text-accent/70">{'{tvdb_id}'}</code> — TVDb numeric ID</span>
+            <span><code className="text-accent/70">{'{mal_id}'}</code> — MyAnimeList ID</span>
+            <span><code className="text-accent/70">{'{anilist_id}'}</code> — AniList ID</span>
+            <span><code className="text-accent/70">{'{type}'}</code> — movie or series</span>
+            <span><code className="text-accent/70">{'{season}'}</code> — Season number</span>
+            <span><code className="text-accent/70">{'{episode}'}</code> — Episode number</span>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function SearchSettingsSection() {
   const movieSearchEngine = useAppStore((s) => s.movieSearchEngine)
   const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine)
@@ -556,7 +680,7 @@ function SearchSettingsSection() {
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
@@ -1120,6 +1244,18 @@ export default function SettingsPage() {
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
+            </svg>
+          )
+        },
+        {
+          id: 'artwork',
+          label: 'Artwork',
+          description: 'Art providers, custom poster/backdrop/logo URLs, and overrides.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 15-5-5L5 21" />
             </svg>
           )
         },
@@ -1800,6 +1936,19 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
+              {/* Fanart.tv */}
+              <SettingSection title="Fanart.tv" description="High-quality poster, backdrop, and logo artwork from the Fanart.tv community.">
+                <SettingRow label="API Key" description="Get a free personal key at fanart.tv/get-an-api-key">
+                  <input
+                    type="password"
+                    value={store.fanartApiKey}
+                    onChange={(e) => store.setFanartApiKey(e.target.value)}
+                    placeholder="Enter your Fanart.tv API key"
+                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
+                  />
+                </SettingRow>
+              </SettingSection>
+
               {/* OpenRouter AI */}
               <SettingSection title="OpenRouter AI" description="AI-powered natural language searches and subtitle translation.">
                 <SettingRow label="API Key" description="Get your API key at openrouter.ai">
@@ -2258,6 +2407,13 @@ export default function SettingsPage() {
               </SettingSection>
 
             </>
+          )}
+
+          {/* ═══════════════════════════════════════════════
+              ARTWORK TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'artwork' && (
+            <ArtworkSettingsSection />
           )}
 
           {/* ═══════════════════════════════════════════════

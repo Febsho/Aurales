@@ -338,7 +338,7 @@ export default function CatalogPage() {
         <>
           <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
             {items.map((item) => (
-              <MediaCard key={item.id} item={item} disableArtOverride={true} />
+              <MediaCard key={item.id} item={item} />
             ))}
           </div>
           {loadingMore && (

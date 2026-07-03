@@ -16,7 +16,7 @@ import DetailContentShell from '../components/media/DetailContentShell'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
-import { applyMovieArt, applySearchResultArt } from '../services/artwork'
+import { applyMovieArt, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
@@ -340,7 +340,15 @@ export default function MovieDetailPage() {
 
       finalResult.id = targetId
 
-      const artApplied = applyMovieArt(finalResult)
+      let artApplied = applyMovieArt(finalResult)
+
+      const providerArt = await resolveArtFromProviders('movie', {
+        tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
+      }, artApplied.isAnime)
+      if (providerArt.poster || providerArt.backdrop || providerArt.logo) {
+        artApplied = { ...artApplied, ...(providerArt.poster && { poster: providerArt.poster }), ...(providerArt.backdrop && { backdrop: providerArt.backdrop }), ...(providerArt.logo && { logo: providerArt.logo }) }
+      }
+
       setMovie(artApplied)
       setLoading(false)
 

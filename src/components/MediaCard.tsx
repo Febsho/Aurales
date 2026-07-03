@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { applySearchResultArt } from '../services/artwork'
+import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
@@ -85,8 +85,10 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
 
   const ratingStr = useMemo(() => {
     if (!displayItem.rating) return null
-    const str = String(displayItem.rating)
-    return str.replace(/\/10$/, '').trim()
+    const n = Number(displayItem.rating)
+    if (isNaN(n)) return null
+    const formatted = n % 1 === 0 ? String(n) : n.toFixed(1)
+    return formatted.replace(/\/10$/, '').trim()
   }, [displayItem.rating])
 
   const widthClass = useMemo(() => {
@@ -147,6 +149,15 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
             if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
             if (meta.genre) setResolvedGenre(meta.genre)
           }
+        }
+        const providerArt = await resolveArtFromProviders(
+          displayItem.type,
+          { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId },
+          displayItem.isAnime,
+        )
+        if (!cancelled) {
+          if (providerArt.poster) setResolvedPoster(providerArt.poster)
+          if (providerArt.backdrop) setResolvedBackdrop(providerArt.backdrop)
         }
       } catch (_) { /* ignore */ }
     })()
@@ -288,7 +299,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
         {/* Bottom gradient overlay with genre + rating */}
         <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
         {(showGenreOnCards || showRatingsOnCards) && (
-          <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center gap-1.5">
+          <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center justify-center gap-1.5">
             {showGenreOnCards && genre && (
               <span className="text-[10px] font-semibold text-white/70 tracking-wide">
                 {genre}

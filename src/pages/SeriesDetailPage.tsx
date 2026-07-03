@@ -19,7 +19,7 @@ import DetailContentShell from '../components/media/DetailContentShell'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
-import { applyEpisodeArt, applySearchResultArt, applyShowArt } from '../services/artwork'
+import { applyEpisodeArt, applySearchResultArt, applyShowArt, resolveArtFromProviders } from '../services/artwork'
 import { isWatchedFromProviders, batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
@@ -985,7 +985,14 @@ export default function SeriesDetailPage() {
         } catch (_) { /* continue */ }
       }
 
-      const finalArt = applyShowArt(artApplied)
+      let finalArt = applyShowArt(artApplied)
+
+      const providerArt = await resolveArtFromProviders('series', {
+        tmdbId: finalArt.tmdbId, tvdbId: finalArt.tvdbId, imdbId: finalArt.imdbId,
+      }, finalArt.isAnime)
+      if (providerArt.poster || providerArt.backdrop || providerArt.logo) {
+        finalArt = { ...finalArt, ...(providerArt.poster && { poster: providerArt.poster }), ...(providerArt.backdrop && { backdrop: providerArt.backdrop }), ...(providerArt.logo && { logo: providerArt.logo }) }
+      }
 
       if (isAnimeLocal) {
         console.log("[AnimeDetail] setting seasons", {

@@ -7,6 +7,27 @@ import { v4 as uuid } from 'uuid'
 
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
+export type ArtProvider = 'default' | 'tmdb' | 'tvdb' | 'fanart'
+
+export interface ArtProviderSettings {
+  moviePoster: ArtProvider
+  movieBackdrop: ArtProvider
+  movieLogo: ArtProvider
+  seriesPoster: ArtProvider
+  seriesBackdrop: ArtProvider
+  seriesLogo: ArtProvider
+  animePoster: ArtProvider
+  animeBackdrop: ArtProvider
+  animeLogo: ArtProvider
+}
+
+export interface CustomArtUrls {
+  posterUrl: string
+  backdropUrl: string
+  logoUrl: string
+  episodeThumbnailUrl: string
+}
+
 interface AppState {
   sidebarCollapsed: boolean
   toggleSidebar: () => void
@@ -162,9 +183,16 @@ interface AppState {
   subtitleColor: string
   subtitleBorderStyle: 'outline' | 'shadow' | 'none'
   visibleHeroRatings: string[]
+  fanartApiKey: string
+  setFanartApiKey: (key: string) => void
   openrouterApiKey: string
   openrouterModel: string
 
+  // Art providers
+  artProviders: ArtProviderSettings
+  setArtProviders: (providers: ArtProviderSettings) => void
+  customArtUrls: CustomArtUrls
+  setCustomArtUrls: (urls: CustomArtUrls) => void
   // Metadata sources
   movieMetadataSource: 'tmdb' | 'tvdb'
   seriesMetadataSource: 'tvdb' | 'tmdb'
@@ -663,6 +691,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color }) },
   setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style }) },
   setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
+  fanartApiKey: localStorage.getItem('fanart_api_key') || '',
+  setFanartApiKey: (key) => { localStorage.setItem('fanart_api_key', key); set({ fanartApiKey: key }) },
   openrouterApiKey: localStorage.getItem('openrouter_api_key') || '',
   openrouterModel: localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash',
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
@@ -689,6 +719,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  artProviders: JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || {
+    moviePoster: 'default', movieBackdrop: 'default', movieLogo: 'default',
+    seriesPoster: 'default', seriesBackdrop: 'default', seriesLogo: 'default',
+    animePoster: 'default', animeBackdrop: 'default', animeLogo: 'default',
+  } as ArtProviderSettings,
+  setArtProviders: (providers) => { localStorage.setItem('aurales_art_providers', JSON.stringify(providers)); set({ artProviders: providers }) },
+  customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
+    posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
+  } as CustomArtUrls,
+  setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); set({ customArtUrls: urls }) },
   movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
   seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
   animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',

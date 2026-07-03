@@ -7,7 +7,7 @@ import type {
   DrawStroke,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
-import { findMatchingLocalStream } from './streamMatcher'
+import { findMatchingLocalStream, createStreamFingerprint } from './streamMatcher'
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -445,26 +445,41 @@ export function stopPingLoop(): void {
   }
 }
 
-// ── Auto-resolve guest stream ──────────────────────────────────────────────
+// ── Auto-resolve stream (host + guest) ─────────────────────────────────────
 
-async function autoResolveGuestStream(
-  media: RoomMedia,
+export async function autoResolveStream(
+  media?: RoomMedia,
   episode?: RoomEpisode,
   hostStream?: RoomStream,
-): Promise<void> {
+): Promise<boolean> {
   const store = getStore()
+  const m = media ?? store.currentRoom?.selectedMedia
+  const ep = episode ?? store.currentRoom?.selectedEpisode
+  if (!m) return false
   try {
-    logDebug('out', 'AUTO_RESOLVE_START', { media: media.title, hostStream: !!hostStream })
-    const match = await findMatchingLocalStream(media, episode, hostStream)
+    logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, hostStream: !!hostStream })
+    const match = await findMatchingLocalStream(m, ep, hostStream)
     if (match) {
       store.setSelectedLocalStream(match)
+      selectStream({
+        addonId: match.addonId,
+        name: match.addonName,
+        title: match.stream.title,
+        quality: match.stream.name?.match(/\b(4k|2160p|1080p|720p|480p)\b/i)?.[0] ?? undefined,
+        infoHash: match.stream.infoHash,
+        fileIdx: match.stream.fileIdx,
+        streamFingerprint: createStreamFingerprint(match.stream as any),
+      })
       setReady(true)
       logDebug('in', 'AUTO_RESOLVE_OK', { addon: match.addonName, stream: match.stream.name ?? match.stream.title })
+      return true
     } else {
-      logDebug('in', 'AUTO_RESOLVE_NONE', { media: media.title })
+      logDebug('in', 'AUTO_RESOLVE_NONE', { media: m.title })
+      return false
     }
   } catch (_) {
-    logDebug('in', 'AUTO_RESOLVE_ERROR', { media: media.title })
+    logDebug('in', 'AUTO_RESOLVE_ERROR', { media: m.title })
+    return false
   }
 }
 
@@ -482,8 +497,9 @@ function handleServerMessage(msg: ServerMessage): void {
       store.setRoomPanelOpen(true)
       if (msg.room.hostUserId === msg.userId) {
         startSyncLoop()
-      } else if (msg.room.selectedMedia) {
-        autoResolveGuestStream(msg.room.selectedMedia, msg.room.selectedEpisode, msg.room.selectedStream)
+      }
+      if (msg.room.selectedMedia) {
+        autoResolveStream(msg.room.selectedMedia, msg.room.selectedEpisode, msg.room.selectedStream)
       }
       break
     }
@@ -507,8 +523,8 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'MEDIA_UPDATED':
       store.updateMedia(msg.media, msg.episode, msg.stream)
-      if (!store.isHost && msg.media) {
-        autoResolveGuestStream(msg.media, msg.episode, msg.stream)
+      if (msg.media) {
+        autoResolveStream(msg.media, msg.episode, msg.stream)
       }
       break
 
