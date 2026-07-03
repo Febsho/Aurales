@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import Button from '../ui/Button'
@@ -6,6 +7,8 @@ export default function RoomReadyCheck() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const isHost = useWatchTogetherStore((s) => s.isHost)
   const currentUserId = useWatchTogetherStore((s) => s.currentUserId)
+  const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
+  const [resolving, setResolving] = useState(false)
 
   if (!currentRoom || !currentRoom.selectedMedia) return null
   if (currentRoom.playback.status === 'playing' || currentRoom.playback.status === 'paused') return null
@@ -16,6 +19,29 @@ export default function RoomReadyCheck() {
   const allReady = readyCount === totalCount
   const me = participants.find((p) => p.id === currentUserId)
   const myReady = me?.isReady ?? false
+
+  const handleStartPlayback = async () => {
+    if (!selectedLocalStream) {
+      setResolving(true)
+      const found = await wsClient.autoResolveStream()
+      setResolving(false)
+      if (!found) return
+    }
+
+    if (allReady || totalCount <= 1) {
+      wsClient.play(0)
+    }
+  }
+
+  const handleForceStart = async () => {
+    if (!selectedLocalStream) {
+      setResolving(true)
+      const found = await wsClient.autoResolveStream()
+      setResolving(false)
+      if (!found) return
+    }
+    wsClient.play(0)
+  }
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -63,21 +89,29 @@ export default function RoomReadyCheck() {
               variant="primary"
               size="sm"
               fullWidth
-              disabled={!allReady && totalCount > 1}
-              onClick={() => wsClient.play(0)}
+              disabled={resolving || (!allReady && totalCount > 1)}
+              onClick={handleStartPlayback}
               icon={
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
+                resolving ? (
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                )
               }
             >
-              Start Playback
+              {resolving ? 'Finding stream...' : 'Start Playback'}
             </Button>
             {!allReady && totalCount > 1 && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => wsClient.play(0)}
+                disabled={resolving}
+                onClick={handleForceStart}
                 className="flex-shrink-0 text-white/40"
               >
                 Force Start
