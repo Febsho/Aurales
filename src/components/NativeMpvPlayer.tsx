@@ -667,6 +667,14 @@ function FullNativeMpvPlayer({
   useEffect(() => { showUpNextRef.current = showUpNext }, [showUpNext])
   useEffect(() => { volumeRef.current = volume }, [volume])
 
+  // Hide the blurred hero backdrop so the native mpv window is visible through the transparent webview
+  useEffect(() => {
+    const root = document.documentElement
+    const wasActive = root.classList.contains('hero-bg-active')
+    root.classList.remove('hero-bg-active')
+    return () => { if (wasActive) root.classList.add('hero-bg-active') }
+  }, [])
+
   // Live-sync subtitle styling to mpv when settings change during playback
   const playerRunningRef = useRef(playerRunning)
   useEffect(() => { playerRunningRef.current = playerRunning }, [playerRunning])
