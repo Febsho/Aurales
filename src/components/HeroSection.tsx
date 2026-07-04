@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { applySearchResultArt } from '../services/artwork'
+import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
 import { Button } from './ui'
 
@@ -20,6 +21,11 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
   const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
+  const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
 
   const goTo = useCallback(
     (i: number) => setActiveIndex(((i % count) + count) % count),
@@ -62,6 +68,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
 
   // Upgrade backdrops to highest-voted from TMDB images endpoint
   const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
+  const [providerArt, setProviderArt] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -83,7 +90,28 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
     return () => { cancelled = true }
   }, [items])
 
-  const displayItems = items.map(applySearchResultArt)
+  useEffect(() => {
+    let cancelled = false
+    setProviderArt({})
+    items.forEach((itm) => {
+      const key = String(itm.id)
+      resolveArtFromProviders(
+        itm.type === 'series' ? 'series' : 'movie',
+        { tmdbId: itm.tmdbId, tvdbId: itm.tvdbId, imdbId: itm.imdbId },
+        itm.isAnime,
+      ).then((art) => {
+        if (!cancelled) {
+          setProviderArt((prev) => ({ ...prev, [key]: art }))
+        }
+      }).catch(() => undefined)
+    })
+    return () => { cancelled = true }
+  }, [items, artProviderKey, fanartApiKey])
+
+  const displayItems = items.map((raw) => {
+    const art = providerArt[String(raw.id)]
+    return applySearchResultArt(art ? { ...raw, ...art } : raw)
+  })
   const item = displayItems[activeIndex]
   const type = item?.type === 'series' ? 'series' : 'movie'
 
@@ -92,9 +120,9 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
     if (!onActiveBackdropChange || isSmall) return
     const activeItem = displayItems[activeIndex]
     if (!activeItem) { onActiveBackdropChange(undefined); return }
-    const backdrop = upgradedBackdrops[String(activeItem.id)] || activeItem.backdrop || activeItem.poster
+    const backdrop = activeItem.backdrop || upgradedBackdrops[String(activeItem.id)] || activeItem.poster
     onActiveBackdropChange(backdrop)
-  }, [activeIndex, upgradedBackdrops, isSmall])
+  }, [activeIndex, upgradedBackdrops, providerArt, customArtKey, isSmall])
 
   // Fetch top 3 cast for the active hero item
   useEffect(() => {
@@ -174,12 +202,14 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
             >
               {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
                 <img
-                  src={upgradedBackdrops[String(itm.id)] || itm.backdrop!.replace(/\/w\d+\//, '/w1280/')}
+                  src={itm.backdrop || upgradedBackdrops[String(itm.id)]}
                   alt=""
                   className="absolute inset-0 w-full h-full object-cover"
                   style={{ objectPosition: 'center 20%' }}
                   draggable={false}
                   loading={i === activeIndex ? 'eager' : 'lazy'}
+                  decoding="async"
+                  fetchPriority={i === activeIndex ? 'high' : 'auto'}
                 />
               ) : itm.poster ? (
                 <>
@@ -233,7 +263,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
         )}
 
         {/* Content — bottom-left */}
-        <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-6'}`}>
+        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall ? 'px-8 pb-8' : 'px-6 pb-6'}`}>
           {/* Title */}
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (

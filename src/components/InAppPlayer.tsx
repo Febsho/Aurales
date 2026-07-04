@@ -19,6 +19,8 @@ import {
   play as wtPlay,
   pause as wtPause,
   seek as wtSeek,
+  reportLocalPlayback as wtReportLocalPlayback,
+  clearLocalPlayback as wtClearLocalPlayback,
   sendBuffering as wtSendBuffering,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
@@ -370,10 +372,21 @@ IMPORTANT RULES:
     }
 
     window.addEventListener('wt:sync_request', onSyncRequest)
+
+    // Feed the live position to the watch-together sync loop so the host
+    // broadcasts real progress instead of the last event timestamp.
+    const reportTimer = setInterval(() => {
+      const video = videoRef.current
+      if (!video || !useWatchTogetherStore.getState().currentRoom) return
+      wtReportLocalPlayback(video.currentTime, !video.paused)
+    }, 1000)
+
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)
       if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+      clearInterval(reportTimer)
       resetDriftState()
+      wtClearLocalPlayback()
     }
   }, [])
 

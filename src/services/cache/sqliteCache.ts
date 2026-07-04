@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 
+// [PERF] logs are dev-only — they add noise and cost in production builds
+const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
+
 interface RawCacheEntry {
   key: string
   value: string
@@ -68,12 +71,6 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
   }
 }
 
-export async function cacheDelete(key: string): Promise<void> {
-  try {
-    await invoke('cache_entry_set', { key })
-  } catch (_) { /* ignore */ }
-}
-
 export async function cacheClearCategory(category: string): Promise<number> {
   try {
     return await invoke<number>('cache_entry_clear_category', { category })
@@ -120,12 +117,12 @@ export async function cachedFetch<T>(
   const cached = await cacheGet<T>(key)
 
   if (cached && !cached.stale) {
-    console.log(`[PERF] cache-hit category=${options.category} age=${cached.age}ms`)
+    perfLog(`[PERF] cache-hit category=${options.category} age=${cached.age}ms`)
     return cached.data
   }
 
   if (cached) {
-    console.log(`[PERF] stale-serve category=${options.category} age=${cached.age}ms`)
+    perfLog(`[PERF] stale-serve category=${options.category} age=${cached.age}ms`)
 
     if (!pendingRefreshes.has(key) && !(options.skipRefreshIf?.(cached.data))) {
       const refresh = (async () => {
@@ -133,14 +130,14 @@ export async function cachedFetch<T>(
         try {
           const fresh = await fetcher()
           if (Array.isArray(fresh) && fresh.length === 0 && Array.isArray(cached.data) && (cached.data as unknown[]).length > 0) {
-            console.log(`[PERF] stale-kept category=${options.category} reason=empty-refresh`)
+            perfLog(`[PERF] stale-kept category=${options.category} reason=empty-refresh`)
             return
           }
           await cacheSet(key, fresh, options)
-          console.log(`[PERF] stale-refresh category=${options.category} time=${Math.round(performance.now() - t0)}ms`)
+          perfLog(`[PERF] stale-refresh category=${options.category} time=${Math.round(performance.now() - t0)}ms`)
           options.onStaleRefreshed?.(fresh)
         } catch (e) {
-          console.log(`[PERF] stale-kept-on-error category=${options.category}`, e)
+          perfLog(`[PERF] stale-kept-on-error category=${options.category}`, e)
         }
       })().finally(() => pendingRefreshes.delete(key))
       pendingRefreshes.set(key, refresh)
@@ -152,7 +149,7 @@ export async function cachedFetch<T>(
   const t0 = performance.now()
   try {
     const fresh = await fetcher()
-    console.log(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
+    perfLog(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
     await cacheSet(key, fresh, options)
     return fresh
   } catch (e) {

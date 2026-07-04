@@ -119,6 +119,17 @@ export async function removeSimklPlaybackProgress(id: number): Promise<void> {
   if (isSimklMockMode()) return
   try {
     await simklRequest(`/sync/playback/${id}`, { method: 'DELETE' })
+    // The playback list is served from the sqlite cache (120s TTL) — drop the
+    // deleted entry there too, or the item reappears until the cache expires.
+    const { cacheGet, cacheSet } = await import('../cache/sqliteCache')
+    const cached = await cacheGet<SimklPlaybackProgressItem[]>('simkl_playback')
+    if (cached?.data) {
+      await cacheSet(
+        'simkl_playback',
+        cached.data.filter((entry) => Number(entry.id) !== id),
+        { category: 'SIMKL_LISTS', ttlSeconds: 120 },
+      )
+    }
   } catch (_) {
     // Swallow
   }

@@ -15,15 +15,27 @@ interface ArtIds {
 
 function resolveCustomUrl(pattern: string, ids: ArtIds): string | undefined {
   if (!pattern.trim()) return undefined
+  const values: Record<string, string | undefined> = {
+    imdb_id: ids.imdbId ? String(ids.imdbId) : undefined,
+    tmdb_id: ids.tmdbId != null ? String(ids.tmdbId) : undefined,
+    tvdb_id: ids.tvdbId != null ? String(ids.tvdbId) : undefined,
+    mal_id: ids.malId != null ? String(ids.malId) : undefined,
+    anilist_id: ids.anilistId != null ? String(ids.anilistId) : undefined,
+    type: ids.type,
+    season: ids.season != null ? String(ids.season) : undefined,
+    episode: ids.episode != null ? String(ids.episode) : undefined,
+  }
+
+  const missing = Array.from(pattern.matchAll(/\{([a-z_]+)\}/g)).some((match) => {
+    const key = match[1]
+    return !values[key]
+  })
+  if (missing) return undefined
+
   let url = pattern
-    .replace(/\{imdb_id\}/g, String(ids.imdbId || ''))
-    .replace(/\{tmdb_id\}/g, String(ids.tmdbId || ''))
-    .replace(/\{tvdb_id\}/g, String(ids.tvdbId || ''))
-    .replace(/\{mal_id\}/g, String(ids.malId || ''))
-    .replace(/\{anilist_id\}/g, String(ids.anilistId || ''))
-    .replace(/\{type\}/g, ids.type || '')
-    .replace(/\{season\}/g, String(ids.season ?? ''))
-    .replace(/\{episode\}/g, String(ids.episode ?? ''))
+  for (const [key, value] of Object.entries(values)) {
+    url = url.replace(new RegExp(`\\{${key}\\}`, 'g'), value || '')
+  }
 
   if (url.includes('{') || !url.startsWith('http')) return undefined
   return url
@@ -33,12 +45,18 @@ function getCustomUrls() {
   return useAppStore.getState().customArtUrls
 }
 
-export function applySearchResultArt<T extends SearchResult>(item: T): T {
+export function getSearchResultCustomArt(item: SearchResult): { poster?: string; backdrop?: string; logo?: string } {
   const urls = getCustomUrls()
   const ids: ArtIds = { imdbId: item.imdbId, tmdbId: item.tmdbId, tvdbId: item.tvdbId, malId: item.malId, anilistId: item.anilistId, type: item.type }
-  const poster = resolveCustomUrl(urls.posterUrl, ids)
-  const backdrop = resolveCustomUrl(urls.backdropUrl, ids)
-  const logo = resolveCustomUrl(urls.logoUrl, ids)
+  return {
+    poster: resolveCustomUrl(urls.posterUrl, ids),
+    backdrop: resolveCustomUrl(urls.backdropUrl, ids),
+    logo: resolveCustomUrl(urls.logoUrl, ids),
+  }
+}
+
+export function applySearchResultArt<T extends SearchResult>(item: T): T {
+  const { poster, backdrop, logo } = getSearchResultCustomArt(item)
   if (!poster && !backdrop && !logo) return item
   return { ...item, ...(poster && { poster }), ...(backdrop && { backdrop }), ...(logo && { logo }) }
 }
@@ -98,16 +116,12 @@ export async function resolveArtFromProviders(
   const backdropProvider = artProviders[getProviderKey(mediaType, isAnime, 'Backdrop')]
   const logoProvider = artProviders[getProviderKey(mediaType, isAnime, 'Logo')]
 
-  if (posterProvider === 'default' && backdropProvider === 'default' && logoProvider === 'default') {
-    return {}
-  }
-
   const needed = new Set([posterProvider, backdropProvider, logoProvider])
-  needed.delete('default')
 
   const results: Record<string, { poster?: string; backdrop?: string; logo?: string }> = {}
 
   const fetches: Promise<void>[] = []
+  let resolvedTvdbId = ids.tvdbId
 
   if (needed.has('tmdb') && ids.tmdbId) {
     fetches.push(
@@ -116,7 +130,7 @@ export async function resolveArtFromProviders(
           getTmdbCardMetadata(mediaType, ids.tmdbId!),
           getTmdbLandscapeBackdrop(mediaType, ids.tmdbId!),
         ]).then(([card, backdrop]) => {
-          results.tmdb = { poster: card.poster, backdrop: backdrop || card.backdrop }
+          results.tmdb = { poster: card.poster, backdrop: backdrop || card.backdrop, logo: card.logo }
         })
       ).catch(() => undefined)
     )
@@ -138,9 +152,16 @@ export async function resolveArtFromProviders(
       import('./fanart').then(({ getFanartMovieArt, getFanartShowArt }) => {
         if (mediaType === 'movie' && ids.tmdbId) {
           return getFanartMovieArt(ids.tmdbId).then((art) => { results.fanart = art })
-        } else if (ids.tvdbId) {
-          const tvdbId = String(ids.tvdbId).replace('tvdb-', '')
-          return getFanartShowArt(tvdbId).then((art) => { results.fanart = art })
+        } else if (mediaType === 'series') {
+          return (async () => {
+            if (!resolvedTvdbId && ids.tmdbId) {
+              const { getTvdbIdFromTmdb } = await import('./tmdb')
+              resolvedTvdbId = await getTvdbIdFromTmdb(ids.tmdbId)
+            }
+            if (!resolvedTvdbId) return
+            const tvdbId = String(resolvedTvdbId).replace('tvdb-', '')
+            return getFanartShowArt(tvdbId).then((art) => { results.fanart = art })
+          })()
         }
       }).catch(() => undefined)
     )
@@ -149,8 +170,8 @@ export async function resolveArtFromProviders(
   await Promise.all(fetches)
 
   return {
-    poster: posterProvider !== 'default' ? results[posterProvider]?.poster : undefined,
-    backdrop: backdropProvider !== 'default' ? results[backdropProvider]?.backdrop : undefined,
-    logo: logoProvider !== 'default' ? results[logoProvider]?.logo : undefined,
+    poster: results[posterProvider]?.poster,
+    backdrop: results[backdropProvider]?.backdrop,
+    logo: results[logoProvider]?.logo,
   }
 }

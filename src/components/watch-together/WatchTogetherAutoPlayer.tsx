@@ -1,31 +1,69 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
-import NativeMpvPlayer from '../NativeMpvPlayer'
-import InAppPlayer from '../InAppPlayer'
+import * as wsClient from '../../services/watch-together/wsClient'
 import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
+
+// Lazy: keeps the heavy player stack out of the startup bundle — it only loads
+// once a watch-together playback actually starts.
+const NativeMpvPlayer = lazy(() => import('../NativeMpvPlayer'))
+const InAppPlayer = lazy(() => import('../InAppPlayer'))
+
+const ACTIVE_STATUSES = new Set(['playing', 'paused', 'buffering', 'waiting_for_ready'])
 
 export default function WatchTogetherAutoPlayer() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
   const [active, setActive] = useState(false)
+  // Set when the user closes the player while the room is still playing, so a
+  // pause/resume status change doesn't instantly remount it in their face.
+  const dismissedRef = useRef(false)
+  // Freeze the start time at activation — playback.currentTime updates on every
+  // sync event and must not feed a live prop into the player.
+  const startTimeRef = useRef(0)
 
   const media = currentRoom?.selectedMedia
   const episode = currentRoom?.selectedEpisode
   const playback = currentRoom?.playback
+  const mediaKey = media
+    ? `${media.localMediaId}:${episode?.seasonNumber ?? ''}:${episode?.episodeNumber ?? ''}`
+    : ''
+
+  // New media/episode clears a previous dismissal.
+  useEffect(() => {
+    dismissedRef.current = false
+  }, [mediaKey])
 
   useEffect(() => {
+    const status = playback?.status
+    if (!status || status === 'idle' || status === 'stopped' || status === 'ended' || status === 'selecting') {
+      dismissedRef.current = false
+      setActive(false)
+      return
+    }
     if (!media || !selectedLocalStream) return
-    if (!playback || playback.status === 'idle' || playback.status === 'stopped') return
+    if (dismissedRef.current) return
 
-    if (playback.status === 'playing' || playback.status === 'paused' || playback.status === 'waiting_for_ready') {
-      setActive(true)
+    if (ACTIVE_STATUSES.has(status)) {
+      setActive((prev) => {
+        if (!prev) {
+          const pb = playback!
+          const elapsed = pb.isPlaying && Number.isFinite(pb.lastUpdatedAt)
+            ? Math.max(0, (Date.now() - pb.lastUpdatedAt) / 1000)
+            : 0
+          startTimeRef.current = Math.max(0, (pb.currentTime ?? 0) + elapsed)
+        }
+        return true
+      })
     }
   }, [media, selectedLocalStream, playback?.status])
 
   useEffect(() => {
-    if (!currentRoom) setActive(false)
+    if (!currentRoom) {
+      dismissedRef.current = false
+      setActive(false)
+    }
   }, [currentRoom])
 
   if (!active || !media || !selectedLocalStream) return null
@@ -34,7 +72,6 @@ export default function WatchTogetherAutoPlayer() {
   const url = getPlayableStreamUrl(stream)
   if (!url) return null
 
-  const mediaType = media.type === 'movie' ? 'movie' : 'series'
   const simklType: 'movie' | 'show' | 'anime' = media.anilistId ? 'anime' : media.type === 'movie' ? 'movie' : 'show'
 
   const playbackItem: PlaybackItem = {
@@ -48,7 +85,6 @@ export default function WatchTogetherAutoPlayer() {
     episode: episode?.episodeNumber,
   }
 
-  const startTime = playback?.currentTime ?? 0
   const isTauri = !!(window as any).__TAURI_INTERNALS__
   const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer
 
@@ -56,19 +92,29 @@ export default function WatchTogetherAutoPlayer() {
     ? `S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}`
     : undefined
 
+  const handleClose = () => {
+    const wt = useWatchTogetherStore.getState()
+    dismissedRef.current = true
+    setActive(false)
+    // The host leaving playback stops the room; a guest just steps out.
+    if (wt.isHost) wsClient.stop()
+  }
+
   return createPortal(
-    <PlayerComponent
-      url={url}
-      title={media.title}
-      subtitle={subtitle}
-      subtitles={[]}
-      playbackItem={playbackItem}
-      startTime={startTime}
-      poster={media.poster}
-      backdrop={media.backdrop}
-      onClose={() => setActive(false)}
-      onPickAnother={() => setActive(false)}
-    />,
+    <Suspense fallback={null}>
+      <PlayerComponent
+        url={url}
+        title={media.title}
+        subtitle={subtitle}
+        subtitles={[]}
+        playbackItem={playbackItem}
+        startTime={startTimeRef.current}
+        poster={media.poster}
+        backdrop={media.backdrop}
+        onClose={handleClose}
+        onPickAnother={handleClose}
+      />
+    </Suspense>,
     document.body,
   )
 }

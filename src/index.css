@@ -57,7 +57,7 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: transparent;
+  background: #000;
   color: var(--color-text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', 'Segoe UI', sans-serif;
   overflow: hidden;
@@ -71,7 +71,11 @@ html.hero-bg-active::before {
   position: fixed;
   inset: 0;
   z-index: 0;
-  background: var(--hero-bg) center / cover no-repeat;
+  background-color: #000;
+  background-image: var(--hero-bg);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
   filter: blur(40px) brightness(0.35);
   transform: scale(1.15);
   pointer-events: none;

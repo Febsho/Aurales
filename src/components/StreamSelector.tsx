@@ -1,10 +1,13 @@
-import { useMemo, useState, useEffect } from 'react'
+import { lazy, Suspense, useMemo, useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
 import { getAddonStreams, getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
-import NativeMpvPlayer from './NativeMpvPlayer'
-import InAppPlayer from './InAppPlayer'
+
+// Lazy: keeps the heavy player stack out of page chunks — it only loads once
+// the user actually starts playback.
+const NativeMpvPlayer = lazy(() => import('./NativeMpvPlayer'))
+const InAppPlayer = lazy(() => import('./InAppPlayer'))
 import type { PlaybackItem } from '../services/simkl/playback'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { selectStream as wtSelectStream, play as wtPlay } from '../services/watch-together/wsClient'
@@ -451,18 +454,20 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer
 
     return createPortal(
-      <PlayerComponent
-        url={playback.url}
-        title={title}
-        subtitle={seasonEpisode ? `From S${seasonEpisode.season} · E${seasonEpisode.episode}` : undefined}
-        subtitles={mergedSubtitles}
-        playbackItem={playbackItem}
-        startTime={startTime}
-        poster={artwork?.poster}
-        backdrop={artwork?.backdrop}
-        onClose={onClose}
-        onPickAnother={() => setPlayback(null)}
-      />,
+      <Suspense fallback={null}>
+        <PlayerComponent
+          url={playback.url}
+          title={title}
+          subtitle={seasonEpisode ? `From S${seasonEpisode.season} · E${seasonEpisode.episode}` : undefined}
+          subtitles={mergedSubtitles}
+          playbackItem={playbackItem}
+          startTime={startTime}
+          poster={artwork?.poster}
+          backdrop={artwork?.backdrop}
+          onClose={onClose}
+          onPickAnother={() => setPlayback(null)}
+        />
+      </Suspense>,
       document.body
     )
   }

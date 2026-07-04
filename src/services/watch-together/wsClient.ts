@@ -4,6 +4,7 @@ import type {
   RoomMedia,
   RoomEpisode,
   RoomStream,
+  RoomSettings,
   DrawStroke,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
@@ -15,6 +16,36 @@ let syncTimer: ReturnType<typeof setInterval> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let reconnectAttempt = 0
 let lastServerUrl = ''
+
+// Live playback position reported by whichever player component is active.
+// The room's stored playback state only changes on discrete events (play,
+// pause, seek), so the sync loop must NOT use it as the host position —
+// that would rubber-band every guest back to the last event timestamp.
+let localPlayback: { time: number; isPlaying: boolean; updatedAt: number } | null = null
+
+export function reportLocalPlayback(time: number, isPlaying: boolean): void {
+  if (!Number.isFinite(time)) return
+  localPlayback = { time, isPlaying, updatedAt: Date.now() }
+}
+
+export function clearLocalPlayback(): void {
+  localPlayback = null
+}
+
+// Best-known current position: live player position when fresh, otherwise the
+// room's event-anchored time extrapolated by elapsed wall-clock.
+export function getBestKnownTime(): number {
+  if (localPlayback && Date.now() - localPlayback.updatedAt <= 10_000) {
+    const elapsed = localPlayback.isPlaying ? (Date.now() - localPlayback.updatedAt) / 1000 : 0
+    return localPlayback.time + elapsed
+  }
+  const pb = getStore().currentRoom?.playback
+  if (!pb) return 0
+  const elapsed = pb.isPlaying && Number.isFinite(pb.lastUpdatedAt)
+    ? Math.max(0, (Date.now() - pb.lastUpdatedAt) / 1000)
+    : 0
+  return (pb.currentTime ?? 0) + elapsed
+}
 
 function getStore() {
   return useWatchTogetherStore.getState()
@@ -28,7 +59,6 @@ function logDebug(direction: 'in' | 'out', event: string, data?: any) {
 
 export function connect(serverUrl: string): Promise<void> {
   console.log('[WT DEBUG] connect() called, current ws:', ws ? `readyState=${ws.readyState}` : 'null')
-  console.trace('[WT DEBUG] connect call stack')
   return new Promise((resolve, reject) => {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       console.log('[WT DEBUG] Already connected/connecting, resolving immediately')
@@ -53,15 +83,7 @@ export function connect(serverUrl: string): Promise<void> {
 
     console.log('[WT DEBUG] Attempting WebSocket connection to:', serverUrl)
     try {
-      const localWs = new WebSocket(serverUrl)
-      ws = localWs
-      console.log('[WT DEBUG] WebSocket created, readyState:', ws.readyState)
-
-      // Poll readyState
-      const poll = setInterval(() => {
-        console.log('[WT DEBUG] poll: ws===localWs?', ws === localWs, 'readyState:', localWs.readyState, 'settled:', settled)
-        if (localWs.readyState > 1 || settled) clearInterval(poll)
-      }, 500)
+      ws = new WebSocket(serverUrl)
     } catch (err) {
       console.error('[WT DEBUG] WebSocket constructor threw:', err)
       clearTimeout(timeout)
@@ -164,6 +186,10 @@ export async function createRoom(name: string): Promise<void> {
     type: 'ROOM_JOIN',
     roomCode: '',
     name,
+    roomSettings: {
+      everyoneCanControl: store.defaultControlMode === 'everyone',
+      requireReadyCheck: store.requireReadyCheck,
+    },
   })
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -232,6 +258,7 @@ export function leaveRoom(): void {
     })
   }
   stopSyncLoop()
+  clearLocalPlayback()
   store.setCurrentRoom(null)
   store.setCurrentUserId(null)
   store.setIsHost(false)
@@ -380,6 +407,22 @@ export function transferHost(newHostUserId: string): void {
   })
 }
 
+// ── Room settings (host only) ───────────────────────────────────────────────
+
+export function setRoomSettings(settings: RoomSettings): void {
+  const store = getStore()
+  if (!store.currentRoom || !store.currentUserId) return
+  send({
+    type: 'ROOM_SETTINGS',
+    roomId: store.currentRoom.id,
+    senderUserId: store.currentUserId,
+    settings,
+  })
+  // Optimistic local update so the toggle reacts immediately; the server's
+  // ROOM_STATE broadcast is authoritative and will confirm or revert it.
+  store.setCurrentRoom({ ...store.currentRoom, ...settings })
+}
+
 // ── Sync & buffering ────────────────────────────────────────────────────────
 
 export function sendSyncState(time: number, isPlaying: boolean): void {
@@ -422,7 +465,15 @@ export function startSyncLoop(): void {
     const store = getStore()
     if (!store.isHost || !store.currentRoom) return
     const pb = store.currentRoom.playback
-    sendSyncState(pb.currentTime, pb.isPlaying)
+    if (pb.status !== 'playing' && pb.status !== 'paused') return
+
+    // Only broadcast when we have a fresh live position from the player.
+    // Sending the room's stale event-time here is what caused guests to be
+    // dragged back to the last play/pause/seek position every few seconds.
+    if (!localPlayback || Date.now() - localPlayback.updatedAt > 10_000) return
+
+    const elapsed = localPlayback.isPlaying ? (Date.now() - localPlayback.updatedAt) / 1000 : 0
+    sendSyncState(localPlayback.time + elapsed, localPlayback.isPlaying)
   }, intervalMs)
 }
 
@@ -523,12 +574,21 @@ function handleServerMessage(msg: ServerMessage): void {
       store.updateParticipant(msg.participant)
       break
 
-    case 'MEDIA_UPDATED':
+    case 'MEDIA_UPDATED': {
       store.updateMedia(msg.media, msg.episode, msg.stream)
-      if (msg.media) {
+      // Skip re-resolving when our current stream already matches the host's
+      // (the server re-broadcasts media whenever the host picks a stream).
+      const current = store.selectedLocalStream
+      const alreadyMatched = !!(
+        current &&
+        msg.stream?.streamFingerprint &&
+        createStreamFingerprint({ ...current.stream, addonId: current.addonId } as any) === msg.stream.streamFingerprint
+      )
+      if (msg.media && !alreadyMatched) {
         autoResolveStream(msg.media, msg.episode, msg.stream)
       }
       break
+    }
 
     case 'PLAYBACK_UPDATED':
       store.updatePlayback(msg.playback)

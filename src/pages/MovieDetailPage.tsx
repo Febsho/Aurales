@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
@@ -130,6 +130,15 @@ function parseRuntime(value: unknown): number | undefined {
   return numeric > 10 ? numeric : undefined
 }
 
+function artworkSettingsKey(): string {
+  const settings = useAppStore.getState()
+  return JSON.stringify({
+    providers: settings.artProviders,
+    fanart: Boolean(settings.fanartApiKey),
+    custom: settings.customArtUrls,
+  })
+}
+
 function rotateFallback<T>(items: T[], seed: string): T[] {
   if (items.length === 0) return []
   const offset = Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % items.length
@@ -151,13 +160,22 @@ export default function MovieDetailPage() {
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const artSettingsSignature = useMemo(() => JSON.stringify({
+    providers: artProviders,
+    fanart: Boolean(fanartApiKey),
+    custom: customArtUrls,
+  }), [artProviders, fanartApiKey, customArtUrls])
   const [movieWatched, setMovieWatched] = useState(false)
 
   useEffect(() => {
     async function load() {
       setMalRating(null)
 
-      const movieCacheKey = id ? `detail:movie:${id}` : null
+      const artKey = artworkSettingsKey()
+      const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
       if (movieCacheKey) {
         const cached = await cacheGet<MovieDetails>(movieCacheKey)
         if (cached) {
@@ -341,7 +359,7 @@ export default function MovieDetailPage() {
 
       finalResult.id = targetId
 
-      let artApplied = applyMovieArt(finalResult)
+      let artApplied = finalResult
 
       const providerArt = await resolveArtFromProviders('movie', {
         tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
@@ -349,13 +367,14 @@ export default function MovieDetailPage() {
       if (providerArt.poster || providerArt.backdrop || providerArt.logo) {
         artApplied = { ...artApplied, ...(providerArt.poster && { poster: providerArt.poster }), ...(providerArt.backdrop && { backdrop: providerArt.backdrop }), ...(providerArt.logo && { logo: providerArt.logo }) }
       }
+      artApplied = applyMovieArt(artApplied)
 
       setMovie(artApplied)
       setLoading(false)
 
       const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
       if (movieCacheKey) void cacheSet(movieCacheKey, artApplied, cacheOpts)
-      if (artApplied.id && artApplied.id !== id) void cacheSet(`detail:movie:${artApplied.id}`, artApplied, cacheOpts)
+      if (artApplied.id && artApplied.id !== id) void cacheSet(`detail:movie:${artKey}:${artApplied.id}`, artApplied, cacheOpts)
 
       if (id && artApplied.id && artApplied.id !== id) {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
@@ -363,7 +382,7 @@ export default function MovieDetailPage() {
       }
     }
     load()
-  }, [id, state.addonUrl, state.provider, state.title, addons])
+  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
 
   useEffect(() => {
     if (!movie) return
@@ -435,7 +454,7 @@ export default function MovieDetailPage() {
   const movieIsAnime = !!(movie.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
 
   return (
-    <div className="pb-12">
+    <div className="min-h-screen bg-black pb-12">
       <DetailHero
         title={movie.title}
         originalTitle={movie.originalTitle}

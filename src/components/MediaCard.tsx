@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
@@ -44,10 +44,11 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
   }, [])
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
-  const [imgError, setImgError] = useState(false)
-  const [backdropError, setBackdropError] = useState(false)
+  const customArt = disableArtOverride ? {} : getSearchResultCustomArt(item)
+  const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(new Set())
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
+  const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
   const providerWatched = useWatchedCacheStore((s) => {
     const keys = s.watchedKeys
@@ -61,7 +62,12 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
   const posterSize = useAppStore((s) => s.posterSize)
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
+  const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
+  const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
 
   const localCompleted = useAppStore((s) => {
     const ci = s.completedIds
@@ -118,14 +124,19 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
   useEffect(() => {
     if (!isVisible) return
     let cancelled = false
+    setFailedImageUrls(new Set())
+    setResolvedPoster(undefined)
+    setResolvedBackdrop(undefined)
+    setResolvedCustomArt({})
     const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
 
     const needsPoster = layout !== 'landscape' && !displayItem.poster
     const needsBackdrop = layout === 'landscape' && !displayItem.backdrop
     const needsGenre = showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length
+    const wantsProviderArt = !disableArtOverride
 
-    if (!needsPoster && !needsBackdrop && !needsGenre) {
+    if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt) {
       if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
         getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
           .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
@@ -137,12 +148,28 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
     ;(async () => {
       try {
         let resolvedTmdbId = tmdbId
+        let resolvedImdbId = imdbId
         if (!resolvedTmdbId && imdbId) {
           const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
           const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
           if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
         }
-        if (resolvedTmdbId) {
+        if (!resolvedImdbId && (resolvedTmdbId || displayItem.tvdbId) && customArtKey.includes('{imdb_id}')) {
+          const { resolveImdbId } = await import('../services/metadataEnrich')
+          resolvedImdbId = await resolveImdbId(
+            {
+              tmdbId: resolvedTmdbId || tmdbId,
+              tvdbId: displayItem.tvdbId as string | number | undefined,
+              anilistId: displayItem.anilistId,
+              malId: displayItem.malId,
+            },
+            displayItem.type === 'movie' ? 'movie' : 'series',
+          )
+          if (!cancelled && resolvedImdbId) {
+            setResolvedCustomArt(getSearchResultCustomArt({ ...displayItem, imdbId: resolvedImdbId }))
+          }
+        }
+        if (resolvedTmdbId && (needsPoster || needsBackdrop || needsGenre)) {
           const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId)
           if (!cancelled) {
             if (meta.poster) setResolvedPoster(meta.poster)
@@ -150,21 +177,35 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
             if (meta.genre) setResolvedGenre(meta.genre)
           }
         }
-        const providerArt = await resolveArtFromProviders(
-          displayItem.type,
-          { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId },
-          displayItem.isAnime,
-        )
-        if (!cancelled) {
-          if (providerArt.poster) setResolvedPoster(providerArt.poster)
-          if (providerArt.backdrop) setResolvedBackdrop(providerArt.backdrop)
+        if (wantsProviderArt) {
+          const providerArt = await resolveArtFromProviders(
+            displayItem.type,
+            { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId: resolvedImdbId },
+            displayItem.isAnime,
+          )
+          if (!cancelled) {
+            setResolvedPoster(providerArt.poster)
+            setResolvedBackdrop(providerArt.backdrop)
+          }
         }
       } catch (_) { /* ignore */ }
     })()
     return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type, showGenreOnCards])
+  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey])
 
-  const landscapeBackdrop = resolvedBackdrop || displayItem.backdrop
+  const pickWorkingUrl = (...urls: Array<string | undefined>) =>
+    urls.find((url) => url && !failedImageUrls.has(url))
+  const posterUrl = pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, displayItem.poster)
+  const backdropUrl = pickWorkingUrl(customArt.backdrop, resolvedCustomArt.backdrop, resolvedBackdrop, displayItem.backdrop)
+  const landscapeBackdrop = backdropUrl
+  const markImageFailed = (url?: string) => {
+    if (!url) return
+    setFailedImageUrls((prev) => {
+      const next = new Set(prev)
+      next.add(url)
+      return next
+    })
+  }
 
   const showContextMenu = useContextMenu((s) => s.show)
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -179,8 +220,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
     navigate(path, {
       state: {
-        poster: resolvedPoster || displayItem.poster,
-        backdrop: resolvedBackdrop || displayItem.backdrop,
+        poster: posterUrl,
+        backdrop: backdropUrl,
         title: displayItem.title,
         year: displayItem.year,
         rating: displayItem.rating,
@@ -207,23 +248,23 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
       >
         <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
-          {landscapeBackdrop && !backdropError ? (
+          {landscapeBackdrop ? (
             <img
               src={landscapeBackdrop}
               alt={displayItem.title}
               className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
               decoding="async"
-              onError={() => setBackdropError(true)}
+              onError={() => markImageFailed(landscapeBackdrop)}
             />
-          ) : (resolvedPoster || displayItem.poster) && !imgError ? (
+          ) : posterUrl ? (
             <img
-              src={resolvedPoster || displayItem.poster}
+              src={posterUrl}
               alt={displayItem.title}
               className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
               decoding="async"
-              onError={() => setImgError(true)}
+              onError={() => markImageFailed(posterUrl)}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
@@ -281,14 +322,14 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
       className={`flex-shrink-0 group cursor-pointer focus-ring transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
     >
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-2 group-hover:scale-[1.04]">
-        {(resolvedPoster || displayItem.poster) && !imgError ? (
+        {posterUrl ? (
           <img
-            src={resolvedPoster || displayItem.poster}
+            src={posterUrl}
             alt={displayItem.title}
             className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
             loading="lazy"
             decoding="async"
-            onError={() => setImgError(true)}
+            onError={() => markImageFailed(posterUrl)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">

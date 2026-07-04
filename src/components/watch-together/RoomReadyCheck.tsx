@@ -16,7 +16,8 @@ export default function RoomReadyCheck() {
   const participants = currentRoom.participants
   const readyCount = participants.filter((p) => p.isReady).length
   const totalCount = participants.length
-  const allReady = readyCount === totalCount
+  // When the room doesn't require a ready check, the host can always start.
+  const allReady = !currentRoom.requireReadyCheck || readyCount === totalCount
   const me = participants.find((p) => p.id === currentUserId)
   const myReady = me?.isReady ?? false
 

@@ -31,11 +31,19 @@ function pickBest(images?: FanartImage[]): string | undefined {
   return sorted[0]?.url
 }
 
+function cacheKeyToken(value: string): string {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0
+  }
+  return String(hash >>> 0)
+}
+
 export async function getFanartMovieArt(tmdbId: string | number): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
   const apiKey = useAppStore.getState().fanartApiKey
   if (!apiKey || !tmdbId) return {}
 
-  return cachedFetch(`fanart_movie:${tmdbId}`, async () => {
+  return cachedFetch(`fanart_movie:${cacheKeyToken(apiKey)}:${tmdbId}`, async () => {
     const res = await fetch(`${BASE}/movies/${tmdbId}?api_key=${apiKey}`)
     if (!res.ok) return {}
     const data = await res.json() as FanartMovieResponse
@@ -51,7 +59,7 @@ export async function getFanartShowArt(tvdbId: string | number): Promise<{ poste
   const apiKey = useAppStore.getState().fanartApiKey
   if (!apiKey || !tvdbId) return {}
 
-  return cachedFetch(`fanart_show:${tvdbId}`, async () => {
+  return cachedFetch(`fanart_show:${cacheKeyToken(apiKey)}:${tvdbId}`, async () => {
     const res = await fetch(`${BASE}/tv/${tvdbId}?api_key=${apiKey}`)
     if (!res.ok) return {}
     const data = await res.json() as FanartShowResponse

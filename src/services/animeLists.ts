@@ -358,6 +358,24 @@ export async function mapTvdbEpisodeToAnimeProviders(
   episode: number
   season: number
 } | null> {
+  const anibridge = await import('./anime-mapping/anibridgeMappings')
+    .then(({ mapTvdbEpisodeWithAniBridge }) => mapTvdbEpisodeWithAniBridge({
+      localMediaId: `tvdb-${tvdbId}`,
+      tvdbSeriesId: tvdbId,
+      tvdbSeasonNumber: season,
+      tvdbEpisodeNumber: episode,
+    }))
+    .catch(() => null)
+  if (anibridge?.anilist || anibridge?.mal || anibridge?.tmdb) {
+    return {
+      anilistId: anibridge.anilist?.mediaId,
+      malId: anibridge.mal?.id,
+      tmdbId: anibridge.tmdb?.id,
+      episode: anibridge.anilist?.episodeNumber ?? anibridge.mal?.episodeNumber ?? anibridge.tmdb?.episodeNumber ?? episode,
+      season: anibridge.tmdb?.seasonNumber ?? season,
+    }
+  }
+
   await loadAnimeLists()
   const entries = indexByTvdb.get(tvdbId)
   const entry = entries?.find((e) => getTvdbSeason(e) === season)

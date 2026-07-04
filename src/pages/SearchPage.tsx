@@ -5,6 +5,7 @@ import { tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import { useAppStore } from '../stores/appStore'
 import { EmptyState } from '../components/ui'
+import { MediaRowSkeleton } from '../components/ui/Skeleton'
 import { getAddonCatalog } from '../services/addons'
 import { searchEngines, type SearchEngineId } from '../services/searchEngines'
 
@@ -344,15 +345,20 @@ export default function SearchPage() {
   return (
     <div className="py-8 space-y-4">
       {searched && (
-        <div className="px-8 flex items-end justify-between gap-4">
+        <div className="px-6 flex items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">Results for &ldquo;{query}&rdquo;</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-white">Results for &ldquo;{query}&rdquo;</h1>
             <p className="text-sm text-white/35 mt-1">{totalMovies} movies · {totalSeries} series</p>
           </div>
         </div>
       )}
 
-      {loading && results.length === 0 && <div className="mx-auto my-16 w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />}
+      {loading && results.length === 0 && (
+        <div className="pt-2">
+          <MediaRowSkeleton title="Movies" />
+          <MediaRowSkeleton title="Series" />
+        </div>
+      )}
 
       {movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} />}
       {series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} />}
@@ -368,7 +374,7 @@ export default function SearchPage() {
       )}
 
       {searched && !loading && (
-        <section className="mx-8 mt-4 rounded-2xl border border-purple-500/15 bg-purple-500/[0.05] p-5">
+        <section className="mx-6 mt-4 rounded-2xl border border-purple-500/15 bg-purple-500/[0.05] p-5">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="font-bold text-white">AI suggestions</h2>
@@ -391,7 +397,7 @@ export default function SearchPage() {
 
       {!searched && !loading && (
         searchHistory.length > 0 ? (
-          <div className="px-8 py-4">
+          <div className="px-6 py-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold text-white/80">Recent Searches</h2>
               <button

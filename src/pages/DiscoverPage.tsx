@@ -272,12 +272,9 @@ export default function DiscoverPage() {
           if (item.type !== 'series') return item
           const tmdbId = item.tmdbId || item.id?.replace('tmdb-', '')
           if (!tmdbId) return item
-          console.log('[DiscoverHero] resolving tvdbId for tmdb:', tmdbId, item.title)
           const tvdbId = await getTvdbIdFromTmdb(tmdbId)
-          console.log('[DiscoverHero] tvdbId:', tvdbId, 'for', item.title)
           if (!tvdbId) return item
           const banner = await getTvdbBanner(tvdbId)
-          console.log('[DiscoverHero] banner:', banner, 'for', item.title)
           return banner ? { ...item, backdrop: banner } : item
         })
       )
@@ -316,7 +313,7 @@ export default function DiscoverPage() {
 
   return (
     <div className="pb-12">
-      <div className="px-8 pt-8 pb-6">
+      <div className="px-6 pt-8 pb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Discover</h1>
@@ -344,7 +341,7 @@ export default function DiscoverPage() {
         </div>
       </div>
 
-      <div className="px-8 mb-6 flex flex-wrap gap-2">
+      <div className="px-6 mb-6 flex flex-wrap gap-2">
         {Object.entries(genreMap).map(([id, name]) => (
           <button
             key={id}
@@ -362,26 +359,26 @@ export default function DiscoverPage() {
 
       {selectedGenre ? (
         genreLoading ? (
-          <div className="flex items-center gap-3 px-8 py-6">
+          <div className="flex items-center gap-3 px-6 py-6">
             <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
             <span className="text-sm text-white/40">Loading {genreMap[selectedGenre]}...</span>
           </div>
         ) : genreResults.length > 0 ? (
           <MediaRow title={genreMap[selectedGenre]} items={genreResults} layout="poster" disableArtOverride={false} />
         ) : (
-          <p className="px-8 py-4 text-sm text-white/30">No results for {genreMap[selectedGenre]}</p>
+          <p className="px-6 py-4 text-sm text-white/30">No results for {genreMap[selectedGenre]}</p>
         )
       ) : (
         <>
           {heroItems.length > 0 && (
-            <div className="px-8 mb-8">
+            <div className="px-6 mb-8">
               <HeroSection items={heroItems} isSmall={true} />
             </div>
           )}
 
           {/* Platforms Row */}
           {tab !== 'anime' && (
-            <div className="px-8 mb-8 select-none">
+            <div className="px-6 mb-8 select-none">
               <div className="flex items-center justify-between mb-3.5">
                 <h2 className="text-lg font-bold text-white/90 tracking-tight">Platforms</h2>
               </div>

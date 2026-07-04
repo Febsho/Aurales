@@ -16,8 +16,16 @@ import type { SearchResult, HomeRowConfig } from '../types'
 import type { SimklWatchlistItem } from '../services/simkl/types'
 import { discoverTmdbWithCache } from '../services/tmdb'
 import { canonicalizeCatalogItemsWithTvdb, getProviderListItems } from '../services/providerLists'
-import { cachedFetch, cacheClearExpired } from '../services/cache/sqliteCache'
+import { cachedFetch, cacheClearExpired, cacheGetMany } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
+import {
+  simklRowCacheKey,
+  providerRowCacheKey,
+  addonRowCacheKey,
+  discoverRowCacheKey,
+  heroRowCacheKey,
+  homeRowCacheKey,
+} from '../services/cache/homeRowCacheKeys'
 import { taskQueue } from '../services/cache/backgroundTaskQueue'
 import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
@@ -59,6 +67,27 @@ const SIMKL_LIST_SOURCES = [
   { id: 'dropped',            label: 'Simkl — Dropped',                   type: 'poster' },
 ] as const
 
+function getRowDisplayTitle(row: HomeRowConfig): string {
+  let title = row.title.trim().replace(/\s*\(\d+\)\s*$/, '')
+
+  if (row.sourceType === 'simkl') title = title.replace(/^Simkl\s*(?:-|—|–|â€”)\s*/i, '')
+  else if (row.sourceType === 'trakt') title = title.replace(/^Trakt\s*(?:-|—|–)\s*/i, '')
+  else if (row.sourceType === 'anilist') title = title.replace(/^AniList\s*(?:-|—|–)\s*/i, '')
+  else if (row.sourceType === 'pmdb') title = title.replace(/^PMDB\s*(?:-|—|–)\s*/i, '')
+  else if (row.sourceType === 'pmdb-picks') title = title.replace(/^PMDB Picks\s*(?:-|—|–)\s*/i, '')
+  else if (row.sourceType === 'mdblist') title = title.replace(/^MDBList\s*(?:-|—|–)\s*/i, '')
+
+  if ((row.sourceType === 'trakt' && row.providerListId?.startsWith('public:')) || row.sourceType === 'mdblist') {
+    title = title.replace(/\s+by\s+[^()]+$/i, '')
+  }
+
+  if (row.addonId && row.addonId !== 'com.example.mockaddon') {
+    title = title.replace(/\s*\([^()]+\)\s*$/, '')
+  }
+
+  return title.trim() || row.title
+}
+
 function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; options?: string[] }[] | undefined): Record<string, string> | undefined {
   const required = (extra || []).filter((item) => item.isRequired)
   if (required.length === 0) return undefined
@@ -91,10 +120,10 @@ function MediaRowSkeleton({ title, layout, headerLeftControls, headerRightContro
   const isLandscape = layout === 'landscape'
   return (
     <div className="mb-8 animate-pulse select-none">
-      <div className="flex items-center justify-between px-6 mb-3">
+      <div className="flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className="text-lg font-semibold text-white/90">{title}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/60">{title}</h2>
         </div>
         <div>
           {headerRightControls}
@@ -121,10 +150,10 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
   const isLandscape = layout === 'landscape'
   return (
     <div className="mb-8 select-none">
-      <div className="flex items-center justify-between px-6 mb-3">
+      <div className="flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className="text-lg font-semibold text-white/50">{title}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/50">{title}</h2>
         </div>
         <div>
           {headerRightControls}
@@ -146,7 +175,7 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 }
 
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `home:simkl:${row.providerListId || 'watchlist'}:${row.sortBy || 'default'}`
+  const cacheKey = simklRowCacheKey(row)
   const memCache = useHomeCatalogCache()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
@@ -195,7 +224,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
   if (loading) {
     return (
       <MediaRowSkeleton
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
@@ -206,7 +235,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
   if (error) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message={error}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -218,7 +247,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
   if (!items || items.length === 0) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message="No items found in this list."
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -229,11 +258,11 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 
   return (
     <MediaRow
-      title={`${row.title} (${items.length})`}
+      title={getRowDisplayTitle(row)}
       items={items}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
-      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={items.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
@@ -242,7 +271,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 }
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `home:provider:${row.sourceType}:${row.providerListId}:${row.sortBy || 'default'}`
+  const cacheKey = providerRowCacheKey(row)
   const memCache = useHomeCatalogCache()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
@@ -281,27 +310,27 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
   }, [cacheKey, row.providerListId, row.sourceType, row.sortBy])
 
   const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
-  if (loading) return <MediaRowSkeleton title={row.title} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
-  if (error) return <MediaRowError title={row.title} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
-  if (!items || items.length === 0) return <MediaRowError title={row.title} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (loading) return <MediaRowSkeleton title={getRowDisplayTitle(row)} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (!items || items.length === 0) return <MediaRowError title={getRowDisplayTitle(row)} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
 
   return (
     <MediaRow
-      title={`${row.title} (${items.length})`}
+      title={getRowDisplayTitle(row)}
       items={items}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       disableArtOverride={false}
       showRank={row.showRank ?? /trending/i.test(row.title)}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
-      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={items.length >= 20}
     />
   )
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `home:addon:v2:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
+  const cacheKey = addonRowCacheKey(row)
   const memCache = useHomeCatalogCache()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
@@ -378,7 +407,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
   if (loading) {
     return (
       <MediaRowSkeleton
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
@@ -389,7 +418,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
   if (error) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message={error}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -401,7 +430,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
   if (!displayItems || displayItems.length === 0) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message="No items found in this catalog."
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -417,11 +446,11 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
   return (
     <MediaRow
-      title={`${row.title} (${sortedItems.length})`}
+      title={getRowDisplayTitle(row)}
       items={sortedItems}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
-      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
@@ -430,7 +459,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 }
 
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = `home:discover:${row.id}:${JSON.stringify(row.discoverConfig || {})}`
+  const cacheKey = discoverRowCacheKey(row)
   const memCache = useHomeCatalogCache()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
@@ -478,7 +507,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   if (loading) {
     return (
       <MediaRowSkeleton
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
@@ -489,7 +518,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   if (error) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message={error}
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -501,7 +530,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   if (!items || items.length === 0) {
     return (
       <MediaRowError
-        title={row.title}
+        title={getRowDisplayTitle(row)}
         message="No items found matching the filters."
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
@@ -517,11 +546,11 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 
   return (
     <MediaRow
-      title={`${row.title} (${sortedItems.length})`}
+      title={getRowDisplayTitle(row)}
       items={sortedItems}
       layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
       showRank={row.showRank ?? /trending/i.test(row.title)}
-      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`}
+      showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
@@ -531,7 +560,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 
 function HeroCatalogSection({ row, onBackdropChange }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void }) {
   const memCache = useHomeCatalogCache()
-  const cacheKey = `home:hero:${row.sourceType || 'addon'}:${row.addonId || ''}:${row.catalogId || ''}:${row.providerListId || ''}`
+  const cacheKey = heroRowCacheKey(row)
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[]>(cached || [])
   const addons = useAppStore((s) => s.addons)
@@ -634,7 +663,7 @@ function UnconfiguredShelf({
     <div className="px-6 mb-8 select-none">
       <div className="flex items-center gap-2.5 mb-3">
         {headerLeftControls}
-        <h2 className="text-lg font-semibold text-white/40">{row.title}</h2>
+        <h2 className="text-lg font-semibold text-white/40">{getRowDisplayTitle(row)}</h2>
       </div>
       <div className="px-6">
         <div
@@ -790,7 +819,7 @@ function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEd
     return (
       <div ref={sentinelRef} className="row-contain">
         <MediaRowSkeleton
-          title={row.title}
+          title={getRowDisplayTitle(row)}
           layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         />
       </div>
@@ -845,6 +874,39 @@ export default function HomePage() {
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
+
+  // Batch-load every shelf's sqlite cache entry in a single IPC call and seed
+  // the in-memory cache, so all rows paint instantly instead of each doing its
+  // own roundtrip (and flashing a skeleton) on mount.
+  const [cachePreloaded, setCachePreloaded] = useState(() => {
+    const state = useHomeCatalogCache.getState()
+    return useAppStore.getState().homeRows
+      .filter((row) => row.enabled)
+      .map(homeRowCacheKey)
+      .every((key) => !key || state.get(key))
+  })
+  useEffect(() => {
+    if (cachePreloaded) return
+    let cancelled = false
+    const state = useHomeCatalogCache.getState()
+    const keys = useAppStore.getState().homeRows
+      .filter((row) => row.enabled)
+      .map(homeRowCacheKey)
+      .filter((key): key is string => !!key && !state.get(key))
+
+    cacheGetMany<SearchResult[]>(keys)
+      .then((entries) => {
+        if (cancelled) return
+        const seed: Record<string, SearchResult[]> = {}
+        for (const [key, result] of entries) {
+          if (Array.isArray(result.data)) seed[key] = result.data
+        }
+        if (Object.keys(seed).length > 0) state.setMany(seed)
+      })
+      .finally(() => { if (!cancelled) setCachePreloaded(true) })
+
+    return () => { cancelled = true }
+  }, [cachePreloaded])
 
   useEffect(() => {
     taskQueue.enqueue({
@@ -919,19 +981,33 @@ export default function HomePage() {
         </div>
       )}
 
-      {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
+      {!cachePreloaded ? (
+        <div className="pt-6">
+          {activeRows.slice(0, INITIAL_VISIBLE).map((row) => (
+          <MediaRowSkeleton
+            key={row.id}
+            title={getRowDisplayTitle(row)}
+              layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
+            />
+          ))}
+        </div>
+      ) : (
+        <>
+          {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
 
-      <div className="relative" style={{ marginTop: heroRow ? '20px' : undefined }}>
-        {isEditing ? (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>
-              {shelvesContent}
-            </SortableContext>
-          </DndContext>
-        ) : (
-          shelvesContent
-        )}
-      </div>
+          <div className="relative" style={{ marginTop: heroRow ? '20px' : undefined }}>
+            {isEditing ? (
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+                  {shelvesContent}
+                </SortableContext>
+              </DndContext>
+            ) : (
+              shelvesContent
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

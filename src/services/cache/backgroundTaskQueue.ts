@@ -1,3 +1,6 @@
+// [PERF] logs are dev-only — they add noise and cost in production builds
+const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
+
 export type TaskPriority = 'critical' | 'high' | 'normal' | 'low' | 'idle'
 
 const PRIORITY_ORDER: TaskPriority[] = ['critical', 'high', 'normal', 'low', 'idle']
@@ -20,7 +23,7 @@ class BackgroundTaskQueue {
     if (task.dedupKey) {
       for (const [, entry] of this.running) {
         if (entry.dedupKey === task.dedupKey) {
-          console.log(`[PERF] task-dedup id=${task.id} dedupKey=${task.dedupKey} (running)`)
+          perfLog(`[PERF] task-dedup id=${task.id} dedupKey=${task.dedupKey} (running)`)
           return
         }
       }
@@ -28,14 +31,14 @@ class BackgroundTaskQueue {
         const idx = queue.findIndex((t) => t.dedupKey === task.dedupKey)
         if (idx !== -1) {
           queue[idx] = task
-          console.log(`[PERF] task-replaced id=${task.id} dedupKey=${task.dedupKey}`)
+          perfLog(`[PERF] task-replaced id=${task.id} dedupKey=${task.dedupKey}`)
           return
         }
       }
     }
 
     this.queues.get(task.priority)!.push(task)
-    console.log(`[PERF] task-enqueue id=${task.id} priority=${task.priority}`)
+    perfLog(`[PERF] task-enqueue id=${task.id} priority=${task.priority}`)
     this.processNext()
   }
 
@@ -70,12 +73,12 @@ class BackgroundTaskQueue {
 
       const task = queue.shift()!
       const t0 = performance.now()
-      console.log(`[PERF] task-start id=${task.id} priority=${task.priority}`)
+      perfLog(`[PERF] task-start id=${task.id} priority=${task.priority}`)
 
       const promise = task
         .execute()
         .then(() => {
-          console.log(`[PERF] task-complete id=${task.id} duration=${Math.round(performance.now() - t0)}ms`)
+          perfLog(`[PERF] task-complete id=${task.id} duration=${Math.round(performance.now() - t0)}ms`)
         })
         .catch((e) => {
           console.error(`[PERF] task-error id=${task.id}`, e)
