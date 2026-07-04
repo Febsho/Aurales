@@ -75,6 +75,8 @@ export default function App() {
     let cancelled = false
     let stopSync: (() => void) | undefined
 
+    let stopProviderSync: (() => void) | undefined
+
     const cancelIdle = scheduleIdleWork(() => {
       import('./services/watchedCacheSync')
         .then((watchedCacheSync) => {
@@ -83,12 +85,21 @@ export default function App() {
           stopSync = watchedCacheSync.stopWatchedCacheSync
         })
         .catch(() => {})
+      // Per-provider background sync driven by the Sync Frequency settings.
+      import('./services/providerSync')
+        .then((providerSync) => {
+          if (cancelled) return
+          providerSync.startProviderSyncScheduler()
+          stopProviderSync = providerSync.stopProviderSyncScheduler
+        })
+        .catch(() => {})
     }, 2500)
 
     return () => {
       cancelled = true
       cancelIdle()
       stopSync?.()
+      stopProviderSync?.()
     }
   }, [watchedCheckmarkSources])
 
@@ -144,7 +155,15 @@ export default function App() {
 
   return (
     <ErrorBoundary label="App">
-      <Suspense fallback={<div className="flex items-center justify-center h-screen bg-black" />}>
+      <Suspense
+        fallback={
+          <div className="flex items-center justify-center h-screen bg-black">
+            <div className="w-12 h-12 rounded-2xl bg-accent/20 flex items-center justify-center animate-pulse">
+              <span className="text-accent font-black text-xl">A</span>
+            </div>
+          </div>
+        }
+      >
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={startPagePath === '/' ? <HomePage /> : <Navigate to={startPagePath} replace />} />

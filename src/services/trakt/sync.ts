@@ -130,6 +130,11 @@ export async function getPlaybackProgress(): Promise<unknown[]> {
   return await traktFetch('/sync/playback') as unknown[]
 }
 
+/** Delete a single playback-progress entry (the id returned by /sync/playback). */
+export async function removePlaybackItem(id: string | number): Promise<void> {
+  await traktFetch(`/sync/playback/${id}`, { method: 'DELETE' })
+}
+
 export interface TraktSeasonSummary {
   number: number
   episodeCount: number

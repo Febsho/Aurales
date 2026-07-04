@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { lazy, Suspense, useState, useRef, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
@@ -17,6 +17,7 @@ import {
   getSimklConnectionStatus,
 } from '../services/simkl/auth'
 import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
+import { syncProviderNow } from '../services/providerSync'
 import { loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
@@ -26,7 +27,8 @@ import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, ge
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
-import NativeMpvPlayer from '../components/NativeMpvPlayer'
+// Lazy: debug player only loads when the test player is opened
+const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
 import { cacheStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { checkForUpdate, downloadAndInstall, getAppVersion } from '../services/updater'
@@ -423,6 +425,7 @@ function CacheManagementSection() {
 function AnimeIdMappingsSection() {
   const [lookupCacheCount, setLookupCacheCount] = useState<number | null>(null)
   const [animeListCount, setAnimeListCount] = useState<number | null>(null)
+  const [aniBridgeCount, setAniBridgeCount] = useState<number | null>(null)
 
   const refresh = () => {
     cacheStats().then((stats) => {
@@ -432,6 +435,10 @@ function AnimeIdMappingsSection() {
       .then(({ getStoredAnimeListEntryCount }) => getStoredAnimeListEntryCount())
       .then(setAnimeListCount)
       .catch(() => setAnimeListCount(0))
+    import('../services/anime-mapping/anibridgeMappings')
+      .then(({ getStoredAniBridgeEntryCount }) => getStoredAniBridgeEntryCount())
+      .then(setAniBridgeCount)
+      .catch(() => setAniBridgeCount(0))
   }
 
   useEffect(() => { refresh() }, [])
@@ -442,6 +449,19 @@ function AnimeIdMappingsSection() {
         <div className="flex items-center gap-3">
           <span className="text-sm font-bold text-white tabular-nums">
             {animeListCount == null ? 'Loading...' : animeListCount.toLocaleString()}
+          </span>
+          <button
+            onClick={refresh}
+            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
+          >
+            Refresh
+          </button>
+        </div>
+      </SettingRow>
+      <SettingRow label="AniBridge episode mappings" description="Episode-level mappings across AniList, MAL, TMDB, TVDB, IMDB, and AniDB stored in browser cache.">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-bold text-white tabular-nums">
+            {aniBridgeCount == null ? 'Loading...' : aniBridgeCount.toLocaleString()}
           </span>
           <button
             onClick={refresh}
@@ -471,11 +491,10 @@ function AnimeIdMappingsSection() {
 function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select
-      value={value}
+      value={value === 'default' ? 'tmdb' : value}
       onChange={(e) => onChange(e.target.value)}
       className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
     >
-      <option value="default">Default</option>
       <option value="tmdb">TMDb</option>
       <option value="tvdb">TVDb</option>
       <option value="fanart">Fanart.tv</option>
@@ -488,6 +507,7 @@ function ArtworkSettingsSection() {
   const setArtProviders = useAppStore((s) => s.setArtProviders)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const setCustomArtUrls = useAppStore((s) => s.setCustomArtUrls)
+  const btttrPosterUrl = 'https://btttr.cc/poster/auto/{imdb_id}/auto.png'
 
   const updateProvider = (key: string, value: string) => {
     setArtProviders({ ...artProviders, [key]: value })
@@ -534,13 +554,27 @@ function ArtworkSettingsSection() {
       <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Custom Art URL Overrides</h3>
       <SettingSection description="Custom URL patterns replace the default artwork everywhere. Use placeholders: {imdb_id}, {tmdb_id}, {tvdb_id}, {mal_id}, {anilist_id}, {type}, {season}, {episode}">
         <SettingRow label="Poster URL pattern" description="e.g. https://example.com/poster/{imdb_id}.jpg">
-          <input
-            type="text"
-            value={customArtUrls.posterUrl}
-            onChange={(e) => updateCustomUrl('posterUrl', e.target.value)}
-            placeholder="Leave empty to use provider"
-            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
-          />
+          <div className="flex items-center gap-2">
+            <select
+              value={customArtUrls.posterUrl === btttrPosterUrl ? btttrPosterUrl : customArtUrls.posterUrl ? 'custom' : ''}
+              onChange={(e) => {
+                if (e.target.value === 'custom') updateCustomUrl('posterUrl', 'https://example.com/poster/{imdb_id}.jpg')
+                else updateCustomUrl('posterUrl', e.target.value)
+              }}
+              className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+            >
+              <option value="">None</option>
+              <option value={btttrPosterUrl}>btttr.cc</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input
+              type="text"
+              value={customArtUrls.posterUrl}
+              onChange={(e) => updateCustomUrl('posterUrl', e.target.value)}
+              placeholder="Leave empty to use provider"
+              className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+            />
+          </div>
         </SettingRow>
         <SettingRow label="Background URL pattern" description="e.g. https://example.com/backdrop/{tmdb_id}.jpg">
           <input
@@ -2560,19 +2594,6 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <SettingRow label="Watchlist Button" description="Bookmark button target next to Play.">
-                  <select
-                    value={store.watchlistButtonTarget}
-                    onChange={(e) => store.setWatchlistButtonTarget(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="local">Local</option>
-                    <option value="trakt">Trakt</option>
-                    <option value="simkl">Simkl</option>
-                    <option value="pmdb">PMDB</option>
-                    <option value="anilist">AniList (anime only)</option>
-                  </select>
-                </SettingRow>
               </SettingSection>
 
               {/* ─── Anime Tracking ─── */}
@@ -2632,7 +2653,7 @@ export default function SettingsPage() {
                   setSaveResume: store.setTraktSaveResumePosition,
                   syncFreqValue: store.traktSyncFrequency,
                   setSyncFreq: store.setTraktSyncFrequency,
-                  syncAction: null,
+                  syncAction: store.traktConnected ? () => { syncProviderNow('trakt') } : null,
                   syncLoading: false,
                   lastSync: null,
                   exportAction: null,
@@ -2680,7 +2701,7 @@ export default function SettingsPage() {
                   setSaveResume: store.setPmdBSaveResumePosition,
                   syncFreqValue: store.pmdbSyncFrequency,
                   setSyncFreq: store.setPmdBSyncFrequency,
-                  syncAction: () => { store.setPmdBLastSyncTime(new Date().toLocaleString()) },
+                  syncAction: () => { syncProviderNow('pmdb') },
                   syncLoading: false,
                   lastSync: store.pmdbLastSyncTime || null,
                   exportAction: null,
@@ -2696,7 +2717,7 @@ export default function SettingsPage() {
                   setSaveResume: store.setMdblistSaveResumePosition,
                   syncFreqValue: store.mdblistSyncFrequency,
                   setSyncFreq: store.setMdblistSyncFrequency,
-                  syncAction: () => { store.setMdblistLastSyncTime(new Date().toLocaleString()) },
+                  syncAction: () => { syncProviderNow('mdblist') },
                   syncLoading: false,
                   lastSync: store.mdblistLastSyncTime || null,
                   exportAction: null,
@@ -2973,17 +2994,6 @@ export default function SettingsPage() {
                     ))}
                   </select>
                 </SettingRow>
-                <SettingRow label="Cues Ahead" description="Number of subtitle cues to pre-translate.">
-                  <select
-                    value={store.translationCuesAhead}
-                    onChange={(e) => store.setTranslationCuesAhead(Number(e.target.value))}
-                    className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
-                  >
-                    {[1, 2, 3, 5, 8, 10, 15, 20].map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </SettingRow>
                 <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
                   <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
                 </SettingRow>
@@ -3164,6 +3174,28 @@ export default function SettingsPage() {
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
                   <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
                 </SettingRow>
+              </SettingSection>
+
+              {/* Seek step */}
+              <SettingSection title="Seek Step" description="How far the arrow keys and the skip buttons jump.">
+                <div className="px-6 py-4">
+                  <div className="flex flex-wrap gap-2">
+                    {[5, 10, 15, 30, 60].map((secs) => {
+                      const active = store.seekStepSeconds === secs
+                      return (
+                        <button
+                          key={secs}
+                          onClick={() => store.setSeekStepSeconds(secs)}
+                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          }`}
+                        >
+                          {secs}s
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
               </SettingSection>
 
               {/* Next episode prompt */}
@@ -3372,12 +3404,14 @@ export default function SettingsPage() {
         </div>
       </div>
       {playerDebugTest && (
-        <NativeMpvPlayer
-          url={playerDebugTest.url}
-          title={playerDebugTest.title}
-          onClose={() => setPlayerDebugTest(null)}
-          onPickAnother={() => setPlayerDebugTest(null)}
-        />
+        <Suspense fallback={null}>
+          <NativeMpvPlayer
+            url={playerDebugTest.url}
+            title={playerDebugTest.title}
+            onClose={() => setPlayerDebugTest(null)}
+            onPickAnother={() => setPlayerDebugTest(null)}
+          />
+        </Suspense>
       )}
     </div>
   )

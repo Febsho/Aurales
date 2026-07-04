@@ -324,15 +324,21 @@ export default function CatalogPage() {
     <div className="p-6 pb-12">
       <div className="mb-6">
         <p className="text-sm uppercase tracking-[0.24em] text-muted mb-2">Catalog</p>
-        <h1 className="text-3xl font-bold">{title}</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
         {!loading && (
           <p className="text-sm text-muted mt-2">{items.length} titles loaded</p>
         )}
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-20">
-          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <div className="grid gap-5 animate-pulse" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
+          {Array.from({ length: 18 }).map((_, i) => (
+            <div key={i}>
+              <div className="aspect-[2/3] rounded-2xl bg-white/[0.06]" />
+              <div className="h-3 bg-white/[0.04] rounded-md mt-2.5 w-3/4" />
+              <div className="h-3 bg-white/[0.04] rounded-md mt-1.5 w-1/3" />
+            </div>
+          ))}
         </div>
       ) : (
         <>

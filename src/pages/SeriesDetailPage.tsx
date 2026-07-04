@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
@@ -67,8 +67,17 @@ function animeStructureSettingsKey(): string {
   ].map(Number).join('')
 }
 
+function artworkSettingsKey(): string {
+  const settings = useAppStore.getState()
+  return JSON.stringify({
+    providers: settings.artProviders,
+    fanart: Boolean(settings.fanartApiKey),
+    custom: settings.customArtUrls,
+  })
+}
+
 function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
-  const settingsKey = animeStructureSettingsKey()
+  const settingsKey = `${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -103,7 +112,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = animeStructureSettingsKey()
+  const settingsKey = `${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)
@@ -371,6 +380,14 @@ export default function SeriesDetailPage() {
   const blurTitles = useAppStore((s) => s.blurTitles)
   const blurDescriptions = useAppStore((s) => s.blurDescriptions)
   const keepNextEpisodeVisible = useAppStore((s) => s.keepNextEpisodeVisible)
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const artSettingsSignature = useMemo(() => JSON.stringify({
+    providers: artProviders,
+    fanart: Boolean(fanartApiKey),
+    custom: customArtUrls,
+  }), [artProviders, fanartApiKey, customArtUrls])
 
   const isAnime = show?.isAnime ?? !!(id && /^(mal|anilist)[-:]/i.test(id))
 
@@ -975,7 +992,7 @@ export default function SeriesDetailPage() {
       finalResult.id = targetId
       finalResult.isAnime = isAnime
       finalResult.seasons = processSeasons(finalResult.seasons, isAnime)
-      const artApplied = applyShowArt(finalResult)
+      const artApplied = finalResult
 
       // Resolve IMDb ID if still missing (needed for posters/ratings)
       if (!artApplied.imdbId && (artApplied.tmdbId || artApplied.tvdbId)) {
@@ -986,7 +1003,7 @@ export default function SeriesDetailPage() {
         } catch (_) { /* continue */ }
       }
 
-      let finalArt = applyShowArt(artApplied)
+      let finalArt = artApplied
 
       const providerArt = await resolveArtFromProviders('series', {
         tmdbId: finalArt.tmdbId, tvdbId: finalArt.tvdbId, imdbId: finalArt.imdbId,
@@ -994,6 +1011,7 @@ export default function SeriesDetailPage() {
       if (providerArt.poster || providerArt.backdrop || providerArt.logo) {
         finalArt = { ...finalArt, ...(providerArt.poster && { poster: providerArt.poster }), ...(providerArt.backdrop && { backdrop: providerArt.backdrop }), ...(providerArt.logo && { logo: providerArt.logo }) }
       }
+      finalArt = applyShowArt(finalArt)
 
       if (isAnimeLocal) {
         console.log("[AnimeDetail] setting seasons", {
@@ -1040,7 +1058,7 @@ export default function SeriesDetailPage() {
       }
     }
     load()
-  }, [id, state.addonUrl, state.provider, state.title, addons])
+  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
 
   useEffect(() => {
     if (!show) return
@@ -1584,7 +1602,7 @@ export default function SeriesDetailPage() {
     && allEpisodes.every((episode) => watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
 
   return (
-    <div className="pb-12">
+    <div className="min-h-screen bg-black pb-12">
       <DetailHero
         title={show.title}
         year={show.year}

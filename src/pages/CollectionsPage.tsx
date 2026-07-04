@@ -654,7 +654,7 @@ function ProviderListPickerSection({
             disabled={added}
             onClick={() => {
               onAdd({
-                title: `${label} - ${list.label}`,
+                title: list.label,
                 sourceType: service,
                 providerListId: list.id,
                 layout: list.type,
@@ -801,6 +801,39 @@ function AddWidgetOverlay({
       setTraktPublicSearching(false)
     }
   }, [traktPublicSearch, traktLists])
+
+  // ─── Global public-list search ───
+  // The main search bar also searches Trakt/MDBList public lists, so users
+  // don't have to discover the per-provider search boxes buried in sections.
+  const [globalPublicTrakt, setGlobalPublicTrakt] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
+  const [globalPublicMdblist, setGlobalPublicMdblist] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
+  const [globalPublicSearching, setGlobalPublicSearching] = useState(false)
+
+  useEffect(() => {
+    const q = search.trim()
+    if (q.length < 2 || (!traktConnected && !mdblistApiKey)) {
+      setGlobalPublicTrakt([])
+      setGlobalPublicMdblist([])
+      setGlobalPublicSearching(false)
+      return
+    }
+    let cancelled = false
+    setGlobalPublicSearching(true)
+    const timer = setTimeout(async () => {
+      const [traktResults, mdblistResults] = await Promise.all([
+        traktConnected ? searchTraktPublicListSources(q).catch(() => []) : Promise.resolve([]),
+        mdblistApiKey ? getAvailableMdblistSources(q).catch(() => []) : Promise.resolve([]),
+      ])
+      if (cancelled) return
+      setGlobalPublicTrakt(traktResults.filter((r) => !traktLists.some((own) => own.id === r.id)))
+      setGlobalPublicMdblist(mdblistResults.filter((r) => !mdblistLists.some((own) => own.id === r.id) && r.id !== 'watchlist'))
+      setGlobalPublicSearching(false)
+    }, 500)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [search, traktConnected, mdblistApiKey, traktLists, mdblistLists])
 
   const handleCreateMdblistList = async () => {
     const name = newMdblistName.trim()
@@ -1408,7 +1441,7 @@ function AddWidgetOverlay({
 
   const addSimklCatalog = (list: typeof SIMKL_LIBRARY_CATALOGS[number]) => {
     onAdd({
-      title: `Simkl - ${list.label}`,
+      title: list.label,
       sourceType: 'simkl',
       providerListId: list.id,
       layout: list.type,
@@ -1535,25 +1568,31 @@ function AddWidgetOverlay({
           <div className="grid grid-cols-2 gap-2 px-5 sm:px-6 py-3 border-b border-white/[0.06] flex-shrink-0 bg-black/10">
             <button
               onClick={() => setMode('preset')}
-              className={`flex items-center justify-center gap-2 px-3 sm:px-4 py-3 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer border ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all cursor-pointer border ${
                 mode === 'preset'
-                  ? 'bg-accent/15 text-accent border-accent/25 backdrop-blur-sm'
-                  : 'bg-white/[0.025] text-white/40 hover:bg-white/[0.05] hover:text-white/65 border-white/[0.04]'
+                  ? 'bg-accent/15 border-accent/25 backdrop-blur-sm'
+                  : 'bg-white/[0.025] hover:bg-white/[0.05] border-white/[0.04]'
               }`}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
-              Standard Shelf
+              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'preset' ? 'text-accent' : 'text-white/40'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+              <span className="min-w-0">
+                <span className={`block text-xs sm:text-sm font-semibold ${mode === 'preset' ? 'text-accent' : 'text-white/60'}`}>Browse Shelves</span>
+                <span className="hidden sm:block text-[10px] text-white/30 mt-0.5 truncate">Catalogs & lists from your addons, Trakt, Simkl, MDBList…</span>
+              </span>
             </button>
             <button
               onClick={() => setMode('discover')}
-              className={`flex items-center justify-center gap-2 px-3 sm:px-4 py-3 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer border ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all cursor-pointer border ${
                 mode === 'discover'
-                  ? 'bg-accent/15 text-accent border-accent/25 backdrop-blur-sm'
-                  : 'bg-white/[0.025] text-white/40 hover:bg-white/[0.05] hover:text-white/65 border-white/[0.04]'
+                  ? 'bg-accent/15 border-accent/25 backdrop-blur-sm'
+                  : 'bg-white/[0.025] hover:bg-white/[0.05] border-white/[0.04]'
               }`}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-              Build Your Catalog
+              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'discover' ? 'text-accent' : 'text-white/40'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+              <span className="min-w-0">
+                <span className={`block text-xs sm:text-sm font-semibold ${mode === 'discover' ? 'text-accent' : 'text-white/60'}`}>Create Custom Catalog</span>
+                <span className="hidden sm:block text-[10px] text-white/30 mt-0.5 truncate">Build your own shelf with genre, rating & streaming filters</span>
+              </span>
             </button>
           </div>
         )}
@@ -1668,7 +1707,9 @@ function AddWidgetOverlay({
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search shelves, catalogs, lists..."
+                        placeholder={traktConnected || mdblistApiKey
+                          ? 'Search shelves — also finds public Trakt & MDBList lists...'
+                          : 'Search shelves, catalogs, lists...'}
                         className="w-full bg-white/[0.055] border border-white/[0.08] rounded-xl pl-11 pr-10 py-3 text-sm text-white placeholder-white/28 outline-none focus:border-accent/35 focus:bg-white/[0.07] focus:ring-1 focus:ring-accent/20 transition-all"
                         autoFocus
                       />
@@ -1828,7 +1869,7 @@ function AddWidgetOverlay({
                               disabled={added}
                               onClick={() => {
                                 onAdd({
-                                  title: `${cat.catalogName} (${cat.addonName})`,
+                                  title: cat.catalogName,
                                   addonId: cat.addonId,
                                   addonUrl: cat.addonUrl,
                                   catalogType: cat.catalogType,
@@ -1889,7 +1930,7 @@ function AddWidgetOverlay({
                               disabled={added}
                               onClick={() => {
                                 onAdd({
-                                  title: `${cat.catalogName} (${cat.addonName})`,
+                                  title: cat.catalogName,
                                   addonId: cat.addonId,
                                   addonUrl: cat.addonUrl,
                                   catalogType: cat.catalogType,
@@ -2029,7 +2070,7 @@ function AddWidgetOverlay({
                               disabled={added}
                               onClick={() => {
                                 onAdd({
-                                  title: `Simkl — ${list.label}`,
+                                  title: list.label,
                                   sourceType: 'simkl',
                                   providerListId: list.id,
                                   layout: list.type,
@@ -2263,8 +2304,49 @@ function AddWidgetOverlay({
                     </div>
                   )}
 
+                  {/* Public lists found via the main search bar */}
+                  {search.trim().length >= 2 && (globalPublicSearching || globalPublicTrakt.length > 0 || globalPublicMdblist.length > 0) && (
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
+                        <div className="w-6 h-6 rounded-lg bg-sky-500/15 flex items-center justify-center flex-shrink-0">
+                          <svg className="w-3.5 h-3.5 text-sky-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                        </div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Public Lists</h3>
+                        <span className="text-[10px] text-white/25">
+                          {globalPublicSearching ? 'Searching Trakt & MDBList…' : `${globalPublicTrakt.length + globalPublicMdblist.length} found for “${search.trim()}”`}
+                        </span>
+                      </div>
+                      {globalPublicTrakt.length > 0 && (
+                        <div className="mb-3">
+                          <p className="text-[10px] font-bold text-white/40 mb-1.5 px-1">From Trakt</p>
+                          <ProviderListPickerSection
+                            title="Public Trakt Lists"
+                            service="trakt"
+                            lists={globalPublicTrakt.map((l) => ({ id: l.id, label: l.label, type: l.layout }))}
+                            isAlreadyAdded={isAlreadyAdded}
+                            onAdd={onAdd}
+                            onClose={onClose}
+                          />
+                        </div>
+                      )}
+                      {globalPublicMdblist.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-bold text-white/40 mb-1.5 px-1">From MDBList</p>
+                          <ProviderListPickerSection
+                            title="Public MDBList Lists"
+                            service="mdblist"
+                            lists={globalPublicMdblist.map((l) => ({ id: l.id, label: l.label.replace(/^MDBList - /, ''), type: l.layout }))}
+                            isAlreadyAdded={isAlreadyAdded}
+                            onAdd={onAdd}
+                            onClose={onClose}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Search empty state */}
-                  {totalVisible === 0 && search && (
+                  {totalVisible === 0 && search && !globalPublicSearching && globalPublicTrakt.length === 0 && globalPublicMdblist.length === 0 && (
                     <div className="glass-panel-light rounded-2xl flex flex-col items-center justify-center text-center py-14">
                       <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-4">
                         <svg className="w-6 h-6 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
@@ -2272,7 +2354,11 @@ function AddWidgetOverlay({
                         </svg>
                       </div>
                       <p className="text-sm text-white/30 font-medium">No results for &ldquo;{search}&rdquo;</p>
-                      <p className="text-xs text-white/15 mt-1">Try a different search term</p>
+                      <p className="text-xs text-white/15 mt-1">
+                        {traktConnected || mdblistApiKey
+                          ? 'Nothing local and no public Trakt/MDBList lists matched'
+                          : 'Try a different search term'}
+                      </p>
                     </div>
                   )}
 

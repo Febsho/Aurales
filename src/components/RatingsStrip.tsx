@@ -167,7 +167,7 @@ function toMalRating(value: number): MdblistRating {
   return {
     source: 'myanimelist',
     label: 'MAL',
-    value: Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0$/, '').replace(/\.0$/, ''),
+    value: value.toFixed(1),
     icon: 'MAL',
     iconUrl: getRatingIconUrl('myanimelist') ?? undefined,
   }

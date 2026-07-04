@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -39,6 +39,8 @@ import {
   pause as wtPause,
   seek as wtSeek,
   sendBuffering as wtSendBuffering,
+  reportLocalPlayback as wtReportLocalPlayback,
+  clearLocalPlayback as wtClearLocalPlayback,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
@@ -437,6 +439,26 @@ interface PlayerSession {
   status: "starting" | "playing" | "paused" | "buffering" | "stopped" | "error"
 }
 
+let latestFullPlayerSessionId: string | null = null
+
+// True when we're a watch-together guest without playback-control rights.
+// Local transport actions (pause, seek) are blocked so the guest doesn't
+// desync from the room and then get yanked back by drift correction.
+function wtControlBlocked(): boolean {
+  const wt = useWatchTogetherStore.getState()
+  if (!wt.currentRoom || !wt.currentUserId) return false
+  return wt.currentRoom.hostUserId !== wt.currentUserId && !wt.currentRoom.everyoneCanControl
+}
+
+// mpv args derived from settings that aren't first-class launch params.
+function buildMpvExtraArgs(storeState: { mpvCustomArgs: string; audioPassthrough: boolean }): string {
+  const parts = [storeState.mpvCustomArgs?.trim() ?? '']
+  if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
+    parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
+  }
+  return parts.filter(Boolean).join(' ')
+}
+
 function playerUrlHash(value: string): string {
   let hash = 2166136261
   for (let index = 0; index < value.length; index += 1) {
@@ -565,6 +587,9 @@ function FullNativeMpvPlayer({
   // ─ State ─────────────────────────────────────────────────────────────────
   const [controlsVisible, setControlsVisible] = useState(true)
   const [paused, setPaused] = useState(false)
+  const [buffering, setBuffering] = useState(false)
+  const eofClosedRef = useRef(false)
+  const closeRef = useRef<(() => Promise<void>) | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
@@ -628,6 +653,8 @@ function FullNativeMpvPlayer({
 
   // Store
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
+  const simklSaveResumePosition = useAppStore((s) => s.simklSaveResumePosition)
+  const traktSaveResumePosition = useAppStore((s) => s.traktSaveResumePosition)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
   const scrobblePmdb = useAppStore((s) => s.scrobblePmdb)
   const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
@@ -645,8 +672,8 @@ function FullNativeMpvPlayer({
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
   const subtitleColor = useAppStore((s) => s.subtitleColor)
   const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
-  const translationCuesAhead = useAppStore((s) => s.translationCuesAhead)
   const contextAwareTranslation = useAppStore((s) => s.contextAwareTranslation)
+  const seekStepSeconds = useAppStore((s) => s.seekStepSeconds)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
@@ -722,6 +749,9 @@ function FullNativeMpvPlayer({
 
     const onSyncRequest = (e: Event) => {
       if (!playerRunningRef.current) return
+      // Don't correct until mpv has actually loaded the file — seeking a
+      // not-yet-loaded stream errors out or lands at the wrong position.
+      if (progressRef.current.duration <= 0) return
       const { time, isPlaying, sentAt } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
 
       const { driftThreshold } = useWatchTogetherStore.getState()
@@ -734,7 +764,7 @@ function FullNativeMpvPlayer({
 
       if (shouldSeek) {
         suppressNextWatchTogetherEvent()
-        sendPlayerCommand('seek', [targetTime, 'absolute']).catch(() => {})
+        sendPlayerCommand('seek', [Math.max(0, targetTime), 'absolute']).catch(() => {})
         markCorrectionApplied()
       }
 
@@ -752,6 +782,7 @@ function FullNativeMpvPlayer({
       window.removeEventListener('wt:sync_request', onSyncRequest)
       if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
       resetDriftState()
+      wtClearLocalPlayback()
     }
   }, [isInWatchTogether, suppressNextWatchTogetherEvent])
 
@@ -870,7 +901,13 @@ function FullNativeMpvPlayer({
   }, [])
 
   const command = useCallback((name: string, args: unknown[] = []) => {
-    sendPlayerCommand(name, args).catch((e) => setError(String(e)))
+    sendPlayerCommand(name, args).catch((e) => {
+      const message = String(e)
+      logEvent('MPV DEBUG', `command ${name} failed: ${message}`)
+      if (!/IPC not ready|No player is running|Failed to send mpv command/i.test(message)) {
+        setError(message)
+      }
+    })
   }, [])
 
   // ─ Subtitle loading ───────────────────────────────────────────────────────
@@ -1018,25 +1055,16 @@ function FullNativeMpvPlayer({
       if (inflight.has(line) || liveTranslateCacheRef.current.has(line)) return
       inflight.add(line)
       try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${openrouterApiKey}`,
-            'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-            'X-Title': 'Aurales Media Player',
-          },
-          body: JSON.stringify({
-            model: openrouterModel || 'google/gemini-2.5-flash',
-            messages: [
-              { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise — this is a subtitle line.` },
-              { role: 'user', content: line }
-            ]
-          })
+        const raw = await openRouterChat(openrouterApiKey, {
+          model: openrouterModel || 'google/gemini-2.5-flash',
+          messages: [
+            { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise - this is a subtitle line.` },
+            { role: 'user', content: line }
+          ]
         })
-        if (cancelled || !response.ok) return
-        const data = await response.json()
-        const result = data.choices?.[0]?.message?.content?.trim()
+        if (cancelled) return
+        const data = JSON.parse(raw)
+        const result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
         if (!result || cancelled) return
         liveTranslateCacheRef.current.set(line, result)
         if (liveTranslatePendingRef.current === line) setTranslatedText(result)
@@ -1111,24 +1139,15 @@ function FullNativeMpvPlayer({
       try {
         let result = liveTranslateCacheRef.current.get(line)
         if (!result) {
-          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${openrouterApiKey}`,
-              'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-              'X-Title': 'Aurales Media Player',
-            },
-            body: JSON.stringify({
-              model: openrouterModel || 'google/gemini-2.5-flash',
-              messages: [
-                { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
-                { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
-              ]
-            })
+          const raw = await openRouterChat(openrouterApiKey, {
+            model: openrouterModel || 'google/gemini-2.5-flash',
+            messages: [
+              { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
+              { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
+            ]
           })
-          if (!response.ok || cancelled) return
-          const data = await response.json()
+          if (cancelled) return
+          const data = JSON.parse(raw)
           result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
           if (!result) return
           liveTranslateCacheRef.current.set(line, result)
@@ -1257,18 +1276,29 @@ function FullNativeMpvPlayer({
         if (holdTimeout) clearTimeout(holdTimeout)
         if (spoolInterval) clearInterval(spoolInterval)
 
+        const step = useAppStore.getState().seekStepSeconds || 10
         pressedKey = key
-        accumulatedSeekRef.current = key === 'ArrowRight' ? 10 : -10
+        accumulatedSeekRef.current = key === 'ArrowRight' ? step : -step
         setAccumulatedSeek(accumulatedSeekRef.current)
 
         holdTimeout = setTimeout(() => {
           spoolInterval = setInterval(() => {
             if (accumulatedSeekRef.current !== null) {
-              accumulatedSeekRef.current += key === 'ArrowRight' ? 5 : -5
+              const spool = Math.max(5, Math.round(step / 2))
+              accumulatedSeekRef.current += key === 'ArrowRight' ? spool : -spool
               setAccumulatedSeek(accumulatedSeekRef.current)
             }
           }, 150)
         }, 250)
+        return
+      }
+
+      if (key === 'Escape') {
+        if (isFullscreen) {
+          e.preventDefault()
+          e.stopPropagation()
+          toggleFullscreen()
+        }
         return
       }
 
@@ -1311,7 +1341,7 @@ function FullNativeMpvPlayer({
           if (holdTimeout) clearTimeout(holdTimeout)
           if (spoolInterval) clearInterval(spoolInterval)
           
-          if (accumulatedSeekRef.current !== null) {
+          if (accumulatedSeekRef.current !== null && !wtControlBlocked()) {
             logEvent('PLAYER DEBUG', `Keyboard seek triggered for: ${accumulatedSeekRef.current}s`)
             sendPlayerCommand('seek', [accumulatedSeekRef.current, 'relative']).catch(() => {})
             sendWatchTogetherSeek(progressRef.current.currentTime + accumulatedSeekRef.current)
@@ -1335,7 +1365,7 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [sendWatchTogetherSeek, showControls, toggleFullscreen])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1355,6 +1385,7 @@ function FullNativeMpvPlayer({
       status: "starting"
     }
     activeSessionRef.current = session
+    latestFullPlayerSessionId = session.id
     logEvent('PLAYER DEBUG', `Player started session ${session.id} for media ${session.mediaId}`)
 
     let cancelled = false
@@ -1372,7 +1403,7 @@ function FullNativeMpvPlayer({
           cacheBufferSize: storeState.cacheBufferSize,
           mpvCacheSecs: storeState.mpvCacheSecs,
           mpvNetworkTimeout: storeState.mpvNetworkTimeout,
-          mpvCustomArgs: storeState.mpvCustomArgs
+          mpvCustomArgs: buildMpvExtraArgs(storeState)
         })
         if (cancelled || session.status === "stopped") return
         setPlayerRunning(true)
@@ -1486,7 +1517,8 @@ function FullNativeMpvPlayer({
       // session has already taken over by the time this fires, skip the
       // stop — otherwise we'd kill the new session's mpv process.
       setTimeout(() => {
-        if (activeSessionRef.current === null || activeSessionRef.current.id === session.id) {
+        if (latestFullPlayerSessionId === session.id) {
+          latestFullPlayerSessionId = null
           stopEmbeddedPlayer().catch(() => {})
         }
       }, 0)
@@ -1633,7 +1665,7 @@ function FullNativeMpvPlayer({
         cacheBufferSize: storeState.cacheBufferSize,
         mpvCacheSecs: storeState.mpvCacheSecs,
         mpvNetworkTimeout: storeState.mpvNetworkTimeout,
-        mpvCustomArgs: storeState.mpvCustomArgs
+        mpvCustomArgs: buildMpvExtraArgs(storeState)
       })
       applySavedVolume()
       logEvent('PLAYER DEBUG', `Player restarted successfully`)
@@ -1668,10 +1700,21 @@ function FullNativeMpvPlayer({
           lastPauseRef.current = isPause
           logEvent('MPV DEBUG', `pause changed to: ${isPause}`)
         }
+        // Keep React state in sync with mpv's real pause state. Remote
+        // watch-together commands (and mpv itself) change it outside of
+        // togglePlay, and a desynced `paused` flips the next WT event.
+        if (isPause !== null && isPause !== pausedRef.current) {
+          pausedRef.current = isPause
+          setPaused(isPause)
+        }
         if (isBuffering !== null && isBuffering !== lastBufferingRef.current) {
           lastBufferingRef.current = isBuffering
           logEvent('MPV DEBUG', `buffering changed to: ${isBuffering}`)
+          if (useWatchTogetherStore.getState().currentRoom) {
+            wtSendBuffering(isBuffering, pos ?? progressRef.current.currentTime)
+          }
         }
+        setBuffering(isBuffering === true)
         if (cacheBuffState !== null && cacheBuffState !== lastCacheBuffStateRef.current) {
           lastCacheBuffStateRef.current = cacheBuffState
           logEvent('MPV DEBUG', `cache-buffering-state changed: ${cacheBuffState}%`)
@@ -1711,6 +1754,27 @@ function FullNativeMpvPlayer({
           progressRef.current.duration = dur
         }
 
+        // Feed the live position to the watch-together sync loop — the room's
+        // stored playback time only changes on events and must not be used.
+        if (pos != null && useWatchTogetherStore.getState().currentRoom) {
+          wtReportLocalPlayback(pos, !isPause && !isBuffering)
+        }
+
+        // End of file: mpv runs with --keep-open=no, so the process exits at
+        // EOF. Close gracefully (scrobbles the finished state) instead of
+        // leaving a dead overlay behind — unless Up Next is on screen.
+        if (
+          eofReached === true &&
+          !eofClosedRef.current &&
+          !showUpNextRef.current &&
+          progressRef.current.duration > 0 &&
+          progressRef.current.currentTime / progressRef.current.duration > 0.8
+        ) {
+          eofClosedRef.current = true
+          closeRef.current?.()
+          return
+        }
+
         // Stall detection
         const PLAYER_STALL_TIMEOUT_MS = 30000
         const PLAYER_RESTART_COOLDOWN_MS = 15000
@@ -1746,7 +1810,7 @@ function FullNativeMpvPlayer({
             saveLocalProgress(pos, dur, false)
           }
           const item = currentItemRef.current
-          if (item && scrobbleSimkl && pos - lastSimklPlaybackSaveRef.current >= 60) {
+          if (item && scrobbleSimkl && simklSaveResumePosition && pos - lastSimklPlaybackSaveRef.current >= 60) {
             lastSimklPlaybackSaveRef.current = pos
             logEvent('PLAYBACK SYNC DEBUG', `Save Simkl scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveSimklPlaybackProgress(item, pos / dur).catch(() => {})
@@ -1762,13 +1826,24 @@ function FullNativeMpvPlayer({
             saveMdblistProgressHelper(pos, dur, false)
           }
 
-          // Detect near-end for Up Next
-          // Trigger when ≤90s remaining OR ≥92% through, whichever comes first
+          // Detect near-end for Up Next, honoring the Next Episode Prompt
+          // setting. 'auto' = ≤90s remaining OR ≥92% through; timed options
+          // use a fixed remaining threshold; 'off' disables the prompt.
+          // Suppressed in Watch Together — autoplaying a new episode locally
+          // would desync the whole room.
           const remaining = dur - pos
           const pctDone = pos / dur
+          const promptSetting = useAppStore.getState().nextEpisodePrompt
+          const promptThresholds: Record<string, number> = { '30s': 30, '45s': 45, '1m': 60, '1.5m': 90, '2m': 120 }
+          const shouldPrompt = promptSetting === 'off'
+            ? false
+            : promptSetting === 'auto'
+              ? (remaining <= 90 || pctDone >= 0.92)
+              : remaining <= (promptThresholds[promptSetting] ?? 90)
           if (
-            (remaining <= 90 || pctDone >= 0.92) &&
+            shouldPrompt &&
             remaining > 0 &&
+            !useWatchTogetherStore.getState().currentRoom &&
             nextEpInfoRef.current &&
             !showUpNextRef.current &&
             !upNextTriggeredRef.current &&
@@ -1800,7 +1875,9 @@ function FullNativeMpvPlayer({
           }
           setActiveSkip((previous) => previous?.id === found?.id ? previous : found)
           setSkipType((previous) => previous === foundType ? previous : foundType)
-          if (autoSkipSegments && found && foundType) {
+          // Auto-skip is disabled for guests without control rights — the
+          // local jump would be reverted by drift correction anyway.
+          if (autoSkipSegments && found && foundType && !wtControlBlocked()) {
             const endMs = foundType === 'intro'
               ? found.intro_end_ms
               : foundType === 'recap'
@@ -1829,7 +1906,7 @@ function FullNativeMpvPlayer({
       finally { polling = false }
     }, 1000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
+  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -1912,7 +1989,18 @@ function FullNativeMpvPlayer({
     currentBackdropRef.current = nextEp.stillPath ?? currentBackdropRef.current
 
     try {
-      await launchEmbeddedPlayer({ url: foundUrl, title, volume: volumeRef.current, viewport: buildVideoViewport() })
+      const storeState = useAppStore.getState()
+      await launchEmbeddedPlayer({
+        url: foundUrl,
+        title,
+        volume: volumeRef.current,
+        viewport: buildVideoViewport(),
+        hwdecMode: storeState.hwdecMode,
+        cacheBufferSize: storeState.cacheBufferSize,
+        mpvCacheSecs: storeState.mpvCacheSecs,
+        mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+        mpvCustomArgs: buildMpvExtraArgs(storeState)
+      })
       applySavedVolume()
 
       // Update title/subtitle in the player controls bar
@@ -2044,6 +2132,7 @@ function FullNativeMpvPlayer({
     await stopEmbeddedPlayer().catch(() => {})
     onClose()
   }
+  useEffect(() => { closeRef.current = close })
 
   const pickAnother = async () => {
     const item = currentItemRef.current
@@ -2077,33 +2166,44 @@ function FullNativeMpvPlayer({
     onPickAnother()
   }
 
+  const wtBlockedNotice = useCallback(() => {
+    setError('Only the host can control playback in this room.')
+    setTimeout(() => setError((prev) => prev === 'Only the host can control playback in this room.' ? '' : prev), 2500)
+    showControls()
+  }, [showControls])
+
   const togglePlay = () => {
     if (!playerRunning) {
       setError('The player process has exited. Go back and choose another stream.')
       return
     }
-    command('cycle', ['pause'])
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
+    const targetPaused = !pausedRef.current
+    const { currentTime: pos, duration: dur } = progressRef.current
+    const progress = dur > 0 ? pos / dur : 0
+    const item = currentItemRef.current
+
+    pausedRef.current = targetPaused
+    setPaused(targetPaused)
+    command('set_property', ['pause', targetPaused])
 
     const wt = useWatchTogetherStore.getState()
     if (wt.currentRoom && !wtIgnoreNextEvent.current) {
-      const pos = progressRef.current.currentTime
-      if (pausedRef.current) wtPlay(pos)
-      else wtPause(pos)
+      if (targetPaused) wtPause(pos)
+      else wtPlay(pos)
     }
 
-    setPaused((prev) => {
-      const newPaused = !prev
-      const item = currentItemRef.current
-      if (item) {
-        const { currentTime: pos, duration: dur } = progressRef.current
-        const progress = dur > 0 ? pos / dur : 0
-        queueMicrotask(() => saveLocalProgress(pos, dur, false))
-        if (newPaused) {
+    if (item) {
+      queueMicrotask(() => {
+        saveLocalProgress(pos, dur, false)
+        if (targetPaused) {
           if (scrobbleSimkl) {
             saveSimklPlaybackProgress(item, progress).catch(() => {})
             onSimklPlaybackPause(item, progress).catch(() => {})
           }
-          if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
+          // Trakt derives the resume point from scrobble pause - the
+          // "Save Resume Position" setting gates it.
+          if (scrobbleTrakt && traktSaveResumePosition && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
             const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
@@ -2125,13 +2225,13 @@ function FullNativeMpvPlayer({
             traktScrobbleStart(payload).catch(() => {})
           }
         }
-      }
-      return newPaused
-    })
+      })
+    }
   }
 
   const seekBy = (secs: number) => {
     if (!playerRunning) return
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
     const targetTime = progressRef.current.currentTime + secs
     command('seek', [secs, 'relative'])
     sendWatchTogetherSeek(targetTime)
@@ -2217,6 +2317,18 @@ function FullNativeMpvPlayer({
     }
   }, [command, liveTranslateOn, startLiveAiSubtitles, translatingSubtitles])
 
+  // Auto-start live AI subtitle translation once per playback when the
+  // "Translate subtitles" setting is on and a source track is available.
+  const autoTranslateStartedRef = useRef(false)
+  useEffect(() => {
+    if (!subtitleTranslationEnabled || autoTranslateStartedRef.current) return
+    if (!openrouterApiKey || !subtitleTranslationLang) return
+    if (!tracksLoaded || subTracks.length === 0) return
+    if (liveTranslateOn || translatingSubtitles) return
+    autoTranslateStartedRef.current = true
+    startLiveAiSubtitles()
+  }, [subtitleTranslationEnabled, openrouterApiKey, subtitleTranslationLang, tracksLoaded, subTracks, liveTranslateOn, translatingSubtitles, startLiveAiSubtitles])
+
   const changeSub = (id: number | 'no') => {
     setSelectedSub(id)
     setLiveTranslateOn(id !== 'no' && id === aiSubtitleTrackIdRef.current)
@@ -2277,6 +2389,15 @@ function FullNativeMpvPlayer({
         onClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) { showControls(); togglePlay() } }}
         onDoubleClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) toggleFullscreen() }}
       />
+
+      {/* Buffering spinner */}
+      {buffering && !paused && playerReady && (
+        <div className="absolute inset-0 z-[2] flex items-center justify-center pointer-events-none">
+          <div className="w-16 h-16 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-white/25 border-t-white rounded-full animate-spin" />
+          </div>
+        </div>
+      )}
 
       {/* Center play/pause indicator */}
       {paused && (
@@ -2342,6 +2463,7 @@ function FullNativeMpvPlayer({
         <button
           onClick={(e) => {
             e.stopPropagation()
+            if (wtControlBlocked()) { wtBlockedNotice(); return }
             let endMs: number
             if (skipType === 'intro') endMs = activeSkip.intro_end_ms
             else if (skipType === 'recap') endMs = activeSkip.recap_end_ms ?? activeSkip.intro_end_ms
@@ -2559,27 +2681,27 @@ function FullNativeMpvPlayer({
               )}
             </button>
 
-            {/* Skip back 10s */}
+            {/* Skip back */}
             <button
-              onClick={(e) => { e.stopPropagation(); seekBy(-10) }}
-              title="Back 10s (←)"
+              onClick={(e) => { e.stopPropagation(); seekBy(-seekStepSeconds) }}
+              title={`Back ${seekStepSeconds}s (←)`}
               className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
-                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">{seekStepSeconds}</text>
               </svg>
             </button>
 
-            {/* Skip forward 10s */}
+            {/* Skip forward */}
             <button
-              onClick={(e) => { e.stopPropagation(); seekBy(10) }}
-              title="Forward 10s (→)"
+              onClick={(e) => { e.stopPropagation(); seekBy(seekStepSeconds) }}
+              title={`Forward ${seekStepSeconds}s (→)`}
               className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
-                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">{seekStepSeconds}</text>
               </svg>
             </button>
 
@@ -2591,6 +2713,7 @@ function FullNativeMpvPlayer({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation()
+                    if (wtControlBlocked()) { wtBlockedNotice(); return }
                     const targetTime = range.end / 1000
                     command('seek', [targetTime, 'absolute'])
                     sendWatchTogetherSeek(targetTime)
@@ -2629,6 +2752,7 @@ function FullNativeMpvPlayer({
                 }}
                 onMouseUp={() => {
                   setIsDragging(false)
+                  if (wtControlBlocked()) { wtBlockedNotice(); return }
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
                 }}
@@ -2639,6 +2763,7 @@ function FullNativeMpvPlayer({
                 }}
                 onTouchEnd={() => {
                   setIsDragging(false)
+                  if (wtControlBlocked()) { wtBlockedNotice(); return }
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
                 }}

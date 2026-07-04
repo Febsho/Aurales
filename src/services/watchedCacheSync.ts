@@ -1,5 +1,5 @@
 import { useWatchedCacheStore, makeWatchedKey, type WatchedKey } from '../stores/watchedCacheStore'
-import { cachedFetch } from './cache/sqliteCache'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { getWatchedMovies, getWatchedShows, type TraktWatchedItem } from './trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from './simkl/history'
@@ -56,39 +56,66 @@ function extractMdblistKeys(items: { imdb_id?: string; tmdb_id?: number; tvdb_id
   return keys
 }
 
+export type SyncableWatchedSource = 'trakt' | 'simkl' | 'pmdb' | 'mdblist'
+
+interface ProviderFetcher {
+  key: string
+  fetch: () => Promise<unknown>
+  extract: (data: any) => WatchedKey[]
+}
+
+const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
+  trakt: {
+    key: 'watched:trakt',
+    fetch: async () => {
+      const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
+      return { movies, shows }
+    },
+    extract: (data) => extractTraktKeys(data.movies, data.shows),
+  },
+  simkl: {
+    key: 'watched:simkl',
+    fetch: async () => {
+      const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
+      return { items: [...movies, ...episodes] as SimklWatchlistItem[] }
+    },
+    extract: (data) => extractSimklKeys(data.items),
+  },
+  pmdb: {
+    key: 'watched:pmdb',
+    fetch: () => getPMDBWatched(),
+    extract: (data) => extractPmdbKeys(data),
+  },
+  mdblist: {
+    key: 'watched:mdblist',
+    fetch: () => getMdblistWatched(),
+    extract: (data) => extractMdblistKeys(data),
+  },
+}
+
+/**
+ * Bypass the cache TTL for a single provider: fetch fresh data and overwrite
+ * its cache entry. Used by the per-provider background sync scheduler.
+ */
+export async function forceRefreshProviderWatched(source: SyncableWatchedSource): Promise<void> {
+  const def = PROVIDER_FETCHERS[source]
+  const fresh = await def.fetch()
+  await cacheSet(def.key, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+}
+
 async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]> {
   const allKeys: WatchedKey[] = []
 
   const tasks = sources
-    .filter((s) => s !== 'local')
+    .filter((s): s is SyncableWatchedSource => s !== 'local' && s in PROVIDER_FETCHERS)
     .map(async (source) => {
       try {
-        if (source === 'trakt') {
-          const data = await cachedFetch('watched:trakt', async () => {
-            const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
-            return { movies, shows }
-          }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
-          return extractTraktKeys(data.movies, data.shows)
-        }
-        if (source === 'simkl') {
-          const data = await cachedFetch<{ items: SimklWatchlistItem[] }>('watched:simkl', async () => {
-            const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
-            return { items: [...movies, ...episodes] }
-          }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
-          return extractSimklKeys(data.items)
-        }
-        if (source === 'pmdb') {
-          const data = await cachedFetch('watched:pmdb', async () => {
-            return await getPMDBWatched()
-          }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
-          return extractPmdbKeys(data)
-        }
-        if (source === 'mdblist') {
-          const data = await cachedFetch('watched:mdblist', async () => {
-            return await getMdblistWatched()
-          }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
-          return extractMdblistKeys(data)
-        }
+        const def = PROVIDER_FETCHERS[source]
+        const data = await cachedFetch(def.key, def.fetch, {
+          category: CACHE_CATEGORIES.WATCHED_STATUS,
+          ttlSeconds: CACHE_TTLS.WATCHED_STATUS,
+        })
+        return def.extract(data)
       } catch (e) {
         console.warn(`[WatchedCache] failed to fetch ${source}:`, e)
       }

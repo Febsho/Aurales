@@ -1,14 +1,15 @@
-import { useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
-import { getSimklPlaybackProgress } from '../services/simkl/playback'
-import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
-import { getPMDBPlaybackProgress } from '../services/pmdb'
-import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
+import { getSimklPlaybackProgress, removeSimklPlaybackProgress } from '../services/simkl/playback'
+import { getPlaybackProgress as getTraktPlaybackProgress, removePlaybackItem as removeTraktPlaybackItem } from '../services/trakt/sync'
+import { getPMDBPlaybackProgress, deletePMDBResumePoint } from '../services/pmdb'
+import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth, scrobbleMdblist } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
-import StreamSelector from './StreamSelector'
+// Lazy: StreamSelector pulls in the full player stack; only load it on demand
+const StreamSelector = lazy(() => import('./StreamSelector'))
 import type { HomeRowConfig } from '../types'
 import { formatTime } from '../services/player'
 import { useContextMenu } from '../hooks/useContextMenu'
@@ -652,19 +653,21 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       </div>
 
       {streamSelectorData && (
-        <StreamSelector
-          open={true}
-          onClose={() => setStreamSelectorData(null)}
-          mediaType={streamSelectorData.mediaType}
-          mediaId={streamSelectorData.mediaId}
-          title={streamSelectorData.title}
-          artwork={streamSelectorData.artwork}
-          seasonEpisode={streamSelectorData.seasonEpisode}
-          startTime={streamSelectorData.startTime}
-          tmdbId={streamSelectorData.tmdbId}
-          malId={streamSelectorData.malId}
-          anilistId={streamSelectorData.anilistId}
-        />
+        <Suspense fallback={null}>
+          <StreamSelector
+            open={true}
+            onClose={() => setStreamSelectorData(null)}
+            mediaType={streamSelectorData.mediaType}
+            mediaId={streamSelectorData.mediaId}
+            title={streamSelectorData.title}
+            artwork={streamSelectorData.artwork}
+            seasonEpisode={streamSelectorData.seasonEpisode}
+            startTime={streamSelectorData.startTime}
+            tmdbId={streamSelectorData.tmdbId}
+            malId={streamSelectorData.malId}
+            anilistId={streamSelectorData.anilistId}
+          />
+        </Suspense>
       )}
 
       {cwMenu && (
@@ -676,8 +679,26 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           source={source}
           onClose={() => setCwMenu(null)}
           onRemove={(removedItem) => {
+            // Remove at the source, not just from local component state —
+            // otherwise the item reappears on the next load.
             if (source === 'local') {
               removeWatchProgress([removedItem.mediaId, removedItem.imdbId].filter(Boolean) as string[], removedItem.season, removedItem.episode)
+            } else if (source === 'trakt') {
+              removeTraktPlaybackItem(removedItem.id).catch((e) => console.warn('[CW] Trakt remove failed:', e))
+            } else if (source === 'simkl') {
+              removeSimklPlaybackProgress(Number(removedItem.id)).catch((e) => console.warn('[CW] Simkl remove failed:', e))
+            } else if (source === 'pmdb') {
+              deletePMDBResumePoint(removedItem.id).catch((e) => console.warn('[CW] PMDB remove failed:', e))
+            } else if (source === 'mdblist' && removedItem.id.startsWith('mdblist-pb-')) {
+              scrobbleMdblist(
+                'clear',
+                removedItem.tmdbId,
+                removedItem.mediaType,
+                0,
+                removedItem.season,
+                removedItem.episode,
+                removedItem.imdbId,
+              ).catch((e) => console.warn('[CW] MDBList remove failed:', e))
             }
             setItems((prev) => prev.filter((i) => i.id !== removedItem.id))
             setCwMenu(null)

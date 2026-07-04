@@ -21,7 +21,7 @@ export default function RoomControls() {
   const isPlaying = playback.isPlaying
 
   const handlePlayPause = async () => {
-    const time = playback.currentTime
+    const time = wsClient.getBestKnownTime()
     if (isPlaying) {
       wsClient.pause(time)
     } else {
@@ -151,12 +151,18 @@ export default function RoomControls() {
           {/* Everyone can control toggle */}
           <Toggle
             checked={currentRoom.everyoneCanControl}
-            onChange={() => {
-              // This would typically call a wsClient method to toggle the setting
-              // For now, this is a placeholder for the store action
-            }}
+            onChange={(checked) => wsClient.setRoomSettings({ everyoneCanControl: checked })}
             label="Everyone can control"
             description="Let anyone play, pause, and seek"
+            size="sm"
+          />
+
+          {/* Require ready check toggle */}
+          <Toggle
+            checked={currentRoom.requireReadyCheck}
+            onChange={(checked) => wsClient.setRoomSettings({ requireReadyCheck: checked })}
+            label="Require ready check"
+            description="Wait for everyone before starting playback"
             size="sm"
           />
         </>

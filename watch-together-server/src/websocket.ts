@@ -12,6 +12,7 @@ import {
   isParticipant,
   updateMedia,
   updateStream,
+  updateRoomSettings,
   setReady,
   updatePlayback,
   addChatMessage,
@@ -144,6 +145,10 @@ function handleEvent(ws: WebSocket, client: ConnectedClient, event: ClientEvent,
       handleTransferHost(ws, client, event)
       return
 
+    case 'ROOM_SETTINGS':
+      handleRoomSettings(ws, client, event)
+      return
+
     default:
       sendTo(ws, { type: 'ERROR', code: 'UNKNOWN_EVENT', message: 'Unknown event type' })
   }
@@ -165,7 +170,7 @@ function handleJoin(
       sendTo(ws, { type: 'ERROR', code: 'RATE_LIMITED', message: 'Too many room creations. Try again later.' })
       return
     }
-    const { room, userId } = createRoom(name, config)
+    const { room, userId } = createRoom(name, config, event.roomSettings)
     client.userId = userId
     client.roomId = room.id
     client.clientId = event.clientId
@@ -252,12 +257,39 @@ function handleStreamSelected(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'STREAM_SELECTED' }>,
 ): void {
-  const participant = updateParticipantStatus(event.roomId, event.senderUserId, {
-    hasSelectedStream: true,
-    status: 'connected',
-  })
+  const room = updateStream(event.roomId, event.senderUserId, event.stream)
+  const participant = room?.participants.find(p => p.id === event.senderUserId)
   if (participant) {
     broadcastToRoom(event.roomId, { type: 'PARTICIPANT_UPDATED', participant })
+  }
+  // When the host picks a stream, tell everyone else so guests can re-match
+  // against it. Exclude the sender to avoid a resolve→select feedback loop.
+  if (room && room.hostUserId === event.senderUserId) {
+    broadcastToRoom(event.roomId, {
+      type: 'MEDIA_UPDATED',
+      media: room.selectedMedia,
+      episode: room.selectedEpisode,
+      stream: room.selectedStream,
+    }, event.senderUserId)
+  }
+}
+
+function handleRoomSettings(
+  ws: WebSocket,
+  client: ConnectedClient,
+  event: Extract<ClientEvent, { type: 'ROOM_SETTINGS' }>,
+): void {
+  const room = getRoom(event.roomId)
+  if (!room) return
+
+  if (room.hostUserId !== event.senderUserId) {
+    sendTo(ws, { type: 'ERROR', code: 'HOST_ONLY_CONTROL', message: 'Only the host can change room settings' })
+    return
+  }
+
+  const updated = updateRoomSettings(event.roomId, event.settings ?? {})
+  if (updated) {
+    broadcastToRoom(event.roomId, { type: 'ROOM_STATE', room: updated })
   }
 }
 
