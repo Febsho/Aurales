@@ -43,6 +43,11 @@ export default function CreateRoomButton() {
       await wsClient.createRoom(trimmed)
       setShowModal(false)
       setRoomPanelOpen(true)
+      // Honor the "Auto-copy invite link" setting from Watch Together settings.
+      const wt = useWatchTogetherStore.getState()
+      if (wt.autoCopyInvite && wt.currentRoom) {
+        navigator.clipboard.writeText(`aurales://watch/${wt.currentRoom.code}`).catch(() => {})
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to create room'
       if (msg.includes('timed out') || msg.includes('Failed to connect')) {

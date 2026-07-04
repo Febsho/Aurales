@@ -187,7 +187,7 @@ export default function HomeEditorPage() {
 
   const handleAddCatalog = (cat: typeof addonCatalogs[0]) => {
     addHomeRow({
-      title: `${cat.catalogName} (${cat.addonName})`,
+      title: cat.catalogName,
       addonId: cat.addonId,
       addonUrl: cat.addonUrl,
       catalogType: cat.catalogType,
@@ -223,7 +223,7 @@ export default function HomeEditorPage() {
 
   const handleAddSimklList = (list: typeof SIMKL_LIST_SOURCES[number]) => {
     addHomeRow({
-      title: `Simkl - ${list.label}`,
+      title: list.label,
       sourceType: 'simkl',
       providerListId: list.id,
       layout: list.layout,

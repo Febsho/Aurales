@@ -7,7 +7,7 @@ import { v4 as uuid } from 'uuid'
 
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
-export type ArtProvider = 'default' | 'tmdb' | 'tvdb' | 'fanart'
+export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 
 export interface ArtProviderSettings {
   moviePoster: ArtProvider
@@ -26,6 +26,29 @@ export interface CustomArtUrls {
   backdropUrl: string
   logoUrl: string
   episodeThumbnailUrl: string
+}
+
+const DEFAULT_ART_PROVIDERS: ArtProviderSettings = {
+  moviePoster: 'tmdb', movieBackdrop: 'tmdb', movieLogo: 'tmdb',
+  seriesPoster: 'tmdb', seriesBackdrop: 'tmdb', seriesLogo: 'tmdb',
+  animePoster: 'tmdb', animeBackdrop: 'tmdb', animeLogo: 'tmdb',
+}
+
+function normalizeArtProviderSettings(value: unknown): ArtProviderSettings {
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof ArtProviderSettings, string>>
+  const normalize = (provider?: string): ArtProvider =>
+    provider === 'tvdb' || provider === 'fanart' ? provider : 'tmdb'
+  return {
+    moviePoster: normalize(raw.moviePoster),
+    movieBackdrop: normalize(raw.movieBackdrop),
+    movieLogo: normalize(raw.movieLogo),
+    seriesPoster: normalize(raw.seriesPoster),
+    seriesBackdrop: normalize(raw.seriesBackdrop),
+    seriesLogo: normalize(raw.seriesLogo),
+    animePoster: normalize(raw.animePoster),
+    animeBackdrop: normalize(raw.animeBackdrop),
+    animeLogo: normalize(raw.animeLogo),
+  }
 }
 
 interface AppState {
@@ -104,7 +127,6 @@ interface AppState {
   continueWatchingSource: ProgressProvider
   continueWatchingLimit: number
   watchedCheckmarkSources: ProgressProvider[]
-  watchlistButtonTarget: ProgressProvider
   pmdbApiKey: string
   pmdbSaveResumePosition: boolean
   mdblistSaveResumePosition: boolean
@@ -124,7 +146,6 @@ interface AppState {
   setContinueWatchingSource: (src: ProgressProvider) => void
   setContinueWatchingLimit: (limit: number) => void
   setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
-  setWatchlistButtonTarget: (target: ProgressProvider) => void
   setPmdBApiKey: (key: string) => void
   setPmdBSaveResumePosition: (val: boolean) => void
   setMdblistSaveResumePosition: (val: boolean) => void
@@ -287,9 +308,11 @@ interface AppState {
   mpvCacheSecs: number
   mpvNetworkTimeout: number
   mpvCustomArgs: string
+  seekStepSeconds: number
   setMpvCacheSecs: (secs: number) => void
   setMpvNetworkTimeout: (secs: number) => void
   setMpvCustomArgs: (args: string) => void
+  setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
 }
 
@@ -585,7 +608,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (_) { /* ignore */ }
     return ['local'] as ProgressProvider[]
   })(),
-  watchlistButtonTarget: (localStorage.getItem('aurales_watchlist_target') || 'local') as ProgressProvider,
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
@@ -645,7 +667,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })
   },
-  setWatchlistButtonTarget: (target) => { localStorage.setItem('aurales_watchlist_target', target); set({ watchlistButtonTarget: target }) },
   setPmdBApiKey: (key) => { localStorage.setItem('pmdb_api_key', key); set({ pmdbApiKey: key }) },
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
   setMdblistSaveResumePosition: (val) => { localStorage.setItem('mdblist_save_resume', String(val)); set({ mdblistSaveResumePosition: val }) },
@@ -701,9 +722,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   mpvCacheSecs: Number(localStorage.getItem('aurales_mpv_cache_secs') || '60'),
   mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '15'),
   mpvCustomArgs: localStorage.getItem('aurales_mpv_custom_args') || '',
+  seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
   setMpvCacheSecs: (secs) => { localStorage.setItem('aurales_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
   setMpvNetworkTimeout: (secs) => { localStorage.setItem('aurales_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
   setMpvCustomArgs: (args) => { localStorage.setItem('aurales_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
+  setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
     localStorage.setItem('aurales_hwdec_mode', 'auto')
     localStorage.setItem('aurales_cache_buffer_size', 'default')
@@ -719,12 +742,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  artProviders: JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || {
-    moviePoster: 'default', movieBackdrop: 'default', movieLogo: 'default',
-    seriesPoster: 'default', seriesBackdrop: 'default', seriesLogo: 'default',
-    animePoster: 'default', animeBackdrop: 'default', animeLogo: 'default',
-  } as ArtProviderSettings,
-  setArtProviders: (providers) => { localStorage.setItem('aurales_art_providers', JSON.stringify(providers)); set({ artProviders: providers }) },
+  artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
+  setArtProviders: (providers) => {
+    const normalized = normalizeArtProviderSettings(providers)
+    localStorage.setItem('aurales_art_providers', JSON.stringify(normalized))
+    set({ artProviders: normalized })
+  },
   customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
     posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
   } as CustomArtUrls,

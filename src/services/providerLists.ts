@@ -181,7 +181,7 @@ export async function searchTraktPublicListSources(query: string): Promise<{ id:
   const results = await searchTraktPopularLists(query)
   return results.map((list) => ({
     id: `public:${list.user.ids.slug}:${list.ids.slug}`,
-    label: `${list.name} by ${list.user.username}`,
+    label: list.name,
     layout: 'poster' as const,
   }))
 }
@@ -218,7 +218,7 @@ export async function getAvailableMdblistSources(search = ''): Promise<{ id: str
     })),
     ...publicLists.map((list) => ({
       id: `list:${list.id}`,
-      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}${list.user_name ? ` by ${list.user_name}` : ''}`,
+      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}`,
       layout: 'poster' as const,
     })),
   ]

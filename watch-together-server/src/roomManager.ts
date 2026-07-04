@@ -7,6 +7,7 @@ import type {
   RoomMedia,
   RoomEpisode,
   RoomStream,
+  RoomSettings,
   ServerConfig,
 } from './types.js'
 
@@ -36,7 +37,7 @@ function now(): string {
 
 // ── Create ─────────────────────────────────────────────────────────────────
 
-export function createRoom(hostName: string, config: ServerConfig): { room: WatchRoom; userId: string } {
+export function createRoom(hostName: string, config: ServerConfig, settings?: RoomSettings): { room: WatchRoom; userId: string } {
   const id = randomUUID()
   const code = generateCode()
   const userId = randomUUID()
@@ -66,8 +67,8 @@ export function createRoom(hostName: string, config: ServerConfig): { room: Watc
     },
     participants: [host],
     chat: [],
-    everyoneCanControl: false,
-    requireReadyCheck: true,
+    everyoneCanControl: settings?.everyoneCanControl ?? false,
+    requireReadyCheck: settings?.requireReadyCheck ?? true,
     createdAt: ts,
     updatedAt: ts,
     lastActivityAt: ts,
@@ -267,6 +268,20 @@ export function updateStream(roomId: string, userId: string, stream: RoomStream)
     participant.status = 'connected'
     participant.lastSeenAt = now()
   }
+  // The host's stream is the room's reference stream — guests match against it.
+  if (room.hostUserId === userId) {
+    room.selectedStream = stream
+  }
+  room.lastActivityAt = now()
+  return room
+}
+
+export function updateRoomSettings(roomId: string, settings: RoomSettings): WatchRoom | null {
+  const room = rooms.get(roomId)
+  if (!room) return null
+  if (settings.everyoneCanControl != null) room.everyoneCanControl = settings.everyoneCanControl
+  if (settings.requireReadyCheck != null) room.requireReadyCheck = settings.requireReadyCheck
+  room.updatedAt = now()
   room.lastActivityAt = now()
   return room
 }

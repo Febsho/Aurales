@@ -77,7 +77,7 @@ export interface ProviderEpisodeMapping {
   }
 
   confidence: number
-  source: 'animeApi' | 'animeLists' | 'override'
+  source: 'anibridge' | 'animeApi' | 'animeLists' | 'override'
   updatedAt: string
 }
 
@@ -95,7 +95,7 @@ export interface AnimeMappingResult {
 
   seasons: AnimeSeasonMapping[]
   confidence: number
-  source: 'animeApi' | 'animeLists' | 'override'
+  source: 'anibridge' | 'animeApi' | 'animeLists' | 'override'
   raw?: unknown
   updatedAt: string
 }

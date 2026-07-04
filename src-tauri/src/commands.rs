@@ -1308,6 +1308,7 @@ fn launch_mpv_with_window(
         format!("--input-ipc-server={}", ipc_path),
         "--terminal=yes".to_string(),
         "--msg-level=all=warn".to_string(),
+        "--ao=wasapi".to_string(),
         "--term-osd-bar=no".to_string(),
         "--term-status-msg=".to_string(),
         "--keep-open=no".to_string(),
@@ -1337,7 +1338,21 @@ fn launch_mpv_with_window(
     }
 
     if let Some(custom) = mpv_custom_args {
+        let mut skip_next = false;
         for arg in custom.split_whitespace() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if arg == "--ao" || arg == "-ao" {
+                skip_next = true;
+                player_debug_log("[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi".to_string());
+                continue;
+            }
+            if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
+                player_debug_log(format!("[PLAYER CONFIG] ignored custom audio output arg: {}", arg));
+                continue;
+            }
             if !arg.is_empty() {
                 args.push(arg.to_string());
             }
@@ -1481,6 +1496,11 @@ fn launch_mpv_with_window(
             r#"{"command":["observe_property",10,"eof-reached"]}"#,
             r#"{"command":["observe_property",11,"idle-active"]}"#,
             r#"{"command":["observe_property",12,"core-idle"]}"#,
+            r#"{"command":["observe_property",13,"secondary-sub-text"]}"#,
+            r#"{"command":["observe_property",14,"secondary-sub-start"]}"#,
+            r#"{"command":["observe_property",15,"secondary-sub-end"]}"#,
+            r#"{"command":["observe_property",16,"sub-start"]}"#,
+            r#"{"command":["observe_property",17,"sub-end"]}"#,
         ];
         if let Ok(mut writer_guard) = writer.lock() {
             for cmd in observe_cmds {

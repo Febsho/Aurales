@@ -123,8 +123,13 @@ export interface DrawStroke {
 
 // ── Client → Server events ─────────────────────────────────────────────────
 
+export interface RoomSettings {
+  everyoneCanControl?: boolean
+  requireReadyCheck?: boolean
+}
+
 export type ClientEvent =
-  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string }
+  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string; roomSettings?: RoomSettings }
   | { type: 'ROOM_LEAVE'; roomId: string; userId: string }
   | { type: 'READY'; roomId: string; userId: string; ready: boolean }
   | { type: 'MEDIA_SELECTED'; roomId: string; senderUserId: string; media: RoomMedia; episode?: RoomEpisode; stream?: RoomStream; sentAt: number }
@@ -139,6 +144,7 @@ export type ClientEvent =
   | { type: 'DRAW_STROKE'; roomId: string; senderUserId: string; stroke: DrawStroke; sentAt: number }
   | { type: 'DRAW_CLEAR'; roomId: string; senderUserId: string; sentAt: number }
   | { type: 'TRANSFER_HOST'; roomId: string; senderUserId: string; newHostUserId: string }
+  | { type: 'ROOM_SETTINGS'; roomId: string; senderUserId: string; settings: RoomSettings }
   | { type: 'PING'; sentAt: number }
 
 // ── Server → Client events ─────────────────────────────────────────────────

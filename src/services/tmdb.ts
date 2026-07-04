@@ -43,7 +43,7 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
   const selected = backdrops[0]
-  return selected ? `${IMG_BASE}/w1280${selected.file_path}` : undefined
+  return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
@@ -66,7 +66,7 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
   const id = String(tmdbId).replace('tmdb-', '')
   if (!id) return undefined
 
-  const result = await cachedFetch<string | null>(`tmdb_backdrop:${mediaType}:${id}`, async () => {
+  const result = await cachedFetch<string | null>(`tmdb_backdrop_v2:${mediaType}:${id}`, async () => {
     try {
       const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Record<string, unknown>
       return pickBestBackdrop(images) || null
@@ -80,21 +80,24 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
 export async function getTmdbCardMetadata(
   type: 'movie' | 'series' | 'show' | 'anime',
   tmdbId: string | number,
-): Promise<{ poster?: string; backdrop?: string; genre?: string }> {
+): Promise<{ poster?: string; backdrop?: string; logo?: string; genre?: string }> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return {}
   const mediaType = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace('tmdb-', '')
   if (!id) return {}
 
-  return cachedFetch<{ poster?: string; backdrop?: string; genre?: string }>(`tmdb_card:${mediaType}:${id}`, async () => {
+  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; genre?: string }>(`tmdb_card_v2:${mediaType}:${id}`, async () => {
     const [details, images] = await Promise.all([
       tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
     ])
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
+    const logos = (images.logos as Record<string, unknown>[]) || []
+    const enLogo = logos.find((logo) => logo.iso_639_1 === 'en') || logos.find((logo) => logo.iso_639_1 === null) || logos[0]
     return {
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
+      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
+      logo: enLogo ? `${IMG_BASE}/w500${enLogo.file_path as string}` : undefined,
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
@@ -125,7 +128,7 @@ function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'
     type,
     year: ((item.release_date || item.first_air_date) as string)?.slice(0, 4) ? parseInt(((item.release_date || item.first_air_date) as string).slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/w1280${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
     overview: item.overview as string,
     rating: item.vote_average as number,
     provider: 'tmdb',
@@ -217,7 +220,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,
       cast,
@@ -288,7 +291,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/w1280${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
       logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
       certification: undefined,
       status: details.status as string,
@@ -450,7 +453,7 @@ function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | '
     type: mediaType === 'movie' ? 'movie' : 'series',
     year: date ? Number(date.slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/w1280${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
     overview: item.overview as string | undefined,
     rating: item.vote_average as number | undefined,
     provider: 'tmdb',

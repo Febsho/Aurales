@@ -10,6 +10,7 @@ import type {
 import { isAnimeApiEnabled } from './animeApiClient'
 import { resolveFromAnimeApi } from './animeProviderMapper'
 import { mapTvdbEpisodeToProviders, isConfidenceSufficient, getOverridesForMedia } from './animeProgressMapper'
+import { mapProviderProgressWithAniBridge, mapTvdbEpisodeWithAniBridge } from './anibridgeMappings'
 import {
   getCachedAnimeMapping,
   saveAnimeMapping,
@@ -52,6 +53,12 @@ export async function resolveAnimeMappings(input: AnimeMappingInput): Promise<An
 export async function mapEpisodeToProviders(input: TvdbEpisodeMappingInput): Promise<ProviderEpisodeMapping | null> {
   if (!isAnimeApiEnabled()) return null
 
+  const anibridge = await mapTvdbEpisodeWithAniBridge(input).catch(() => null)
+  if (anibridge) {
+    await saveEpisodeMapping(anibridge).catch(() => {})
+    return anibridge
+  }
+
   const cached = await getCachedEpisodeMapping(input.tvdbSeriesId, input.tvdbSeasonNumber, input.tvdbEpisodeNumber)
   if (cached) return cached
 
@@ -78,6 +85,9 @@ export async function mapProviderProgressToTvdb(input: ProviderProgressMappingIn
   episodeNumber: number
 } | null> {
   if (!isAnimeApiEnabled()) return null
+
+  const anibridge = await mapProviderProgressWithAniBridge(input).catch(() => null)
+  if (anibridge) return anibridge
 
   const cacheKey: AnimeMappingCacheKey = {}
   if (input.provider === 'anilist') cacheKey.anilistId = Number(input.providerId)

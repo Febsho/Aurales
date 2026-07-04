@@ -120,8 +120,13 @@ export interface DrawStroke {
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
+export interface RoomSettings {
+  everyoneCanControl?: boolean
+  requireReadyCheck?: boolean
+}
+
 export type WatchTogetherEvent =
-  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string }
+  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string; roomSettings?: RoomSettings }
   | { type: 'ROOM_LEAVE'; roomId: string; userId: string }
   | { type: 'READY'; roomId: string; userId: string; ready: boolean }
   | { type: 'MEDIA_SELECTED'; roomId: string; senderUserId: string; media: RoomMedia; episode?: RoomEpisode; stream?: RoomStream; sentAt: number }
@@ -136,6 +141,7 @@ export type WatchTogetherEvent =
   | { type: 'DRAW_STROKE'; roomId: string; senderUserId: string; stroke: DrawStroke; sentAt: number }
   | { type: 'DRAW_CLEAR'; roomId: string; senderUserId: string; sentAt: number }
   | { type: 'TRANSFER_HOST'; roomId: string; senderUserId: string; newHostUserId: string }
+  | { type: 'ROOM_SETTINGS'; roomId: string; senderUserId: string; settings: RoomSettings }
   | { type: 'PING'; sentAt: number }
 
 // ── Server responses ─────────────────────────────────────────────────────────
