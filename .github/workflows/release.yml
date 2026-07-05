@@ -43,11 +43,31 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           $tmp = Join-Path $env:RUNNER_TEMP 'mpv'
-          $zip = Join-Path $env:RUNNER_TEMP 'mpv.zip'
           New-Item -ItemType Directory -Force $tmp | Out-Null
-          Invoke-WebRequest -Uri 'https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-pc-windows-msvc.zip' -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          # Fetch the latest shinchiro mpv-winbuild release (includes libmpv)
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest' -Headers @{ 'User-Agent' = 'aurales-ci' }
+
+          # mpv-x86_64 archive: mpv.exe + d3dcompiler_43.dll
+          $mpvAsset = $rel.assets | Where-Object { $_.name -match '^mpv-x86_64-\d' } | Select-Object -First 1
+          $mpv7z = Join-Path $env:RUNNER_TEMP 'mpv.7z'
+          Invoke-WebRequest -Uri $mpvAsset.browser_download_url -OutFile $mpv7z
+          & 7z x $mpv7z -o"$tmp" -y | Out-Null
           Copy-Item (Join-Path $tmp 'mpv.exe') 'src-tauri/binaries/mpv-x86_64-pc-windows-msvc.exe' -Force
+          foreach ($dll in @('d3dcompiler_43.dll')) {
+            $src = Join-Path $tmp $dll
+            if (Test-Path $src) { Copy-Item $src "src-tauri/binaries/$dll" -Force }
+          }
+
+          # mpv-dev-x86_64 archive: libmpv-2.dll
+          $devAsset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d' } | Select-Object -First 1
+          $dev7z = Join-Path $env:RUNNER_TEMP 'mpv-dev.7z'
+          Invoke-WebRequest -Uri $devAsset.browser_download_url -OutFile $dev7z
+          & 7z x $dev7z -o"$tmp" -y libmpv-2.dll | Out-Null
+          Copy-Item (Join-Path $tmp 'libmpv-2.dll') 'src-tauri/binaries/libmpv-2.dll' -Force
+
+          Write-Host "Bundled binaries:"
+          Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
