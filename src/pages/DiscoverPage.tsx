@@ -81,6 +81,7 @@ const ANIME_MOODS = [
   { title: 'Lighthearted Fun', genres: [35, 10762] },
 ]
 
+const HENTAI_EXCLUDE_KEYWORDS = [{ id: 293054, name: 'hentai' }, { id: 6126, name: 'ecchi' }]
 const DISCOVERY_DAY = Math.floor(Date.now() / 86_400_000)
 
 function makeConfig(
@@ -200,7 +201,11 @@ export default function DiscoverPage() {
     return pool[DISCOVERY_DAY % pool.length]
   }, [tab])
 
-  const animeOverrides = tab === 'anime' ? { originalLanguage: 'ja', includeGenres: ['16'] } : {}
+  const animeOverrides = tab === 'anime' ? {
+    originalLanguage: 'ja',
+    includeGenres: ['16'],
+    excludeKeywords: HENTAI_EXCLUDE_KEYWORDS,
+  } : {}
 
   const trending = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, animeOverrides),
@@ -221,7 +226,7 @@ export default function DiscoverPage() {
       genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
       voteAverageMin: Math.max(6.5, minRating),
       voteCountMin: tab === 'anime' ? 80 : 250,
-      ...(tab === 'anime' ? { originalLanguage: 'ja' } : {})
+      ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : {})
     }),
     `discover-mood-${tab}-${mood.title}-${preferenceKey}`,
     fallbackVariants.mood,
@@ -253,7 +258,7 @@ export default function DiscoverPage() {
       genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
       voteAverageMin: Math.max(6.5, minRating),
       voteCountMin: tab === 'anime' ? 50 : 150,
-      ...(tab === 'anime' ? { originalLanguage: 'ja' } : {})
+      ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : {})
     }),
     `discover-for-you-${tab}-${tasteGenre || 'starter'}-${preferenceKey}`,
     fallbackVariants.taste,
@@ -296,7 +301,7 @@ export default function DiscoverPage() {
       makeConfig(contentType, 'popularity.desc', preferences, {
         includeGenres: tab === 'anime' ? ['16', String(genreId)] : [String(genreId)],
         genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
-        ...(tab === 'anime' ? { originalLanguage: 'ja' } : {})
+        ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : {})
       }),
       `discover-genre-${tab}-${genreId}-${preferenceKey}`,
     )

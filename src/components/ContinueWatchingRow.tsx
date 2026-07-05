@@ -171,7 +171,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 const cleanedFanart = backdrop.startsWith('/') ? backdrop.slice(1) : backdrop
                 backdrop = `https://simkl.in/fanart/${cleanedFanart}_medium.jpg`
               }
-              const defaultDuration = i.type === 'movie' ? 120 * 60 : 45 * 60
+              const defaultDuration = i.type === 'movie' ? 120 * 60 : i.type === 'anime' ? 24 * 60 : 45 * 60
               const progressSec = Math.floor((i.progress / 100) * defaultDuration)
 
               return {
@@ -206,7 +206,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               const tmdbId = isMovie ? i.movie?.ids?.tmdb : i.show?.ids?.tmdb
               const season = isMovie ? undefined : i.episode?.season
               const episode = isMovie ? undefined : i.episode?.number
-              const defaultDuration = isMovie ? 120 * 60 : 45 * 60
+              const runtime = isMovie ? i.movie?.runtime : i.episode?.runtime
+              const defaultDuration = runtime ? runtime * 60 : (isMovie ? 120 * 60 : 24 * 60)
               const progressSec = Math.floor((i.progress / 100) * defaultDuration)
 
               return {
@@ -403,12 +404,26 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               try {
                 if (item.mediaType === 'series' && item.season != null && item.episode != null) {
                   const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
-                  if (keepFramesFor !== 'none' && episode.still) return { ...item, backdrop: episode.still }
+                  const updated = { ...item }
+                  if (keepFramesFor !== 'none' && episode.still) updated.backdrop = episode.still
+                  if (episode.runtime && episode.runtime > 0) {
+                    const runtimeSec = episode.runtime * 60
+                    updated.durationSeconds = runtimeSec
+                    updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                  }
+                  return updated
                 }
 
                 if (item.mediaType === 'movie') {
-                  const backdrop = await getTmdbLandscapeBackdrop('movie', item.tmdbId)
-                  if (backdrop) return { ...item, backdrop }
+                  const movie = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
+                  const updated = { ...item }
+                  if (movie.backdrop) updated.backdrop = movie.backdrop
+                  if (movie.runtime && movie.runtime > 0) {
+                    const runtimeSec = movie.runtime * 60
+                    updated.durationSeconds = runtimeSec
+                    updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                  }
+                  return updated
                 }
 
                 if (!item.backdrop) {

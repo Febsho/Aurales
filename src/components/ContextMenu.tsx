@@ -624,8 +624,11 @@ async function checkTraktWatched(
       lookup.isAnime = isAnimeItem(item)
       lookup.appSeasonEpCounts = target.appSeasonCounts
     }
-    return isWatchedFromProviders(lookup, ['trakt'], new Map())
-  } catch (_) { return false }
+    return await isWatchedFromProviders(lookup, ['trakt'], new Map())
+  } catch (err) {
+    console.error('[TraktCheck] error:', err)
+    return false
+  }
 }
 
 async function checkSimklWatched(

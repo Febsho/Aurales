@@ -30,6 +30,25 @@ export async function getWatchedShows(): Promise<TraktWatchedItem[]> {
   }))
 }
 
+export interface TraktEpisodeProgress {
+  number: number
+  completed: boolean
+}
+
+export interface TraktSeasonProgress {
+  number: number
+  episodes: TraktEpisodeProgress[]
+}
+
+export async function getShowWatchedProgress(showId: string): Promise<TraktSeasonProgress[]> {
+  const data = await traktFetch(`/shows/${showId}/progress/watched`) as Record<string, unknown>
+  const seasons = data.seasons as { number: number; episodes: { number: number; completed: boolean }[] }[]
+  return (seasons || []).map((s) => ({
+    number: s.number,
+    episodes: (s.episodes || []).map((e) => ({ number: e.number, completed: e.completed })),
+  }))
+}
+
 export async function getCollection(type: 'movies' | 'shows'): Promise<unknown[]> {
   return await traktFetch(`/sync/collection/${type}`) as unknown[]
 }
