@@ -264,13 +264,13 @@ export default function MovieDetailPage() {
             const match = raw.find((item) => {
               if (item.type !== 'movie' || !item.movie) return false
               return (
-                fuzzyIdsMatch(item.movie.ids.simkl, movie.id) ||
-                fuzzyIdsMatch(item.movie.ids.imdb, movie.imdbId) ||
-                fuzzyIdsMatch(item.movie.ids.tmdb, movie.tmdbId)
+                fuzzyIdsMatch(item.movie.ids.simkl, movie!.id) ||
+                fuzzyIdsMatch(item.movie.ids.imdb, movie!.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie!.tmdbId)
               )
             })
             if (match && active) {
-              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
               candidates.push({
                 provider: 'simkl',
                 progressSeconds: Math.floor((match.progress / 100) * dur),
@@ -289,12 +289,12 @@ export default function MovieDetailPage() {
             const match = raw.find((item: any) => {
               if (item.type !== 'movie' || !item.movie) return false
               return (
-                fuzzyIdsMatch(item.movie.ids.imdb, movie.imdbId) ||
-                fuzzyIdsMatch(item.movie.ids.tmdb, movie.tmdbId)
+                fuzzyIdsMatch(item.movie.ids.imdb, movie!.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie!.tmdbId)
               )
-            })
+            }) as any
             if (match && active) {
-              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
               candidates.push({
                 provider: 'trakt',
                 progressSeconds: Math.floor((match.progress / 100) * dur),
@@ -311,18 +311,15 @@ export default function MovieDetailPage() {
           try {
             const raw = await getPMDBPlaybackProgress()
             const match = raw.find((item) => {
-              if (item.mediaType !== 'movie') return false
-              return (
-                fuzzyIdsMatch(item.tmdbId, movie.tmdbId) ||
-                fuzzyIdsMatch(item.imdbId, movie.imdbId)
-              )
+              if (item.media_type !== 'movie') return false
+              return fuzzyIdsMatch(item.tmdb_id, movie!.tmdbId)
             })
             if (match && active) {
               candidates.push({
                 provider: 'pmdb',
-                progressSeconds: Math.floor((match.progressMs ?? 0) / 1000),
-                durationSeconds: Math.floor((match.durationMs ?? 7200000) / 1000),
-                updatedAt: match.updatedAt,
+                progressSeconds: Math.floor((match.position_ms ?? 0) / 1000),
+                durationSeconds: Math.floor((match.runtime_ms ?? 7200000) / 1000),
+                updatedAt: match.updated_at,
               })
             }
           } catch (_) {}
@@ -336,12 +333,12 @@ export default function MovieDetailPage() {
             const match = raw.find((item) => {
               if (item.type !== 'movie') return false
               return (
-                fuzzyIdsMatch(item.tmdbId, movie.tmdbId) ||
-                fuzzyIdsMatch(item.imdbId, movie.imdbId)
+                fuzzyIdsMatch(item.movie?.ids?.tmdb, movie!.tmdbId) ||
+                fuzzyIdsMatch(item.movie?.ids?.imdb, movie!.imdbId)
               )
             })
             if (match && active) {
-              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
               candidates.push({
                 provider: 'mdblist',
                 progressSeconds: Math.floor(((match.progress ?? 0) / 100) * dur),
