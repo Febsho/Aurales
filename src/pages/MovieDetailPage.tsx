@@ -705,11 +705,10 @@ export default function MovieDetailPage() {
               onClick={() => setStreamOpen(true)}
             >
               {(() => {
+                if (movieWatched) return 'Rewatch'
                 const activeResume = liveResumePoint || (hasProgress ? { progressSeconds: progressItem.progressSeconds, durationSeconds: progressItem.durationSeconds } : null)
                 return activeResume
                   ? `Resume (${formatRemainingTime(activeResume.durationSeconds - activeResume.progressSeconds)})`
-                  : movieWatched
-                  ? 'Rewatch'
                   : 'Play'
               })()}
             </Button>
@@ -790,7 +789,7 @@ export default function MovieDetailPage() {
         mediaId={streamId}
         title={movie.title}
         artwork={{ poster: movie.poster, backdrop: movie.backdrop }}
-        startTime={liveResumePoint ? liveResumePoint.progressSeconds : (hasProgress ? progressItem.progressSeconds : undefined)}
+        startTime={movieWatched ? undefined : liveResumePoint ? liveResumePoint.progressSeconds : (hasProgress ? progressItem.progressSeconds : undefined)}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
         malId={movie.malId != null ? Number(movie.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}

@@ -83,13 +83,13 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
   },
   pmdb: {
     key: 'watched:pmdb',
-    fetch: () => getPMDBWatched(),
-    extract: (data) => extractPmdbKeys(data),
+    fetch: async () => ({ items: await getPMDBWatched() }),
+    extract: (data) => extractPmdbKeys(data.items),
   },
   mdblist: {
     key: 'watched:mdblist',
-    fetch: () => getMdblistWatched(),
-    extract: (data) => extractMdblistKeys(data),
+    fetch: async () => ({ items: await getMdblistWatched() }),
+    extract: (data) => extractMdblistKeys(data.items),
   },
 }
 

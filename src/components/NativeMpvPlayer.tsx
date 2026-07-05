@@ -826,9 +826,11 @@ function FullNativeMpvPlayer({
       if (key != null) {
         thumbnailCacheRef.current.set(key, { imageUrl, width, height })
       }
-      // Only update visible preview if still hovering
+      // Only update visible preview if still hovering near the requested time
       const hover = thumbnailHoverRef.current
       if (!hover) return
+      const hoverKey = Math.round(hover.time)
+      if (key != null && Math.abs(hoverKey - key) > 3) return
       setTimelinePreview({
         visible: true,
         leftPct: hover.leftPct,
@@ -871,10 +873,10 @@ function FullNativeMpvPlayer({
     const key = Math.round(time)
     const cached = thumbnailCacheRef.current.get(key)
 
-    // If no exact cache hit, show the nearest cached thumbnail (within 15s)
+    // If no exact cache hit, show the nearest cached thumbnail (within 3s)
     let displayThumb = cached
     if (!displayThumb) {
-      let minDist = 15
+      let minDist = 3
       for (const [k, v] of thumbnailCacheRef.current) {
         const dist = Math.abs(k - key)
         if (dist < minDist) {
@@ -896,10 +898,8 @@ function FullNativeMpvPlayer({
 
     if (cached) return
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
-    thumbnailTimerRef.current = setTimeout(() => {
-      thumbnailPendingKeyRef.current = key
-      requestPlayerThumbnail(time).catch(() => {})
-    }, 50)
+    thumbnailPendingKeyRef.current = key
+    requestPlayerThumbnail(time).catch(() => {})
   }, [duration])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
@@ -2892,10 +2892,12 @@ function FullNativeMpvPlayer({
                 max={100}
                 step={0.05}
                 value={displayProgressPct}
-                onMouseDown={() => {
+                onMouseDown={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const clickPct = rect.width > 0 ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)) : progressPct
                   setIsDragging(true)
-                  draggingProgressRef.current = progressPct
-                  setDraggingProgress(progressPct)
+                  draggingProgressRef.current = clickPct
+                  setDraggingProgress(clickPct)
                 }}
                 onMouseUp={() => {
                   setIsDragging(false)
@@ -2903,10 +2905,13 @@ function FullNativeMpvPlayer({
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
                 }}
-                onTouchStart={() => {
+                onTouchStart={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const touch = e.touches[0]
+                  const clickPct = rect.width > 0 && touch ? Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100)) : progressPct
                   setIsDragging(true)
-                  draggingProgressRef.current = progressPct
-                  setDraggingProgress(progressPct)
+                  draggingProgressRef.current = clickPct
+                  setDraggingProgress(clickPct)
                 }}
                 onTouchEnd={() => {
                   setIsDragging(false)
