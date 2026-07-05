@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod libmpv_player;
 
 use db::Database;
 use tauri::Manager;
@@ -12,8 +13,12 @@ pub fn run() {
             let mut updater = tauri_plugin_updater::Builder::new();
             let token = option_env!("AURALES_UPDATE_TOKEN").unwrap_or("");
             if !token.is_empty() {
-                updater = updater.header("Authorization", format!("token {}", token)).unwrap();
-                updater = updater.header("Accept", "application/octet-stream").unwrap();
+                updater = updater
+                    .header("Authorization", format!("token {}", token))
+                    .unwrap();
+                updater = updater
+                    .header("Accept", "application/octet-stream")
+                    .unwrap();
             }
             updater.build()
         })
@@ -69,6 +74,8 @@ pub fn run() {
             commands::clear_player_debug_logs,
             commands::select_local_video_file,
             commands::mpv_command,
+            commands::request_player_thumbnail,
+            commands::clear_player_thumbnail,
             commands::mpv_get_property,
             commands::resize_embedded_mpv,
             commands::setup_player_click_through,

@@ -33,6 +33,7 @@ interface StreamSelectorProps {
   seasonEpisode?: { season: number; episode: number }
   startTime?: number
   tmdbId?: number
+  tvdbId?: number | string
   malId?: number
   anilistId?: number
   sourceAddonId?: string
@@ -124,7 +125,7 @@ function loadStreamFilters(): StreamFilterState {
   }
 }
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, malId, anilistId, sourceAddonId, sourceAddonItemId }: StreamSelectorProps) {
+export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId }: StreamSelectorProps) {
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
   const [playError, setPlayError] = useState('')
@@ -444,6 +445,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       // imdbId derived from mediaId if it looks like an IMDB id
       imdbId: mediaId.startsWith('tt') ? mediaId : undefined,
       tmdbId: tmdbId || (mediaId.startsWith('tmdb-') ? Number(mediaId.replace('tmdb-', '')) : undefined),
+      // tvdbId enables the TVDB→AniList/PMDB episode mapping during scrobbling
+      tvdbId: tvdbId != null
+        ? Number(String(tvdbId).replace('tvdb-', ''))
+        : mediaId.startsWith('tvdb-') ? Number(mediaId.replace('tvdb-', '').split(':')[0]) : undefined,
       malId,
       anilistId,
       season: seasonEpisode?.season,

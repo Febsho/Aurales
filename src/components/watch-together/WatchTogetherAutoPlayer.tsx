@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
@@ -66,24 +66,29 @@ export default function WatchTogetherAutoPlayer() {
     }
   }, [currentRoom])
 
-  if (!active || !media || !selectedLocalStream) return null
+  // Stable identity: room state updates arrive every few seconds and would
+  // otherwise hand the player a brand-new playbackItem prop each time.
+  const playbackItem = useMemo<PlaybackItem | null>(() => {
+    if (!media) return null
+    const simklType: 'movie' | 'show' | 'anime' = media.anilistId ? 'anime' : media.type === 'movie' ? 'movie' : 'show'
+    return {
+      localId: media.localMediaId,
+      title: media.title,
+      type: simklType,
+      mediaType: simklType,
+      imdbId: media.imdbId,
+      tmdbId: media.tmdbId,
+      season: episode?.seasonNumber,
+      episode: episode?.episodeNumber,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaKey, media?.localMediaId])
+
+  if (!active || !media || !selectedLocalStream || !playbackItem) return null
 
   const stream = selectedLocalStream.stream
   const url = getPlayableStreamUrl(stream)
   if (!url) return null
-
-  const simklType: 'movie' | 'show' | 'anime' = media.anilistId ? 'anime' : media.type === 'movie' ? 'movie' : 'show'
-
-  const playbackItem: PlaybackItem = {
-    localId: media.localMediaId,
-    title: media.title,
-    type: simklType,
-    mediaType: simklType,
-    imdbId: media.imdbId,
-    tmdbId: media.tmdbId,
-    season: episode?.seasonNumber,
-    episode: episode?.episodeNumber,
-  }
 
   const isTauri = !!(window as any).__TAURI_INTERNALS__
   const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer

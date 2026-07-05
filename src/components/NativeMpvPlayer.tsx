@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
+import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, requestPlayerThumbnail, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -94,6 +95,22 @@ interface SubtitleSource {
   originalUrl: string
   localPath: string
   label: string
+}
+
+interface PlayerThumbnailReadyPayload {
+  path: string
+  width: number
+  height: number
+  sessionId: string
+}
+
+interface TimelinePreview {
+  visible: boolean
+  leftPct: number
+  time: number
+  imageUrl?: string
+  width?: number
+  height?: number
 }
 
 
@@ -612,6 +629,14 @@ function FullNativeMpvPlayer({
   const [accumulatedSeek, setAccumulatedSeek] = useState<number | null>(null)
   const accumulatedSeekRef = useRef<number | null>(null)
 
+  // Timeline Preview
+  const [timelinePreview, setTimelinePreview] = useState<TimelinePreview>({ visible: false, leftPct: 0, time: 0 })
+  const thumbnailCacheRef = useRef<Map<number, { imageUrl: string; width: number; height: number }>>(new Map())
+  const thumbnailHoverRef = useRef<{ leftPct: number; time: number } | null>(null)
+  const thumbnailPendingKeyRef = useRef<number | null>(null)
+  const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+
   // Up Next state
   const [nextEpInfo, setNextEpInfo] = useState<NextEpInfo | null>(null)
   const [showUpNext, setShowUpNext] = useState(false)
@@ -786,6 +811,97 @@ function FullNativeMpvPlayer({
     }
   }, [isInWatchTogether, suppressNextWatchTogetherEvent])
 
+  // ── Thumbnail Preview ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<PlayerThumbnailReadyPayload>('player-thumbnail-ready', (event) => {
+      if (disposed) return
+      const key = thumbnailPendingKeyRef.current
+      const width = Math.max(1, event.payload.width || 1)
+      const height = Math.max(1, event.payload.height || 1)
+      const path = event.payload.path
+      const imageUrl = path.startsWith('data:') ? path : `${convertFileSrc(path)}?v=${Date.now()}`
+      // Always cache even if the user has moved away
+      if (key != null) {
+        thumbnailCacheRef.current.set(key, { imageUrl, width, height })
+      }
+      // Only update visible preview if still hovering
+      const hover = thumbnailHoverRef.current
+      if (!hover) return
+      setTimelinePreview({
+        visible: true,
+        leftPct: hover.leftPct,
+        time: hover.time,
+        imageUrl,
+        width,
+        height,
+      })
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+
+    return () => {
+      disposed = true
+      unlisten?.()
+      if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+      clearPlayerThumbnail().catch(() => {})
+    }
+  }, [])
+
+  const hideTimelinePreview = useCallback(() => {
+    thumbnailHoverRef.current = null
+    thumbnailPendingKeyRef.current = null
+    if (thumbnailTimerRef.current) {
+      clearTimeout(thumbnailTimerRef.current)
+      thumbnailTimerRef.current = null
+    }
+    setTimelinePreview((preview) => ({ ...preview, visible: false }))
+    clearPlayerThumbnail().catch(() => {})
+  }, [])
+
+  const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (duration <= 0 || !Number.isFinite(duration)) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return
+
+    const leftPct = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
+    const time = Math.max(0, Math.min(duration, (leftPct / 100) * duration))
+    const key = Math.round(time)
+    const cached = thumbnailCacheRef.current.get(key)
+
+    // If no exact cache hit, show the nearest cached thumbnail (within 15s)
+    let displayThumb = cached
+    if (!displayThumb) {
+      let minDist = 15
+      for (const [k, v] of thumbnailCacheRef.current) {
+        const dist = Math.abs(k - key)
+        if (dist < minDist) {
+          minDist = dist
+          displayThumb = v
+        }
+      }
+    }
+
+    thumbnailHoverRef.current = { leftPct, time }
+    setTimelinePreview({
+      visible: true,
+      leftPct,
+      time,
+      imageUrl: displayThumb?.imageUrl,
+      width: displayThumb?.width,
+      height: displayThumb?.height,
+    })
+
+    if (cached) return
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = setTimeout(() => {
+      thumbnailPendingKeyRef.current = key
+      requestPlayerThumbnail(time).catch(() => {})
+    }, 50)
+  }, [duration])
+
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
     const item = currentItemRef.current
@@ -828,8 +944,8 @@ function FullNativeMpvPlayer({
     const item = currentItemRef.current
     const tmdbId = tmdbIdRef.current
     const imdbId = item?.imdbId
-    if (!item || !pmdbApiKey) return
-    if (!tmdbId && !imdbId) return
+    if (!item || !pmdbApiKey) return Promise.resolve()
+    if (!tmdbId && !imdbId) return Promise.resolve()
 
     const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
     const mediaType = isEpisodic ? 'tv' : 'movie'
@@ -838,7 +954,7 @@ function FullNativeMpvPlayer({
     // Scrobble only when: caller explicitly permits it, we're confident the
     // episode is finished (≥90%), and duration looks real (≥3 min).
     if (allowScrobble && scrobblePmdb && tmdbId && progress >= 0.90 && dur >= 180) {
-      ;(async () => {
+      return (async () => {
         const pmdbEpisode = isEpisodic
           ? await resolvePmdbPlaybackEpisode(item, tmdbId)
           : { tmdbId, season: item.season, episode: item.episode }
@@ -852,12 +968,11 @@ function FullNativeMpvPlayer({
           await removePMDBWatched(pmdbEpisode.tmdbId, 'tv', item.season, item.episode)
         }
       })().catch(() => {})
-      return // PMDB server already marks it watched — no need to save resume point
     }
 
     if (pmdbSaveResumePosition && dur > 0) {
       logEvent('PLAYBACK SYNC DEBUG', `Save PMDB resume point: ${Math.floor(pos)}s / ${Math.floor(dur)}s`)
-      ;(async () => {
+      return (async () => {
         const pmdbEpisode = isEpisodic && tmdbId
           ? await resolvePmdbPlaybackEpisode(item, tmdbId)
           : { tmdbId, season: item.season, episode: item.episode }
@@ -871,26 +986,28 @@ function FullNativeMpvPlayer({
           imdbId
         )
       })().catch(() => {})
-      // Note: we intentionally ignore the {action:'completed'} response here.
     }
+
+    return Promise.resolve()
   }, [pmdbApiKey, pmdbSaveResumePosition, scrobblePmdb])
 
   const saveMdblistProgressHelper = useCallback((pos: number, dur: number, allowScrobble = false) => {
     const item = currentItemRef.current
     const tmdbId = tmdbIdRef.current
-    if (!item || !mdblistApiKey || dur <= 0) return
+    if (!item || !mdblistApiKey || dur <= 0) return Promise.resolve()
     const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
     const mediaType = isEpisodic ? 'series' : 'movie'
     const progressPct = Math.max(0, Math.min(100, (pos / dur) * 100))
 
     if (allowScrobble && scrobbleMdblistEnabled && progressPct >= 90 && dur >= 180) {
-      scrobbleMdblist('stop', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
-      return
+      return scrobbleMdblist('stop', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
     }
 
     if (mdblistSaveResumePosition) {
-      scrobbleMdblist('pause', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
+      return scrobbleMdblist('pause', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
     }
+
+    return Promise.resolve()
   }, [mdblistApiKey, mdblistSaveResumePosition, scrobbleMdblistEnabled])
 
   // ─ Controls visibility ────────────────────────────────────────────────────
@@ -1972,14 +2089,16 @@ function FullNativeMpvPlayer({
     // Stop current, save progress
     const { currentTime: pos, duration: dur } = progressRef.current
     saveLocalProgress(pos, dur, false)
+    const promises: Promise<any>[] = []
     if (scrobbleSimkl && item) {
-      onSimklPlaybackStop(item, dur > 0 ? pos / dur : 0).catch(() => {})
+      promises.push(onSimklPlaybackStop(item, dur > 0 ? pos / dur : 0).catch(() => {}))
     }
     if (scrobbleTrakt && isTraktAuthenticated() && item?.imdbId && item.season != null && item.episode != null) {
       const pct = Math.round((dur > 0 ? pos / dur : 0) * 10000) / 100
       const payload = buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
-      traktScrobbleStop(payload).catch(() => {})
+      promises.push(traktScrobbleStop(payload).catch(() => {}))
     }
+    await Promise.allSettled(promises)
     await stopEmbeddedPlayer().catch(() => {})
 
     // Update current playback item refs
@@ -2111,22 +2230,23 @@ function FullNativeMpvPlayer({
       if (keepFramesFor !== 'none') {
         setSavedFramesCount(savedFramesCount + 1)
       }
+      const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
-        saveSimklPlaybackProgress(item, progress).catch(() => {})
-        onSimklPlaybackStop(item, progress).catch(() => {})
+        promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
       if (scrobbleAnilist && item.mediaType === 'anime') {
-        saveAniListProgressMapped(item, progress).catch(() => {})
+        promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
         const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
-        traktScrobbleStop(payload).catch(() => {})
+        promises.push(traktScrobbleStop(payload).catch(() => {}))
       }
-      savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is done watching
-      saveMdblistProgressHelper(pos, dur, true)
+      promises.push(savePMDBProgressHelper(pos, dur, true))
+      promises.push(saveMdblistProgressHelper(pos, dur, true))
+      await Promise.allSettled(promises)
     }
     if (isFullscreen) await getCurrentWindow().setFullscreen(false).catch(() => {})
     await stopEmbeddedPlayer().catch(() => {})
@@ -2144,22 +2264,23 @@ function FullNativeMpvPlayer({
       if (keepFramesFor !== 'none') {
         setSavedFramesCount(savedFramesCount + 1)
       }
+      const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
-        saveSimklPlaybackProgress(item, progress).catch(() => {})
-        onSimklPlaybackStop(item, progress).catch(() => {})
+        promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
       if (scrobbleAnilist && item.mediaType === 'anime') {
-        saveAniListProgressMapped(item, progress).catch(() => {})
+        promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
         const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
-        traktScrobbleStop(payload).catch(() => {})
+        promises.push(traktScrobbleStop(payload).catch(() => {}))
       }
-      savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is switching away
-      saveMdblistProgressHelper(pos, dur, true)
+      promises.push(savePMDBProgressHelper(pos, dur, true))
+      promises.push(saveMdblistProgressHelper(pos, dur, true))
+      await Promise.allSettled(promises)
     }
     if (isFullscreen) { await getCurrentWindow().setFullscreen(false).catch(() => {}); setIsFullscreen(false) }
     await stopEmbeddedPlayer().catch(() => {})
@@ -2198,7 +2319,6 @@ function FullNativeMpvPlayer({
         saveLocalProgress(pos, dur, false)
         if (targetPaused) {
           if (scrobbleSimkl) {
-            saveSimklPlaybackProgress(item, progress).catch(() => {})
             onSimklPlaybackPause(item, progress).catch(() => {})
           }
           // Trakt derives the resume point from scrobble pause - the
@@ -2214,7 +2334,6 @@ function FullNativeMpvPlayer({
           saveMdblistProgressHelper(pos, dur, false)
         } else {
           if (scrobbleSimkl) {
-            saveSimklPlaybackProgress(item, progress).catch(() => {})
             onSimklPlaybackStart(item, progress).catch(() => {})
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
@@ -2705,7 +2824,35 @@ function FullNativeMpvPlayer({
               </svg>
             </button>
 
-            <div className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5">
+            <div
+              className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5"
+              onPointerMove={showTimelinePreviewFromPointer}
+              onPointerLeave={hideTimelinePreview}
+            >
+              {timelinePreview.visible && (
+                <div
+                  className="pointer-events-none absolute bottom-7 z-[20] flex -translate-x-1/2 flex-col items-center gap-1"
+                  style={{ left: `${timelinePreview.leftPct}%` }}
+                >
+                  <div className="overflow-hidden rounded-md border border-white/15 bg-black/80 shadow-2xl">
+                    {timelinePreview.imageUrl ? (
+                      <img
+                        src={timelinePreview.imageUrl}
+                        alt=""
+                        className="block h-auto w-[220px] bg-black object-cover"
+                        draggable={false}
+                      />
+                    ) : (
+                      <div className="flex h-[124px] w-[220px] items-center justify-center bg-black/85 text-[11px] font-medium text-white/45">
+                        {formatTime(timelinePreview.time)}
+                      </div>
+                    )}
+                  </div>
+                  <span className="rounded bg-black/85 px-1.5 py-0.5 text-[11px] font-semibold text-white/80">
+                    {formatTime(timelinePreview.time)}
+                  </span>
+                </div>
+              )}
               <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
                 <button

@@ -17,11 +17,46 @@ import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
 import { applyMovieArt, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { getSimklPlaybackProgress } from '../services/simkl/playback'
+import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
+import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+
+function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
+  if (idA == null || idB == null) return false
+  const clean = (val: string | number) => {
+    const s = String(val).toLowerCase().trim()
+    return s
+      .replace(/^app_tmdb_movie_/, '')
+      .replace(/^app_movie_/, '')
+      .replace(/^app_tmdb_/, '')
+      .replace(/^app_tvdb_/, '')
+      .replace(/^tmdb[-:]/, '')
+      .replace(/^imdb[-:]/, '')
+      .replace(/^tvdb[-:]/, '')
+      .replace(/^mal[-:]/, '')
+      .replace(/^anilist[-:]/, '')
+  }
+  const cleanA = clean(idA)
+  const cleanB = clean(idB)
+  return cleanA !== '' && cleanA === cleanB
+}
+
+function formatRemainingTime(seconds: number): string {
+  if (seconds <= 0) return ''
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')} left`
+  }
+  return `${m}:${s.toString().padStart(2, '0')} left`
+}
 
 interface LocationState {
   poster?: string
@@ -169,6 +204,184 @@ export default function MovieDetailPage() {
     custom: customArtUrls,
   }), [artProviders, fanartApiKey, customArtUrls])
   const [movieWatched, setMovieWatched] = useState(false)
+
+  const progressItem = useMemo(() => {
+    if (!movie) return null
+    return Array.from(watchedProgress.values()).find((i) => {
+      if (i.mediaType !== 'movie') return false
+      return (
+        fuzzyIdsMatch(i.mediaId, movie.id) ||
+        fuzzyIdsMatch(i.imdbId, movie.imdbId) ||
+        fuzzyIdsMatch(i.tmdbId, movie.tmdbId) ||
+        fuzzyIdsMatch(i.id, movie.id)
+      )
+    })
+  }, [movie, watchedProgress])
+
+  const hasProgress = progressItem && !progressItem.completed && progressItem.progressSeconds > 5
+
+  const resumePriorityOrder = useAppStore((s) => s.resumePriorityOrder)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+
+  const [liveResumePoint, setLiveResumePoint] = useState<{
+    provider: string
+    progressSeconds: number
+    durationSeconds: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!movie) return
+
+    let active = true
+
+    async function fetchPoints() {
+      const candidates: {
+        provider: 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist'
+        progressSeconds: number
+        durationSeconds: number
+        updatedAt?: string
+      }[] = []
+
+      // 1. Local
+      if (progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
+        candidates.push({
+          provider: 'local',
+          progressSeconds: progressItem.progressSeconds,
+          durationSeconds: progressItem.durationSeconds,
+          updatedAt: progressItem.updatedAt,
+        })
+      }
+
+      const fetchPromises: Promise<void>[] = []
+
+      if (resumePriorityOrder.includes('simkl') && simklConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getSimklPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.type !== 'movie' || !item.movie) return false
+              return (
+                fuzzyIdsMatch(item.movie.ids.simkl, movie.id) ||
+                fuzzyIdsMatch(item.movie.ids.imdb, movie.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie.tmdbId)
+              )
+            })
+            if (match && active) {
+              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              candidates.push({
+                provider: 'simkl',
+                progressSeconds: Math.floor((match.progress / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.paused_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('trakt') && traktConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getTraktPlaybackProgress()
+            const match = raw.find((item: any) => {
+              if (item.type !== 'movie' || !item.movie) return false
+              return (
+                fuzzyIdsMatch(item.movie.ids.imdb, movie.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie.tmdbId)
+              )
+            })
+            if (match && active) {
+              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              candidates.push({
+                provider: 'trakt',
+                progressSeconds: Math.floor((match.progress / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.paused_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('pmdb') && pmdbApiKey) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getPMDBPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.mediaType !== 'movie') return false
+              return (
+                fuzzyIdsMatch(item.tmdbId, movie.tmdbId) ||
+                fuzzyIdsMatch(item.imdbId, movie.imdbId)
+              )
+            })
+            if (match && active) {
+              candidates.push({
+                provider: 'pmdb',
+                progressSeconds: Math.floor((match.progressMs ?? 0) / 1000),
+                durationSeconds: Math.floor((match.durationMs ?? 7200000) / 1000),
+                updatedAt: match.updatedAt,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('mdblist') && (mdblistApiKey || hasMdblistOAuth())) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getMdblistPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.type !== 'movie') return false
+              return (
+                fuzzyIdsMatch(item.tmdbId, movie.tmdbId) ||
+                fuzzyIdsMatch(item.imdbId, movie.imdbId)
+              )
+            })
+            if (match && active) {
+              const dur = movie.runtime ? movie.runtime * 60 : 7200
+              candidates.push({
+                provider: 'mdblist',
+                progressSeconds: Math.floor(((match.progress ?? 0) / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.updated_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (fetchPromises.length > 0) {
+        await Promise.allSettled(fetchPromises)
+      }
+
+      if (!active) return
+
+      // Select candidate according to priority order
+      for (const provider of resumePriorityOrder) {
+        const found = candidates.find((c) => c.provider === provider)
+        if (found) {
+          setLiveResumePoint(found)
+          return
+        }
+      }
+
+      if (candidates.length > 0) {
+        setLiveResumePoint(candidates[0])
+      } else {
+        setLiveResumePoint(null)
+      }
+    }
+
+    fetchPoints()
+
+    return () => {
+      active = false
+    }
+  }, [movie, progressItem, resumePriorityOrder, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
+
 
   useEffect(() => {
     async function load() {
@@ -494,7 +707,14 @@ export default function MovieDetailPage() {
               }
               onClick={() => setStreamOpen(true)}
             >
-              {movieWatched ? 'Rewatch' : 'Play'}
+              {(() => {
+                const activeResume = liveResumePoint || (hasProgress ? { progressSeconds: progressItem.progressSeconds, durationSeconds: progressItem.durationSeconds } : null)
+                return activeResume
+                  ? `Resume (${formatRemainingTime(activeResume.durationSeconds - activeResume.progressSeconds)})`
+                  : movieWatched
+                  ? 'Rewatch'
+                  : 'Play'
+              })()}
             </Button>
             <WatchlistButton
               mediaRef={{
@@ -573,6 +793,7 @@ export default function MovieDetailPage() {
         mediaId={streamId}
         title={movie.title}
         artwork={{ poster: movie.poster, backdrop: movie.backdrop }}
+        startTime={liveResumePoint ? liveResumePoint.progressSeconds : (hasProgress ? progressItem.progressSeconds : undefined)}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
         malId={movie.malId != null ? Number(movie.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}

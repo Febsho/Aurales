@@ -140,6 +140,16 @@ export async function refreshWatchedCache(sources: WatchedSource[]): Promise<voi
   }
 }
 
+export async function invalidateWatchedStatusCache(sources?: WatchedSource[]): Promise<void> {
+  const { cacheClearCategory } = await import('./cache/sqliteCache')
+  const { CACHE_CATEGORIES } = await import('./cache/constants')
+  await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
+
+  const { useAppStore } = await import('../stores/appStore')
+  const activeSources = sources || (useAppStore.getState().watchedCheckmarkSources as WatchedSource[])
+  await refreshWatchedCache(activeSources)
+}
+
 export function startWatchedCacheSync(sources: WatchedSource[], intervalMs = 5 * 60 * 1000): void {
   stopWatchedCacheSync()
   refreshWatchedCache(sources)

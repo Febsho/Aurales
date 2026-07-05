@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Aurales",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "identifier": "com.aurales.app",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:; media-src * blob: data:; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * asset: http://asset.localhost data: blob:; media-src * blob: data:; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$TEMP/**/*"]
+      }
     }
   },
   "plugins": {
@@ -40,6 +44,11 @@
     "createUpdaterArtifacts": true,
     "targets": ["msi", "nsis"],
     "externalBin": ["binaries/mpv"],
+    "resources": {
+      "binaries/*.dll": "",
+      "resources/mpv-scripts/*": "mpv-scripts/",
+      "resources/mpv-script-opts/*": "mpv-script-opts/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -104,14 +104,18 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
   try {
     const payload = await buildPayload(item, progress * 100)
     if (payload) {
-      await simklRequest('/sync/playback', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      })
+      await simklScrobbleStart(payload)
+      refreshSimklPlaybackCache().catch(() => {})
     }
   } catch (_) {
     // Swallow
   }
+}
+
+async function refreshSimklPlaybackCache(): Promise<void> {
+  const fresh = (await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback')) ?? []
+  const { cacheSet } = await import('../cache/sqliteCache')
+  await cacheSet('simkl_playback', fresh, { category: 'SIMKL_LISTS', ttlSeconds: 120 })
 }
 
 /** Remove a playback progress item from Simkl. */
