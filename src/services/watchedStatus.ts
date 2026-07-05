@@ -1,12 +1,12 @@
 import type { SearchResult, WatchProgress } from '../types'
-import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatchedItem, type TraktSeasonSummary } from './trakt/sync'
+import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, getShowWatchedProgress, type TraktWatchedItem, type TraktSeasonSummary } from './trakt/sync'
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, lookupTmdbId, type PMDBWatchedItem } from './pmdb'
 import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
 import { getAniListProgress, getAniListTrackedProgress, hasAnyAniListExactEpisodeMarks, isAniListEpisodeMarkedExact, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
-import { cachedFetch } from './cache/sqliteCache'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
 
@@ -258,87 +258,132 @@ function traktSeasonToAbsolute(season: number, episode: number, traktSeasons: Tr
   return abs + episode
 }
 
+async function fetchShowProgress(showId: string | number): Promise<{ number: number; episodes: { number: number; plays: number; lastWatchedAt: string }[] }[]> {
+  const progress = await getShowWatchedProgress(String(showId))
+  return progress.map((s) => ({
+    number: s.number,
+    episodes: s.episodes.filter((e) => e.completed).map((e) => ({ number: e.number, plays: 1, lastWatchedAt: '' })),
+  }))
+}
+
+async function isTraktWatchedWithData(item: WatchedLookupItem, data: TraktCacheData): Promise<boolean> {
+  if (item.type === 'movie') {
+    return data.movies.some((entry) => matchesIds(item, entry.movie?.ids))
+  }
+
+  const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
+  if (!matchedEntry) return false
+  if (item.season == null) return false
+
+  // If seasons data is missing (Trakt API no longer returns it in bulk), fetch per-show progress
+  let seasons = matchedEntry.seasons
+  if (!seasons || seasons.length === 0) {
+    const showId = matchedEntry.show?.ids?.imdb || matchedEntry.show?.ids?.trakt || matchedEntry.show?.ids?.tmdb
+    if (showId) {
+      seasons = await fetchShowProgress(showId).catch(() => undefined as any)
+    }
+  }
+  if (!seasons || seasons.length === 0) return false
+
+  if (item.episode == null) {
+    if (!item.seasonEpisodeCount) return false
+    if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb) {
+      const range = seasonAbsoluteRange(item)
+      const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
+      if (range && traktSeasons.length > 0) {
+        const watched = new Set<number>()
+        for (const season of seasons) {
+          for (const ep of season.episodes) {
+            if (ep.plays <= 0) continue
+            const absolute = traktSeasonToAbsolute(Number(season.number), Number(ep.number), traktSeasons)
+            if (absolute >= range.start && absolute <= range.end) watched.add(absolute)
+          }
+        }
+        return watched.size >= item.seasonEpisodeCount
+      }
+    }
+    const season = seasons.find((s) => Number(s.number) === Number(item.season))
+    return season ? new Set(season.episodes.filter((ep) => ep.plays > 0).map((ep) => Number(ep.number))).size >= item.seasonEpisodeCount : false
+  }
+
+  // Direct season/episode match
+  const directMatch = seasons.some((season) =>
+    Number(season.number) === Number(item.season) && season.episodes.some((ep) => Number(ep.number) === Number(item.episode) && ep.plays > 0)
+  )
+  if (directMatch) return true
+
+  // For anime, try absolute episode mapping (Trakt may have different season structure)
+  if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb) {
+    const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
+    if (traktSeasons.length > 0) {
+      const myAbsolute = seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
+      const absoluteMatch = seasons.some((season) =>
+        season.episodes.some((ep) => {
+          if (ep.plays <= 0) return false
+          return traktSeasonToAbsolute(season.number, ep.number, traktSeasons) === myAbsolute
+        })
+      )
+      if (absoluteMatch) return true
+    }
+  }
+
+  // For anime, try anime-mapping API to check with mapped trakt ID
+  if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
+    try {
+      const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
+      if (Number.isFinite(tvdbId)) {
+        const apiMapping = await mapEpisodeToProviders({
+          localMediaId: item.id,
+          tvdbSeriesId: tvdbId,
+          tvdbSeasonNumber: item.season,
+          tvdbEpisodeNumber: item.episode,
+        })
+        if (apiMapping?.trakt?.id && isConfidenceSufficient(apiMapping)) {
+          const mappedTraktId = apiMapping.trakt.id
+          const mappedSeason = apiMapping.trakt.seasonNumber ?? item.season
+          const mappedEpisode = apiMapping.trakt.episodeNumber ?? item.episode
+          const altEntry = data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
+          let altSeasons = altEntry?.seasons
+          if (altEntry && (!altSeasons || altSeasons.length === 0)) {
+            const altShowId = altEntry.show?.ids?.imdb || altEntry.show?.ids?.trakt || altEntry.show?.ids?.tmdb
+            if (altShowId) altSeasons = await fetchShowProgress(altShowId).catch(() => undefined as any)
+          }
+          if (altSeasons) {
+            const found = altSeasons.some((season) =>
+              Number(season.number) === Number(mappedSeason) && season.episodes.some((ep) => Number(ep.number) === Number(mappedEpisode) && ep.plays > 0)
+            )
+            if (found) return true
+          }
+        }
+      }
+    } catch (_) { /* fall through */ }
+  }
+
+  return false
+}
+
+async function fetchFreshTraktData(): Promise<TraktCacheData> {
+  const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
+  const data = { movies, shows }
+  await cacheSet('watched:trakt', data, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+  return data
+}
+
 async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
-    const data = await getTraktCache()
-    if (item.type === 'movie') {
-      return data.movies.some((entry) => matchesIds(item, entry.movie?.ids))
+    let data = await getTraktCache()
+
+    // Validate cache shape — old app versions or corrupt cache may store wrong format
+    if (!data || !Array.isArray(data.movies) || !Array.isArray(data.shows)) {
+      console.warn('[Trakt] Cache has wrong shape, force-refetching')
+      data = await fetchFreshTraktData()
     }
 
-    const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
-    if (!matchedEntry) return false
-    if (item.season == null) return false
-    if (item.episode == null) {
-      if (!item.seasonEpisodeCount) return false
-      if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb && matchedEntry.seasons) {
-        const range = seasonAbsoluteRange(item)
-        const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
-        if (range && traktSeasons.length > 0) {
-          const watched = new Set<number>()
-          for (const season of matchedEntry.seasons) {
-            for (const ep of season.episodes) {
-              if (ep.plays <= 0) continue
-              const absolute = traktSeasonToAbsolute(Number(season.number), Number(ep.number), traktSeasons)
-              if (absolute >= range.start && absolute <= range.end) watched.add(absolute)
-            }
-          }
-          return watched.size >= item.seasonEpisodeCount
-        }
-      }
-      const season = matchedEntry.seasons?.find((s) => Number(s.number) === Number(item.season))
-      return season ? new Set(season.episodes.filter((ep) => ep.plays > 0).map((ep) => Number(ep.number))).size >= item.seasonEpisodeCount : false
-    }
+    const result = await isTraktWatchedWithData(item, data)
 
-    // Direct season/episode match
-    const directMatch = matchedEntry.seasons?.some((season) =>
-      Number(season.number) === Number(item.season) && season.episodes.some((ep) => Number(ep.number) === Number(item.episode) && ep.plays > 0)
-    ) ?? false
-    if (directMatch) return true
-
-    // For anime, try absolute episode mapping (Trakt may have different season structure)
-    if (item.isAnime && item.appSeasonEpCounts && matchedEntry.show?.ids?.imdb && matchedEntry.seasons) {
-      const traktSeasons = await getTraktShowSeasons(matchedEntry.show.ids.imdb).catch(() => [])
-      if (traktSeasons.length > 0) {
-        const myAbsolute = seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
-        const absoluteMatch = matchedEntry.seasons.some((season) =>
-          season.episodes.some((ep) => {
-            if (ep.plays <= 0) return false
-            return traktSeasonToAbsolute(season.number, ep.number, traktSeasons) === myAbsolute
-          })
-        )
-        if (absoluteMatch) return true
-      }
-    }
-
-    // For anime, try anime-mapping API to check with mapped trakt ID
-    if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
-      try {
-        const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
-        if (Number.isFinite(tvdbId)) {
-          const apiMapping = await mapEpisodeToProviders({
-            localMediaId: item.id,
-            tvdbSeriesId: tvdbId,
-            tvdbSeasonNumber: item.season,
-            tvdbEpisodeNumber: item.episode,
-          })
-          if (apiMapping?.trakt?.id && isConfidenceSufficient(apiMapping)) {
-            const mappedTraktId = apiMapping.trakt.id
-            const mappedSeason = apiMapping.trakt.seasonNumber ?? item.season
-            const mappedEpisode = apiMapping.trakt.episodeNumber ?? item.episode
-            const altEntry = data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
-            if (altEntry?.seasons) {
-              const found = altEntry.seasons.some((season) =>
-                Number(season.number) === Number(mappedSeason) && season.episodes.some((ep) => Number(ep.number) === Number(mappedEpisode) && ep.plays > 0)
-              )
-              if (found) return true
-            }
-          }
-        }
-      } catch (_) { /* fall through */ }
-    }
-
-    return false
-  } catch (_) {
+    return result
+  } catch (err) {
+    console.error('[Trakt] isTraktWatched error:', err)
     return false
   }
 }

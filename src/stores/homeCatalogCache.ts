@@ -9,7 +9,7 @@ interface HomeCatalogCache {
   clear: () => void
 }
 
-const DEFAULT_TTL = 10 * 60 * 1000
+const DEFAULT_TTL = Infinity
 
 export const useHomeCatalogCache = create<HomeCatalogCache>((set, get) => ({
   rows: {},

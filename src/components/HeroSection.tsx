@@ -158,9 +158,9 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
   const ratingLabel = item.rating ? `R` : ''
   const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
 
-  const heroHeight = isSmall ? '380px' : 'clamp(550px, calc(100vh - 270px), 1200px)'
+  const heroHeight = isSmall ? '380px' : 'clamp(550px, 85vh, 1200px)'
 
-  const maskGradient = 'linear-gradient(to bottom, black 75%, rgba(0,0,0,0.4) 90%, transparent 100%)'
+  const maskGradient = 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
 
   return (
     <div
@@ -168,16 +168,14 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
       className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
-      {/* Masked backdrop layer — fade only affects backgrounds, not text */}
-      {!isSmall && (
+      {!isSmall ? (
         <div
           className="absolute inset-0 pointer-events-none"
           style={{ maskImage: maskGradient, WebkitMaskImage: maskGradient }}
         >
           {renderBackdrops()}
         </div>
-      )}
-      {isSmall && renderBackdrops()}
+      ) : renderBackdrops()}
       {renderOverlay()}
     </div>
   )
@@ -263,7 +261,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
         )}
 
         {/* Content — bottom-left */}
-        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall ? 'px-8 pb-8' : 'px-6 pb-6'}`}>
+        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
           {/* Title */}
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (
