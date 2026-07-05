@@ -179,7 +179,7 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
       const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
       if (!mediaId) return false
       const entries = await getAniListTrackedProgress()
-      return entries.some((entry) => entry.mediaId === mediaId && entry.progress > 0)
+      return entries.some((entry) => entry.mediaId === mediaId && entry.status === 'COMPLETED')
     }
 
     if (item.season != null && item.episode != null) {
