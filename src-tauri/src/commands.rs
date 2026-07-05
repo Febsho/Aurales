@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::libmpv_player::{self, LibMpvPlayer};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -49,14 +50,69 @@ fn discord_ipc_connect() -> Result<(), String> {
     pipe.write_all(&discord_ipc_encode(0, &handshake))
         .map_err(|e| format!("Failed to send Discord handshake: {}", e))?;
 
-    // Read response (DISPATCH with READY event)
-    let mut header = [0u8; 8];
-    pipe.read_exact(&mut header)
-        .map_err(|e| format!("Failed to read Discord handshake response: {}", e))?;
-    let response_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-    let mut body = vec![0u8; response_len];
-    pipe.read_exact(&mut body)
-        .map_err(|e| format!("Failed to read Discord response body: {}", e))?;
+    // Read response (DISPATCH with READY event) with a bounded wait — a stale
+    // or unresponsive Discord pipe must never hang the caller indefinitely.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
+
+        let handle = HANDLE(pipe.as_raw_handle());
+        let mut mode = PIPE_NOWAIT;
+        unsafe {
+            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+        let mut response = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let got_response = loop {
+            match pipe.read(&mut chunk) {
+                Ok(n) if n > 0 => {
+                    response.extend_from_slice(&chunk[..n]);
+                    if response.len() >= 8 {
+                        let body_len = u32::from_le_bytes([
+                            response[4],
+                            response[5],
+                            response[6],
+                            response[7],
+                        ]) as usize;
+                        if response.len() >= 8 + body_len {
+                            break true;
+                        }
+                    }
+                }
+                _ => {
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+        };
+
+        let mut mode = PIPE_WAIT;
+        unsafe {
+            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
+        }
+
+        if !got_response {
+            return Err("Discord handshake timed out".to_string());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut header = [0u8; 8];
+        pipe.read_exact(&mut header)
+            .map_err(|e| format!("Failed to read Discord handshake response: {}", e))?;
+        let response_len =
+            u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let mut body = vec![0u8; response_len];
+        pipe.read_exact(&mut body)
+            .map_err(|e| format!("Failed to read Discord response body: {}", e))?;
+    }
 
     *guard = Some(pipe);
     Ok(())
@@ -129,8 +185,11 @@ fn discord_ipc_disconnect() {
     }
 }
 
+// Async + spawn_blocking: these commands do blocking pipe I/O. As sync
+// commands they ran on the webview main thread, so a stale Discord pipe
+// froze the entire app (reproducibly on pause, which re-sets presence).
 #[tauri::command]
-pub fn discord_set_activity(
+pub async fn discord_set_activity(
     details: Option<String>,
     state: Option<String>,
     large_image: Option<String>,
@@ -181,12 +240,16 @@ pub fn discord_set_activity(
         activity["timestamps"] = timestamps;
     }
 
-    discord_ipc_set_activity(activity)
+    tauri::async_runtime::spawn_blocking(move || discord_ipc_set_activity(activity))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn discord_clear_activity() -> Result<(), String> {
-    discord_ipc_clear_activity()
+pub async fn discord_clear_activity() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(discord_ipc_clear_activity)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -259,11 +322,38 @@ unsafe extern "system" fn transparent_host_proc(
     }
 }
 
+enum NativePlayerBackend {
+    Process {
+        child: Child,
+        ipc_path: String,
+        writer: Option<Arc<Mutex<std::fs::File>>>,
+    },
+    LibMpv {
+        player: Arc<LibMpvPlayer>,
+    },
+}
+
 struct NativePlayerState {
     host_hwnd: isize,
-    child: Child,
-    ipc_path: String,
-    writer: Option<Arc<Mutex<std::fs::File>>>,
+    video_hwnd: isize,
+    session_id: String,
+    backend: NativePlayerBackend,
+}
+
+impl NativePlayerState {
+    fn process_child_mut(&mut self) -> Option<&mut Child> {
+        match &mut self.backend {
+            NativePlayerBackend::Process { child, .. } => Some(child),
+            NativePlayerBackend::LibMpv { .. } => None,
+        }
+    }
+
+    fn process_pid(&self) -> Option<u32> {
+        match &self.backend {
+            NativePlayerBackend::Process { child, .. } => Some(child.id()),
+            NativePlayerBackend::LibMpv { .. } => None,
+        }
+    }
 }
 
 static NATIVE_PLAYER: OnceLock<Mutex<Option<NativePlayerState>>> = OnceLock::new();
@@ -282,14 +372,34 @@ fn player_debug_state() -> &'static Mutex<PlayerDebugState> {
     PLAYER_DEBUG_STATE.get_or_init(|| Mutex::new(PlayerDebugState::default()))
 }
 
-fn player_debug_log(message: impl Into<String>) {
-    let message = message.into();
+pub(crate) fn player_debug_log(message: impl Into<String>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let message_str = message.into();
+    let message = format!(
+        "[{:02}:{:02}:{:02}.{:03}] {}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60,
+        now.subsec_millis(),
+        message_str
+    );
     eprintln!("{}", message);
     if let Ok(mut state) = player_debug_state().lock() {
-        state.logs.push(message);
+        state.logs.push(message.clone());
         if state.logs.len() > 2_000 {
             state.logs.drain(..500);
         }
+    }
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("c:\\Users\\justi\\Documents\\Dev\\Aurales\\aurales-app\\player_debug.log")
+    {
+        let _ = writeln!(file, "{}", message);
     }
 }
 
@@ -311,6 +421,26 @@ static PROPERTY_CACHE: OnceLock<
 fn get_property_cache(
 ) -> &'static std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>> {
     PROPERTY_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+pub(crate) fn cache_mpv_property(name: String, value: serde_json::Value) {
+    if let Ok(mut cache) = get_property_cache().write() {
+        cache.insert(name, value);
+    }
+}
+
+pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
+    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+    let should_clear = state
+        .as_ref()
+        .map(|player| player.session_id == session_id)
+        .unwrap_or(false);
+    if should_clear {
+        if let Some(player) = state.take() {
+            cleanup_player_windows(player.host_hwnd, player.video_hwnd);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -952,6 +1082,43 @@ fn find_mpv() -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
+fn resource_candidates(relative: &[&str]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(
+                relative
+                    .iter()
+                    .fold(dir.to_path_buf(), |path, part| path.join(part)),
+            );
+            candidates.push(
+                relative
+                    .iter()
+                    .fold(dir.join("resources"), |path, part| path.join(part)),
+            );
+        }
+    }
+    candidates.push(relative.iter().fold(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"),
+        |path, part| path.join(part),
+    ));
+    candidates.push(relative.iter().fold(
+        PathBuf::from("src-tauri").join("resources"),
+        |path, part| path.join(part),
+    ));
+    candidates
+}
+
+fn find_resource(relative: &[&str]) -> Option<PathBuf> {
+    resource_candidates(relative)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+fn find_thumbfast_script() -> Option<PathBuf> {
+    find_resource(&["mpv-scripts", "thumbfast.lua"])
+}
+
 #[tauri::command]
 pub fn launch_embedded_mpv(
     app: tauri::AppHandle,
@@ -964,11 +1131,40 @@ pub fn launch_embedded_mpv(
     mpv_cache_secs: Option<u32>,
     mpv_network_timeout: Option<u32>,
     mpv_custom_args: Option<String>,
-    _x: Option<i32>,
-    _y: Option<i32>,
-    _width: Option<i32>,
-    _height: Option<i32>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
 ) -> Result<(), String> {
+    // Deduplicate rapid double-launches (React re-running the mount effect
+    // fires two identical launches ~20ms apart; the second used to kill the
+    // just-spawned mpv and start another one).
+    {
+        static LAST_LAUNCH: OnceLock<Mutex<(String, std::time::Instant)>> = OnceLock::new();
+        let guard = LAST_LAUNCH.get_or_init(|| {
+            Mutex::new((
+                String::new(),
+                std::time::Instant::now() - std::time::Duration::from_secs(60),
+            ))
+        });
+        if let Ok(mut last) = guard.lock() {
+            if last.0 == url && last.1.elapsed() < std::time::Duration::from_millis(700) {
+                let running = native_player_state()
+                    .lock()
+                    .map(|state| state.is_some())
+                    .unwrap_or(false);
+                if running {
+                    player_debug_log("[PLAYER START] duplicate launch within 700ms ignored");
+                    return Ok(());
+                }
+                player_debug_log(
+                    "[PLAYER START] duplicate launch window hit but no player is running; continuing",
+                );
+            }
+            *last = (url.clone(), std::time::Instant::now());
+        }
+    }
+
     stop_embedded_mpv()?;
 
     #[cfg(target_os = "windows")]
@@ -980,6 +1176,7 @@ pub fn launch_embedded_mpv(
     };
 
     launch_mpv_with_window(
+        app,
         hwnd,
         url,
         title,
@@ -990,6 +1187,10 @@ pub fn launch_embedded_mpv(
         mpv_cache_secs,
         mpv_network_timeout,
         mpv_custom_args,
+        x,
+        y,
+        width,
+        height,
     )
 }
 
@@ -1078,9 +1279,13 @@ pub fn launch_minimal_mpv(
         let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
         *state = Some(NativePlayerState {
             host_hwnd: 0,
-            child,
-            ipc_path: session_id.clone(),
-            writer: None,
+            video_hwnd: 0,
+            session_id: session_id.clone(),
+            backend: NativePlayerBackend::Process {
+                child,
+                ipc_path: session_id.clone(),
+                writer: None,
+            },
         });
     }
     {
@@ -1131,10 +1336,13 @@ pub fn launch_minimal_mpv(
                 Err(_) => return,
             };
             let Some(player) = state.as_mut() else { return };
-            if player.ipc_path != monitor_identity {
+            if player.session_id != monitor_identity {
                 return;
             }
-            match player.child.try_wait() {
+            let Some(child) = player.process_child_mut() else {
+                return;
+            };
+            match child.try_wait() {
                 Ok(Some(status)) => {
                     *state = None;
                     Some(format!("{}", status))
@@ -1187,7 +1395,7 @@ pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> 
         let state = native_player_state().lock().map_err(|e| e.to_string())?;
         (
             state.is_some(),
-            state.as_ref().map(|player| player.child.id()),
+            state.as_ref().and_then(|player| player.process_pid()),
         )
     };
     let debug = player_debug_state().lock().map_err(|e| e.to_string())?;
@@ -1246,6 +1454,323 @@ fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     Ok(hwnd.0 as isize)
 }
 
+fn apply_custom_libmpv_args(
+    player: &LibMpvPlayer,
+    custom: Option<String>,
+    option_log: &mut Vec<String>,
+) {
+    let Some(custom) = custom else {
+        return;
+    };
+
+    let parts: Vec<String> = custom.split_whitespace().map(str::to_string).collect();
+    let mut index = 0;
+    while index < parts.len() {
+        let arg = &parts[index];
+        index += 1;
+
+        if arg == "--ao" || arg == "-ao" {
+            if index < parts.len() {
+                index += 1;
+            }
+            player_debug_log("[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi");
+            continue;
+        }
+        if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] ignored custom audio output arg: {}",
+                arg
+            ));
+            continue;
+        }
+
+        let Some(trimmed) = arg.strip_prefix("--") else {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] ignored unsupported custom arg: {}",
+                arg
+            ));
+            continue;
+        };
+
+        let (name, value) = if let Some((name, value)) = trimmed.split_once('=') {
+            (name.to_string(), value.to_string())
+        } else if let Some(name) = trimmed.strip_prefix("no-") {
+            (name.to_string(), "no".to_string())
+        } else if index < parts.len() && !parts[index].starts_with('-') {
+            let value = parts[index].clone();
+            index += 1;
+            (trimmed.to_string(), value)
+        } else {
+            (trimmed.to_string(), "yes".to_string())
+        };
+
+        option_log.push(format!("--{}={}", name, value));
+        if let Err(error) = player.set_option(&name, &value) {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] custom option --{} failed: {}",
+                name, error
+            ));
+        }
+    }
+}
+
+fn cleanup_player_windows(host_hwnd: isize, video_hwnd: isize) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+
+        let orig = MPV_HOST_ORIG_PROC.swap(0, Ordering::SeqCst);
+        if orig != 0 {
+            let target = if video_hwnd != 0 {
+                video_hwnd
+            } else {
+                host_hwnd
+            };
+            if target != 0 {
+                unsafe {
+                    SetWindowLongPtrW(HWND(target as *mut _), GWLP_WNDPROC, orig);
+                }
+            }
+        }
+        libmpv_player::destroy_video_child(video_hwnd);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = (host_hwnd, video_hwnd);
+}
+
+fn launch_mpv_with_window(
+    app: tauri::AppHandle,
+    hwnd: isize,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    volume: Option<f64>,
+    hwdec_mode: Option<String>,
+    cache_buffer_size: Option<String>,
+    mpv_cache_secs: Option<u32>,
+    mpv_network_timeout: Option<u32>,
+    mpv_custom_args: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (
+            hwnd,
+            app,
+            url,
+            title,
+            start_time,
+            volume,
+            hwdec_mode,
+            cache_buffer_size,
+            mpv_cache_secs,
+            mpv_network_timeout,
+            mpv_custom_args,
+            x,
+            y,
+            width,
+            height,
+        );
+        return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(mut cache) = get_property_cache().write() {
+            cache.clear();
+        }
+
+        let libmpv = libmpv_player::find_libmpv().ok_or_else(|| {
+            let candidates = libmpv_player::libmpv_candidates()
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Failed to launch embedded mpv: libmpv-2.dll was not found. Expected one of: {}",
+                candidates
+            )
+        })?;
+
+        let session_id = format!(
+            "libmpv-{}-{}",
+            std::process::id(),
+            MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
+        );
+        let hwdec = match hwdec_mode.as_deref() {
+            Some("no") => "no",
+            Some("d3d11va") => "d3d11va",
+            Some("nvdec") => "nvdec",
+            Some("vaapi") => "vaapi",
+            Some("videotoolbox") => "videotoolbox",
+            _ => "auto-safe",
+        };
+        let cache_secs = mpv_cache_secs.unwrap_or(60);
+        let network_timeout = mpv_network_timeout.unwrap_or(15);
+        let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
+            Some("large") => ("256MiB", "128MiB"),
+            Some("aggressive") => ("512MiB", "256MiB"),
+            _ => ("150MiB", "75MiB"),
+        };
+        let _ = (x, y, width, height);
+        let video_hwnd = 0;
+        let thumbfast_script = find_thumbfast_script();
+        let thumbfast_output = std::env::temp_dir()
+            .join(format!("aurales-thumbfast-{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let thumbfast_mpv_path = find_mpv()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| "mpv".to_string());
+
+        let player = match LibMpvPlayer::create(&libmpv, session_id.clone()) {
+            Ok(player) => player,
+            Err(error) => return Err(error),
+        };
+
+        player_debug_log(format!(
+            "[PLAYER START] session={} stream={} hwdec={} backend=libmpv dll={}",
+            session_id,
+            stable_stream_hash(&url),
+            hwdec,
+            libmpv.display()
+        ));
+
+        let mut option_log: Vec<String> = Vec::new();
+        {
+            let mut set_option = |name: &str, value: String| -> Result<(), String> {
+                option_log.push(format!("--{}={}", name, value));
+                player.set_option(name, &value)
+            };
+
+            set_option("wid", hwnd.to_string())?;
+            set_option("force-window", "immediate".to_string())?;
+            set_option("osc", "no".to_string())?;
+            set_option("osd-bar", "no".to_string())?;
+            set_option("config", "no".to_string())?;
+            set_option("load-scripts", "no".to_string())?;
+            set_option(
+                "script-opts",
+                format!(
+                    "thumbfast-network=yes,thumbfast-max_width=360,thumbfast-max_height=203,thumbfast-quit_after_inactivity=20,thumbfast-thumbnail={},thumbfast-mpv_path={}",
+                    thumbfast_output,
+                    thumbfast_mpv_path
+                ),
+            )?;
+            set_option("ytdl", "no".to_string())?;
+            set_option("cursor-autohide", "1000".to_string())?;
+            set_option("input-default-bindings", "no".to_string())?;
+            set_option("input-builtin-bindings", "no".to_string())?;
+            set_option("hwdec", hwdec.to_string())?;
+            set_option("vo", "gpu-next".to_string())?;
+            set_option("gpu-api", "d3d11".to_string())?;
+            set_option("d3d11-flip", "no".to_string())?;
+            set_option("vd-lavc-dr", "yes".to_string())?;
+            set_option("terminal", "no".to_string())?;
+            set_option(
+                "log-file",
+                std::env::temp_dir()
+                    .join("aurales-mpv.log")
+                    .display()
+                    .to_string(),
+            )?;
+            set_option("msg-level", "all=info".to_string())?;
+            set_option("ao", "wasapi".to_string())?;
+            set_option("term-osd-bar", "no".to_string())?;
+            set_option("term-status-msg", "".to_string())?;
+            set_option("keep-open", "no".to_string())?;
+            set_option("sub-fix-timing", "yes".to_string())?;
+            set_option("demuxer-mkv-subtitle-preroll", "yes".to_string())?;
+            set_option("cache", "yes".to_string())?;
+            set_option("cache-secs", cache_secs.to_string())?;
+            set_option("demuxer-max-bytes", max_bytes.to_string())?;
+            set_option("demuxer-max-back-bytes", max_back_bytes.to_string())?;
+            set_option("demuxer-readahead-secs", (cache_secs / 2).to_string())?;
+            set_option("network-timeout", network_timeout.to_string())?;
+            set_option("hr-seek", "yes".to_string())?;
+            set_option(
+                "stream-lavf-o",
+                "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
+            )?;
+            set_option("subs-with-matching-audio", "no".to_string())?;
+            set_option("secondary-sub-visibility", "no".to_string())?;
+            set_option("sub-auto", "fuzzy".to_string())?;
+
+            if let Some(t) = title {
+                set_option("force-media-title", t)?;
+            }
+            if let Some(s) = start_time.filter(|value| *value > 0.0) {
+                set_option("start", s.to_string())?;
+            }
+            if let Some(v) = volume {
+                set_option("volume", v.max(0.0).min(130.0).to_string())?;
+            }
+        }
+
+        apply_custom_libmpv_args(&player, mpv_custom_args, &mut option_log);
+        player_debug_log(format!("[PLAYER ARGS] {}", option_log.join(" ")));
+
+        player.initialize()?;
+        player.request_log_messages("warn");
+        if let Some(script) = thumbfast_script {
+            match player.command(
+                "load-script",
+                &[serde_json::Value::String(
+                    script.to_string_lossy().to_string(),
+                )],
+            ) {
+                Ok(()) => player_debug_log(format!("[THUMBFAST] loaded {}", script.display())),
+                Err(error) => player_debug_log(format!(
+                    "[THUMBFAST] load-script failed for {}: {}",
+                    script.display(),
+                    error
+                )),
+            }
+        } else {
+            player_debug_log("[THUMBFAST] script not found; timeline thumbnails disabled");
+        }
+        player.observe_properties(&[
+            "time-pos",
+            "duration",
+            "volume",
+            "pause",
+            "track-list",
+            "sub-text",
+            "buffering",
+            "cache-buffering-state",
+            "demuxer-cache-duration",
+            "eof-reached",
+            "idle-active",
+            "core-idle",
+            "secondary-sub-text",
+            "secondary-sub-start",
+            "secondary-sub-end",
+            "sub-start",
+            "sub-end",
+        ]);
+        player.start_event_loop(app);
+        player.command("loadfile", &[serde_json::Value::String(url)])?;
+
+        {
+            let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+            *state = Some(NativePlayerState {
+                host_hwnd: hwnd,
+                video_hwnd,
+                session_id,
+                backend: NativePlayerBackend::LibMpv { player },
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(any())]
 fn launch_mpv_with_window(
     hwnd: isize,
     url: String,
@@ -1257,6 +1782,10 @@ fn launch_mpv_with_window(
     mpv_cache_secs: Option<u32>,
     mpv_network_timeout: Option<u32>,
     mpv_custom_args: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
 ) -> Result<(), String> {
     {
         if let Ok(mut cache) = get_property_cache().write() {
@@ -1298,16 +1827,43 @@ fn launch_mpv_with_window(
         "--osc=no".to_string(),
         "--osd-bar=no".to_string(),
         "--no-config".to_string(),
+        // This mpv build bundles Lua scripts (ytdl_hook, auto_profiles,
+        // osc/menu) that run even with --no-config. Inside the app they
+        // malfunction ("client removed during hook handling" on every
+        // launch), and scripts react to pause events — a wedged script
+        // client deadlocks mpv's core. Standalone bisection (2026-07-05)
+        // proved audio/codecs/D3D11/--wid embedding all pause/resume fine
+        // on this machine without scripts; the app needs none of them.
+        "--load-scripts=no".to_string(),
+        "--no-ytdl".to_string(),
         "--cursor-autohide=1000".to_string(),
         "--input-default-bindings=no".to_string(),
         "--input-builtin-bindings=no".to_string(),
         format!("--hwdec={}", hwdec),
+        // NOTE (2026-07-05): pause/resume wedges in this embedded setup with
+        // EVERY renderer (gpu-next, gpu, direct3d — direct3d doesn't even
+        // display under the transparent webview) and every AO/hwdec/script
+        // combination, while all of them work standalone incl. --wid into a
+        // plain host window. The composited transparent-overlay architecture
+        // itself is the trigger; no mpv option fixes it. gpu-next/d3d11 is
+        // the best-behaved (correct display, occasional wedge handled by the
+        // watchdog + auto-restart). Real fix: in-process libmpv migration.
         "--vo=gpu-next".to_string(),
         "--gpu-api=d3d11".to_string(),
+        "--d3d11-flip=no".to_string(),
         "--vd-lavc-dr=yes".to_string(),
         format!("--input-ipc-server={}", ipc_path),
-        "--terminal=yes".to_string(),
-        "--msg-level=all=warn".to_string(),
+        // terminal=no: mpv must never block writing terminal output into our
+        // stdout/stderr pipes (a full pipe stalls mpv's core). Diagnostics
+        // come from --log-file instead, which mpv writes itself.
+        "--terminal=no".to_string(),
+        format!(
+            "--log-file={}",
+            std::env::temp_dir().join("aurales-mpv.log").display()
+        ),
+        "--msg-level=all=info".to_string(),
+        // WASAPI is fine — standalone pause/resume passes on it; and this
+        // mpv build doesn't ship a dsound AO anyway.
         "--ao=wasapi".to_string(),
         "--term-osd-bar=no".to_string(),
         "--term-status-msg=".to_string(),
@@ -1346,11 +1902,17 @@ fn launch_mpv_with_window(
             }
             if arg == "--ao" || arg == "-ao" {
                 skip_next = true;
-                player_debug_log("[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi".to_string());
+                player_debug_log(
+                    "[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi,dsound"
+                        .to_string(),
+                );
                 continue;
             }
             if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
-                player_debug_log(format!("[PLAYER CONFIG] ignored custom audio output arg: {}", arg));
+                player_debug_log(format!(
+                    "[PLAYER CONFIG] ignored custom audio output arg: {}",
+                    arg
+                ));
                 continue;
             }
             if !arg.is_empty() {
@@ -1376,6 +1938,12 @@ fn launch_mpv_with_window(
         normal_session,
         stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
         hwdec
+    ));
+    // Full argument list (minus the stream URL) — shows which settings-derived
+    // flags (passthrough, custom args, cache sizes) were actually in effect.
+    player_debug_log(format!(
+        "[PLAYER ARGS] {}",
+        args[..args.len().saturating_sub(1)].join(" ")
     ));
 
     if let Some(stderr) = stderr {
@@ -1423,8 +1991,11 @@ fn launch_mpv_with_window(
                 Ok(state) => state,
                 Err(_) => return,
             };
+            // No player at all means this session was stopped/killed — exit
+            // instead of looping forever (the old `continue` leaked threads
+            // and swallowed the PLAYER EXIT log for killed sessions).
             let Some(player) = state.as_mut() else {
-                continue;
+                return;
             };
             if player.ipc_path != monitor_ipc_path {
                 return;
@@ -1514,19 +2085,95 @@ fn launch_mpv_with_window(
         for line_res in reader.lines() {
             let line = match line_res {
                 Ok(l) => l,
-                Err(_) => break,
+                Err(e) => {
+                    player_debug_log(format!("[MPV IPC] reader error: {}", e));
+                    break;
+                }
             };
+            // Any line from mpv proves its IPC thread is alive — feed the
+            // hang watchdog.
+            LAST_IPC_LINE_MS.store(epoch_ms(), Ordering::SeqCst);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                if json.get("event").and_then(|v| v.as_str()) == Some("property-change") {
-                    if let (Some(name), Some(data)) = (
-                        json.get("name").and_then(|v| v.as_str()),
-                        json.get("data").cloned(),
-                    ) {
-                        if let Ok(mut cache) = get_property_cache().write() {
-                            cache.insert(name.to_string(), data);
+                match json.get("event").and_then(|v| v.as_str()) {
+                    Some("property-change") => {
+                        if let (Some(name), Some(data)) = (
+                            json.get("name").and_then(|v| v.as_str()),
+                            json.get("data").cloned(),
+                        ) {
+                            if let Ok(mut cache) = get_property_cache().write() {
+                                cache.insert(name.to_string(), data);
+                            }
                         }
                     }
+                    // Core lifecycle events (pause/unpause/seek/playback-restart/
+                    // end-file/...) are rare and pinpoint what mpv actually did
+                    // with our commands.
+                    Some(_) => {
+                        player_debug_log(format!("[MPV EVENT] {}", line));
+                    }
+                    None => {}
                 }
+                // Surface command failures — replies carry "error" != "success".
+                if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
+                    if err != "success" {
+                        player_debug_log(format!("[MPV IPC ERROR] {}", line));
+                    }
+                }
+            }
+        }
+        player_debug_log("[MPV IPC] reader disconnected — commands can no longer reach mpv");
+    });
+
+    // ── Hang watchdog ──────────────────────────────────────────────────────
+    // mpv is embedded as a cross-process child window (`--wid`), which ties
+    // its input queue to the main window's. If mpv's window thread hangs,
+    // the next input interaction freezes the ENTIRE app. A hung mpv cannot
+    // be detected from the UI thread (it's the one that freezes), so this
+    // background thread pings mpv over IPC and kills the process when it
+    // stops responding — killing it detaches the queues and unfreezes the UI.
+    let watchdog_session = normal_session.clone();
+    let watchdog_ipc_path = ipc_path.clone();
+    LAST_IPC_LINE_MS.store(epoch_ms(), Ordering::SeqCst);
+    std::thread::spawn(move || {
+        // Grace period so slow stream startup is never treated as a hang.
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+
+            let writer_opt = {
+                let mut state = match native_player_state().lock() {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+                let Some(player) = state.as_mut() else { return };
+                if player.ipc_path != watchdog_ipc_path {
+                    return; // a newer session took over
+                }
+
+                let silent_ms = epoch_ms().saturating_sub(LAST_IPC_LINE_MS.load(Ordering::SeqCst));
+                if silent_ms > 8_000 {
+                    player_debug_log(format!(
+                        "[PLAYER WATCHDOG] session={} mpv unresponsive for {}ms — killing process to unfreeze the app",
+                        watchdog_session, silent_ms
+                    ));
+                    let _ = player.child.kill();
+                    *state = None;
+                    return;
+                }
+                player.writer.as_ref().map(Arc::clone)
+            };
+
+            // Ping so a healthy-but-paused mpv keeps producing IPC lines.
+            // Detached thread + try_lock: if the pipe is clogged the blocked
+            // write parks here instead of wedging the watchdog loop.
+            if let Some(writer) = writer_opt {
+                std::thread::spawn(move || {
+                    use std::io::Write;
+                    if let Ok(mut guard) = writer.try_lock() {
+                        let _ = writeln!(guard, r#"{{"command":["get_property","pid"]}}"#);
+                        let _ = guard.flush();
+                    }
+                });
             }
         }
     });
@@ -1534,46 +2181,163 @@ fn launch_mpv_with_window(
     Ok(())
 }
 
+// Async + spawn_blocking: the pipe write blocks if mpv stops draining its
+// IPC pipe (hung decoder/audio device). As a sync command that blocked the
+// webview main thread and froze the whole app.
 #[tauri::command]
-pub fn mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
-    use std::io::Write;
+pub async fn mpv_command(
+    command: String,
+    args: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Write;
 
-    let payload = serde_json::json!({
-        "command": std::iter::once(serde_json::Value::String(command))
-            .chain(args.unwrap_or_default())
-            .collect::<Vec<_>>()
-    });
+        let args = args.unwrap_or_default();
+        let command_name = command.clone();
+        let payload = serde_json::json!({
+            "command": std::iter::once(serde_json::Value::String(command))
+                .chain(args.clone())
+                .collect::<Vec<_>>()
+        });
 
-    let writer_opt = {
-        let state = native_player_state().lock().map_err(|e| e.to_string())?;
-        match state.as_ref() {
-            Some(player) => player.writer.as_ref().map(Arc::clone),
-            None => return Err("No player is running".to_string()),
+        enum Target {
+            LibMpv(Arc<LibMpvPlayer>),
+            Ipc {
+                writer: Option<Arc<Mutex<std::fs::File>>>,
+                ipc_path: String,
+            },
         }
-    };
 
-    if let Some(writer) = writer_opt {
-        let write_result = writer
-            .lock()
-            .map_err(|e| e.to_string())
-            .and_then(|mut writer_guard| {
-                writeln!(writer_guard, "{}", payload)
-                    .and_then(|_| writer_guard.flush())
-                    .map_err(|e| e.to_string())
-            });
+        let target = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Target::LibMpv(Arc::clone(player)),
+                    NativePlayerBackend::Process {
+                        writer, ipc_path, ..
+                    } => Target::Ipc {
+                        writer: writer.as_ref().map(Arc::clone),
+                        ipc_path: ipc_path.clone(),
+                    },
+                },
+                None => return Err("No player is running".to_string()),
+            }
+        };
 
-        if let Err(e) = write_result {
-            if let Ok(mut state) = native_player_state().lock() {
-                if let Some(player) = state.as_mut() {
-                    player.writer = None;
+        // Commands are rare (user actions), so logging them is cheap and
+        // makes "the command never arrived" bugs visible in Player Logs.
+        player_debug_log(format!("[MPV CMD] {}", payload));
+
+        match target {
+            Target::LibMpv(player) => player.command(&command_name, &args),
+            Target::Ipc { writer, ipc_path } => {
+                if let Some(writer) = writer {
+                    let write_result =
+                        writer
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|mut writer_guard| {
+                                writeln!(writer_guard, "{}", payload)
+                                    .and_then(|_| writer_guard.flush())
+                                    .map_err(|e| e.to_string())
+                            });
+
+                    if let Err(e) = write_result {
+                        player_debug_log(format!("[MPV CMD] write failed: {}", e));
+                        if let Ok(mut state) = native_player_state().lock() {
+                            if let Some(player) = state.as_mut() {
+                                if let NativePlayerBackend::Process {
+                                    ipc_path: current_ipc_path,
+                                    writer,
+                                    ..
+                                } = &mut player.backend
+                                {
+                                    if *current_ipc_path == ipc_path {
+                                        *writer = None;
+                                    }
+                                }
+                            }
+                        }
+                        return Err(format!("Failed to send mpv command: {}", e));
+                    }
+                    Ok(())
+                } else {
+                    player_debug_log("[MPV CMD] dropped: IPC writer not ready");
+                    Err("mpv IPC not ready yet".to_string())
                 }
             }
-            return Err(format!("Failed to send mpv command: {}", e));
         }
-        return Ok(());
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
-    Err("mpv IPC not ready yet".to_string())
+#[tauri::command]
+pub async fn request_player_thumbnail(time: f64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !time.is_finite() || time < 0.0 {
+            return Err("Invalid thumbnail time".to_string());
+        }
+
+        let player = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Arc::clone(player),
+                    NativePlayerBackend::Process { .. } => {
+                        return Err(
+                            "Timeline thumbnails require the embedded libmpv player.".to_string()
+                        )
+                    }
+                },
+                None => return Err("No player is running".to_string()),
+            }
+        };
+
+        let target = player.client_target();
+        player.command(
+            "script-message-to",
+            &[
+                serde_json::Value::String("thumbfast".to_string()),
+                serde_json::Value::String("thumb".to_string()),
+                serde_json::Value::String(format!("{:.3}", time)),
+                serde_json::Value::String(String::new()),
+                serde_json::Value::String(String::new()),
+                serde_json::Value::String(target),
+            ],
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn clear_player_thumbnail() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let player = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Some(Arc::clone(player)),
+                    NativePlayerBackend::Process { .. } => None,
+                },
+                None => None,
+            }
+        };
+
+        if let Some(player) = player {
+            let _ = player.command(
+                "script-message-to",
+                &[
+                    serde_json::Value::String("thumbfast".to_string()),
+                    serde_json::Value::String("clear".to_string()),
+                ],
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1595,11 +2359,51 @@ pub fn mpv_get_property(property: String) -> Result<serde_json::Value, String> {
 pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let (host_hwnd, video_hwnd) = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(s) => (s.host_hwnd, s.video_hwnd),
+                None => return Ok(()),
+            }
+        };
+        if host_hwnd == 0 || video_hwnd == 0 {
+            return Ok(());
+        }
+
+        let host = HWND(host_hwnd as *mut _);
+        let (w, h) = if width > 0 && height > 0 {
+            (width, height)
+        } else {
+            let mut rect = RECT::default();
+            unsafe {
+                let _ = GetClientRect(host, &mut rect);
+            }
+            (rect.right - rect.left, rect.bottom - rect.top)
+        };
+        if w > 0 && h > 0 {
+            libmpv_player::resize_video_child(video_hwnd, x, y, w, h);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = (x, y, width, height);
+
+    Ok(())
+}
+
+#[cfg(any())]
+#[tauri::command]
+pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
         use windows::core::BOOL;
         use windows::Win32::Foundation::{HWND, LPARAM, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
             EnumChildWindows, GetClientRect, GetWindowThreadProcessId, SetWindowPos,
-            SWP_NOACTIVATE, SWP_NOZORDER,
+            SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER,
         };
 
         let (host_hwnd, mpv_pid) = {
@@ -1662,6 +2466,22 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
         if ctx.hwnd != 0 {
             let mpv_hwnd = HWND(ctx.hwnd as *mut _);
             unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, SWP_FRAMECHANGED,
+                    WS_CLIPSIBLINGS,
+                };
+                // WS_CLIPSIBLINGS: the transparent WebView2 overlay is a
+                // SIBLING of mpv's child window. Without sibling clipping,
+                // every webview repaint (pause icon, controls) invalidates
+                // mpv's window, forcing paused-frame redraws — the observed
+                // deadlock trigger when paused.
+                let style = GetWindowLongPtrW(mpv_hwnd, GWL_STYLE);
+                if style != 0 && (style as u32) & WS_CLIPSIBLINGS.0 == 0 {
+                    SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, style | WS_CLIPSIBLINGS.0 as isize);
+                }
+                // SWP_ASYNCWINDOWPOS: mpv's window lives on another process's
+                // thread. Without this flag SetWindowPos waits synchronously
+                // on that thread and freezes our UI thread if mpv is hung.
                 let _ = SetWindowPos(
                     mpv_hwnd,
                     None, // HWND_TOP equivalent (no z-order change with SWP_NOZORDER)
@@ -1669,7 +2489,7 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
                     y,
                     w,
                     h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_FRAMECHANGED,
                 );
             }
         }
@@ -1695,17 +2515,26 @@ pub fn setup_player_click_through() -> Result<(), String> {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
 
-        let host_hwnd = {
+        let target_hwnd = {
             let state = native_player_state().lock().map_err(|e| e.to_string())?;
-            state.as_ref().map(|s| s.host_hwnd).unwrap_or(0)
+            state
+                .as_ref()
+                .map(|s| {
+                    if s.video_hwnd != 0 {
+                        s.video_hwnd
+                    } else {
+                        s.host_hwnd
+                    }
+                })
+                .unwrap_or(0)
         };
 
-        if host_hwnd != 0 && MPV_HOST_ORIG_PROC.load(Ordering::SeqCst) == 0 {
-            // Safety: host_hwnd came from Tauri's hwnd() which is a valid HWND
-            // for the lifetime of the main window.
+        if target_hwnd != 0 && MPV_HOST_ORIG_PROC.load(Ordering::SeqCst) == 0 {
+            // Safety: target_hwnd is owned by this process for the lifetime of
+            // the playback session.
             let prev = unsafe {
                 SetWindowLongPtrW(
-                    HWND(host_hwnd as *mut _),
+                    HWND(target_hwnd as *mut _),
                     GWLP_WNDPROC,
                     transparent_host_proc as *const () as isize,
                 )
@@ -1722,20 +2551,25 @@ pub fn setup_player_click_through() -> Result<(), String> {
 pub fn stop_embedded_mpv() -> Result<(), String> {
     let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
     if let Some(mut player) = state.take() {
-        // Restore the original WndProc before killing mpv so the Tauri main
-        // window is left in a clean state for the next playback session.
-        #[cfg(target_os = "windows")]
-        {
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
-            let orig = MPV_HOST_ORIG_PROC.swap(0, Ordering::SeqCst);
-            if orig != 0 {
-                unsafe {
-                    SetWindowLongPtrW(HWND(player.host_hwnd as *mut _), GWLP_WNDPROC, orig);
-                }
+        cleanup_player_windows(player.host_hwnd, player.video_hwnd);
+        let session_id = player.session_id.clone();
+        match &mut player.backend {
+            NativePlayerBackend::LibMpv { player } => {
+                player_debug_log(format!(
+                    "[PLAYER EXIT] session={} status=terminated-by-stop",
+                    session_id
+                ));
+                player.shutdown();
+            }
+            NativePlayerBackend::Process { child, .. } => {
+                player_debug_log(format!(
+                    "[PLAYER EXIT] session={} pid={} status=killed-by-stop",
+                    session_id,
+                    child.id()
+                ));
+                let _ = child.kill();
             }
         }
-        let _ = player.child.kill();
     }
     Ok(())
 }
@@ -2563,13 +3397,22 @@ pub fn get_mpv_info() -> Result<serde_json::Value, String> {
     let path = find_mpv()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "Not Found".to_string());
+    let libmpv_path = libmpv_player::find_libmpv()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Not Found".to_string());
     let candidates: Vec<String> = mpv_candidates()
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let libmpv_candidates: Vec<String> = libmpv_player::libmpv_candidates()
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     Ok(serde_json::json!({
         "path": path,
+        "libmpvPath": libmpv_path,
         "candidates": candidates,
+        "libmpvCandidates": libmpv_candidates,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
     }))

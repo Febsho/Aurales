@@ -107,9 +107,11 @@ function pickArrayPayload(data: unknown): unknown[] {
 }
 
 function toNumber(value: unknown): number | undefined {
-  const num = Number(value)
+  if (value == null) return undefined
+  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)-/i, ''))
   return Number.isFinite(num) && num > 0 ? num : undefined
 }
+
 
 function msFromApi(value: unknown): number {
   const num = Number(value)
@@ -242,6 +244,23 @@ export async function lookupTmdbId(
           if (preferredMediaType === 'movie' && movies.length > 0) return { tmdbId: movies[0].id, mediaType: 'movie' }
           if (preferredMediaType === 'tv' && shows.length > 0) return { tmdbId: shows[0].id, mediaType: 'tv' }
           if (movies.length > 0) return { tmdbId: movies[0].id, mediaType: 'movie' }
+          if (shows.length > 0) return { tmdbId: shows[0].id, mediaType: 'tv' }
+        }
+      } catch (_) { /* fall through */ }
+    }
+  }
+
+  // TMDB /find also resolves TVDB ids directly (no PMDB key needed)
+  if (idType === 'tvdb') {
+    const tmdbKey = getTmdbApiKey()
+    if (tmdbKey) {
+      try {
+        const res = await fetch(
+          `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=tvdb_id`
+        )
+        if (res.ok) {
+          const data = await res.json()
+          const shows: { id: number }[] = data.tv_results || []
           if (shows.length > 0) return { tmdbId: shows[0].id, mediaType: 'tv' }
         }
       } catch (_) { /* fall through */ }

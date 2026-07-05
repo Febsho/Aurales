@@ -1,14 +1,19 @@
 use rusqlite::Connection;
-use std::path::PathBuf;
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 
 fn main() {
     let app_dir = dirs::data_dir()
         .map(|d| d.join("com.aurales.app"))
         .or_else(|| {
             let home = std::env::var("USERPROFILE").ok()?;
-            Some(PathBuf::from(home).join("AppData").join("Roaming").join("com.aurales.app"))
+            Some(
+                PathBuf::from(home)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("com.aurales.app"),
+            )
         })
         .expect("could not find app data dir");
 
@@ -39,7 +44,8 @@ fn main() {
             file,
             "Addon: {}, ItemID: {}, LocalID: {}, Type: {}",
             addon_id, addon_item_id, local_media_id, media_type
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     writeln!(file, "\n--- ALL APP MEDIA ENTRIES WITH ANILIST_ID ---").unwrap();
@@ -57,7 +63,8 @@ fn main() {
             file,
             "ID: {}, Title: {}, AniList: {:?}, TVDB: {:?}, TMDB: {:?}",
             id, title, anilist_id, tvdb_id, tmdb_id
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     println!("Report written to {:?}", report_path);

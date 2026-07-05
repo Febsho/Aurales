@@ -3,6 +3,23 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   getDeviceCode,
   pollForToken,
   clearTokens,
@@ -23,7 +40,7 @@ import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
-import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
+import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
@@ -708,6 +725,105 @@ function SearchSettingsSection() {
         </SettingRow>
       </SettingSection>
     </>
+  )
+}
+
+interface PriorityItemProps {
+  id: string
+  label: string
+  connected: boolean
+}
+
+function SortablePriorityItem({ id, label, connected }: PriorityItemProps) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex items-center justify-between p-3 bg-white/[0.02] border border-white/[0.06] rounded-xl"
+    >
+      <div className="flex items-center gap-3">
+        <button
+          {...attributes}
+          {...listeners}
+          className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/5 cursor-grab text-white/40 hover:text-white transition-colors"
+          type="button"
+          aria-label={`Drag ${label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
+            <path d="M4 8h16M4 16h16" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <span className="text-sm font-semibold text-white">{label}</span>
+      </div>
+      <div>
+        <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider ${
+          connected ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-white/5 text-white/30 border border-white/5'
+        }`}>
+          {connected ? 'Connected' : 'Not Connected'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function ResumePriorityList() {
+  const store = useAppStore()
+  
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const oldIndex = store.resumePriorityOrder.indexOf(active.id as any)
+    const newIndex = store.resumePriorityOrder.indexOf(over.id as any)
+    const nextOrder = arrayMove(store.resumePriorityOrder, oldIndex, newIndex)
+    store.setResumePriorityOrder(nextOrder)
+  }
+
+  const serviceLabels: Record<string, string> = {
+    local: 'Local Database',
+    simkl: 'Simkl',
+    trakt: 'Trakt',
+    pmdb: 'PMDB',
+    mdblist: 'MDBList',
+  }
+
+  const isServiceConnected = (id: string) => {
+    if (id === 'local') return true
+    if (id === 'simkl') return store.simklConnected
+    if (id === 'trakt') return store.traktConnected
+    if (id === 'pmdb') return !!store.pmdbApiKey
+    if (id === 'mdblist') return !!store.mdblistApiKey || hasMdblistOAuth()
+    return false
+  }
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={store.resumePriorityOrder} strategy={verticalListSortingStrategy}>
+        <div className="space-y-2 max-w-md">
+          {store.resumePriorityOrder.map((id) => (
+            <SortablePriorityItem
+              key={id}
+              id={id}
+              label={serviceLabels[id] || id}
+              connected={isServiceConnected(id)}
+            />
+          ))}
+        </div>
+      </SortableContext>
+    </DndContext>
   )
 }
 
@@ -2523,30 +2639,7 @@ export default function SettingsPage() {
           {activeTab === 'progress' && (
             <>
               {/* ─── Global Settings ─── */}
-              <SettingSection title="Continue Watching" description="Configure progress tracking sources and display.">
-                <div className="px-6 py-4">
-                  <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Source</label>
-                  <div className="flex gap-1.5 bg-white/[0.03] rounded-xl p-1 border border-white/[0.06]">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'mdblist', 'anilist'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setContinueWatchingSource(src)}
-                        className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all capitalize cursor-pointer ${
-                          store.continueWatchingSource === src
-                            ? 'bg-accent/15 text-accent border border-accent/20 font-bold'
-                            : 'text-white/40 hover:text-white border border-transparent'
-                        }`}
-                      >
-                        <span className="inline-flex items-center justify-center gap-1.5">
-                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'mdblist' ? 'MDBList' : src === 'anilist' ? 'AniList' : src}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-white/30 mt-1.5">Choose where Continue Watching is saved on this device.</p>
-                </div>
-
+              <SettingSection title="Continue Watching" description="Every connected service has its own Continue Watching — switch between them directly on the Home row. Use each service's 'Save Resume Position' below to opt out.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
                   <select
                     value={store.continueWatchingLimit}
@@ -2594,6 +2687,16 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+              </SettingSection>
+
+              {/* ─── Play Button Resume Priority ─── */}
+              <SettingSection
+                title="Play Button Resume Priority"
+                description="Drag connected services to configure the priority order used to fetch your resume progress on the detail pages. The first active resume point found from top to bottom will be used."
+              >
+                <div className="px-6 py-4">
+                  <ResumePriorityList />
+                </div>
               </SettingSection>
 
               {/* ─── Anime Tracking ─── */}

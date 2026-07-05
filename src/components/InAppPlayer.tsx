@@ -514,6 +514,9 @@ IMPORTANT RULES:
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
       sendMdblistScrobble('stop', progress)
+      if (progress >= 0.85) {
+        import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
+      }
     }
     onClose()
   }
@@ -540,6 +543,9 @@ IMPORTANT RULES:
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
       sendMdblistScrobble('stop', progress)
+      if (progress >= 0.85) {
+        import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
+      }
     }
     onPickAnother()
   }
@@ -558,6 +564,7 @@ IMPORTANT RULES:
         traktScrobbleStop(traktPayload).catch(() => {})
       }
       sendMdblistScrobble('stop', 1)
+      import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
     }
   }
 

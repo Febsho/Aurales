@@ -2,7 +2,7 @@ import type { SearchResult, WatchProgress } from '../types'
 import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, type TraktWatchedItem, type TraktSeasonSummary } from './trakt/sync'
 import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
-import { getPMDBWatched, type PMDBWatchedItem } from './pmdb'
+import { getPMDBWatched, lookupTmdbId, type PMDBWatchedItem } from './pmdb'
 import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
 import { getAniListProgress, getAniListTrackedProgress, hasAnyAniListExactEpisodeMarks, isAniListEpisodeMarkedExact, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
@@ -72,14 +72,14 @@ export function getLocalWatchedStatus(item: WatchedLookupItem, watchProgress: Ma
     if (item.type === 'movie') return true
     if (item.season == null) return false
     if (item.episode == null) continue
-    if (progress.season === item.season && progress.episode === item.episode) return true
+    if (progress.season != null && progress.episode != null && Number(progress.season) === Number(item.season) && Number(progress.episode) === Number(item.episode)) return true
   }
   if (item.type === 'series' && item.season != null && item.episode == null && item.seasonEpisodeCount) {
     const watched = new Set<number>()
     for (const [, progress] of watchProgress.entries()) {
       if (!progress.completed) continue
       if (!ids.includes(progress.mediaId) && !ids.includes(String(progress.tmdbId || '')) && !ids.includes(String(progress.imdbId || ''))) continue
-      if (progress.season === item.season && progress.episode != null) watched.add(progress.episode)
+      if (progress.season != null && Number(progress.season) === Number(item.season) && progress.episode != null) watched.add(Number(progress.episode))
     }
     return watched.size >= item.seasonEpisodeCount
   }
@@ -278,20 +278,20 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
           for (const season of matchedEntry.seasons) {
             for (const ep of season.episodes) {
               if (ep.plays <= 0) continue
-              const absolute = traktSeasonToAbsolute(season.number, ep.number, traktSeasons)
+              const absolute = traktSeasonToAbsolute(Number(season.number), Number(ep.number), traktSeasons)
               if (absolute >= range.start && absolute <= range.end) watched.add(absolute)
             }
           }
           return watched.size >= item.seasonEpisodeCount
         }
       }
-      const season = matchedEntry.seasons?.find((s) => s.number === item.season)
-      return season ? new Set(season.episodes.filter((ep) => ep.plays > 0).map((ep) => ep.number)).size >= item.seasonEpisodeCount : false
+      const season = matchedEntry.seasons?.find((s) => Number(s.number) === Number(item.season))
+      return season ? new Set(season.episodes.filter((ep) => ep.plays > 0).map((ep) => Number(ep.number))).size >= item.seasonEpisodeCount : false
     }
 
     // Direct season/episode match
     const directMatch = matchedEntry.seasons?.some((season) =>
-      season.number === item.season && season.episodes.some((ep) => ep.number === item.episode && ep.plays > 0)
+      Number(season.number) === Number(item.season) && season.episodes.some((ep) => Number(ep.number) === Number(item.episode) && ep.plays > 0)
     ) ?? false
     if (directMatch) return true
 
@@ -328,7 +328,7 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
             const altEntry = data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
             if (altEntry?.seasons) {
               const found = altEntry.seasons.some((season) =>
-                season.number === mappedSeason && season.episodes.some((ep) => ep.number === mappedEpisode && ep.plays > 0)
+                Number(season.number) === Number(mappedSeason) && season.episodes.some((ep) => Number(ep.number) === Number(mappedEpisode) && ep.plays > 0)
               )
               if (found) return true
             }
@@ -385,22 +385,22 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
           const range = seasonAbsoluteRange(item)
           if (range) {
             const watched = new Set(entry.watchedEpisodes
-              .filter((episode) => episode.season === 1 && episode.episode >= range.start && episode.episode <= range.end)
-              .map((episode) => episode.episode))
+              .filter((episode) => Number(episode.season) === 1 && Number(episode.episode) >= range.start && Number(episode.episode) <= range.end)
+              .map((episode) => Number(episode.episode)))
             if (watched.size >= item.seasonEpisodeCount) return true
           }
         }
-        const watched = new Set(entry.watchedEpisodes.filter((episode) => episode.season === item.season).map((episode) => episode.episode))
+        const watched = new Set(entry.watchedEpisodes.filter((episode) => Number(episode.season) === Number(item.season)).map((episode) => Number(episode.episode)))
         return watched.size >= item.seasonEpisodeCount
       }
       const absoluteEpisode = item.absoluteEpisode ?? (item.isAnime && item.appSeasonEpCounts && item.season != null
-        ? seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
+        ? seasonEpToAbsolute(Number(item.season), Number(item.episode), item.appSeasonEpCounts)
         : undefined)
 
       return entry.watchedEpisodes.some((episode) =>
-        (episode.season === item.season && episode.episode === item.episode) ||
-        (item.isAnime && absoluteEpisode != null && episode.season === 1 && episode.episode === absoluteEpisode) ||
-        (mappedSimkl != null && episode.season === mappedSimkl.season && episode.episode === mappedSimkl.episode)
+        (Number(episode.season) === Number(item.season) && Number(episode.episode) === Number(item.episode)) ||
+        (item.isAnime && absoluteEpisode != null && Number(episode.season) === 1 && Number(episode.episode) === Number(absoluteEpisode)) ||
+        (mappedSimkl != null && Number(episode.season) === Number(mappedSimkl.season) && Number(episode.episode) === Number(mappedSimkl.episode))
       )
     })
   } catch (_) {
@@ -408,8 +408,44 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
   }
 }
 
-async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
+// PMDB entries are keyed by TMDB id only. Items coming from TVDB-sourced
+// pages usually lack a TMDB id, so resolve (and memoize) it — otherwise PMDB
+// always reports "unwatched" there.
+const tmdbIdResolveCache = new Map<string, number | null>()
+
+async function resolveTmdbIdForLookup(item: WatchedLookupItem): Promise<number | undefined> {
+  if (item.tmdbId != null) {
+    const n = Number(String(item.tmdbId).replace('tmdb-', ''))
+    return Number.isFinite(n) ? n : undefined
+  }
+  const preferred = item.type === 'movie' ? 'movie' : 'tv'
+  const cacheKey = `${item.imdbId ?? ''}:${item.tvdbId ?? ''}:${preferred}`
+  if (!item.imdbId && item.tvdbId == null) return undefined
+  if (tmdbIdResolveCache.has(cacheKey)) return tmdbIdResolveCache.get(cacheKey) ?? undefined
+
+  let resolved: number | null = null
   try {
+    if (item.imdbId) {
+      const mapping = await lookupTmdbId('imdb', item.imdbId, preferred)
+      if (mapping) resolved = mapping.tmdbId
+    }
+    if (resolved == null && item.tvdbId != null) {
+      const mapping = await lookupTmdbId('tvdb', String(item.tvdbId).replace('tvdb-', ''), preferred)
+      if (mapping) resolved = mapping.tmdbId
+    }
+  } catch (_) { /* leave unresolved */ }
+  tmdbIdResolveCache.set(cacheKey, resolved)
+  return resolved ?? undefined
+}
+
+async function isPmdbWatched(rawItem: WatchedLookupItem): Promise<boolean> {
+  try {
+    let item = rawItem
+    if (item.tmdbId == null) {
+      const resolved = await resolveTmdbIdForLookup(item)
+      if (resolved == null) return false
+      item = { ...item, tmdbId: resolved }
+    }
     const data = await getPmdbCache()
 
     // For anime, try resolving the correct TMDB ID + season/episode via anime-mapping API
@@ -454,25 +490,25 @@ async function isPmdbWatched(item: WatchedLookupItem): Promise<boolean> {
               .filter((watchedItem) =>
                 watchedItem.media_type === 'tv' &&
                 sameNumber(watchedItem.tmdb_id, item.tmdbId) &&
-                watchedItem.season === 1 &&
+                Number(watchedItem.season) === 1 &&
                 watchedItem.episode != null &&
-                watchedItem.episode >= range.start &&
-                watchedItem.episode <= range.end
+                Number(watchedItem.episode) >= range.start &&
+                Number(watchedItem.episode) <= range.end
               )
-              .map((watchedItem) => watchedItem.episode)
+              .map((watchedItem) => Number(watchedItem.episode))
               .filter((episode): episode is number => episode != null))
             if (watched.size >= item.seasonEpisodeCount) return true
           }
         }
         const watched = new Set(data.items
-          .filter((watchedItem) => watchedItem.media_type === 'tv' && sameNumber(watchedItem.tmdb_id, item.tmdbId) && watchedItem.season === item.season)
-          .map((watchedItem) => watchedItem.episode)
+          .filter((watchedItem) => watchedItem.media_type === 'tv' && sameNumber(watchedItem.tmdb_id, item.tmdbId) && Number(watchedItem.season) === Number(item.season))
+          .map((watchedItem) => Number(watchedItem.episode))
           .filter((episode): episode is number => episode != null))
         return watched.size >= item.seasonEpisodeCount
       }
       return (
-        (entry.season === item.season && entry.episode === item.episode) ||
-        (item.isAnime && item.absoluteEpisode != null && entry.season === 1 && entry.episode === item.absoluteEpisode)
+        (Number(entry.season) === Number(item.season) && Number(entry.episode) === Number(item.episode)) ||
+        (item.isAnime && item.absoluteEpisode != null && Number(entry.season) === 1 && Number(entry.episode) === Number(item.absoluteEpisode))
       )
     })
   } catch (_) {
@@ -494,7 +530,7 @@ async function isMdblistWatched(item: WatchedLookupItem): Promise<boolean> {
       if (item.type === 'movie') return true
       if (item.season == null) return false
       if (item.episode == null) return true
-      return entry.season === item.season && entry.episode === item.episode
+      return Number(entry.season) === Number(item.season) && Number(entry.episode) === Number(item.episode)
     })
   } catch (_) {
     return false
@@ -554,13 +590,18 @@ function matchesFlatIds(item: WatchedLookupItem, ids: { imdbId?: unknown; tmdbId
     sameNumber(item.malId, ids.malId)
   )
 }
-
 function sameString(a: unknown, b: unknown): boolean {
   return Boolean(a && b && String(a).toLowerCase() === String(b).toLowerCase())
 }
 
 function sameNumber(a: unknown, b: unknown): boolean {
-  const left = Number(a)
-  const right = Number(b)
+  const clean = (val: unknown) => {
+    if (val == null) return NaN
+    if (typeof val === 'number') return val
+    const num = Number(String(val).replace(/^(tmdb|tvdb|mal|anilist)-/i, ''))
+    return Number.isFinite(num) ? num : NaN
+  }
+  const left = clean(a)
+  const right = clean(b)
   return Number.isFinite(left) && Number.isFinite(right) && left === right
 }

@@ -534,9 +534,21 @@ async function resolvePmdbEpisodeForTarget(
   item: SearchResult,
   target: Extract<NonNullable<ReturnType<typeof useContextMenu.getState>['target']>, { kind: 'episode' }>,
 ): Promise<{ tmdbId: number; season: number; episode: number }> {
-  const fallbackTmdbId = numericId(item.tmdbId)
+  let tmdbId = numericId(item.tmdbId)
+  if (!tmdbId) {
+    const { lookupTmdbId } = await import('../services/pmdb')
+    const preferred = 'tv'
+    if (item.imdbId) {
+      const mapped = await lookupTmdbId('imdb', item.imdbId, preferred).catch(() => null)
+      if (mapped) tmdbId = mapped.tmdbId
+    }
+    if (!tmdbId && item.tvdbId) {
+      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace('tvdb-', ''), preferred).catch(() => null)
+      if (mapped) tmdbId = mapped.tmdbId
+    }
+  }
   const fallback = {
-    tmdbId: fallbackTmdbId || 0,
+    tmdbId: tmdbId || 0,
     season: target.seasonNumber,
     episode: target.episode.episodeNumber,
   }
@@ -562,7 +574,7 @@ async function resolvePmdbEpisodeForTarget(
       }
     }
     return {
-      tmdbId: mapped.tmdbId,
+      tmdbId: mapped.tmdbId || tmdbId || 0,
       season: mapped.season,
       episode: mapped.episode,
     }
@@ -857,7 +869,19 @@ async function togglePmdbWatched(
   watched: boolean,
 ) {
   const item = target.item
-  const tmdbId = Number(item.tmdbId)
+  let tmdbId = numericId(item.tmdbId)
+  if (!tmdbId) {
+    const { lookupTmdbId } = await import('../services/pmdb')
+    const preferred = item.type === 'movie' ? 'movie' as const : 'tv' as const
+    if (item.imdbId) {
+      const mapped = await lookupTmdbId('imdb', item.imdbId, preferred).catch(() => null)
+      if (mapped) tmdbId = mapped.tmdbId
+    }
+    if (!tmdbId && item.tvdbId) {
+      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace('tvdb-', ''), preferred).catch(() => null)
+      if (mapped) tmdbId = mapped.tmdbId
+    }
+  }
   if (!tmdbId || !Number.isFinite(tmdbId)) throw new Error('No TMDB ID for PMDB')
 
   const { scrobblePMDB, removePMDBWatched } = await import('../services/pmdb')
