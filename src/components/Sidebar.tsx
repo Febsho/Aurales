@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { getAppVersion } from '../services/updater'
 import CreateRoomButton from './watch-together/CreateRoomButton'
@@ -24,6 +24,21 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
   const [hovered, setHovered] = useState(false)
   const [joinModalOpen, setJoinModalOpen] = useState(false)
   const location = useLocation()
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleMouseEnter = useCallback(() => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    setHovered(true)
+  }, [])
+
+  const handleMouseLeave = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = setTimeout(() => setHovered(false), 400)
+  }, [])
+
+  useEffect(() => {
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
+  }, [])
 
   // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
   const pinned = !autoHide
@@ -40,8 +55,8 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         <>
           <div
             className="absolute top-0 left-0 bottom-0 w-5 z-40"
-            onMouseEnter={() => setHovered(true)}
-            onMouseMove={() => setHovered(true)}
+            onMouseEnter={handleMouseEnter}
+            onMouseMove={handleMouseEnter}
           />
           {!visible && (
             <div
@@ -52,8 +67,8 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         </>
       )}
       <aside
-        onMouseEnter={() => !pinned && setHovered(true)}
-        onMouseLeave={() => !pinned && setHovered(false)}
+        onMouseEnter={() => !pinned && handleMouseEnter()}
+        onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
           'flex flex-col z-30',
           'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
@@ -77,7 +92,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         </div>
         <button
           onClick={toggle}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
           title={pinned ? 'Auto-hide sidebar' : 'Pin sidebar'}
         >
           {pinned ? (

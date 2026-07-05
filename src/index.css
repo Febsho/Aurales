@@ -84,6 +84,28 @@ html.hero-bg-active .hero-bg-transparent {
   background: transparent !important;
 }
 
+/* Custom title bar buttons */
+.title-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.title-bar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.title-bar-close:hover {
+  background: #e81123 !important;
+}
+.title-bar-close:hover svg {
+  color: #fff !important;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }

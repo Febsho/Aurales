@@ -995,7 +995,7 @@ export default function HomePage() {
         <>
           {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
 
-          <div className="relative" style={{ marginTop: heroRow ? '20px' : undefined }}>
+          <div className="relative z-10" style={{ marginTop: heroRow ? '-40px' : undefined }}>
             {isEditing ? (
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                 <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>

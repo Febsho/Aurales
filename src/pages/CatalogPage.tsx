@@ -5,7 +5,7 @@ import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
 import type { SearchResult } from '../types'
-import { discoverTmdb } from '../services/tmdb'
+import { discoverTmdb, discoverTmdbWithCache } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 
@@ -157,7 +157,9 @@ export default function CatalogPage() {
         }
 
         try {
-          const results = await discoverTmdb(row.discoverConfig!, page)
+          const results = page === 1
+            ? await discoverTmdbWithCache(row.discoverConfig!, `catalog-${rowId}-p${page}`)
+            : await discoverTmdb(row.discoverConfig!, page)
           if (cancelled) return
 
           const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')

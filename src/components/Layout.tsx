@@ -6,6 +6,7 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import WatchTogetherPanel from './watch-together/WatchTogetherPanel'
 import WatchTogetherAutoPlayer from './watch-together/WatchTogetherAutoPlayer'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
+import TitleBar from './TitleBar'
 
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
@@ -18,8 +19,33 @@ export default function Layout() {
   const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false)
   const [searchBarVisible, setSearchBarVisible] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
+  const isSearchPage = location.pathname === '/search'
   const inputRef = useRef<HTMLInputElement>(null)
   const mainRef = useRef<HTMLElement>(null)
+  const searchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showSearchBar = useCallback(() => {
+    if (searchHideTimer.current) { clearTimeout(searchHideTimer.current); searchHideTimer.current = null }
+    setSearchBarVisible(true)
+  }, [])
+
+  const scheduleHideSearchBar = useCallback(() => {
+    if (searchFocused || isSearchPage) return
+    if (searchHideTimer.current) clearTimeout(searchHideTimer.current)
+    searchHideTimer.current = setTimeout(() => setSearchBarVisible(false), 1500)
+  }, [searchFocused, isSearchPage])
+
+  useEffect(() => {
+    return () => { if (searchHideTimer.current) clearTimeout(searchHideTimer.current) }
+  }, [])
+
+  useEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    const onScroll = () => { if (searchBarVisible && !searchFocused && !isSearchPage) scheduleHideSearchBar() }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [searchBarVisible, searchFocused, isSearchPage, scheduleHideSearchBar])
 
   useLayoutEffect(() => {
     if (!location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
@@ -107,7 +133,7 @@ export default function Layout() {
   const handleSearchBlur = () => {
     setSearchFocused(false)
     window.setTimeout(() => {
-      if (document.activeElement !== inputRef.current) setSearchBarVisible(false)
+      if (document.activeElement !== inputRef.current) scheduleHideSearchBar()
     }, 120)
   }
 
@@ -131,14 +157,13 @@ export default function Layout() {
         placeholder="Search movies, shows, people..."
         className={[
           'w-full pl-10 pr-12 py-2.5',
-          'bg-white/[0.06] hover:bg-white/[0.09] focus:bg-white/[0.12]',
-          'border border-white/[0.06] focus:border-white/[0.15]',
+          'bg-black/40 hover:bg-black/50 focus:bg-black/55',
+          'border border-white/[0.08] focus:border-white/[0.18]',
           'rounded-xl text-sm font-medium tracking-wide',
           'text-white placeholder-white/30',
           'focus:outline-none',
           'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
           'shadow-[0_4px_16px_rgba(0,0,0,0.3)]',
-          'backdrop-blur-xl',
         ].join(' ')}
       />
       <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
@@ -149,11 +174,12 @@ export default function Layout() {
 
   return (
     <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${sidebarPinned ? 'flex' : 'relative'}`}>
+      <TitleBar />
       <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
       <div className={`relative flex flex-col min-h-0 h-full ${sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
-        {location.pathname !== '/' && (
+        {location.pathname !== '/' && location.pathname !== '/discover' && (
           <button
             type="button"
             onClick={goBack}
@@ -174,21 +200,29 @@ export default function Layout() {
             </svg>
           </button>
         )}
-        {/* Search bar */}
+        {/* Narrow center proximity zone — triggers search bar near the indicator */}
         <div
-          className="absolute top-0 left-0 right-0 h-8 z-40"
-          onMouseEnter={() => setSearchBarVisible(true)}
+          className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-10 z-[9997]"
+          onMouseEnter={showSearchBar}
         />
+        {/* Glowing indicator pill — visible when search bar is hidden */}
+        {!searchBarVisible && !searchFocused && !isSearchPage && (
+          <div
+            className="absolute top-0 left-1/2 -translate-x-1/2 z-[9998] w-28 h-1 rounded-b-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
+            aria-hidden="true"
+          />
+        )}
+        {/* Search bar — slides down from top */}
         <header
-          onMouseEnter={() => setSearchBarVisible(true)}
-          onMouseLeave={() => { if (!searchFocused) setSearchBarVisible(false) }}
+          onMouseEnter={showSearchBar}
+          onMouseLeave={scheduleHideSearchBar}
           className={[
-            'absolute top-0 left-1/2 z-40',
-            'w-[min(32rem,calc(100vw-8rem))]',
-            'transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
-            searchBarVisible || searchFocused
-              ? '-translate-x-1/2 translate-y-3 pointer-events-auto'
-              : '-translate-x-1/2 -translate-y-full pointer-events-none',
+            'absolute left-1/2 z-[9998]',
+            'w-[min(32rem,calc(100vw-20rem))]',
+            'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+            searchBarVisible || searchFocused || isSearchPage
+              ? '-translate-x-1/2 top-9 opacity-100 pointer-events-auto'
+              : '-translate-x-1/2 -top-8 opacity-0 pointer-events-none',
           ].join(' ')}
         >
           {searchInput}
