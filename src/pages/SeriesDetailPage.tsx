@@ -483,10 +483,10 @@ export default function SeriesDetailPage() {
                 const showObj = item.show || item.anime
                 if (!showObj || !item.episode) return false
                 return (
-                  fuzzyIdsMatch(showObj.ids.simkl, show.id) ||
-                  fuzzyIdsMatch(showObj.ids.imdb, show.imdbId) ||
-                  fuzzyIdsMatch(showObj.ids.tmdb, show.tmdbId) ||
-                  fuzzyIdsMatch(showObj.ids.tvdb, show.tvdbId)
+                  fuzzyIdsMatch(showObj.ids.simkl, show!.id) ||
+                  fuzzyIdsMatch(showObj.ids.imdb, show!.imdbId) ||
+                  fuzzyIdsMatch(showObj.ids.tmdb, show!.tmdbId) ||
+                  fuzzyIdsMatch(showObj.ids.tvdb, show!.tvdbId)
                 )
               })
               .map((item) => {
@@ -518,8 +518,8 @@ export default function SeriesDetailPage() {
               .filter((item: any) => {
                 if (item.type !== 'episode' || !item.show || !item.episode) return false
                 return (
-                  fuzzyIdsMatch(item.show.ids.imdb, show.imdbId) ||
-                  fuzzyIdsMatch(item.show.ids.tmdb, show.tmdbId)
+                  fuzzyIdsMatch(item.show.ids.imdb, show!.imdbId) ||
+                  fuzzyIdsMatch(item.show.ids.tmdb, show!.tmdbId)
                 )
               })
               .map((item: any) => {
@@ -549,20 +549,17 @@ export default function SeriesDetailPage() {
             const raw = await getPMDBPlaybackProgress()
             const matches = raw
               .filter((item) => {
-                if (item.mediaType !== 'tv') return false
-                return (
-                  fuzzyIdsMatch(item.tmdbId, show.tmdbId) ||
-                  fuzzyIdsMatch(item.imdbId, show.imdbId)
-                )
+                if (item.media_type !== 'tv') return false
+                return fuzzyIdsMatch(item.tmdb_id, show!.tmdbId)
               })
               .map((item) => {
                 return {
                   provider: 'pmdb' as const,
                   season: item.season ?? 1,
                   episode: item.episode ?? 1,
-                  progressSeconds: Math.floor((item.progressMs ?? 0) / 1000),
-                  durationSeconds: Math.floor((item.durationMs ?? 2700000) / 1000),
-                  updatedAt: item.updatedAt,
+                  progressSeconds: Math.floor((item.position_ms ?? 0) / 1000),
+                  durationSeconds: Math.floor((item.runtime_ms ?? 2700000) / 1000),
+                  updatedAt: item.updated_at,
                 }
               })
             
@@ -580,19 +577,21 @@ export default function SeriesDetailPage() {
             const raw = await getMdblistPlaybackProgress()
             const matches = raw
               .filter((item) => {
-                if (item.type !== 'series') return false
+                if (item.type !== 'show') return false
                 return (
-                  fuzzyIdsMatch(item.tmdbId, show.tmdbId) ||
-                  fuzzyIdsMatch(item.imdbId, show.imdbId)
+                  fuzzyIdsMatch(item.show?.ids?.tmdb, show!.tmdbId) ||
+                  fuzzyIdsMatch(item.show?.ids?.imdb, show!.imdbId)
                 )
               })
               .map((item) => {
-                const epProg = getEpisodeProgress(item.season ?? 1, item.episode ?? 1)
+                const epSeason = item.episode?.season ?? 1
+                const epNumber = item.episode?.number ?? item.episode?.episode ?? 1
+                const epProg = getEpisodeProgress(epSeason, epNumber)
                 const dur = epProg && epProg.durationSeconds > 0 ? epProg.durationSeconds : 2700
                 return {
                   provider: 'mdblist' as const,
-                  season: item.season ?? 1,
-                  episode: item.episode ?? 1,
+                  season: epSeason,
+                  episode: epNumber,
                   progressSeconds: Math.floor(((item.progress ?? 0) / 100) * dur),
                   durationSeconds: dur,
                   updatedAt: item.updated_at,
