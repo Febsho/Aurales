@@ -20,6 +20,10 @@ import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
 import { applyEpisodeArt, applySearchResultArt, applyShowArt, resolveArtFromProviders } from '../services/artwork'
+import { getSimklPlaybackProgress } from '../services/simkl/playback'
+import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
+import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { isWatchedFromProviders, batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
@@ -28,6 +32,37 @@ import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+
+function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
+  if (idA == null || idB == null) return false
+  const clean = (val: string | number) => {
+    const s = String(val).toLowerCase().trim()
+    return s
+      .replace(/^app_tmdb_movie_/, '')
+      .replace(/^app_movie_/, '')
+      .replace(/^app_tmdb_/, '')
+      .replace(/^app_tvdb_/, '')
+      .replace(/^tmdb[-:]/, '')
+      .replace(/^imdb[-:]/, '')
+      .replace(/^tvdb[-:]/, '')
+      .replace(/^mal[-:]/, '')
+      .replace(/^anilist[-:]/, '')
+  }
+  const cleanA = clean(idA)
+  const cleanB = clean(idB)
+  return cleanA !== '' && cleanA === cleanB
+}
+
+function formatRemainingTime(seconds: number): string {
+  if (seconds <= 0) return ''
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')} left`
+  }
+  return `${m}:${s.toString().padStart(2, '0')} left`
+}
 
 interface LocationState {
   poster?: string
@@ -366,6 +401,240 @@ export default function SeriesDetailPage() {
   const [showSeasonArrows, setShowSeasonArrows] = useState(false)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
+  const resumePriorityOrder = useAppStore((s) => s.resumePriorityOrder)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+
+  const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
+    if (!show) return null
+    return [...watchedProgress.values()].find((p) => {
+      if (p.completed || p.progressSeconds <= 0 || p.season !== seasonNum || p.episode !== episodeNum) return false
+      return (
+        fuzzyIdsMatch(p.mediaId, show.id) ||
+        fuzzyIdsMatch(p.mediaId, show.imdbId) ||
+        fuzzyIdsMatch(p.mediaId, show.tmdbId) ||
+        fuzzyIdsMatch(p.mediaId, show.tvdbId) ||
+        fuzzyIdsMatch(p.imdbId, show.imdbId) ||
+        fuzzyIdsMatch(p.tmdbId, show.tmdbId)
+      )
+    }) || null
+  }
+
+  const resumeProgress = useMemo(() => {
+    if (!show) return null
+    return [...watchedProgress.values()]
+      .filter((progress) => !progress.completed && progress.season != null && progress.episode != null)
+      .filter((progress) => 
+        fuzzyIdsMatch(progress.mediaId, show.id) ||
+        fuzzyIdsMatch(progress.mediaId, show.imdbId) ||
+        fuzzyIdsMatch(progress.mediaId, show.tmdbId) ||
+        fuzzyIdsMatch(progress.mediaId, show.tvdbId) ||
+        fuzzyIdsMatch(progress.imdbId, show.imdbId) ||
+        fuzzyIdsMatch(progress.tmdbId, show.tmdbId)
+      )
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0] || null
+  }, [show, watchedProgress])
+
+  const [liveResumePoint, setLiveResumePoint] = useState<{
+    provider: string
+    season: number
+    episode: number
+    progressSeconds: number
+    durationSeconds: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!show) return
+
+    let active = true
+
+    async function fetchPoints() {
+      const candidates: {
+        provider: 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist'
+        season: number
+        episode: number
+        progressSeconds: number
+        durationSeconds: number
+        updatedAt?: string
+      }[] = []
+
+      // 1. Local
+      if (resumeProgress) {
+        candidates.push({
+          provider: 'local',
+          season: resumeProgress.season!,
+          episode: resumeProgress.episode!,
+          progressSeconds: resumeProgress.progressSeconds,
+          durationSeconds: resumeProgress.durationSeconds,
+          updatedAt: resumeProgress.updatedAt,
+        })
+      }
+
+      const fetchPromises: Promise<void>[] = []
+
+      if (resumePriorityOrder.includes('simkl') && simklConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getSimklPlaybackProgress()
+            const matches = raw
+              .filter((item) => {
+                const showObj = item.show || item.anime
+                if (!showObj || !item.episode) return false
+                return (
+                  fuzzyIdsMatch(showObj.ids.simkl, show.id) ||
+                  fuzzyIdsMatch(showObj.ids.imdb, show.imdbId) ||
+                  fuzzyIdsMatch(showObj.ids.tmdb, show.tmdbId) ||
+                  fuzzyIdsMatch(showObj.ids.tvdb, show.tvdbId)
+                )
+              })
+              .map((item) => {
+                const epProg = getEpisodeProgress(item.episode!.season ?? 1, item.episode!.number)
+                const dur = epProg && epProg.durationSeconds > 0 ? epProg.durationSeconds : 2700
+                return {
+                  provider: 'simkl' as const,
+                  season: item.episode!.season ?? 1,
+                  episode: item.episode!.number,
+                  progressSeconds: Math.floor((item.progress / 100) * dur),
+                  durationSeconds: dur,
+                  updatedAt: item.paused_at,
+                }
+              })
+            
+            if (matches.length > 0 && active) {
+              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              candidates.push(matches[0])
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('trakt') && traktConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getTraktPlaybackProgress()
+            const matches = raw
+              .filter((item: any) => {
+                if (item.type !== 'episode' || !item.show || !item.episode) return false
+                return (
+                  fuzzyIdsMatch(item.show.ids.imdb, show.imdbId) ||
+                  fuzzyIdsMatch(item.show.ids.tmdb, show.tmdbId)
+                )
+              })
+              .map((item: any) => {
+                const epProg = getEpisodeProgress(item.episode.season, item.episode.number)
+                const dur = epProg && epProg.durationSeconds > 0 ? epProg.durationSeconds : 2700
+                return {
+                  provider: 'trakt' as const,
+                  season: item.episode.season,
+                  episode: item.episode.number,
+                  progressSeconds: Math.floor((item.progress / 100) * dur),
+                  durationSeconds: dur,
+                  updatedAt: item.paused_at,
+                }
+              })
+            
+            if (matches.length > 0 && active) {
+              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              candidates.push(matches[0])
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('pmdb') && pmdbApiKey) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getPMDBPlaybackProgress()
+            const matches = raw
+              .filter((item) => {
+                if (item.mediaType !== 'tv') return false
+                return (
+                  fuzzyIdsMatch(item.tmdbId, show.tmdbId) ||
+                  fuzzyIdsMatch(item.imdbId, show.imdbId)
+                )
+              })
+              .map((item) => {
+                return {
+                  provider: 'pmdb' as const,
+                  season: item.season ?? 1,
+                  episode: item.episode ?? 1,
+                  progressSeconds: Math.floor((item.progressMs ?? 0) / 1000),
+                  durationSeconds: Math.floor((item.durationMs ?? 2700000) / 1000),
+                  updatedAt: item.updatedAt,
+                }
+              })
+            
+            if (matches.length > 0 && active) {
+              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              candidates.push(matches[0])
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (resumePriorityOrder.includes('mdblist') && (mdblistApiKey || hasMdblistOAuth())) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getMdblistPlaybackProgress()
+            const matches = raw
+              .filter((item) => {
+                if (item.type !== 'series') return false
+                return (
+                  fuzzyIdsMatch(item.tmdbId, show.tmdbId) ||
+                  fuzzyIdsMatch(item.imdbId, show.imdbId)
+                )
+              })
+              .map((item) => {
+                const epProg = getEpisodeProgress(item.season ?? 1, item.episode ?? 1)
+                const dur = epProg && epProg.durationSeconds > 0 ? epProg.durationSeconds : 2700
+                return {
+                  provider: 'mdblist' as const,
+                  season: item.season ?? 1,
+                  episode: item.episode ?? 1,
+                  progressSeconds: Math.floor(((item.progress ?? 0) / 100) * dur),
+                  durationSeconds: dur,
+                  updatedAt: item.updated_at,
+                }
+              })
+            
+            if (matches.length > 0 && active) {
+              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              candidates.push(matches[0])
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (fetchPromises.length > 0) {
+        await Promise.allSettled(fetchPromises)
+      }
+
+      if (!active) return
+
+      // Select candidate according to priority order
+      for (const provider of resumePriorityOrder) {
+        const found = candidates.find((c) => c.provider === provider)
+        if (found) {
+          setLiveResumePoint(found)
+          return
+        }
+      }
+
+      if (candidates.length > 0) {
+        setLiveResumePoint(candidates[0])
+      } else {
+        setLiveResumePoint(null)
+      }
+    }
+
+    fetchPoints()
+
+    return () => {
+      active = false
+    }
+  }, [show, resumeProgress, resumePriorityOrder, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
   const completedIds = useAppStore((s) => s.completedIds)
   const watchProgressRef = useRef(watchedProgress)
   watchProgressRef.current = watchedProgress
@@ -1531,16 +1800,7 @@ export default function SeriesDetailPage() {
     )
   }
 
-  const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
-    if (!show) return null
-    const wp = watchedProgress
-    const candidateIds = [show.id, show.imdbId, String(show.tmdbId || '')].filter(Boolean)
-    for (const id of candidateIds) {
-      const p = wp.get(`${id}:${seasonNum}:${episodeNum}`)
-      if (p && !p.completed && p.progressSeconds > 0) return p
-    }
-    return null
-  }
+
 
   const handlePlayEpisode = (seasonNum: number, episodeNum: number) => {
     setStreamEpisode({ season: seasonNum, episode: episodeNum })
@@ -1586,13 +1846,17 @@ export default function SeriesDetailPage() {
 
   const streamId = show.imdbId || state.sourceAddonItemId || id || ''
   const streamTmdbId = show.tmdbId ? Number(show.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
-  const showIds = [show.id, show.imdbId, String(show.tmdbId || '')].filter(Boolean)
-  const resumeProgress = [...watchedProgress.values()]
-    .filter((progress) => !progress.completed && progress.season != null && progress.episode != null)
-    .filter((progress) => showIds.includes(progress.mediaId) || showIds.some((showId) => progress.id === `${showId}:${progress.season}:${progress.episode}`))
-    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
-  const defaultEpisode = resumeProgress
-    ? { season: resumeProgress.season!, episode: resumeProgress.episode! }
+
+  const activeResume = liveResumePoint || (resumeProgress ? {
+    season: resumeProgress.season!,
+    episode: resumeProgress.episode!,
+    progressSeconds: resumeProgress.progressSeconds,
+    durationSeconds: resumeProgress.durationSeconds,
+    provider: 'local'
+  } : null)
+
+  const defaultEpisode = activeResume
+    ? { season: activeResume.season, episode: activeResume.episode }
     : seasonData?.episodes[0]
       ? { season: seasonData.episodes[0].seasonNumber, episode: seasonData.episodes[0].episodeNumber }
       : null
@@ -1656,8 +1920,8 @@ export default function SeriesDetailPage() {
               >
                 {allEpisodesWatched
                   ? 'Rewatch'
-                  : resumeProgress
-                    ? `Resume S${resumeProgress.season} E${resumeProgress.episode}`
+                  : activeResume
+                    ? `Resume S${activeResume.season} E${activeResume.episode} (${formatRemainingTime(activeResume.durationSeconds - activeResume.progressSeconds)})`
                     : 'Play'}
               </Button>
             )}
@@ -1988,6 +2252,7 @@ export default function SeriesDetailPage() {
         seasonEpisode={streamEpisode || undefined}
         startTime={streamEpisode ? getEpisodeProgress(streamEpisode.season, streamEpisode.episode)?.progressSeconds : undefined}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
+        tvdbId={show.tvdbId ?? undefined}
         malId={show.malId != null ? Number(show.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={show.anilistId != null ? Number(show.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}

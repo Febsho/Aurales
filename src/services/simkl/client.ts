@@ -7,6 +7,7 @@
 
 import { getStoredSimklToken, getSimklClientId, isSimklMockMode } from './auth'
 import type { SimklApiItem, SimklMapping } from './types'
+import { logEvent } from '../diagnostics'
 
 const BASE = 'https://api.simkl.com'
 const MOCK_DELAY_MS = 200
@@ -84,7 +85,13 @@ export async function simklRequest<T = unknown>(
 
     let res: Response
     try {
-      res = await fetch(`${BASE}${finalPath}?${urlParams.toString()}`, {
+      const fullUrl = `${BASE}${finalPath}?${urlParams.toString()}`
+      if (fetchOptions.method === 'POST') {
+        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] POST ${finalPath} body: ${fetchOptions.body}`)
+      } else {
+        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] GET ${finalPath}`)
+      }
+      res = await fetch(fullUrl, {
         ...fetchOptions,
         headers: {
           'Content-Type': 'application/json',
@@ -93,7 +100,9 @@ export async function simklRequest<T = unknown>(
           ...fetchOptions.headers,
         },
       })
+      logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] Response ${res.status} ${res.statusText} for ${finalPath}`)
     } catch (networkErr) {
+      logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] Network error for ${finalPath}: ${networkErr}`)
       lastError = new SimklError(
         `Network error: ${networkErr instanceof Error ? networkErr.message : networkErr}`,
         'network_offline',

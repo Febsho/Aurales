@@ -637,7 +637,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                       </span>
                     )}
                     <span className="text-[10px] text-gray-400 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-                      {formatTime(item.progressSeconds)} left
+                      {formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))} left
                     </span>
                   </div>
                 </div>

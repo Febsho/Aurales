@@ -49,6 +49,14 @@ export async function sendPlayerCommand(command: string, args: unknown[] = []): 
   await invoke('mpv_command', { command, args })
 }
 
+export async function requestPlayerThumbnail(time: number): Promise<void> {
+  await invoke('request_player_thumbnail', { time })
+}
+
+export async function clearPlayerThumbnail(): Promise<void> {
+  await invoke('clear_player_thumbnail')
+}
+
 export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest['viewport']>): Promise<void> {
   await invoke('resize_embedded_mpv', {
     x: viewport.x,

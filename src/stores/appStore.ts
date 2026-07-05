@@ -142,9 +142,11 @@ interface AppState {
   introdbApiKey: string
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
   animeShowWatchedFrom: 'all' | 'provider'
+  resumePriorityOrder: ProgressProvider[]
 
   setContinueWatchingSource: (src: ProgressProvider) => void
   setContinueWatchingLimit: (limit: number) => void
+  setResumePriorityOrder: (order: ProgressProvider[]) => void
   setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
   setPmdBApiKey: (key: string) => void
   setPmdBSaveResumePosition: (val: boolean) => void
@@ -633,6 +635,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   savedFramesCount: Number(localStorage.getItem('aurales_saved_frames_count') || '2'),
   posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
+  resumePriorityOrder: (() => {
+    try {
+      const raw = localStorage.getItem('aurales_resume_priority')
+      if (raw) return JSON.parse(raw) as ProgressProvider[]
+    } catch (_) { /* ignore */ }
+    return ['local', 'simkl', 'trakt', 'pmdb', 'mdblist'] as ProgressProvider[]
+  })(),
 
   // New settings options initial values
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
@@ -692,6 +701,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSavedFramesCount: (count) => { localStorage.setItem('aurales_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
   setPosterSize: (size) => { localStorage.setItem('aurales_poster_size', size); set({ posterSize: size }) },
   setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
+  setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
