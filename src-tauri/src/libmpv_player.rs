@@ -278,6 +278,18 @@ impl LibMpvPlayer {
                         "[MPV EVENT] session={} id={} error={}",
                         player.session_id, event.event_id, event.error
                     ));
+                    if event.error >= 0
+                        && (event.event_id == MPV_EVENT_FILE_LOADED
+                            || event.event_id == MPV_EVENT_PLAYBACK_RESTART)
+                    {
+                        let _ = app.emit(
+                            "mpv-playback-ready",
+                            serde_json::json!({
+                                "sessionId": player.session_id,
+                                "eventId": event.event_id,
+                            }),
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -450,7 +462,6 @@ struct ThumbnailReadyPayload {
     session_id: String,
 }
 
-
 unsafe fn handle_client_message_event(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -507,7 +518,7 @@ fn convert_thumbfast_bgra_to_bmp_base64(render: &ThumbfastRender) -> Result<Stri
     let source = PathBuf::from(format!("{}.bgra", render.thumbnail));
     let bgra =
         std::fs::read(&source).map_err(|error| format!("read {}: {}", source.display(), error))?;
-    
+
     // Delete raw video frame file immediately to avoid disk accumulation
     let _ = std::fs::remove_file(&source);
 
@@ -654,21 +665,89 @@ unsafe fn cstr_to_string(ptr: *const c_char) -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn resize_video_child(video_hwnd: isize, x: i32, y: i32, width: i32, height: i32) {
-    use windows::Win32::Foundation::HWND;
+pub(crate) fn create_video_child(
+    parent_hwnd: isize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<isize, String> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        CreateWindowExW, SetWindowPos, SWP_NOACTIVATE, SWP_SHOWWINDOW, WINDOW_EX_STYLE,
+        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
     };
+
+    if parent_hwnd == 0 {
+        return Err("Cannot create mpv video surface: parent window handle is missing".to_string());
+    }
+
+    let parent = HWND(parent_hwnd as *mut _);
+    let mut origin = POINT { x, y };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut origin);
+    }
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0),
+            w!("STATIC"),
+            w!("AuralesMpvVideo"),
+            WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            origin.x,
+            origin.y,
+            width.max(1),
+            height.max(1),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    .map_err(|e| format!("Failed to create mpv video surface: {}", e))?;
 
     unsafe {
         let _ = SetWindowPos(
-            HWND(video_hwnd as *mut _),
-            None,
-            x,
-            y,
+            hwnd,
+            Some(parent),
+            origin.x,
+            origin.y,
             width.max(1),
             height.max(1),
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    Ok(hwnd.0 as isize)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn resize_video_child(
+    parent_hwnd: isize,
+    video_hwnd: isize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_SHOWWINDOW};
+
+    let parent = HWND(parent_hwnd as *mut _);
+    let mut origin = POINT { x, y };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut origin);
+        let _ = SetWindowPos(
+            HWND(video_hwnd as *mut _),
+            Some(parent),
+            origin.x,
+            origin.y,
+            width.max(1),
+            height.max(1),
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
     }
 }

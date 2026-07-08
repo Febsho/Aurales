@@ -1082,43 +1082,6 @@ fn find_mpv() -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
-fn resource_candidates(relative: &[&str]) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(
-                relative
-                    .iter()
-                    .fold(dir.to_path_buf(), |path, part| path.join(part)),
-            );
-            candidates.push(
-                relative
-                    .iter()
-                    .fold(dir.join("resources"), |path, part| path.join(part)),
-            );
-        }
-    }
-    candidates.push(relative.iter().fold(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"),
-        |path, part| path.join(part),
-    ));
-    candidates.push(relative.iter().fold(
-        PathBuf::from("src-tauri").join("resources"),
-        |path, part| path.join(part),
-    ));
-    candidates
-}
-
-fn find_resource(relative: &[&str]) -> Option<PathBuf> {
-    resource_candidates(relative)
-        .into_iter()
-        .find(|candidate| candidate.exists())
-}
-
-fn find_thumbfast_script() -> Option<PathBuf> {
-    find_resource(&["mpv-scripts", "thumbfast.lua"])
-}
-
 #[tauri::command]
 pub fn launch_embedded_mpv(
     app: tauri::AppHandle,
@@ -1617,20 +1580,18 @@ fn launch_mpv_with_window(
             Some("aggressive") => ("512MiB", "256MiB"),
             _ => ("150MiB", "75MiB"),
         };
-        let _ = (x, y, width, height);
-        let video_hwnd = 0;
-        let thumbfast_script = find_thumbfast_script();
-        let thumbfast_output = std::env::temp_dir()
-            .join(format!("aurales-thumbfast-{}", std::process::id()))
-            .to_string_lossy()
-            .to_string();
-        let thumbfast_mpv_path = find_mpv()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|| "mpv".to_string());
-
+        let video_x = x.unwrap_or(0);
+        let video_y = y.unwrap_or(0);
+        let video_width = width.unwrap_or(1).max(1);
+        let video_height = height.unwrap_or(1).max(1);
+        let video_hwnd =
+            libmpv_player::create_video_child(hwnd, video_x, video_y, video_width, video_height)?;
         let player = match LibMpvPlayer::create(&libmpv, session_id.clone()) {
             Ok(player) => player,
-            Err(error) => return Err(error),
+            Err(error) => {
+                libmpv_player::destroy_video_child(video_hwnd);
+                return Err(error);
+            }
         };
 
         player_debug_log(format!(
@@ -1648,20 +1609,12 @@ fn launch_mpv_with_window(
                 player.set_option(name, &value)
             };
 
-            set_option("wid", hwnd.to_string())?;
+            set_option("wid", video_hwnd.to_string())?;
             set_option("force-window", "immediate".to_string())?;
             set_option("osc", "no".to_string())?;
             set_option("osd-bar", "no".to_string())?;
             set_option("config", "no".to_string())?;
             set_option("load-scripts", "no".to_string())?;
-            set_option(
-                "script-opts",
-                format!(
-                    "thumbfast-network=yes,thumbfast-max_width=360,thumbfast-max_height=203,thumbfast-quit_after_inactivity=20,thumbfast-thumbnail={},thumbfast-mpv_path={}",
-                    thumbfast_output,
-                    thumbfast_mpv_path
-                ),
-            )?;
             set_option("ytdl", "no".to_string())?;
             set_option("cursor-autohide", "1000".to_string())?;
             set_option("input-default-bindings", "no".to_string())?;
@@ -1715,25 +1668,13 @@ fn launch_mpv_with_window(
         apply_custom_libmpv_args(&player, mpv_custom_args, &mut option_log);
         player_debug_log(format!("[PLAYER ARGS] {}", option_log.join(" ")));
 
-        player.initialize()?;
-        player.request_log_messages("warn");
-        if let Some(script) = thumbfast_script {
-            match player.command(
-                "load-script",
-                &[serde_json::Value::String(
-                    script.to_string_lossy().to_string(),
-                )],
-            ) {
-                Ok(()) => player_debug_log(format!("[THUMBFAST] loaded {}", script.display())),
-                Err(error) => player_debug_log(format!(
-                    "[THUMBFAST] load-script failed for {}: {}",
-                    script.display(),
-                    error
-                )),
-            }
-        } else {
-            player_debug_log("[THUMBFAST] script not found; timeline thumbnails disabled");
+        if let Err(error) = player.initialize() {
+            player.shutdown();
+            libmpv_player::destroy_video_child(video_hwnd);
+            return Err(error);
         }
+        player.request_log_messages("warn");
+        player_debug_log("[THUMBNAILS] timeline previews use the independent ffmpeg sprite worker");
         player.observe_properties(&[
             "time-pos",
             "duration",
@@ -1754,7 +1695,11 @@ fn launch_mpv_with_window(
             "sub-end",
         ]);
         player.start_event_loop(app);
-        player.command("loadfile", &[serde_json::Value::String(url)])?;
+        if let Err(error) = player.command("loadfile", &[serde_json::Value::String(url)]) {
+            player.shutdown();
+            libmpv_player::destroy_video_child(video_hwnd);
+            return Err(error);
+        }
 
         {
             let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
@@ -2341,6 +2286,40 @@ pub async fn clear_player_thumbnail() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn start_thumbnail_generation(
+    app: tauri::AppHandle,
+    request: crate::thumbnails::ThumbnailStartRequest,
+) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
+    crate::thumbnails::start_thumbnail_generation(app, request)
+}
+
+#[tauri::command]
+pub fn get_thumbnail_metadata(
+    app: tauri::AppHandle,
+    cache_key: String,
+) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
+    crate::thumbnails::get_thumbnail_metadata(app, cache_key)
+}
+
+#[tauri::command]
+pub fn get_or_queue_scrub_thumbnail(
+    app: tauri::AppHandle,
+    request: crate::thumbnails::ScrubThumbnailRequest,
+) -> Result<crate::thumbnails::ScrubThumbnailResponse, String> {
+    crate::thumbnails::get_or_queue_scrub_thumbnail(app, request)
+}
+
+#[tauri::command]
+pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
+    crate::thumbnails::prefetch_thumbnail_sprite(path)
+}
+
+#[tauri::command]
+pub fn get_thumbnail_debug_state() -> crate::thumbnails::ThumbnailDebugState {
+    crate::thumbnails::get_thumbnail_debug_state()
+}
+
+#[tauri::command]
 pub fn mpv_get_property(property: String) -> Result<serde_json::Value, String> {
     if let Ok(cache) = get_property_cache().read() {
         if let Some(val) = cache.get(&property) {
@@ -2384,7 +2363,7 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
             (rect.right - rect.left, rect.bottom - rect.top)
         };
         if w > 0 && h > 0 {
-            libmpv_player::resize_video_child(video_hwnd, x, y, w, h);
+            libmpv_player::resize_video_child(host_hwnd, video_hwnd, x, y, w, h);
         }
     }
 
@@ -2529,18 +2508,23 @@ pub fn setup_player_click_through() -> Result<(), String> {
                 .unwrap_or(0)
         };
 
-        if target_hwnd != 0 && MPV_HOST_ORIG_PROC.load(Ordering::SeqCst) == 0 {
-            // Safety: target_hwnd is owned by this process for the lifetime of
-            // the playback session.
-            let prev = unsafe {
-                SetWindowLongPtrW(
+        if target_hwnd != 0 {
+            let current_proc = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
                     HWND(target_hwnd as *mut _),
                     GWLP_WNDPROC,
-                    transparent_host_proc as *const () as isize,
                 )
             };
-            if prev != 0 {
-                MPV_HOST_ORIG_PROC.store(prev, Ordering::SeqCst);
+
+            let transparent_proc = transparent_host_proc as *const () as isize;
+
+            if current_proc != 0 && current_proc != transparent_proc {
+                let prev = unsafe {
+                    SetWindowLongPtrW(HWND(target_hwnd as *mut _), GWLP_WNDPROC, transparent_proc)
+                };
+                if prev != 0 && prev != transparent_proc {
+                    MPV_HOST_ORIG_PROC.store(prev, Ordering::SeqCst);
+                }
             }
         }
     }

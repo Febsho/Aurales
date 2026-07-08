@@ -4,10 +4,10 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
+import NativeMpvPlayer from '../NativeMpvPlayer'
 
 // Lazy: keeps the heavy player stack out of the startup bundle — it only loads
 // once a watch-together playback actually starts.
-const NativeMpvPlayer = lazy(() => import('../NativeMpvPlayer'))
 const InAppPlayer = lazy(() => import('../InAppPlayer'))
 
 const ACTIVE_STATUSES = new Set(['playing', 'paused', 'buffering', 'waiting_for_ready'])

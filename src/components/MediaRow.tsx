@@ -112,7 +112,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       </div>
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none scroll-gpu"
+        className="flex items-start gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none scroll-gpu"
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {rowItems.map((item, idx) => (

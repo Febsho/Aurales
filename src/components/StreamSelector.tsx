@@ -1,12 +1,12 @@
-import { lazy, Suspense, useMemo, useState, useEffect } from 'react'
+import { lazy, Suspense, useMemo, useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
 import { getAddonStreams, getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
+import NativeMpvPlayer from './NativeMpvPlayer'
 
 // Lazy: keeps the heavy player stack out of page chunks — it only loads once
 // the user actually starts playback.
-const NativeMpvPlayer = lazy(() => import('./NativeMpvPlayer'))
 const InAppPlayer = lazy(() => import('./InAppPlayer'))
 import type { PlaybackItem } from '../services/simkl/playback'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
@@ -14,6 +14,7 @@ import { selectStream as wtSelectStream, play as wtPlay } from '../services/watc
 import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
 import type { RoomStream } from '../services/watch-together/types'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
+import { stopEmbeddedPlayer } from '../services/player'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -131,6 +132,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const [playError, setPlayError] = useState('')
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
   const [playback, setPlayback] = useState<{ url: string; stream: AddonStream } | null>(null)
+  const hadPlaybackRef = useRef(false)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [streamFilters, setStreamFilters] = useState<StreamFilterState>(loadStreamFilters)
@@ -146,7 +148,27 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const toggleStreamTags = () => setShowStreamTags((v) => { localStorage.setItem('orynt_stream_show_tags', String(!v)); return !v })
 
   useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) {
+      hadPlaybackRef.current = !!playback
+      return
+    }
+    if (hadPlaybackRef.current && !playback) {
+      stopEmbeddedPlayer().catch(() => {})
+    }
+    hadPlaybackRef.current = !!playback
+  }, [playback])
+
+  useEffect(() => {
+    return () => {
+      if (hadPlaybackRef.current && (window as any).__TAURI_INTERNALS__) {
+        stopEmbeddedPlayer().catch(() => {})
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (!open || !mediaId) return
+    if (playback) return
     setStreams([])
     setLoading(true)
     setPlayError('')
@@ -226,7 +248,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       )
       setSubtitles(unique)
     })
-  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId])
+  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, playback])
 
   const getPlayableUrl = (stream: AddonStream): string | null => {
     return getPlayableStreamUrl(stream)
@@ -455,15 +477,30 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       episode: seasonEpisode?.episode,
     }
 
-    const isTauri = !!(window as any).__TAURI_INTERNALS__
-    const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer
+    if ((window as any).__TAURI_INTERNALS__) {
+      return createPortal(
+        <NativeMpvPlayer
+          url={playback.url}
+          title={title}
+          subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
+          subtitles={mergedSubtitles}
+          playbackItem={playbackItem}
+          startTime={startTime}
+          poster={artwork?.poster}
+          backdrop={artwork?.backdrop}
+          onClose={onClose}
+          onPickAnother={() => setPlayback(null)}
+        />,
+        document.body
+      )
+    }
 
     return createPortal(
       <Suspense fallback={null}>
-        <PlayerComponent
+        <InAppPlayer
           url={playback.url}
           title={title}
-          subtitle={seasonEpisode ? `From S${seasonEpisode.season} · E${seasonEpisode.episode}` : undefined}
+          subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
           playbackItem={playbackItem}
           startTime={startTime}

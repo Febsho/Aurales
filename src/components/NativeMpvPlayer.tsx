@@ -7,7 +7,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, requestPlayerThumbnail, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
+import { clearPlayerThumbnail, downloadSubtitle, getOrQueueScrubThumbnail, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -95,13 +95,6 @@ interface SubtitleSource {
   originalUrl: string
   localPath: string
   label: string
-}
-
-interface PlayerThumbnailReadyPayload {
-  path: string
-  width: number
-  height: number
-  sessionId: string
 }
 
 interface TimelinePreview {
@@ -635,6 +628,8 @@ function FullNativeMpvPlayer({
   const thumbnailHoverRef = useRef<{ leftPct: number; time: number } | null>(null)
   const thumbnailPendingKeyRef = useRef<number | null>(null)
   const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const thumbnailRequestTokenRef = useRef(0)
+  const isDraggingRef = useRef(false)
 
 
   // Up Next state
@@ -813,94 +808,114 @@ function FullNativeMpvPlayer({
 
   // ── Thumbnail Preview ─────────────────────────────────────────────────────
   useEffect(() => {
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    listen<PlayerThumbnailReadyPayload>('player-thumbnail-ready', (event) => {
-      if (disposed) return
-      const key = thumbnailPendingKeyRef.current
-      const width = Math.max(1, event.payload.width || 1)
-      const height = Math.max(1, event.payload.height || 1)
-      const path = event.payload.path
-      const imageUrl = path.startsWith('data:') ? path : `${convertFileSrc(path)}?v=${Date.now()}`
-      // Always cache even if the user has moved away
-      if (key != null) {
-        thumbnailCacheRef.current.set(key, { imageUrl, width, height })
-      }
-      // Only update visible preview if still hovering near the requested time
-      const hover = thumbnailHoverRef.current
-      if (!hover) return
-      const hoverKey = Math.round(hover.time)
-      if (key != null && Math.abs(hoverKey - key) > 3) return
-      setTimelinePreview({
-        visible: true,
-        leftPct: hover.leftPct,
-        time: hover.time,
-        imageUrl,
-        width,
-        height,
-      })
-    }).then((fn) => {
-      if (disposed) fn()
-      else unlisten = fn
-    }).catch(() => {})
-
     return () => {
-      disposed = true
-      unlisten?.()
       if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+      thumbnailRequestTokenRef.current += 1
       clearPlayerThumbnail().catch(() => {})
     }
   }, [])
 
   const hideTimelinePreview = useCallback(() => {
+    isDraggingRef.current = false
     thumbnailHoverRef.current = null
     thumbnailPendingKeyRef.current = null
+    thumbnailRequestTokenRef.current += 1
     if (thumbnailTimerRef.current) {
       clearTimeout(thumbnailTimerRef.current)
       thumbnailTimerRef.current = null
     }
-    setTimelinePreview((preview) => ({ ...preview, visible: false }))
+    setTimelinePreview((preview) => ({ ...preview, visible: false, imageUrl: undefined }))
     clearPlayerThumbnail().catch(() => {})
   }, [])
 
-  const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (duration <= 0 || !Number.isFinite(duration)) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return
+  const cachedTimelineThumbnail = useCallback((key: number) => {
+    const exact = thumbnailCacheRef.current.get(key)
+    if (exact) return exact
 
-    const leftPct = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
-    const time = Math.max(0, Math.min(duration, (leftPct / 100) * duration))
-    const key = Math.round(time)
-    const cached = thumbnailCacheRef.current.get(key)
-
-    // If no exact cache hit, show the nearest cached thumbnail (within 3s)
-    let displayThumb = cached
-    if (!displayThumb) {
-      let minDist = 3
-      for (const [k, v] of thumbnailCacheRef.current) {
-        const dist = Math.abs(k - key)
-        if (dist < minDist) {
-          minDist = dist
-          displayThumb = v
-        }
+    let nearest: { imageUrl: string; width: number; height: number } | undefined
+    let minDist = 3
+    for (const [cachedKey, value] of thumbnailCacheRef.current) {
+      const dist = Math.abs(cachedKey - key)
+      if (dist < minDist) {
+        minDist = dist
+        nearest = value
       }
     }
+    return nearest
+  }, [])
 
-    thumbnailHoverRef.current = { leftPct, time }
+  const updateTimelinePreviewAtPct = useCallback((leftPct: number, shouldQueueThumbnail: boolean) => {
+    if (duration <= 0 || !Number.isFinite(duration)) return
+
+    const pct = Math.max(0, Math.min(100, leftPct))
+    const time = Math.max(0, Math.min(duration, (pct / 100) * duration))
+    const key = Math.round(time)
+    const displayThumb = cachedTimelineThumbnail(key)
+
+    thumbnailHoverRef.current = { leftPct: pct, time }
     setTimelinePreview({
       visible: true,
-      leftPct,
+      leftPct: pct,
       time,
       imageUrl: displayThumb?.imageUrl,
       width: displayThumb?.width,
       height: displayThumb?.height,
     })
 
-    if (cached) return
+    if (!shouldQueueThumbnail || displayThumb) return
+    if (thumbnailPendingKeyRef.current === key) return
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+
     thumbnailPendingKeyRef.current = key
-    requestPlayerThumbnail(time).catch(() => {})
-  }, [duration])
+    const requestToken = ++thumbnailRequestTokenRef.current
+    thumbnailTimerRef.current = setTimeout(() => {
+      thumbnailTimerRef.current = null
+      getOrQueueScrubThumbnail({
+        mediaId: playbackItem?.localId || url,
+        streamUrl: url,
+        duration,
+        time,
+        thumbnailInterval: 10,
+        thumbnailWidth: 240,
+        thumbnailHeight: 136,
+        quality: 70,
+        maxConcurrentFfmpegWorkers: 1,
+      }).then((response) => {
+        if (thumbnailRequestTokenRef.current !== requestToken) return
+        const path = response.exactPath || response.nearestPath
+        if (!path) return
+        const thumb = {
+          imageUrl: `${convertFileSrc(path)}?v=${Date.now()}`,
+          width: response.metadata.thumbnailWidth || 240,
+          height: response.metadata.thumbnailHeight || 136,
+        }
+        thumbnailCacheRef.current.set(key, thumb)
+
+        const hover = thumbnailHoverRef.current
+        if (!isDraggingRef.current || !hover) return
+        if (Math.abs(Math.round(hover.time) - key) > 3) return
+        setTimelinePreview({
+          visible: true,
+          leftPct: hover.leftPct,
+          time: hover.time,
+          ...thumb,
+        })
+      }).catch(() => {
+        // Keep the timestamp fallback visible if thumbnail generation fails.
+      }).finally(() => {
+        if (thumbnailPendingKeyRef.current === key) {
+          thumbnailPendingKeyRef.current = null
+        }
+      })
+    }, 140)
+  }, [cachedTimelineThumbnail, duration, playbackItem?.localId, url])
+
+  const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return
+    updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100, true)
+  }, [updateTimelinePreviewAtPct])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -1525,6 +1540,18 @@ function FullNativeMpvPlayer({
         if (cancelled || session.status === "stopped") return
         setPlayerRunning(true)
         session.status = "playing"
+        setPlayerReady(true)
+        showControls()
+        const syncNativeSurface = () => {
+          resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+          invoke('setup_player_click_through').catch(() => {})
+        }
+        syncNativeSurface()
+        ;[100, 300, 700, 1500, 3000, 5000].forEach((delay) => {
+          setTimeout(() => {
+            if (!cancelled && session.status !== "stopped") syncNativeSurface()
+          }, delay)
+        })
 
         // Enforce saved volume and subtitle styling
         applySavedVolume()
@@ -1634,14 +1661,37 @@ function FullNativeMpvPlayer({
       // session has already taken over by the time this fires, skip the
       // stop — otherwise we'd kill the new session's mpv process.
       setTimeout(() => {
+        // Only stop if a new session HAS NOT claimed the player slot.
+        // A short delay ensures rapid StrictMode remounts have time to
+        // update the global session ID before we check.
         if (latestFullPlayerSessionId === session.id) {
           latestFullPlayerSessionId = null
           stopEmbeddedPlayer().catch(() => {})
         }
-      }, 0)
+      }, 50)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, title])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<{ sessionId: string; eventId: number }>('mpv-playback-ready', () => {
+      if (disposed) return
+      setPlayerRunning(true)
+      setPlayerReady(true)
+      showControls()
+      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+      invoke('setup_player_click_through').catch(() => {})
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [showControls])
 
   useEffect(() => {
     if (playerReady || error) return
@@ -1652,7 +1702,11 @@ function FullNativeMpvPlayer({
       if (cancelled) return
       setPlayerRunning(running)
 
-      if (!running && Date.now() - startedAt > 3000) {
+      if (running && Date.now() - startedAt > 5000) {
+        setPlayerReady(true)
+        showControls()
+        clearInterval(interval)
+      } else if (!running && Date.now() - startedAt > 3000) {
         await new Promise((r) => setTimeout(r, 500))
         const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
         const reversed = [...logs].reverse()
@@ -1690,8 +1744,15 @@ function FullNativeMpvPlayer({
       resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
       setTimeout(() => invoke('setup_player_click_through').catch(() => {}), 300)
     }
+    let unlistenMoved: (() => void) | undefined
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    getCurrentWindow().onMoved(() => onResize())
+      .then((unlisten) => { unlistenMoved = unlisten })
+      .catch(() => {})
+    return () => {
+      window.removeEventListener('resize', onResize)
+      unlistenMoved?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -2491,7 +2552,7 @@ function FullNativeMpvPlayer({
   const overlay = (
     <div
       className={`fixed inset-0 z-[60] text-white select-none ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
-      style={{ background: playerReady ? 'rgba(0,0,0,0.01)' : '#000' }}
+      style={{ background: playerReady ? 'rgba(0,0,0,0.05)' : '#000' }}
       onMouseMove={showControls}
     >
       {!playerReady && !error && (
@@ -2895,12 +2956,15 @@ function FullNativeMpvPlayer({
                 onMouseDown={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect()
                   const clickPct = rect.width > 0 ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)) : progressPct
+                  isDraggingRef.current = true
                   setIsDragging(true)
                   draggingProgressRef.current = clickPct
                   setDraggingProgress(clickPct)
+                  updateTimelinePreviewAtPct(clickPct, true)
                 }}
                 onMouseUp={() => {
                   setIsDragging(false)
+                  hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
@@ -2909,12 +2973,15 @@ function FullNativeMpvPlayer({
                   const rect = e.currentTarget.getBoundingClientRect()
                   const touch = e.touches[0]
                   const clickPct = rect.width > 0 && touch ? Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100)) : progressPct
+                  isDraggingRef.current = true
                   setIsDragging(true)
                   draggingProgressRef.current = clickPct
                   setDraggingProgress(clickPct)
+                  updateTimelinePreviewAtPct(clickPct, true)
                 }}
                 onTouchEnd={() => {
                   setIsDragging(false)
+                  hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
                   command('seek', [draggingProgressRef.current, 'absolute-percent'])
                   if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
@@ -2923,6 +2990,7 @@ function FullNativeMpvPlayer({
                   const val = Number(e.target.value)
                   draggingProgressRef.current = val
                   setDraggingProgress(val)
+                  if (isDraggingRef.current) updateTimelinePreviewAtPct(val, true)
                 }}
                 className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
               />

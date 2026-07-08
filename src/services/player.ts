@@ -19,6 +19,59 @@ export interface PlaybackRequest {
   }
 }
 
+export interface ThumbnailGenerationRequest {
+  streamUrl: string
+  cacheKey: string
+  duration?: number
+  fastInterval?: number
+  refinedInterval?: number
+  thumbnailWidth?: number
+  thumbnailHeight?: number
+  columns?: number
+  rows?: number
+  quality?: number
+  thumbnailInterval?: number
+  maxConcurrentFfmpegWorkers?: number
+}
+
+export interface ThumbnailMetadata {
+  cacheKey: string
+  interval: number
+  thumbnailWidth: number
+  thumbnailHeight: number
+  columns: number
+  rows: number
+  duration?: number
+  thumbnailPaths?: string[]
+  sprites: string[]
+  spriteThumbnailCounts?: number[]
+  thumbnailCount?: number
+  status: string
+}
+
+export interface ScrubThumbnailRequest {
+  mediaId: string
+  streamUrl: string
+  duration?: number
+  time: number
+  thumbnailInterval?: number
+  thumbnailWidth?: number
+  thumbnailHeight?: number
+  quality?: number
+  maxConcurrentFfmpegWorkers?: number
+}
+
+export interface ScrubThumbnailResponse {
+  cacheKey: string
+  status: 'ready' | 'nearest' | 'generating' | string
+  requestedTime: number
+  requestedIndex: number
+  exactPath?: string
+  nearestPath?: string
+  nearestIndex?: number
+  metadata: ThumbnailMetadata
+}
+
 export async function launchPlayer(request: PlaybackRequest): Promise<void> {
   await invoke('launch_mpv', {
     url: request.url,
@@ -55,6 +108,22 @@ export async function requestPlayerThumbnail(time: number): Promise<void> {
 
 export async function clearPlayerThumbnail(): Promise<void> {
   await invoke('clear_player_thumbnail')
+}
+
+export async function startThumbnailGeneration(request: ThumbnailGenerationRequest): Promise<ThumbnailMetadata | null> {
+  return await invoke('start_thumbnail_generation', { request })
+}
+
+export async function getThumbnailMetadata(cacheKey: string): Promise<ThumbnailMetadata | null> {
+  return await invoke('get_thumbnail_metadata', { cacheKey })
+}
+
+export async function getOrQueueScrubThumbnail(request: ScrubThumbnailRequest): Promise<ScrubThumbnailResponse> {
+  return await invoke('get_or_queue_scrub_thumbnail', { request })
+}
+
+export async function prefetchThumbnailSprite(path: string): Promise<void> {
+  await invoke('prefetch_thumbnail_sprite', { path })
 }
 
 export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest['viewport']>): Promise<void> {

@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
+import TrailerPreview from './TrailerPreview'
 
 const TMDB_GENRES: Record<number, string> = {
   28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',
@@ -19,12 +21,22 @@ interface MediaCardProps {
   item: SearchResult
   layout?: 'poster' | 'landscape'
   disableArtOverride?: boolean
+  disableTrailerPreview?: boolean
   rank?: number
 }
 
-function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }: MediaCardProps) {
+function MediaCard({ item, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
+  const hoverTimerRef = useRef<number | null>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const hoverRequestRef = useRef(0)
+  const collapseResetRef = useRef<number | null>(null)
   const [isVisible, setIsVisible] = useState(false)
+  const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
+  const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
+  const [snapCollapse, setSnapCollapse] = useState(false)
+  const [suppressPosterHover, setSuppressPosterHover] = useState(false)
+  const [reducedMotion, setReducedMotion] = useState(false)
 
   // IntersectionObserver: only mark visible once, with 200px preload margin
   useEffect(() => {
@@ -62,12 +74,18 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
   const posterSize = useAppStore((s) => s.posterSize)
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
+  const posterTrailerPreviews = useAppStore((s) => s.posterTrailerPreviews)
+  const posterTrailerHoverDelayMs = useAppStore((s) => s.posterTrailerHoverDelayMs)
+  const posterTrailerSound = useAppStore((s) => s.posterTrailerSound)
+  const preferredAudio = useAppStore((s) => s.preferredAudio)
+  const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
   const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
+  const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
 
   const localCompleted = useAppStore((s) => {
     const ci = s.completedIds
@@ -118,6 +136,39 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
       }
     }
   }, [layout, posterSize])
+
+  const expandedPosterWidthClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'w-[299px]'
+      case 'large': return 'w-[469px]'
+      case 'huge': return 'w-[555px]'
+      case 'default':
+      default:
+        return 'w-[384px]'
+    }
+  }, [posterSize])
+
+  const expandedPosterHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[168px]'
+      case 'large': return 'h-[264px]'
+      case 'huge': return 'h-[312px]'
+      case 'default':
+      default:
+        return 'h-[216px]'
+    }
+  }, [posterSize])
+
+  const posterSlotHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[214px]'
+      case 'large': return 'h-[310px]'
+      case 'huge': return 'h-[358px]'
+      case 'default':
+      default:
+        return 'h-[262px]'
+    }
+  }, [posterSize])
 
   const isCompleted = localCompleted || providerWatched
 
@@ -239,6 +290,67 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
     })
   }
 
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!query) return
+    const sync = () => setReducedMotion(query.matches)
+    sync()
+    query.addEventListener?.('change', sync)
+    return () => query.removeEventListener?.('change', sync)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+      if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
+      hoverRequestRef.current += 1
+    }
+  }, [])
+
+  const closeHoverPreview = useCallback(() => {
+    if (hoverTimerRef.current) {
+      window.clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+    hoverRequestRef.current += 1
+    if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
+    setSnapCollapse(true)
+    setSuppressPosterHover(true)
+    setHoverTrailer(null)
+    setHoverPreviewOpen(false)
+    collapseResetRef.current = window.requestAnimationFrame(() => {
+      setSnapCollapse(false)
+      collapseResetRef.current = null
+    })
+  }, [])
+
+  const openHoverPreview = useCallback(() => {
+    setSuppressPosterHover(false)
+    if (disableTrailerPreview || layout !== 'poster' || reducedMotion || !posterTrailerPreviews) return
+    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+
+    hoverTimerRef.current = window.setTimeout(() => {
+      const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
+      const requestId = hoverRequestRef.current + 1
+      hoverRequestRef.current = requestId
+
+      getTrailerSource({
+        type: displayItem.type,
+        tmdbId,
+        title: displayItem.title,
+        year: displayItem.year,
+        language: trailerLanguage,
+      }).then((trailer) => {
+        if (hoverRequestRef.current !== requestId || !trailer) return
+        setHoverTrailer(trailer)
+        setHoverPreviewOpen(true)
+      }).catch(() => undefined)
+    }, posterTrailerHoverDelayMs)
+  }, [disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+
   if (layout === 'landscape') {
     return (
       <button
@@ -313,20 +425,38 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
   const genre = displayItem.genres?.[0]
     || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
     || resolvedGenre
+  const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
+  const cardWidthClass = inlineTrailerPreview ? expandedPosterWidthClass : widthClass
+  const cardLiftClass = inlineTrailerPreview ? '-translate-y-2' : ''
+  const posterHoverClass = suppressPosterHover || snapCollapse ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
+  const posterImageHoverClass = suppressPosterHover || snapCollapse ? '' : 'group-hover:scale-105'
 
   return (
     <button
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      className={`flex-shrink-0 group cursor-pointer focus-ring transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
+      onMouseEnter={openHoverPreview}
+      onMouseLeave={closeHoverPreview}
+      onFocus={openHoverPreview}
+      onBlur={closeHoverPreview}
+      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring ${snapCollapse ? 'transition-none' : 'transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]'} ${cardWidthClass} ${posterSlotHeightClass} ${cardLiftClass}`}
     >
-      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-2 group-hover:scale-[1.04]">
-        {posterUrl ? (
+      <div className={`relative rounded-lg overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${inlineTrailerPreview ? expandedPosterHeightClass : `aspect-[2/3] rounded-2xl ${posterHoverClass}`}`}>
+        {inlineTrailerPreview ? (
+          <TrailerPreview
+            trailer={inlineTrailerPreview}
+            title={displayItem.title}
+            muted={!posterTrailerSound}
+            preferVideoOnly={!posterTrailerSound}
+            eager
+            showShade={false}
+          />
+        ) : posterUrl ? (
           <img
             src={posterUrl}
             alt={displayItem.title}
-            className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+            className={`w-full h-full object-cover transition-transform duration-500 ease-out ${posterImageHoverClass}`}
             loading="lazy"
             decoding="async"
             onError={() => markImageFailed(posterUrl)}
@@ -338,8 +468,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
         )}
 
         {/* Bottom gradient overlay with genre + rating */}
-        <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
-        {(showGenreOnCards || showRatingsOnCards) && (
+        {!inlineTrailerPreview && <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />}
+        {!inlineTrailerPreview && (showGenreOnCards || showRatingsOnCards) && (
           <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center justify-center gap-1.5">
             {showGenreOnCards && genre && (
               <span className="text-[10px] font-semibold text-white/70 tracking-wide">
@@ -374,7 +504,15 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, rank }
       <h3 className="text-xs font-semibold text-gray-300 truncate group-hover:text-white transition-colors pl-1">
         {displayItem.title}
       </h3>
-      {displayItem.year && (
+      {inlineTrailerPreview ? (
+        <>
+          {(genre || displayItem.year) && (
+            <p className="text-[10px] text-muted/80 pl-1 mt-0.5 truncate">
+              {[genre, displayItem.year].filter(Boolean).join(' · ')}
+            </p>
+          )}
+        </>
+      ) : displayItem.year && (
         <p className="text-[11px] text-muted/80 pl-1 mt-0.5">{displayItem.year}</p>
       )}
     </button>

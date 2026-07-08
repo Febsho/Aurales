@@ -377,7 +377,7 @@ export default function DiscoverPage() {
         <>
           {heroItems.length > 0 && (
             <div className="px-6 mb-8">
-              <HeroSection items={heroItems} isSmall={true} />
+              <HeroSection items={heroItems} isSmall={true} enableTrailers={false} />
             </div>
           )}
 

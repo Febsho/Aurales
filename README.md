@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128@2x.png" alt="Aurales" width="120" />
+  <img src="public/app-logo.png" alt="Aurales" width="120" />
 </p>
 
 <h1 align="center">Aurales</h1>

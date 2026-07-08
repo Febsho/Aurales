@@ -22,6 +22,39 @@ interface MpvInfo {
   arch: string
 }
 
+interface ThumbnailDebugEvent {
+  atMs: number
+  elapsedMs?: number
+  stage: string
+  message: string
+}
+
+interface ThumbnailDebugState {
+  active: boolean
+  cacheKey?: string
+  cachePath?: string
+  outputDir?: string
+  currentStage: string
+  currentFfmpegStatus: string
+  currentThumbnailIndex?: number
+  generatedThumbnails: number
+  spriteCount: number
+  lastFfmpegCommand?: string
+  lastFfmpegStderr?: string
+  lastFfmpegExitCode?: string
+  lastFfmpegDurationMs?: number
+  generationStartedAtMs?: number
+  elapsedMs?: number
+  lastOutputPath?: string
+  lastOutputExists: boolean
+  lastOutputSize?: number
+  lastImageDimensions?: string
+  streamSeekable?: boolean
+  networkWaitSuspected: boolean
+  lastEvent?: string
+  events: ThumbnailDebugEvent[]
+}
+
 export default function DeveloperPage() {
   const [mpvInfo, setMpvInfo] = useState<MpvInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -29,6 +62,7 @@ export default function DeveloperPage() {
   const [testTitle, setTestTitle] = useState('Developer Test Playback')
   const [error, setError] = useState('')
   const [playbackState, setPlaybackState] = useState<any>(null)
+  const [thumbnailDebug, setThumbnailDebug] = useState<ThumbnailDebugState | null>(null)
   const [logEntries, setLogEntries] = useState(getLogs())
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -101,6 +135,16 @@ export default function DeveloperPage() {
     return () => clearInterval(interval)
   }, [store.isolatedPlaybackMode])
 
+  useEffect(() => {
+    const loadThumbnailDebug = async () => {
+      const state = await invoke<ThumbnailDebugState>('get_thumbnail_debug_state').catch(() => null)
+      setThumbnailDebug(state)
+    }
+    loadThumbnailDebug()
+    const interval = setInterval(loadThumbnailDebug, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   // Play Direct stream handler
   const handlePlayTestStream = async () => {
     if (!testUrl.trim()) return
@@ -156,6 +200,7 @@ export default function DeveloperPage() {
         mpvCustomArgs: store.mpvCustomArgs
       },
       playbackState: playbackState || 'No active session',
+      thumbnailDebug: thumbnailDebug || 'No thumbnail debug state',
       events: logEntries.map(e => `[${e.timestamp}] [${e.prefix}] ${e.message}`),
       nativePlayerLogs,
     }
@@ -193,6 +238,84 @@ export default function DeveloperPage() {
             {error}
           </div>
         )}
+
+        <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black tracking-tight text-white">Thumbnail Pipeline</h2>
+              <p className="text-white/40 text-sm mt-1">Temporary timing view for ffmpeg, sprite, metadata, and cache state.</p>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+              thumbnailDebug?.active ? 'bg-amber-400/15 text-amber-200' : 'bg-emerald-400/15 text-emerald-200'
+            }`}>
+              {thumbnailDebug?.active ? 'Active' : 'Idle'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+            {[
+              ['Stage', thumbnailDebug?.currentStage || '-'],
+              ['ffmpeg', thumbnailDebug?.currentFfmpegStatus || '-'],
+              ['Index', thumbnailDebug?.currentThumbnailIndex ?? '-'],
+              ['Generated', thumbnailDebug?.generatedThumbnails ?? 0],
+              ['Sprites', thumbnailDebug?.spriteCount ?? 0],
+              ['Elapsed', thumbnailDebug?.elapsedMs != null ? `${thumbnailDebug.elapsedMs} ms` : '-'],
+              ['Last ffmpeg', thumbnailDebug?.lastFfmpegDurationMs != null ? `${thumbnailDebug.lastFfmpegDurationMs} ms` : '-'],
+              ['Seekable', thumbnailDebug?.streamSeekable == null ? 'unknown' : String(thumbnailDebug.streamSeekable)],
+              ['Network wait', thumbnailDebug?.networkWaitSuspected ? 'suspected' : 'no'],
+              ['Output exists', thumbnailDebug?.lastOutputExists ? 'yes' : 'no'],
+              ['Output size', thumbnailDebug?.lastOutputSize != null ? `${thumbnailDebug.lastOutputSize} bytes` : '-'],
+              ['Dimensions', thumbnailDebug?.lastImageDimensions || '-'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-white/[0.04] bg-black/20 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-white/35">{label}</div>
+                <div className="mt-1 font-semibold text-white/80 break-all">{String(value)}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-2">
+              <div className="text-white/35 uppercase tracking-wider font-bold">Paths</div>
+              <pre className="max-h-36 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+{`Cache: ${thumbnailDebug?.cachePath || '-'}
+Output: ${thumbnailDebug?.outputDir || '-'}
+Last file: ${thumbnailDebug?.lastOutputPath || '-'}`}
+              </pre>
+            </div>
+            <div className="space-y-2">
+              <div className="text-white/35 uppercase tracking-wider font-bold">Last ffmpeg stderr</div>
+              <pre className="max-h-36 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+                {thumbnailDebug?.lastFfmpegStderr || '-'}
+              </pre>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-xs">
+            <div className="text-white/35 uppercase tracking-wider font-bold">Last ffmpeg command</div>
+            <pre className="max-h-28 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+              {thumbnailDebug?.lastFfmpegCommand || '-'}
+            </pre>
+          </div>
+
+          <div className="space-y-2 text-xs">
+            <div className="text-white/35 uppercase tracking-wider font-bold">Recent thumbnail events</div>
+            <div className="max-h-56 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] divide-y divide-white/[0.04]">
+              {(thumbnailDebug?.events || []).slice(-30).reverse().map((event, index) => (
+                <div key={`${event.atMs}-${index}`} className="p-2.5">
+                  <div className="flex items-center gap-2 text-white/35">
+                    <span>{event.elapsedMs != null ? `+${event.elapsedMs}ms` : event.atMs}</span>
+                    <span className="text-white/60 font-semibold">{event.stage}</span>
+                  </div>
+                  <div className="mt-1 text-white/70 break-all">{event.message}</div>
+                </div>
+              ))}
+              {(!thumbnailDebug?.events || thumbnailDebug.events.length === 0) && (
+                <div className="p-3 text-white/35">No thumbnail events yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
