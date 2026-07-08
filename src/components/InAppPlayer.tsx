@@ -13,6 +13,7 @@ import {
   buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
 import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
+import { saveAniListProgressMapped } from '../services/anilist'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -38,6 +39,7 @@ interface InAppPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
+  onPlaybackError?: (message: string) => void
 }
 
 interface AudioTrackInfo {
@@ -59,10 +61,11 @@ function srtToVtt(input: string): string {
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother }: InAppPlayerProps) {
+export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError }: InAppPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)
+  const lastAniListPlaybackSaveRef = useRef(0)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -86,6 +89,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
   const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
+  const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
@@ -108,6 +112,11 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       playbackItem.episode,
       playbackItem.imdbId
     ).catch(() => {})
+  }
+
+  const saveAniListScrobble = (progress: number) => {
+    if (!playbackItem || !scrobbleAnilist || playbackItem.mediaType !== 'anime') return
+    saveAniListProgressMapped(playbackItem, progress).catch(() => {})
   }
 
   const handleTranslateSubtitle = async (langCode: string, langName: string) => {
@@ -240,6 +249,7 @@ IMPORTANT RULES:
     setLoading(true)
     setError('')
     setPaused(false)
+    lastAniListPlaybackSaveRef.current = 0
     video.volume = volume
     video.muted = false
     video.load()
@@ -263,7 +273,12 @@ IMPORTANT RULES:
           }
           sendMdblistScrobble('start', startProgress)
         }
-      }).catch(() => setPaused(true))
+      }).catch(() => {
+        const message = 'The embedded WebView player could not start this stream.'
+        setPaused(true)
+        setError(message)
+        onPlaybackError?.(message)
+      })
     }, 50)
     return () => clearTimeout(playTimer)
   }, [url])
@@ -513,6 +528,7 @@ IMPORTANT RULES:
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      saveAniListScrobble(progress)
       sendMdblistScrobble('stop', progress)
       if (progress >= 0.85) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
@@ -542,6 +558,7 @@ IMPORTANT RULES:
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      saveAniListScrobble(progress)
       sendMdblistScrobble('stop', progress)
       if (progress >= 0.85) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
@@ -563,6 +580,7 @@ IMPORTANT RULES:
           : buildMovieScrobble(playbackItem.imdbId, 100)
         traktScrobbleStop(traktPayload).catch(() => {})
       }
+      saveAniListScrobble(1)
       sendMdblistScrobble('stop', 1)
       import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
     }
@@ -626,6 +644,10 @@ IMPORTANT RULES:
       lastSavedTimeRef.current = time
       saveLocalProgress(time, dur, false)
     }
+    if (playbackItem && scrobbleAnilist && playbackItem.mediaType === 'anime' && dur > 0 && time - lastAniListPlaybackSaveRef.current >= 60) {
+      lastAniListPlaybackSaveRef.current = time
+      saveAniListProgressMapped(playbackItem, time / dur).catch(() => {})
+    }
   }
 
   return (
@@ -659,8 +681,10 @@ IMPORTANT RULES:
         }}
         onEnded={handleEnded}
         onError={() => {
+          const message = 'This stream could not be played by the embedded WebView player. Pick another stream or use a direct HTTP/HLS source.'
           setLoading(false)
-          setError('This stream could not be played by the embedded WebView player. Pick another stream or use a direct HTTP/HLS source.')
+          setError(message)
+          onPlaybackError?.(message)
         }}
       >
         <source src={url} />

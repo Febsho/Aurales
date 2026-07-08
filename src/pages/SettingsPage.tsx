@@ -84,6 +84,11 @@ const BACKUP_KEYS = [
   'orynt_keep_frames_for',
   'orynt_saved_frames_count',
   'orynt_poster_size',
+  'aurales_hero_trailer_delay',
+  'aurales_poster_trailer_previews',
+  'aurales_poster_trailer_hover_delay_ms',
+  'aurales_poster_trailer_sound',
+  'aurales_trailer_volume',
   'orynt_next_episode_prompt',
   'orynt_accent_color',
   'orynt_default_start_page',
@@ -2368,6 +2373,55 @@ export default function SettingsPage() {
                 <SettingRow label="Show Genre on Media Cards" description="Display genre label on poster cards. Disabling can speed up catalog loading.">
                   <SettingToggle checked={store.showGenreOnCards} onChange={(v) => store.setShowGenreOnCards(v)} />
                 </SettingRow>
+                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards.">
+                  <SettingToggle checked={store.posterTrailerPreviews} onChange={(v) => store.setPosterTrailerPreviews(v)} />
+                </SettingRow>
+                <SettingRow label="Poster trailer hover delay" description="Choose how long to hover before poster trailers start.">
+                  <select
+                    value={store.posterTrailerHoverDelayMs}
+                    onChange={(e) => store.setPosterTrailerHoverDelayMs(Number(e.target.value))}
+                    className="w-40 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    <option value={0}>No delay</option>
+                    <option value={250}>0.25 seconds</option>
+                    <option value={500}>0.5 seconds</option>
+                    <option value={750}>0.75 seconds</option>
+                    <option value={1000}>1 second</option>
+                    <option value={1500}>1.5 seconds</option>
+                    <option value={2000}>2 seconds</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Poster trailer sound" description="Play poster hover trailers with audio when available. Muted previews can use sharper visual-only streams.">
+                  <SettingToggle checked={store.posterTrailerSound} onChange={(v) => store.setPosterTrailerSound(v)} />
+                </SettingRow>
+                <SettingRow label="Trailer volume" description="Controls audio volume for hero and poster trailers when they are unmuted.">
+                  <div className="flex w-48 items-center gap-3">
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={store.trailerVolume}
+                      onChange={(e) => store.setTrailerVolume(Number(e.target.value))}
+                      className="w-full accent-white"
+                    />
+                    <span className="w-10 text-right text-[12px] font-semibold text-white/60">{store.trailerVolume}%</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Hero trailer delay" description="Automatically starts a muted trailer in the Hero banner after this delay.">
+                  <select
+                    value={store.heroTrailerDelay}
+                    onChange={(e) => store.setHeroTrailerDelay(Number(e.target.value))}
+                    className="w-40 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    <option value={0}>Off</option>
+                    <option value={3}>3 seconds</option>
+                    <option value={5}>5 seconds</option>
+                    <option value={10}>10 seconds</option>
+                    <option value={15}>15 seconds</option>
+                    <option value={30}>30 seconds</option>
+                  </select>
+                </SettingRow>
               </SettingSection>
 
               {/* Hero Banner Ratings */}
@@ -3274,6 +3328,9 @@ export default function SettingsPage() {
 
               {/* Auto-skip */}
               <SettingSection>
+                <SettingRow label="Auto-play first stream" description="Skip stream selection and start the first playable stream automatically.">
+                  <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
+                </SettingRow>
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
                   <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
                 </SettingRow>

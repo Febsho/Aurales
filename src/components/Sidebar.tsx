@@ -85,9 +85,12 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
       {/* Logo + pin toggle */}
       <div className="flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-accent/20 flex items-center justify-center flex-shrink-0">
-            <span className="text-accent font-black text-sm">A</span>
-          </div>
+          <img
+            src="/app-logo.png?v=2"
+            alt=""
+            className="w-8 h-8 object-cover flex-shrink-0 shadow-[0_6px_18px_rgba(0,0,0,0.35)]"
+            draggable={false}
+          />
           <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
         </div>
         <button
