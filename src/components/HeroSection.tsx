@@ -1,19 +1,23 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Volume2, VolumeX } from 'lucide-react'
 import type { SearchResult } from '../types'
 import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../services/trailers'
 import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
+import TrailerPreview from './TrailerPreview'
 import { Button } from './ui'
 
 interface HeroSectionProps {
   items: SearchResult[]
   isSmall?: boolean
   onActiveBackdropChange?: (url: string | undefined) => void
+  enableTrailers?: boolean
 }
 
-function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSectionProps) {
+function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
   const [logoError, setLogoError] = useState(false)
@@ -24,8 +28,15 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
+  const preferredAudio = useAppStore((s) => s.preferredAudio)
+  const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
   const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
+  const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+  const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
+  const [heroTrailerPlaying, setHeroTrailerPlaying] = useState(false)
+  const [heroTrailerMuted, setHeroTrailerMuted] = useState(true)
 
   const goTo = useCallback(
     (i: number) => setActiveIndex(((i % count) + count) % count),
@@ -34,6 +45,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
 
   useEffect(() => {
     setLogoError(false)
+    setHeroTrailerMuted(true)
   }, [activeIndex])
 
   useEffect(() => {
@@ -45,9 +57,10 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
   useEffect(() => {
     if (count <= 1) return
     if (scrolledAway) return
+    if (heroTrailerPlaying) return
     const id = setInterval(() => setActiveIndex((prev) => (prev + 1) % count), 8000)
     return () => clearInterval(id)
-  }, [count, scrolledAway])
+  }, [count, scrolledAway, heroTrailerPlaying])
 
   // Scroll blur: listen to the scroll container (closest overflow-y parent)
   useEffect(() => {
@@ -108,10 +121,10 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
     return () => { cancelled = true }
   }, [items, artProviderKey, fanartApiKey])
 
-  const displayItems = items.map((raw) => {
+  const displayItems = useMemo(() => items.map((raw) => {
     const art = providerArt[String(raw.id)]
     return applySearchResultArt(art ? { ...raw, ...art } : raw)
-  })
+  }), [items, providerArt])
   const item = displayItems[activeIndex]
   const type = item?.type === 'series' ? 'series' : 'movie'
 
@@ -136,6 +149,58 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
       .catch(() => { if (!cancelled) setCast([]) })
     return () => { cancelled = true }
   }, [item?.id, item?.tmdbId, type])
+
+  useEffect(() => {
+    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway) {
+      setHeroTrailer(null)
+      setHeroTrailerPlaying(false)
+      return
+    }
+
+    const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
+    let cancelled = false
+    setHeroTrailer(null)
+    setHeroTrailerPlaying(false)
+    setHeroTrailerMuted(true)
+
+    const timer = window.setTimeout(() => {
+      getTrailerSource({
+        type,
+        tmdbId,
+        title: item.title,
+        year: item.year,
+        language: trailerLanguage,
+      }).then((trailer) => {
+        if (!cancelled && trailer) {
+          setHeroTrailer(trailer)
+          setHeroTrailerPlaying(true)
+        }
+      }).catch(() => undefined)
+    }, heroTrailerDelay * 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      setHeroTrailerPlaying(false)
+    }
+  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway])
+
+  useEffect(() => {
+    if (!enableTrailers) return
+    if (heroTrailerDelay <= 0) return
+    if (!displayItems.length) return
+    displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
+      const candidateTmdbId = candidate.tmdbId || (String(candidate.id).startsWith('tmdb-') ? String(candidate.id).replace('tmdb-', '') : undefined)
+      if (!candidateTmdbId) return
+      preloadTrailerSource({
+        type: candidate.type === 'series' ? 'series' : 'movie',
+        tmdbId: candidateTmdbId,
+        title: candidate.title,
+        year: candidate.year,
+        language: trailerLanguage,
+      })
+    })
+  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage])
 
   if (!items.length || !item) return null
 
@@ -222,6 +287,16 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
               ) : (
                 <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
               )}
+              {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (
+                <TrailerPreview
+                  trailer={heroTrailer}
+                  title={itm.title}
+                  muted={heroTrailerMuted}
+                  preferVideoOnly={heroTrailerMuted}
+                  eager
+                  className="pointer-events-none absolute inset-0"
+                />
+              )}
             </div>
           )
         })}
@@ -236,6 +311,22 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange }: HeroSec
   function renderOverlay() {
     return (
       <>
+        {/* Prev / Next */}
+        {enableTrailers && heroTrailerPlaying && heroTrailer && !isSmall && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setHeroTrailerMuted((value) => !value)
+            }}
+            className="absolute right-6 top-6 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white/75 shadow-xl backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white"
+            aria-label={heroTrailerMuted ? 'Unmute hero trailer' : 'Mute hero trailer'}
+            title={heroTrailerMuted ? 'Unmute trailer' : 'Mute trailer'}
+          >
+            {heroTrailerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+          </button>
+        )}
+
         {/* Prev / Next */}
         {count > 1 && (
           <>

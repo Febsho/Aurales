@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Aurales",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "identifier": "com.aurales.app",
   "build": {
     "frontendDist": "../dist",
@@ -27,7 +27,7 @@
       "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * asset: http://asset.localhost data: blob:; media-src * blob: data:; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$TEMP/**/*"]
+        "scope": ["$TEMP/**/*", "$APPDATA/**/*"]
       }
     }
   },

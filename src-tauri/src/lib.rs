@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod libmpv_player;
+mod thumbnails;
 
 use db::Database;
 use tauri::Manager;
@@ -76,6 +77,11 @@ pub fn run() {
             commands::mpv_command,
             commands::request_player_thumbnail,
             commands::clear_player_thumbnail,
+            commands::start_thumbnail_generation,
+            commands::get_thumbnail_metadata,
+            commands::get_or_queue_scrub_thumbnail,
+            commands::prefetch_thumbnail_sprite,
+            commands::get_thumbnail_debug_state,
             commands::mpv_get_property,
             commands::resize_embedded_mpv,
             commands::setup_player_click_through,

@@ -183,14 +183,20 @@ interface AppState {
 
   posterSize: 'compact' | 'default' | 'large' | 'huge'
   nextEpisodePrompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m'
+  heroTrailerDelay: number
   setPosterSize: (size: 'compact' | 'default' | 'large' | 'huge') => void
   setNextEpisodePrompt: (prompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m') => void
+  setHeroTrailerDelay: (seconds: number) => void
 
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
   showGenreOnCards: boolean
+  posterTrailerPreviews: boolean
+  posterTrailerHoverDelayMs: number
+  posterTrailerSound: boolean
+  trailerVolume: number
   discoveryRegion: string
   discoveryMinRating: number
   discoveryIncludeAdult: boolean
@@ -201,6 +207,7 @@ interface AppState {
   cacheBufferSize: 'default' | 'large' | 'aggressive'
   audioPassthrough: boolean
   autoSkipSegments: boolean
+  autoPlayFirstStream: boolean
   subtitleFontSize: number
   subtitleBgOpacity: string
   subtitleColor: string
@@ -289,6 +296,10 @@ interface AppState {
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
   setShowGenreOnCards: (show: boolean) => void
+  setPosterTrailerPreviews: (show: boolean) => void
+  setPosterTrailerHoverDelayMs: (delayMs: number) => void
+  setPosterTrailerSound: (sound: boolean) => void
+  setTrailerVolume: (volume: number) => void
   setDiscoveryRegion: (region: string) => void
   setDiscoveryMinRating: (rating: number) => void
   setDiscoveryIncludeAdult: (include: boolean) => void
@@ -299,6 +310,7 @@ interface AppState {
   setCacheBufferSize: (size: 'default' | 'large' | 'aggressive') => void
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
+  setAutoPlayFirstStream: (val: boolean) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
   setSubtitleColor: (color: string) => void
@@ -635,6 +647,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   savedFramesCount: Number(localStorage.getItem('aurales_saved_frames_count') || '2'),
   posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
+  heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '0'),
   resumePriorityOrder: (() => {
     try {
       const raw = localStorage.getItem('aurales_resume_priority')
@@ -648,6 +661,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
   showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') !== 'false',
+  posterTrailerPreviews: localStorage.getItem('aurales_poster_trailer_previews') !== 'false',
+  posterTrailerHoverDelayMs: (() => {
+    const delayMs = Number(localStorage.getItem('aurales_poster_trailer_hover_delay_ms') || '500')
+    return [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 500
+  })(),
+  posterTrailerSound: localStorage.getItem('aurales_poster_trailer_sound') === 'true',
+  trailerVolume: (() => {
+    const volume = Number(localStorage.getItem('aurales_trailer_volume') || '80')
+    return Number.isFinite(volume) ? Math.min(100, Math.max(0, volume)) : 80
+  })(),
   discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
   discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
   discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
@@ -658,6 +681,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   cacheBufferSize: (localStorage.getItem('aurales_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') === 'true',
   subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
@@ -701,12 +725,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSavedFramesCount: (count) => { localStorage.setItem('aurales_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
   setPosterSize: (size) => { localStorage.setItem('aurales_poster_size', size); set({ posterSize: size }) },
   setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
+  setHeroTrailerDelay: (seconds) => {
+    const safe = [0, 3, 5, 10, 15, 30].includes(seconds) ? seconds : 0
+    localStorage.setItem('aurales_hero_trailer_delay', String(safe))
+    set({ heroTrailerDelay: safe })
+  },
   setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
   setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
+  setPosterTrailerPreviews: (show) => { localStorage.setItem('aurales_poster_trailer_previews', String(show)); set({ posterTrailerPreviews: show }) },
+  setPosterTrailerHoverDelayMs: (delayMs) => {
+    const safe = [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 500
+    localStorage.setItem('aurales_poster_trailer_hover_delay_ms', String(safe))
+    set({ posterTrailerHoverDelayMs: safe })
+  },
+  setPosterTrailerSound: (sound) => { localStorage.setItem('aurales_poster_trailer_sound', String(sound)); set({ posterTrailerSound: sound }) },
+  setTrailerVolume: (volume) => {
+    const safe = Number.isFinite(volume) ? Math.min(100, Math.max(0, Math.round(volume))) : 80
+    localStorage.setItem('aurales_trailer_volume', String(safe))
+    set({ trailerVolume: safe })
+  },
   setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); set({ discoveryRegion: region }) },
   setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
@@ -717,6 +758,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCacheBufferSize: (size) => { localStorage.setItem('aurales_cache_buffer_size', size); set({ cacheBufferSize: size }) },
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
+  setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
   setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
   setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
   setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color }) },
