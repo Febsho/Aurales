@@ -1,11 +1,24 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+
+// getCurrentWindow() throws outside the Tauri runtime (plain-browser preview),
+// which would take the whole app down with it — render no chrome instead.
+function useAppWindow() {
+  return useMemo(() => {
+    try {
+      return getCurrentWindow()
+    } catch (_) {
+      return null
+    }
+  }, [])
+}
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false)
-  const appWindow = getCurrentWindow()
+  const appWindow = useAppWindow()
 
   useEffect(() => {
+    if (!appWindow) return
     appWindow.isMaximized().then(setMaximized).catch(() => {})
     const unlisten = appWindow.onResized(() => {
       appWindow.isMaximized().then(setMaximized).catch(() => {})
@@ -14,6 +27,7 @@ export default function TitleBar() {
   }, [appWindow])
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if (!appWindow) return
     if ((e.target as HTMLElement).closest('button')) return
     if ((e.target as HTMLElement).closest('input')) return
     if ((e.target as HTMLElement).closest('[data-no-drag]')) return
@@ -23,6 +37,8 @@ export default function TitleBar() {
       appWindow.startDragging()
     }
   }, [appWindow])
+
+  if (!appWindow) return null
 
   return (
     <div

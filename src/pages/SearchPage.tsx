@@ -26,7 +26,13 @@ function saveSearchHistory(history: string[]) {
 }
 
 function addToSearchHistory(query: string) {
-  const history = loadSearchHistory().filter((q) => q.toLowerCase() !== query.toLowerCase())
+  const lowered = query.toLowerCase()
+  // Drop exact duplicates and shorter prefixes left behind while typing
+  // (e.g. "inter", "interst" once "interstellar" lands).
+  const history = loadSearchHistory().filter((q) => {
+    const existing = q.toLowerCase()
+    return existing !== lowered && !lowered.startsWith(existing)
+  })
   history.unshift(query)
   saveSearchHistory(history)
 }
@@ -184,6 +190,7 @@ export default function SearchPage() {
   const [searched, setSearched] = useState(false)
   const [aiRequested, setAiRequested] = useState(false)
   const [searchHistory, setSearchHistory] = useState(loadSearchHistory)
+  const [typeFilter, setTypeFilter] = useState<'all' | 'movies' | 'series' | 'anime'>('all')
   const apiKey = useAppStore((state) => state.openrouterApiKey)
   const model = useAppStore((state) => state.openrouterModel)
   const addons = useAppStore((state) => state.addons)
@@ -215,8 +222,6 @@ export default function SearchPage() {
     setSearched(true)
     setAiResults([])
     setAiRequested(false)
-    addToSearchHistory(text)
-    setSearchHistory(loadSearchHistory())
 
     const allResults: SearchResult[] = []
     const pending: Promise<void>[] = []
@@ -270,6 +275,13 @@ export default function SearchPage() {
 
     await Promise.allSettled(pending)
     if (requestId !== requestIdRef.current) return
+
+    // Only remember searches that finished and found something — recording on
+    // keystroke fills the history with partial queries.
+    if (allResults.length > 0) {
+      addToSearchHistory(text)
+      setSearchHistory(loadSearchHistory())
+    }
 
     // Final enrichment pass
     try {
@@ -334,7 +346,10 @@ export default function SearchPage() {
 
   useEffect(() => {
     requestIdRef.current += 1
-    const timer = setTimeout(() => executeSearch(query), 150)
+    setTypeFilter('all')
+    // 300ms: long enough to skip most mid-typing queries (each one fans out to
+    // every engine and addon), short enough to still feel instant.
+    const timer = setTimeout(() => executeSearch(query), 300)
     return () => clearTimeout(timer)
   }, [query, executeSearch])
 
@@ -345,11 +360,39 @@ export default function SearchPage() {
   return (
     <div className="py-8 space-y-4">
       {searched && (
-        <div className="px-6 flex items-end justify-between gap-4">
+        <div className="px-6 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-white">Results for &ldquo;{query}&rdquo;</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+              Results for &ldquo;{query}&rdquo;
+              {loading && results.length > 0 && (
+                <span className="inline-block w-4 h-4 border-2 border-white/25 border-t-white/70 rounded-full animate-spin" aria-label="Refining results" />
+              )}
+            </h1>
             <p className="text-sm text-white/35 mt-1">{totalMovies} movies · {totalSeries} series</p>
           </div>
+          {(totalMovies > 0 || totalSeries > 0) && (
+            <div className="flex items-center gap-2">
+              {([
+                { id: 'all', label: 'All', count: totalMovies + totalSeries },
+                { id: 'movies', label: 'Movies', count: movies.length },
+                { id: 'series', label: 'Series', count: series.length },
+                { id: 'anime', label: 'Anime', count: animeMovies.length + animeSeries.length },
+              ] as const).map(({ id, label, count }) => (
+                <button
+                  key={id}
+                  onClick={() => setTypeFilter(id)}
+                  disabled={count === 0 && id !== 'all'}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer border disabled:opacity-30 disabled:cursor-default ${
+                    typeFilter === id
+                      ? 'bg-accent/15 text-accent border-accent/25'
+                      : 'text-white/45 hover:text-white/75 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
+                  }`}
+                >
+                  {label}{count > 0 ? ` · ${count}` : ''}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -360,10 +403,10 @@ export default function SearchPage() {
         </div>
       )}
 
-      {movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} />}
-      {series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} />}
-      {animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} />}
-      {animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} />}
+      {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview />}
 
       {noResults && (
         <EmptyState
@@ -392,8 +435,8 @@ export default function SearchPage() {
         </section>
       )}
 
-      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="poster" disableArtOverride={false} />}
-      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="poster" disableArtOverride={false} />}
+      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview />}
 
       {!searched && !loading && (
         searchHistory.length > 0 ? (

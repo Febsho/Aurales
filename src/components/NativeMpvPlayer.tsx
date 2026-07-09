@@ -2,12 +2,12 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { clearPlayerThumbnail, downloadSubtitle, getOrQueueScrubThumbnail, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -101,9 +101,6 @@ interface TimelinePreview {
   visible: boolean
   leftPct: number
   time: number
-  imageUrl?: string
-  width?: number
-  height?: number
 }
 
 
@@ -622,13 +619,8 @@ function FullNativeMpvPlayer({
   const [accumulatedSeek, setAccumulatedSeek] = useState<number | null>(null)
   const accumulatedSeekRef = useRef<number | null>(null)
 
-  // Timeline Preview
+  // Timeline Preview (timestamp bubble while scrubbing)
   const [timelinePreview, setTimelinePreview] = useState<TimelinePreview>({ visible: false, leftPct: 0, time: 0 })
-  const thumbnailCacheRef = useRef<Map<number, { imageUrl: string; width: number; height: number }>>(new Map())
-  const thumbnailHoverRef = useRef<{ leftPct: number; time: number } | null>(null)
-  const thumbnailPendingKeyRef = useRef<number | null>(null)
-  const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const thumbnailRequestTokenRef = useRef(0)
   const isDraggingRef = useRef(false)
 
 
@@ -806,115 +798,24 @@ function FullNativeMpvPlayer({
     }
   }, [isInWatchTogether, suppressNextWatchTogetherEvent])
 
-  // ── Thumbnail Preview ─────────────────────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
-      thumbnailRequestTokenRef.current += 1
-      clearPlayerThumbnail().catch(() => {})
-    }
-  }, [])
-
+  // ── Timeline Preview ──────────────────────────────────────────────────────
   const hideTimelinePreview = useCallback(() => {
     isDraggingRef.current = false
-    thumbnailHoverRef.current = null
-    thumbnailPendingKeyRef.current = null
-    thumbnailRequestTokenRef.current += 1
-    if (thumbnailTimerRef.current) {
-      clearTimeout(thumbnailTimerRef.current)
-      thumbnailTimerRef.current = null
-    }
-    setTimelinePreview((preview) => ({ ...preview, visible: false, imageUrl: undefined }))
-    clearPlayerThumbnail().catch(() => {})
+    setTimelinePreview((preview) => ({ ...preview, visible: false }))
   }, [])
 
-  const cachedTimelineThumbnail = useCallback((key: number) => {
-    const exact = thumbnailCacheRef.current.get(key)
-    if (exact) return exact
-
-    let nearest: { imageUrl: string; width: number; height: number } | undefined
-    let minDist = 3
-    for (const [cachedKey, value] of thumbnailCacheRef.current) {
-      const dist = Math.abs(cachedKey - key)
-      if (dist < minDist) {
-        minDist = dist
-        nearest = value
-      }
-    }
-    return nearest
-  }, [])
-
-  const updateTimelinePreviewAtPct = useCallback((leftPct: number, shouldQueueThumbnail: boolean) => {
+  const updateTimelinePreviewAtPct = useCallback((leftPct: number) => {
     if (duration <= 0 || !Number.isFinite(duration)) return
-
     const pct = Math.max(0, Math.min(100, leftPct))
     const time = Math.max(0, Math.min(duration, (pct / 100) * duration))
-    const key = Math.round(time)
-    const displayThumb = cachedTimelineThumbnail(key)
-
-    thumbnailHoverRef.current = { leftPct: pct, time }
-    setTimelinePreview({
-      visible: true,
-      leftPct: pct,
-      time,
-      imageUrl: displayThumb?.imageUrl,
-      width: displayThumb?.width,
-      height: displayThumb?.height,
-    })
-
-    if (!shouldQueueThumbnail || displayThumb) return
-    if (thumbnailPendingKeyRef.current === key) return
-    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
-
-    thumbnailPendingKeyRef.current = key
-    const requestToken = ++thumbnailRequestTokenRef.current
-    thumbnailTimerRef.current = setTimeout(() => {
-      thumbnailTimerRef.current = null
-      getOrQueueScrubThumbnail({
-        mediaId: playbackItem?.localId || url,
-        streamUrl: url,
-        duration,
-        time,
-        thumbnailInterval: 10,
-        thumbnailWidth: 240,
-        thumbnailHeight: 136,
-        quality: 70,
-        maxConcurrentFfmpegWorkers: 1,
-      }).then((response) => {
-        if (thumbnailRequestTokenRef.current !== requestToken) return
-        const path = response.exactPath || response.nearestPath
-        if (!path) return
-        const thumb = {
-          imageUrl: `${convertFileSrc(path)}?v=${Date.now()}`,
-          width: response.metadata.thumbnailWidth || 240,
-          height: response.metadata.thumbnailHeight || 136,
-        }
-        thumbnailCacheRef.current.set(key, thumb)
-
-        const hover = thumbnailHoverRef.current
-        if (!isDraggingRef.current || !hover) return
-        if (Math.abs(Math.round(hover.time) - key) > 3) return
-        setTimelinePreview({
-          visible: true,
-          leftPct: hover.leftPct,
-          time: hover.time,
-          ...thumb,
-        })
-      }).catch(() => {
-        // Keep the timestamp fallback visible if thumbnail generation fails.
-      }).finally(() => {
-        if (thumbnailPendingKeyRef.current === key) {
-          thumbnailPendingKeyRef.current = null
-        }
-      })
-    }, 140)
-  }, [cachedTimelineThumbnail, duration, playbackItem?.localId, url])
+    setTimelinePreview({ visible: true, leftPct: pct, time })
+  }, [duration])
 
   const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingRef.current) return
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return
-    updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100, true)
+    updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100)
   }, [updateTimelinePreviewAtPct])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
@@ -2348,6 +2249,13 @@ function FullNativeMpvPlayer({
     onPickAnother()
   }
 
+  const retryStream = useCallback(() => {
+    setError('')
+    // Clearing the error re-arms the startup watchdog, which reports again if
+    // the relaunch also fails to produce a video frame.
+    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0))
+  }, [triggerRestart, startTime])
+
   const wtBlockedNotice = useCallback(() => {
     setError('Only the host can control playback in this room.')
     setTimeout(() => setError((prev) => prev === 'Only the host can control playback in this room.' ? '' : prev), 2500)
@@ -2615,8 +2523,37 @@ function FullNativeMpvPlayer({
         </button>
       </div>
 
-      {/* Error message */}
-      {error && (
+      {/* Fatal startup failure — playback never began, offer a way out */}
+      {error && !playerReady && (
+        <div className="absolute inset-0 z-[25] flex items-center justify-center bg-black/80 backdrop-blur-sm px-6">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-neutral-950/90 p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10">
+              <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+            </div>
+            <h3 className="mb-1.5 text-base font-bold text-white">This stream could not be played</h3>
+            <p className="mb-5 break-words text-xs leading-relaxed text-white/45">{error}</p>
+            <div className="flex items-center justify-center gap-2.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); pickAnother() }}
+                className="cursor-pointer rounded-xl border border-accent/20 bg-accent/15 px-4 py-2 text-sm font-semibold text-accent transition-colors hover:bg-accent/25"
+              >
+                Choose another stream
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); retryStream() }}
+                className="cursor-pointer rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/80 transition-colors hover:bg-white/10"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transient playback notices */}
+      {error && playerReady && (
         <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 max-w-md rounded-2xl border border-red-500/25 bg-red-900/60 backdrop-blur-xl px-5 py-3 text-sm text-red-200">
           {error}
         </div>
@@ -2892,24 +2829,10 @@ function FullNativeMpvPlayer({
             >
               {timelinePreview.visible && (
                 <div
-                  className="pointer-events-none absolute bottom-7 z-[20] flex -translate-x-1/2 flex-col items-center gap-1"
+                  className="pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2"
                   style={{ left: `${timelinePreview.leftPct}%` }}
                 >
-                  <div className="overflow-hidden rounded-md border border-white/15 bg-black/80 shadow-2xl">
-                    {timelinePreview.imageUrl ? (
-                      <img
-                        src={timelinePreview.imageUrl}
-                        alt=""
-                        className="block h-auto w-[220px] bg-black object-cover"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="flex h-[124px] w-[220px] items-center justify-center bg-black/85 text-[11px] font-medium text-white/45">
-                        {formatTime(timelinePreview.time)}
-                      </div>
-                    )}
-                  </div>
-                  <span className="rounded bg-black/85 px-1.5 py-0.5 text-[11px] font-semibold text-white/80">
+                  <span className="rounded-lg border border-white/10 bg-black/85 px-2.5 py-1 text-xs font-semibold text-white/90 shadow-xl backdrop-blur-sm">
                     {formatTime(timelinePreview.time)}
                   </span>
                 </div>
@@ -2960,7 +2883,7 @@ function FullNativeMpvPlayer({
                   setIsDragging(true)
                   draggingProgressRef.current = clickPct
                   setDraggingProgress(clickPct)
-                  updateTimelinePreviewAtPct(clickPct, true)
+                  updateTimelinePreviewAtPct(clickPct)
                 }}
                 onMouseUp={() => {
                   setIsDragging(false)
@@ -2977,7 +2900,7 @@ function FullNativeMpvPlayer({
                   setIsDragging(true)
                   draggingProgressRef.current = clickPct
                   setDraggingProgress(clickPct)
-                  updateTimelinePreviewAtPct(clickPct, true)
+                  updateTimelinePreviewAtPct(clickPct)
                 }}
                 onTouchEnd={() => {
                   setIsDragging(false)
@@ -2990,7 +2913,7 @@ function FullNativeMpvPlayer({
                   const val = Number(e.target.value)
                   draggingProgressRef.current = val
                   setDraggingProgress(val)
-                  if (isDraggingRef.current) updateTimelinePreviewAtPct(val, true)
+                  if (isDraggingRef.current) updateTimelinePreviewAtPct(val)
                 }}
                 className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
               />
