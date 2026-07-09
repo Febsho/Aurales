@@ -3,6 +3,7 @@ import type { HomeRowConfig, WatchProgress, SearchResult, TraktAccount } from '.
 import type { InstalledAddon } from '../services/addons'
 import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
+import { buildDefaultHomeRows } from '../data/defaultHomeRows'
 import { v4 as uuid } from 'uuid'
 
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
@@ -458,9 +459,7 @@ export function getLanguageCodeFromTrack(langStr?: string): string | null {
   return found ? found.code : null
 }
 
-const DEFAULT_HOME_ROWS: HomeRowConfig[] = [
-  { id: 'continue-watching', title: 'Continue Watching', layout: 'continue', enabled: true, order: 1, sourceType: 'local' },
-]
+const DEFAULT_HOME_ROWS: HomeRowConfig[] = buildDefaultHomeRows()
 
 export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: true,

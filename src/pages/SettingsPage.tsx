@@ -1580,7 +1580,7 @@ export default function SettingsPage() {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
                         <div className="flex items-center gap-3">
-                          <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse" />
+                          <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
                           <div>
                             <span className="text-sm font-semibold text-white">Connected</span>
                             <p className="text-xs text-white/40 mt-0.5">{stremioAuth.email}</p>
@@ -1590,7 +1590,7 @@ export default function SettingsPage() {
                           <button
                             onClick={handleStremioSync}
                             disabled={stremioLoading}
-                            className="px-3.5 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+                            className="px-3.5 py-2 bg-accent/10 hover:bg-accent/20 text-accent rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
                           >
                             {stremioLoading ? 'Syncing...' : 'Sync Addons'}
                           </button>
@@ -1632,7 +1632,7 @@ export default function SettingsPage() {
                       <button
                         onClick={handleStremioLogin}
                         disabled={stremioLoading}
-                        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors cursor-pointer"
+                        className="px-5 py-2.5 bg-accent hover:bg-accent/80 disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
                       >
                         {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
                       </button>
@@ -3244,7 +3244,7 @@ export default function SettingsPage() {
 
               {/* Hardware Decoding */}
               <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
-                <SettingRow label="Decoding API">
+                <SettingRow label="Hardware decoding" description="Leave on Auto-detect unless video stutters or shows visual glitches.">
                   <select
                     value={store.hwdecMode}
                     onChange={(e) => store.setHwdecMode(e.target.value as any)}
@@ -3261,7 +3261,7 @@ export default function SettingsPage() {
 
               {/* Buffer */}
               <SettingSection title="Buffer Cache" description="Adjust cache to prevent buffering on slow networks.">
-                <SettingRow label="Cache limit">
+                <SettingRow label="Memory cache size" description="How much of the stream is kept in memory. Larger helps on unstable connections.">
                   <select
                     value={store.cacheBufferSize}
                     onChange={(e) => store.setCacheBufferSize(e.target.value as any)}

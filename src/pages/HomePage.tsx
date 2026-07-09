@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, cloneElement } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import ErrorBoundary from '../components/ui/ErrorBoundary'
+import { EmptyState } from '../components/ui'
 import HeroSection from '../components/HeroSection'
 import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
@@ -98,6 +99,16 @@ function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; option
     return acc
   }, {})
   return Object.keys(defaults).length ? defaults : undefined
+}
+
+// Keep raw provider/HTTP errors in the console; show people a readable message.
+function friendlyRowError(err: unknown, fallback: string): string {
+  console.warn('[HomeRow]', err)
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  if (/network|fetch|timed? ?out|abort|offline/i.test(msg)) {
+    return "Couldn't reach the server. Check your connection and try again."
+  }
+  return fallback
 }
 
 function simklItemToSearchResult(item: SimklWatchlistItem): SearchResult {
@@ -212,7 +223,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
         }
       } catch (err: any) {
         if (!cancelledRef.current) {
-          setError(err?.message || 'Failed to fetch Simkl list.')
+          setError(friendlyRowError(err, "Couldn't load this Simkl list right now."))
           setLoading(false)
         }
       }
@@ -300,7 +311,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
         }
       } catch (err: any) {
         if (!cancelledRef.current) {
-          setError(err?.message || `Failed to fetch ${row.sourceType} list.`)
+          setError(friendlyRowError(err, "Couldn't load this list right now."))
           setLoading(false)
         }
       }
@@ -393,7 +404,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
         }
       } catch (err: any) {
         if (!cancelledRef.current) {
-          setError(err?.message || 'Failed to load addon catalog.')
+          setError(friendlyRowError(err, "Couldn't load this catalog right now."))
           setLoading(false)
         }
       }
@@ -495,7 +506,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
         }
       } catch (err: any) {
         if (!cancelledRef.current) {
-          setError(err?.message || 'Failed to load discover catalog.')
+          setError(friendlyRowError(err, "Couldn't load recommendations right now."))
           setLoading(false)
         }
       }
@@ -668,17 +679,17 @@ function UnconfiguredShelf({
       <div className="px-6">
         <div
           onClick={() => onConfigure(row)}
-          className="w-full max-w-4xl border border-dashed border-neutral-700/60 hover:border-accent/40 bg-white/[0.01] hover:bg-white/[0.03] rounded-2xl p-6 flex items-center justify-between transition-all duration-200 cursor-pointer group"
+          className="w-full max-w-4xl border border-dashed border-white/10 hover:border-accent/40 bg-white/[0.01] hover:bg-white/[0.03] rounded-2xl p-6 flex items-center justify-between transition-all duration-200 cursor-pointer group"
         >
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-neutral-900 border border-neutral-800/60 flex items-center justify-center text-neutral-500 group-hover:text-accent transition-colors">
+            <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-white/35 group-hover:text-accent transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
             <div className="text-left">
-              <span className="block text-sm font-bold text-neutral-400 group-hover:text-white transition-colors">Unconfigured Shelf</span>
-              <span className="block text-xs text-neutral-500 mt-0.5">Click to choose a content source for this row.</span>
+              <span className="block text-sm font-bold text-white/55 group-hover:text-white transition-colors">Unconfigured Shelf</span>
+              <span className="block text-xs text-white/35 mt-0.5">Click to choose a content source for this row.</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -869,7 +880,8 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
 ];
 
 export default function HomePage() {
-  const { homeRows, reorderHomeRows, removeHomeRow } = useAppStore();
+  const { homeRows, reorderHomeRows, removeHomeRow, resetHomeRows } = useAppStore();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
@@ -974,7 +986,7 @@ export default function HomePage() {
         <div className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/10 py-4 px-6 flex items-center justify-center gap-4">
           <button
             onClick={() => setIsEditing(false)}
-            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-sm transition-all shadow-lg cursor-pointer"
+            className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black font-bold rounded-xl text-sm transition-all shadow-lg shadow-accent/20 cursor-pointer"
           >
             Done
           </button>
@@ -991,6 +1003,15 @@ export default function HomePage() {
             />
           ))}
         </div>
+      ) : activeRows.length === 0 && !heroRow ? (
+        <EmptyState
+          className="min-h-[70vh]"
+          icon={<svg fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" strokeLinecap="round" /></svg>}
+          title="Your home screen is empty"
+          description="Add trending movies and shows with one click, or browse Discover to find something to watch."
+          action={{ label: 'Restore default shelves', onClick: resetHomeRows }}
+          secondaryAction={{ label: 'Browse Discover', onClick: () => navigate('/discover') }}
+        />
       ) : (
         <>
           {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}

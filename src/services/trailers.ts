@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { getTmdbApiKey } from './apiKeys'
-import { cacheGet, cacheSet, cachedFetch } from './cache/sqliteCache'
+import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
@@ -14,16 +14,6 @@ export type TrailerSource = {
   thumbnailUrl: string
   language?: string
   official?: boolean
-}
-
-export interface TrailerVideoStream {
-  url: string
-  mimeType?: string
-  quality?: string
-}
-
-export interface TrailerVideoStreamOptions {
-  preferVideoOnly?: boolean
 }
 
 interface TrailerLookupInput {
@@ -55,16 +45,6 @@ const REJECT_YOUTUBE_TERMS = [
   'clip',
 ]
 
-const PIPED_API_BASES = [
-  'https://api.piped.private.coffee',
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi-libre.kavin.rocks',
-  'https://pipedapi.leptons.xyz',
-  'https://pipedapi.syncpundit.io',
-  'https://api-piped.mha.fi',
-  'https://pipedapi.reallyaweso.me',
-]
-
 function mediaTypeForTmdb(type: TrailerLookupInput['type']): 'movie' | 'tv' {
   return type === 'movie' ? 'movie' : 'tv'
 }
@@ -74,7 +54,10 @@ export function youtubeThumbnailUrl(key: string, quality: 'max' | 'high' = 'max'
 }
 
 export function buildYoutubeEmbedUrl(key: string, options: { muted?: boolean } = {}): string {
-  const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined
+  const pageOrigin = typeof window !== 'undefined' ? window.location?.origin : undefined
+  // YouTube rejects non-HTTP origins such as tauri://localhost when `origin` is
+  // supplied. The embed works without it because we do not need the iframe API.
+  const origin = pageOrigin && /^https?:\/\//.test(pageOrigin) ? pageOrigin : undefined
   const params = new URLSearchParams({
     autoplay: '1',
     mute: options.muted === false ? '0' : '1',
@@ -89,7 +72,7 @@ export function buildYoutubeEmbedUrl(key: string, options: { muted?: boolean } =
     enablejsapi: '1',
     autohide: '1',
     showinfo: '0',
-    vq: 'hd1080',
+    vq: 'highres',
   })
   if (origin) params.set('origin', origin)
   return `https://www.youtube-nocookie.com/embed/${key}?${params.toString()}`
@@ -106,85 +89,6 @@ function makeYoutubeSource(key: string, source: TrailerSource['source'], languag
     language,
     official,
   }
-}
-
-function trailerVideoQualityRank(stream: PipedVideoStream, options: TrailerVideoStreamOptions = {}): number {
-  const text = `${stream.quality || ''} ${stream.mimeType || ''} ${stream.format || ''}`.toLowerCase()
-  const numeric = Number(text.match(/(\d{3,4})p/)?.[1] || stream.height || 0)
-  const isMp4 = text.includes('mp4') || text.includes('mpeg_4')
-  const isWebm = text.includes('webm')
-  const compatibilityBonus = isMp4
-    ? 500
-    : isWebm
-      ? -220
-      : 0
-  const progressiveBonus = stream.videoOnly ? -350 : 450
-  const visualBonus = stream.videoOnly && options.preferVideoOnly ? 140 : 0
-  const lbryBonus = text.includes('lbry') ? 50 : 0
-  const sizeBonus = stream.bitrate ? Math.min(stream.bitrate / 10000, 80) : 0
-  return numeric + compatibilityBonus + progressiveBonus + visualBonus + lbryBonus + sizeBonus
-}
-
-interface PipedVideoStream {
-  url?: string
-  format?: string
-  quality?: string
-  mimeType?: string
-  videoOnly?: boolean
-  height?: number
-  bitrate?: number
-  width?: number
-  contentLength?: number
-}
-
-interface PipedStreamsResponse {
-  videoStreams?: PipedVideoStream[]
-}
-
-function isPlayableVideoStream(stream: PipedVideoStream): boolean {
-  const text = `${stream.mimeType || ''} ${stream.format || ''} ${stream.url || ''}`.toLowerCase()
-  return text.includes('mp4') || text.includes('mpeg_4') || text.includes('.mp4') || text.includes('webm') || text.includes('.webm')
-}
-
-function pickPipedVideoStream(data: PipedStreamsResponse, options: TrailerVideoStreamOptions = {}): TrailerVideoStream | null {
-  const streams = (data.videoStreams || [])
-    .filter((stream) => {
-      if (!stream.url) return false
-      return isPlayableVideoStream(stream)
-    })
-    .sort((a, b) => trailerVideoQualityRank(b, options) - trailerVideoQualityRank(a, options))
-
-  const best = streams[0]
-  return best?.url ? { url: best.url, mimeType: best.mimeType, quality: best.quality } : null
-}
-
-async function fetchDirectTrailerStream(key: string, options: TrailerVideoStreamOptions = {}): Promise<TrailerVideoStream | null> {
-  for (const base of PIPED_API_BASES) {
-    try {
-      const body = await invoke<string>('http_get_text', { url: `${base}/streams/${key}` })
-      const parsed = JSON.parse(body) as PipedStreamsResponse
-      const stream = pickPipedVideoStream(parsed, options)
-      if (stream) return stream
-    } catch (_) {
-      // Try the next public API instance.
-    }
-  }
-  return null
-}
-
-export async function getTrailerVideoStream(key: string, options: TrailerVideoStreamOptions = {}): Promise<TrailerVideoStream | null> {
-  const cacheKey = `trailer_video_stream_v3:${options.preferVideoOnly ? 'visual' : 'audio'}:${key}`
-  const cached = await cacheGet<TrailerVideoStream>(cacheKey)
-  if (cached && !cached.stale) return cached.data
-
-  const stream = await fetchDirectTrailerStream(key, options)
-  if (stream) {
-    await cacheSet(cacheKey, stream, {
-      category: CACHE_CATEGORIES.DETAIL_PAGE,
-      ttlSeconds: 2 * 60 * 60,
-    })
-  }
-  return stream
 }
 
 function isValidYoutubeKey(value: unknown): value is string {
