@@ -2632,6 +2632,8 @@ pub async fn http_get_text(url: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         let response = ureq::get(&url)
             .set("Accept", "application/json, text/plain, */*")
+            .set("Accept-Language", "en-US,en;q=0.9")
+            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
             .call()
             .map_err(|e| format!("HTTP request failed: {e}"))?;
         response

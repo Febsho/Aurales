@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getTrailerVideoStream, youtubeThumbnailUrl, type TrailerSource, type TrailerVideoStream } from '../services/trailers'
 import { useAppStore } from '../stores/appStore'
 
@@ -31,6 +31,35 @@ export default function TrailerPreview({
     () => thumbnailFailed ? youtubeThumbnailUrl(trailer.key, 'high') : trailer.thumbnailUrl || youtubeThumbnailUrl(trailer.key),
     [thumbnailFailed, trailer.key, trailer.thumbnailUrl],
   )
+  const applyPlayback = useCallback(() => {
+    const video = videoRef.current
+    if (!video || !stream) return
+
+    const targetVolume = Math.min(1, Math.max(0, trailerVolume / 100))
+    const applyRequestedAudio = () => {
+      video.volume = muted ? 0 : targetVolume
+      video.muted = muted
+    }
+
+    if (!video.paused) {
+      applyRequestedAudio()
+      return
+    }
+
+    video.muted = true
+    video.volume = 0
+    video.play()
+      .then(() => {
+        applyRequestedAudio()
+      })
+      .catch(() => {
+        applyRequestedAudio()
+        video.play().catch(() => {
+          video.muted = true
+          video.volume = 0
+        })
+      })
+  }, [muted, stream, trailerVolume])
 
   useEffect(() => {
     setLoaded(false)
@@ -52,12 +81,8 @@ export default function TrailerPreview({
   }, [trailer.key, preferVideoOnly])
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
-    video.muted = muted
-    video.volume = muted ? 0 : Math.min(1, Math.max(0, trailerVolume / 100))
-    if (!muted) video.play().catch(() => {})
-  }, [muted, stream, trailerVolume])
+    applyPlayback()
+  }, [applyPlayback])
 
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
@@ -79,14 +104,20 @@ export default function TrailerPreview({
           src={stream.url}
           className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
           autoPlay
-          muted={muted}
+          muted
           loop
           playsInline
           preload={eager ? 'auto' : 'metadata'}
           disablePictureInPicture
           controls={false}
-          onCanPlay={() => setLoaded(true)}
-          onPlaying={() => setLoaded(true)}
+          onCanPlay={() => {
+            setLoaded(true)
+            applyPlayback()
+          }}
+          onPlaying={() => {
+            setLoaded(true)
+            applyPlayback()
+          }}
           onError={() => {
             setStreamFailed(true)
             setLoaded(true)
