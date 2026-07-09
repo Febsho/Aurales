@@ -111,17 +111,18 @@ function makeYoutubeSource(key: string, source: TrailerSource['source'], languag
 function trailerVideoQualityRank(stream: PipedVideoStream, options: TrailerVideoStreamOptions = {}): number {
   const text = `${stream.quality || ''} ${stream.mimeType || ''} ${stream.format || ''}`.toLowerCase()
   const numeric = Number(text.match(/(\d{3,4})p/)?.[1] || stream.height || 0)
-  const formatBonus = text.includes('mp4') || text.includes('mpeg_4')
-    ? 140
-    : text.includes('webm')
-      ? 80
+  const isMp4 = text.includes('mp4') || text.includes('mpeg_4')
+  const isWebm = text.includes('webm')
+  const compatibilityBonus = isMp4
+    ? 500
+    : isWebm
+      ? -220
       : 0
-  const audioBonus = stream.videoOnly
-    ? options.preferVideoOnly ? 260 : -1000
-    : options.preferVideoOnly ? 0 : 160
+  const progressiveBonus = stream.videoOnly ? -350 : 450
+  const visualBonus = stream.videoOnly && options.preferVideoOnly ? 140 : 0
   const lbryBonus = text.includes('lbry') ? 50 : 0
   const sizeBonus = stream.bitrate ? Math.min(stream.bitrate / 10000, 80) : 0
-  return numeric + formatBonus + audioBonus + lbryBonus + sizeBonus
+  return numeric + compatibilityBonus + progressiveBonus + visualBonus + lbryBonus + sizeBonus
 }
 
 interface PipedVideoStream {
@@ -149,7 +150,6 @@ function pickPipedVideoStream(data: PipedStreamsResponse, options: TrailerVideoS
   const streams = (data.videoStreams || [])
     .filter((stream) => {
       if (!stream.url) return false
-      if (!options.preferVideoOnly && stream.videoOnly) return false
       return isPlayableVideoStream(stream)
     })
     .sort((a, b) => trailerVideoQualityRank(b, options) - trailerVideoQualityRank(a, options))
@@ -173,7 +173,7 @@ async function fetchDirectTrailerStream(key: string, options: TrailerVideoStream
 }
 
 export async function getTrailerVideoStream(key: string, options: TrailerVideoStreamOptions = {}): Promise<TrailerVideoStream | null> {
-  const cacheKey = `trailer_video_stream_v2:${options.preferVideoOnly ? 'visual' : 'audio'}:${key}`
+  const cacheKey = `trailer_video_stream_v3:${options.preferVideoOnly ? 'visual' : 'audio'}:${key}`
   const cached = await cacheGet<TrailerVideoStream>(cacheKey)
   if (cached && !cached.stale) return cached.data
 
