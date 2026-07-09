@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import MediaCard from '../components/MediaCard'
+import { EmptyState } from '../components/ui'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
@@ -222,6 +223,7 @@ export default function CatalogPage() {
         .then((results) => {
           if (!cancelled) setItems(results)
         })
+        .catch(() => {})
         .finally(() => {
           if (!cancelled) setLoading(false)
         })
@@ -264,38 +266,43 @@ export default function CatalogPage() {
         setLoadingMore(true)
       }
 
-      const skip = page * pageSize
-      const results = await getAddonCatalog(url, row.catalogType!, row.catalogId!, {
-        ...(row.catalogExtra || {}),
-        skip: String(skip),
-      }, row.addonId)
+      try {
+        const skip = page * pageSize
+        const results = await getAddonCatalog(url, row.catalogType!, row.catalogId!, {
+          ...(row.catalogExtra || {}),
+          skip: String(skip),
+        }, row.addonId)
 
-      if (cancelled) return
+        if (cancelled) return
 
-      const unique = results.filter((item) => {
-        if (seen.has(item.id)) return false
-        seen.add(item.id)
-        return true
-      })
+        const unique = results.filter((item) => {
+          if (seen.has(item.id)) return false
+          seen.add(item.id)
+          return true
+        })
 
-      if (results.length === 0 || unique.length === 0 || results.length < pageSize) {
+        if (results.length === 0 || unique.length === 0 || results.length < pageSize) {
+          canLoadMore = false
+          setHasMore(false)
+        } else {
+          page += 1
+          pageRef.current = page
+          setHasMore(true)
+        }
+
+        if (unique.length > 0) {
+          setItems((current) => [...current, ...unique])
+        }
+      } catch (_) {
         canLoadMore = false
         setHasMore(false)
-      } else {
-        page += 1
-        pageRef.current = page
-        setHasMore(true)
-      }
-
-      if (unique.length > 0) {
-        setItems((current) => [...current, ...unique])
-      }
-
-      loadingPage = false
-      if (initial) {
-        setLoading(false)
-      } else {
-        setLoadingMore(false)
+      } finally {
+        loadingPage = false
+        if (initial) {
+          setLoading(false)
+        } else {
+          setLoadingMore(false)
+        }
       }
 
       if (canLoadMore && !cancelled) {
@@ -327,7 +334,7 @@ export default function CatalogPage() {
       <div className="mb-6">
         <p className="text-sm uppercase tracking-[0.24em] text-muted mb-2">Catalog</p>
         <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
-        {!loading && (
+        {!loading && items.length > 0 && (
           <p className="text-sm text-muted mt-2">{items.length} titles loaded</p>
         )}
       </div>
@@ -342,6 +349,12 @@ export default function CatalogPage() {
             </div>
           ))}
         </div>
+      ) : items.length === 0 ? (
+        <EmptyState
+          icon={<svg fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" strokeLinecap="round" /></svg>}
+          title="Nothing to show here"
+          description="This catalog didn't return any titles. It may be temporarily unavailable — try again in a moment."
+        />
       ) : (
         <>
           <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>

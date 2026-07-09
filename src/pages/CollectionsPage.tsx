@@ -336,7 +336,7 @@ function SortableShelfCard({
           : isDragging
           ? 'scale-[1.05] border-white/20 shadow-[0_20px_60px_rgba(0,0,0,0.6)]'
           : 'border-white/[0.08] hover:border-white/[0.15] hover:shadow-[0_8px_32px_rgba(0,0,0,0.4)] hover:scale-[1.02]'
-      }`}
+      } ${!row.enabled ? 'opacity-55 saturate-[0.6] hover:opacity-90' : ''}`}
     >
       {/* Poster mosaic background */}
       <PosterMosaic posters={posters} loading={loading} />
@@ -350,6 +350,11 @@ function SortableShelfCard({
           <span className={`w-1.5 h-1.5 rounded-full ${sourceColor(row).split(' ').find(c => c.startsWith('bg-'))?.replace(/\/\d+/, '') || 'bg-white/40'}`} />
           {locked ? 'Fixed' : shelfSourceLabel(row)}
         </span>
+        {!row.enabled && (
+          <span className="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold bg-black/50 backdrop-blur-sm text-amber-300/90">
+            Hidden
+          </span>
+        )}
       </div>
 
       {/* Hover actions (top-right) */}
@@ -357,12 +362,18 @@ function SortableShelfCard({
         <button
           onClick={(e) => { e.stopPropagation(); onToggle() }}
           onPointerDown={(e) => e.stopPropagation()}
-          title="Hide from home"
+          title={row.enabled ? 'Hide from home' : 'Show on home'}
           className="w-7 h-7 rounded-lg flex items-center justify-center text-white/50 hover:text-white hover:bg-white/[0.12] transition-colors cursor-pointer"
         >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" />
-          </svg>
+          {row.enabled ? (
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+          ) : (
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+            </svg>
+          )}
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); onEdit() }}
@@ -3012,6 +3023,9 @@ export default function CollectionsPage() {
 
   const [addOverlay, setAddOverlay] = useState(false)
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
+  const [shelfQuery, setShelfQuery] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('All')
+  const [showHidden, setShowHidden] = useState(false)
 
   const heroRow = homeRows.find((r) => r.layout === 'hero')
   const allWidgetRows = homeRows
@@ -3023,11 +3037,27 @@ export default function CollectionsPage() {
   const widgetRows = [...fixedWidgetRows, ...movableWidgetRows]
   const hiddenCount = allWidgetRows.length - widgetRows.length
 
+  const sourceOptions = useMemo(
+    () => ['All', ...new Set(allWidgetRows.map(shelfSourceLabel))],
+    [allWidgetRows],
+  )
+  const filtering = shelfQuery.trim() !== '' || sourceFilter !== 'All' || showHidden
+  const visibleRows = useMemo(() => {
+    let rows = showHidden ? allWidgetRows : widgetRows
+    if (sourceFilter !== 'All') rows = rows.filter((r) => shelfSourceLabel(r) === sourceFilter)
+    const q = shelfQuery.trim().toLowerCase()
+    if (q) rows = rows.filter((r) => r.title.toLowerCase().includes(q))
+    return rows
+  }, [showHidden, allWidgetRows, widgetRows, sourceFilter, shelfQuery])
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   )
 
   const handleDragEnd = (event: DragEndEvent) => {
+    // Reordering while a filter narrows the grid would corrupt the saved
+    // order — the indices wouldn't line up with the full list.
+    if (filtering) return
     const { active, over } = event
     if (over && active.id !== over.id) {
       const activeRow = widgetRows.find((r) => r.id === active.id)
@@ -3070,20 +3100,65 @@ export default function CollectionsPage() {
 
         {/* Shelves grid */}
         <div>
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-3">
               <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
-                Shelves ({widgetRows.length})
+                Shelves ({visibleRows.length})
               </h2>
               {hiddenCount > 0 && (
-                <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md">
-                  {hiddenCount} hidden
-                </span>
+                <button
+                  onClick={() => setShowHidden((v) => !v)}
+                  className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
+                    showHidden
+                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/25'
+                      : 'text-white/30 hover:text-white/60 bg-white/[0.04] hover:bg-white/[0.07] border-white/[0.06]'
+                  }`}
+                >
+                  {showHidden ? 'Hide hidden shelves' : `Show ${hiddenCount} hidden`}
+                </button>
               )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {sourceOptions.length > 2 && sourceOptions.map((src) => (
+                <button
+                  key={src}
+                  onClick={() => setSourceFilter(src)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all cursor-pointer border ${
+                    sourceFilter === src
+                      ? 'bg-accent/15 text-accent border-accent/25'
+                      : 'text-white/40 hover:text-white/70 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
+                  }`}
+                >
+                  {src}
+                </button>
+              ))}
+              <div className="relative">
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-white/25" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="text"
+                  value={shelfQuery}
+                  onChange={(e) => setShelfQuery(e.target.value)}
+                  placeholder="Filter shelves..."
+                  className="w-44 pl-8 pr-7 py-1.5 bg-white/[0.04] border border-white/[0.06] rounded-lg text-[11px] text-white placeholder-white/25 focus:outline-none focus:bg-white/[0.07] focus:border-white/[0.12] transition-all"
+                />
+                {shelfQuery && (
+                  <button
+                    onClick={() => setShelfQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-white/25 hover:text-white/60 transition-colors cursor-pointer"
+                    aria-label="Clear filter"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
-          {widgetRows.length === 0 ? (
+          {widgetRows.length === 0 && hiddenCount === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 glass-panel-light rounded-2xl">
               <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-5">
                 <svg className="w-8 h-8 text-white/15" fill="none" stroke="currentColor" strokeWidth="1.2" viewBox="0 0 24 24">
@@ -3103,11 +3178,16 @@ export default function CollectionsPage() {
                 Add your first shelf
               </button>
             </div>
+          ) : visibleRows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 glass-panel-light rounded-2xl">
+              <p className="text-sm font-medium text-white/35 mb-1">No shelves match</p>
+              <p className="text-xs text-white/20">Try a different name or source filter.</p>
+            </div>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-              <SortableContext items={widgetRows.map((r) => r.id)} strategy={rectSortingStrategy}>
+              <SortableContext items={visibleRows.map((r) => r.id)} strategy={rectSortingStrategy}>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                  {widgetRows.map((row) => (
+                  {visibleRows.map((row) => (
                     <SortableShelfCard
                       key={row.id}
                       row={row}

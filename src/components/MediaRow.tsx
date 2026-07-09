@@ -13,12 +13,13 @@ interface MediaRowProps {
   showAllPath?: string
   forceShowAll?: boolean
   disableArtOverride?: boolean
+  disableTrailerPreview?: boolean
   showRank?: boolean
   headerLeftControls?: React.ReactNode
   headerRightControls?: React.ReactNode
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, showRank = false, headerLeftControls, headerRightControls }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const posterSize = useAppStore((s) => s.posterSize)
@@ -72,7 +73,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         </div>
         <div className="space-y-2">
           {rowItems.map((item) => (
-            <MediaCard key={item.id} item={item} layout="landscape" />
+            <MediaCard key={item.id} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
           ))}
         </div>
       </div>
@@ -121,6 +122,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
             item={item}
             layout={layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
+            disableTrailerPreview={disableTrailerPreview}
             rank={showRank ? idx + 1 : undefined}
           />
         ))}
