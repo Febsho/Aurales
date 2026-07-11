@@ -68,22 +68,95 @@ export default function ContextMenu() {
       setAdjusted({ x: ax, y: ay })
     }
     updatePosition()
+    const observer = new ResizeObserver(() => {
+      updatePosition()
+    })
+    observer.observe(menuRef.current)
     window.addEventListener('resize', updatePosition)
     window.addEventListener('scroll', updatePosition, true)
     return () => {
+      observer.disconnect()
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [open, x, y, providerStates.length, target?.kind])
+  }, [open, x, y])
+
+  const [enrichedItem, setEnrichedItem] = useState<SearchResult | null>(null)
 
   useEffect(() => {
-    if (!open || !target) { setProviderStates([]); return }
-    loadProviderStates()
+    if (!open || !target) {
+      setEnrichedItem(null)
+      return
+    }
+
+    let cancelled = false
+    const rawItem = target.item
+    setEnrichedItem(rawItem)
+
+    ;(async () => {
+      try {
+        const imdbId = rawItem.imdbId || (String(rawItem.id).startsWith('tt') ? rawItem.id : undefined)
+        const tvdbId = rawItem.tvdbId ? Number(String(rawItem.tvdbId).replace(/^tvdb[-:]/i, '')) : undefined
+        const tmdbId = rawItem.tmdbId ? Number(String(rawItem.tmdbId).replace(/^tmdb[-:]/i, '')) : undefined
+
+        // 1. Check local anime lists (fast O(1) in-memory lookup)
+        const { lookupByImdbId, lookupByTvdbId, lookupByTmdbId } = await import('../services/animeLists')
+        let animeMatch: any = null
+        if (imdbId) {
+          animeMatch = await lookupByImdbId(imdbId)
+        }
+        if (!animeMatch && tvdbId) {
+          const matches = await lookupByTvdbId(tvdbId)
+          if (matches && matches.length > 0) animeMatch = matches[0]
+        }
+        if (!animeMatch && tmdbId) {
+          const matches = await lookupByTmdbId(tmdbId)
+          if (matches.length > 0) animeMatch = matches[0]
+        }
+
+        if (animeMatch && !cancelled) {
+          const tmdbIdVal = typeof animeMatch.themoviedb_id === 'object'
+            ? (animeMatch.themoviedb_id.tv || animeMatch.themoviedb_id.movie)
+            : animeMatch.themoviedb_id
+
+          setEnrichedItem({
+            ...rawItem,
+            isAnime: true,
+            anilistId: rawItem.anilistId || animeMatch.anilist_id,
+            malId: rawItem.malId || animeMatch.mal_id,
+            tvdbId: rawItem.tvdbId || animeMatch.tvdb_id,
+            tmdbId: rawItem.tmdbId || tmdbIdVal,
+            imdbId: rawItem.imdbId || (Array.isArray(animeMatch.imdb_id) ? animeMatch.imdb_id[0] : animeMatch.imdb_id),
+          })
+          return
+        }
+
+        // 2. Resolve TMDB ID if needed and not anime
+        if (!tmdbId && imdbId && !cancelled) {
+          const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+          const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
+          if (found.tmdbId && !cancelled) {
+            setEnrichedItem({
+              ...rawItem,
+              tmdbId: String(found.tmdbId),
+            })
+          }
+        }
+      } catch (e) {
+        console.error('[ContextMenu] Enrichment failed:', e)
+      }
+    })()
+
+    return () => { cancelled = true }
   }, [open, target])
 
-  const loadProviderStates = useCallback(async () => {
+  useEffect(() => {
+    if (!open || !target || !enrichedItem) { setProviderStates([]); return }
+    loadProviderStates(enrichedItem)
+  }, [open, target, enrichedItem])
+
+  const loadProviderStates = useCallback(async (item: SearchResult) => {
     if (!target) return
-    const item = target.item
     const states: ProviderWatchState[] = []
 
     const localWatched = checkLocalWatched(item, target, watchProgress)
@@ -128,6 +201,8 @@ export default function ContextMenu() {
 
   const handleToggleProvider = useCallback(async (provider: ProviderKey) => {
     if (!target) return
+    const item = enrichedItem || target.item
+    const enrichedTarget = { ...target, item }
     const state = providerStates.find((s) => s.provider === provider)
     if (!state || state.loading) return
     const newWatched = !state.watched
@@ -135,15 +210,15 @@ export default function ContextMenu() {
 
     try {
       if (provider === 'local') {
-        await toggleLocalWatched(target, newWatched, watchProgress, setWatchProgress, removeWatchProgress)
+        await toggleLocalWatched(enrichedTarget, newWatched, watchProgress, setWatchProgress, removeWatchProgress)
       } else if (provider === 'trakt') {
-        await toggleTraktWatched(target, newWatched)
+        await toggleTraktWatched(enrichedTarget, newWatched)
       } else if (provider === 'simkl') {
-        await toggleSimklWatched(target, newWatched)
+        await toggleSimklWatched(enrichedTarget, newWatched)
       } else if (provider === 'pmdb') {
-        await togglePmdbWatched(target, newWatched)
+        await togglePmdbWatched(enrichedTarget, newWatched)
       } else if (provider === 'anilist') {
-        await toggleAniListWatched(target, newWatched)
+        await toggleAniListWatched(enrichedTarget, newWatched)
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
       setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, watched: newWatched, loading: false } : s))
@@ -153,10 +228,12 @@ export default function ContextMenu() {
       setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, loading: false } : s))
       toast('error', `Failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
-  }, [target, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast])
+  }, [target, enrichedItem, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast])
 
   const handleMarkAllProviders = useCallback(async (watched: boolean) => {
     if (!target) return
+    const item = enrichedItem || target.item
+    const enrichedTarget = { ...target, item }
     const connectedProviders = providerStates.filter((s) => s.connected && !s.loading)
     setProviderStates((prev) => prev.map((s) => s.connected ? { ...s, loading: true } : s))
 
@@ -164,15 +241,15 @@ export default function ContextMenu() {
       connectedProviders.map(async (s) => {
         if (s.watched === watched) return
         if (s.provider === 'local') {
-          await toggleLocalWatched(target, watched, watchProgress, setWatchProgress, removeWatchProgress)
+          await toggleLocalWatched(enrichedTarget, watched, watchProgress, setWatchProgress, removeWatchProgress)
         } else if (s.provider === 'trakt') {
-          await toggleTraktWatched(target, watched)
+          await toggleTraktWatched(enrichedTarget, watched)
         } else if (s.provider === 'simkl') {
-          await toggleSimklWatched(target, watched)
+          await toggleSimklWatched(enrichedTarget, watched)
         } else if (s.provider === 'pmdb') {
-          await togglePmdbWatched(target, watched)
+          await togglePmdbWatched(enrichedTarget, watched)
         } else if (s.provider === 'anilist') {
-          await toggleAniListWatched(target, watched)
+          await toggleAniListWatched(enrichedTarget, watched)
         }
       })
     )
@@ -194,11 +271,11 @@ export default function ContextMenu() {
     if (failed > 0) toast('warning', `${failed} provider(s) failed`)
     else toast('success', `${watched ? 'Marked' : 'Unmarked'} on all providers`)
     close()
-  }, [target, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast, close])
+  }, [target, enrichedItem, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast, close])
 
   const handleGoToDetail = useCallback(() => {
     if (!target) return
-    const item = target.item
+    const item = enrichedItem || target.item
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
     navigate(path, {
       state: {
@@ -211,27 +288,28 @@ export default function ContextMenu() {
       },
     })
     close()
-  }, [target, navigate, close])
+  }, [target, enrichedItem, navigate, close])
 
   const handleCopyId = useCallback(() => {
     if (!target) return
-    const item = target.item
+    const item = enrichedItem || target.item
     const ids = [item.imdbId, item.tmdbId ? `tmdb:${item.tmdbId}` : null, item.tvdbId ? `tvdb:${item.tvdbId}` : null, item.id].filter(Boolean).join(', ')
     navigator.clipboard.writeText(ids)
     toast('info', 'IDs copied')
     close()
-  }, [target, toast, close])
+  }, [target, enrichedItem, toast, close])
 
   const handleRecommendationFeedback = useCallback((kind: RecommendationFeedbackKind) => {
     if (!target) return
-    saveRecommendationFeedback(target.item, kind)
+    const item = enrichedItem || target.item
+    saveRecommendationFeedback(item, kind)
     toast('success', kind === 'more-like-this' ? 'Recommendations adjusted' : 'Feedback saved')
     close()
-  }, [target, toast, close])
+  }, [target, enrichedItem, toast, close])
 
   if (!open || !target) return null
 
-  const item = target.item
+  const item = enrichedItem || target.item
   const isEpisode = target.kind === 'episode'
   const isSeason = target.kind === 'season'
   const episodeStill = isEpisode ? target.episode.still : undefined
@@ -245,16 +323,16 @@ export default function ContextMenu() {
     <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={menuRef}
-        className="fixed min-w-[280px] max-w-[320px] rounded-2xl overflow-hidden border border-white/[0.12]"
+        className="fixed min-w-[280px] max-w-[320px] rounded-2xl overflow-hidden border border-white/[0.08]"
         style={{
           left: adjusted.x || x,
           top: adjusted.y || y,
           maxHeight: 'calc(100vh - 16px)',
           overflowY: 'auto',
-          background: 'rgba(20, 20, 22, 0.75)',
-          backdropFilter: 'blur(60px) saturate(200%)',
-          WebkitBackdropFilter: 'blur(60px) saturate(200%)',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.1)',
+          background: 'rgba(10, 10, 12, 0.45)',
+          backdropFilter: 'blur(40px) saturate(220%)',
+          WebkitBackdropFilter: 'blur(40px) saturate(220%)',
+          boxShadow: '0 32px 64px rgba(0,0,0,0.65), inset 0 1px 1px rgba(255,255,255,0.12)',
           animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)',
         }}
       >
@@ -288,7 +366,7 @@ export default function ContextMenu() {
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] font-semibold text-white truncate">{title}</p>
                   {!isSeason && item.year && (
-                    <p className="text-[11px] text-white/40 mt-0.5">{item.year} &middot; {item.type === 'movie' ? 'Movie' : 'Series'}</p>
+                    <p className="text-[11px] text-white/40 mt-0.5">{item.year} &middot; {isAnimeItem(item) ? 'Anime' : item.type === 'movie' ? 'Movie' : 'Series'}</p>
                   )}
                   {isSeason && (
                     <p className="text-[11px] text-white/40 mt-0.5">{target.episodeCount} episodes</p>
@@ -386,12 +464,10 @@ export default function ContextMenu() {
 // ─── Helper functions ─────────────────────────────────────────────────────────
 
 function isAnimeItem(item: SearchResult): boolean {
-  return item.type === 'series' && !!(
-    item.isAnime ||
-    item.provider === 'anilist' ||
-    item.provider === 'mal' ||
-    /^(mal|anilist)[-:]/i.test(item.id)
-  )
+  const genres = item.genres?.map((g) => g.toLowerCase()) || []
+  const hasAnimeGenre = genres.includes('anime') || item.isAnime || item.provider === 'anilist' || item.provider === 'mal' || /^(mal|anilist)[-:]/i.test(item.id)
+  const isDiscoverAnime = (item.genreIds?.includes(16) || genres.includes('animation')) && item.originalLanguage === 'ja'
+  return Boolean(hasAnimeGenre || isDiscoverAnime)
 }
 
 function seasonEpToAbsolute(season: number, episode: number, seasonCounts?: { season: number; count: number }[]): number | null {
@@ -847,15 +923,15 @@ async function toggleSimklWatched(
     const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl } = await import('../services/simkl/history')
     const mapping = await mapAnimeEpisodeForTarget(item, target)
     const animeProviders = await mapAnimeProvidersForTarget(item, target)
-    const providerEpisode = mapping?.simkl?.episodeNumber
-      ? { season: mapping.simkl.seasonNumber ?? target.seasonNumber, episode: mapping.simkl.episodeNumber }
-      : animeProviders?.simklId
+    const providerEpisode = animeProviders?.simklId
       ? { season: 1, episode: animeProviders.episode }
+      : mapping?.simkl?.episodeNumber
+      ? { season: mapping.simkl.seasonNumber ?? target.seasonNumber, episode: mapping.simkl.episodeNumber }
       : appEpisodeForTarget(target.seasonNumber, target.episode.episodeNumber)
-    const mappedRef = mapping?.simkl?.id
-      ? { ...mediaRef, simklId: mapping.simkl.id }
-      : animeProviders?.simklId
+    const mappedRef = animeProviders?.simklId
       ? { ...mediaRef, simklId: animeProviders.simklId, malId: animeProviders.malId ?? mediaRef.malId }
+      : mapping?.simkl?.id
+      ? { ...mediaRef, simklId: mapping.simkl.id }
       : mediaRef
     if (watched) await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
     else await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
@@ -979,18 +1055,19 @@ async function toggleAniListWatched(
     }
   } else {
     if (target.kind === 'episode') {
-      const { saveAniListProgress, unmarkAniListEpisodeExact } = await import('../services/anilist')
+      const { getAniListProgress, saveAniListProgress, unmarkAniListEpisodeExact } = await import('../services/anilist')
       const resolved = await resolveAniListEpisodeForTarget(item, target)
       for (const id of aniListExactMarkIds(item)) {
         unmarkAniListEpisodeExact(id, target.seasonNumber, target.episode.episodeNumber)
       }
+      const current = await getAniListProgress(resolved.anilistId, resolved.malId)
       const previousEpisode = resolved.episode - 1
-      if (previousEpisode > 0) {
+      if (current?.progress === resolved.episode && previousEpisode > 0) {
         await saveAniListProgress(
           { anilistId: resolved.anilistId, malId: resolved.malId, episode: previousEpisode } as any,
           0.5,
         )
-      } else {
+      } else if (current?.progress === 1 && resolved.episode === 1) {
         const { removeFromAniListList } = await import('../services/anilist')
         await removeFromAniListList(resolved.anilistId as number | undefined, resolved.malId as number | undefined)
       }

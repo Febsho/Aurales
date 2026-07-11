@@ -20,7 +20,7 @@ async function tmdbFetch(path: string, params: Record<string, string> = {}): Pro
 
 export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number | undefined> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
-  const id = String(tmdbId).replace('tmdb-', '')
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
   const result = await cachedFetch<number | null>(`tmdb_tvdb_id:${id}`, async () => {
@@ -64,7 +64,7 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
 export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const mediaType = type === 'movie' ? 'movie' : 'tv'
-  const id = String(tmdbId).replace('tmdb-', '')
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
   const result = await cachedFetch<string | null>(`tmdb_backdrop_v2:${mediaType}:${id}`, async () => {
@@ -84,7 +84,7 @@ export async function getTmdbCardMetadata(
 ): Promise<{ poster?: string; backdrop?: string; logo?: string; genre?: string }> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return {}
   const mediaType = type === 'movie' ? 'movie' : 'tv'
-  const id = String(tmdbId).replace('tmdb-', '')
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return {}
 
   return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; genre?: string }>(`tmdb_card_v2:${mediaType}:${id}`, async () => {
@@ -110,7 +110,7 @@ export async function getTmdbHeroCast(
 ): Promise<{ name: string; photo?: string }[]> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return []
   const mediaType = type === 'movie' ? 'movie' : 'tv'
-  const id = String(tmdbId).replace('tmdb-', '')
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return []
 
   return cachedFetch<{ name: string; photo?: string }[]>(`tmdb_hero_cast:${mediaType}:${id}`, async () => {
@@ -169,7 +169,7 @@ export const tmdbProvider: MetadataProvider = {
   },
 
   async getMovie(id: string): Promise<MovieDetails> {
-    const tmdbId = id.replace('tmdb-', '')
+    const tmdbId = id.replace(/^tmdb[-:]/i, '')
     const [details, credits, videos, recs, images] = await Promise.all([
       tmdbFetch(`/movie/${tmdbId}`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/movie/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
@@ -240,7 +240,7 @@ export const tmdbProvider: MetadataProvider = {
   },
 
   async getShow(id: string): Promise<ShowDetails> {
-    const tmdbId = id.replace('tmdb-', '')
+    const tmdbId = id.replace(/^tmdb[-:]/i, '')
     const [details, credits, videos, recs, images, externalIds] = await Promise.all([
       tmdbFetch(`/tv/${tmdbId}`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/tv/${tmdbId}/credits`) as Promise<Record<string, unknown>>,
@@ -316,7 +316,7 @@ export const tmdbProvider: MetadataProvider = {
   },
 
   async getSeason(showId: string, season: number): Promise<SeasonDetails> {
-    const tmdbId = showId.replace('tmdb-', '')
+    const tmdbId = showId.replace(/^tmdb[-:]/i, '')
 
     return cachedFetch<SeasonDetails>(`tmdb_season:${tmdbId}:${season}`, async () => {
       const data = await tmdbFetch(`/tv/${tmdbId}/season/${season}`) as Record<string, unknown>
@@ -344,7 +344,7 @@ export const tmdbProvider: MetadataProvider = {
   },
 
   async getEpisode(showId: string, season: number, episode: number): Promise<EpisodeDetails> {
-    const tmdbId = showId.replace('tmdb-', '')
+    const tmdbId = showId.replace(/^tmdb[-:]/i, '')
     const data = await tmdbFetch(`/tv/${tmdbId}/season/${season}/episode/${episode}`) as Record<string, unknown>
     return {
       id: String(data.id),
@@ -562,7 +562,7 @@ export async function getTmdbCertifications(type: 'movie' | 'tv'): Promise<Recor
   }
 }
 
-export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<SearchResult[]> {
+export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1): Promise<SearchResult[]> {
   const params: Record<string, string> = {
     page: String(page),
   }
@@ -597,7 +597,9 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<Se
   // Certifications
   if (config.certificationCountry && config.certificationCountry !== 'None') {
     params.certification_country = config.certificationCountry
-    if (config.certification && config.certification !== 'None') {
+    if (config.certificationLte) {
+      params['certification.lte'] = config.certificationLte
+    } else if (config.certification && config.certification !== 'None') {
       params.certification = config.certification
     }
   }
@@ -674,9 +676,16 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<Se
 
   const endpoint = config.contentType === 'movie' ? '/discover/movie' : '/discover/tv'
 
-  const data = await tmdbFetch(endpoint, params) as { results: Record<string, unknown>[] }
-  const results = data.results || []
-  const items = results.map((r) => mapSearchResult(r, config.contentType === 'movie' ? 'movie' : 'series'))
+  const pageNumbers = Array.from({ length: Math.max(1, pages) }, (_, i) => page + i)
+  const settled = await Promise.allSettled(pageNumbers.map(async (p) => {
+    const data = await tmdbFetch(endpoint, { ...params, page: String(p) }) as { results: Record<string, unknown>[] }
+    return (data.results || []).map((r) => mapSearchResult(r, config.contentType === 'movie' ? 'movie' : 'series'))
+  }))
+  if (settled.every((result) => result.status === 'rejected')) {
+    throw (settled[0] as PromiseRejectedResult).reason
+  }
+  const merged = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+  const items = merged.filter((item, idx, self) => self.findIndex((other) => other.id === item.id) === idx)
 
   // If the source is TVDB, Simkl, or AniList, we keep the TMDB results (filters are TMDB-specific)
   // but we can label the item's provider.
@@ -690,17 +699,22 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<Se
   return items
 }
 
+// Discover rows fetch 3 TMDB pages (~50 titles) so catalogs can show a full preview.
+export const DISCOVER_ROW_PAGES = 3
+export const DISCOVER_ROW_LIMIT = 50
+
 export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: string, forceRefresh = false, onStaleRefreshed?: (items: SearchResult[]) => void): Promise<SearchResult[]> {
   const cacheKey = catalogCacheKey({ scope: 'discover', id: rowId || 'row', mediaType: config.contentType, region: config.releaseRegion, provider: config.source, filters: config })
   const ttlSeconds = config.cacheTtl || CACHE_TTLS.DISCOVER
+  const fetchRow = () => discoverTmdb(config, 1, DISCOVER_ROW_PAGES).then((items) => items.slice(0, DISCOVER_ROW_LIMIT))
 
   if (forceRefresh) {
-    const fresh = await discoverTmdb(config)
+    const fresh = await fetchRow()
     await cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds })
     return fresh
   }
 
-  return cachedFetch<SearchResult[]>(cacheKey, () => discoverTmdb(config), {
+  return cachedFetch<SearchResult[]>(cacheKey, fetchRow, {
     category: CACHE_CATEGORIES.DISCOVER,
     ttlSeconds,
     onStaleRefreshed,

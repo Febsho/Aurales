@@ -248,6 +248,7 @@ export interface DiscoverConfig {
   releaseRegion?: string
   certificationCountry?: string
   certification?: string
+  certificationLte?: string
   filterMode?: 'Exact' | 'Loose'
   
   // People, Companies, and Keywords

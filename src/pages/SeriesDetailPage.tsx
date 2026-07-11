@@ -32,6 +32,7 @@ import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { setDiscordBrowsingActivity } from '../services/discord'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -109,6 +110,9 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
+    // Metadata source affects the resolved title/overview/artwork, so it must be
+    // part of the cache key — otherwise switching sources returns a stale detail page
+    meta: [settings.seriesMetadataSource, settings.seriesMetadataFallback, settings.animeMetadataSource, settings.animeMetadataFallback, settings.animeTitleLanguage],
   })
 }
 
@@ -190,9 +194,18 @@ function cleanId(val: unknown): string | undefined {
 
 
 function addonMetaToShow(meta: Record<string, unknown>, id: string): ShowDetails {
-  const genres = Array.isArray(meta.genres) ? meta.genres as string[] :
+  const rawGenres = Array.isArray(meta.genres) ? meta.genres :
     (typeof meta.genre === 'string' ? (meta.genre as string).split(',').map(g => g.trim()) :
-    (Array.isArray(meta.genre) ? meta.genre as string[] : []))
+    (Array.isArray(meta.genre) ? meta.genre : []))
+
+  const genres = rawGenres.map((g) => {
+    if (typeof g === 'string') return g
+    if (g && typeof g === 'object') {
+      const obj = g as Record<string, unknown>
+      return String(obj.name || obj.title || obj.genre || JSON.stringify(obj))
+    }
+    return String(g)
+  }).filter(Boolean)
 
   const videos = Array.isArray(meta.videos) ? meta.videos as Record<string, unknown>[] : []
   const seasons: { seasonNumber: number; name: string; episodeCount: number }[] = []
@@ -662,13 +675,33 @@ export default function SeriesDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const seriesMetadataSource = useAppStore((s) => s.seriesMetadataSource)
+  const seriesMetadataFallback = useAppStore((s) => s.seriesMetadataFallback)
+  const animeMetadataSource = useAppStore((s) => s.animeMetadataSource)
+  const animeMetadataFallback = useAppStore((s) => s.animeMetadataFallback)
+  const animeTitleLanguage = useAppStore((s) => s.animeTitleLanguage)
+  const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const artSettingsSignature = useMemo(() => JSON.stringify({
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
-  }), [artProviders, fanartApiKey, customArtUrls])
+    meta: [seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage],
+  }), [artProviders, fanartApiKey, customArtUrls, seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage])
 
   const isAnime = show?.isAnime ?? !!(id && /^(mal|anilist)[-:]/i.test(id))
+
+  useEffect(() => {
+    if (!show || !discordRichPresence) return
+    const image = show.poster?.startsWith('http') ? show.poster : undefined
+    setDiscordBrowsingActivity({
+      details: `Browsing ${show.title}`,
+      state: isAnime ? 'Anime Series' : 'Series',
+      largeImage: image || 'aurales_logo',
+      largeText: show.title,
+      activityType: 3,
+    }).catch(() => {})
+    return () => { setDiscordBrowsingActivity().catch(() => {}) }
+  }, [show?.title, show?.poster, isAnime, discordRichPresence])
 
   useEffect(() => {
     async function load() {
@@ -782,6 +815,13 @@ export default function SeriesDetailPage() {
             const first = matches[0]
             if (first.anilist_id) knownIds.anilistId = String(first.anilist_id)
             if (first.mal_id) knownIds.malId = String(first.mal_id)
+            if (first.themoviedb_id) {
+              const tmdbVal = typeof first.themoviedb_id === 'object'
+                ? (first.themoviedb_id.tv || first.themoviedb_id.movie)
+                : first.themoviedb_id
+              if (tmdbVal) knownIds.tmdbId = String(tmdbVal)
+            }
+            if (first.imdb_id) knownIds.imdbId = Array.isArray(first.imdb_id) ? first.imdb_id[0] : first.imdb_id
           }
         } catch (_) { /* ignore */ }
       }
@@ -879,14 +919,11 @@ export default function SeriesDetailPage() {
       }
 
       // Early anime detection — route to TVDB first for anime
-      const isAnimeEarly = !!(
-        (id && /^(mal|anilist)[-:]/i.test(id)) ||
-        state.provider === 'anilist'
-      )
+      const isAnimeEarly = isAnimeLocal
       let isAnimeLate = false
 
       if (isAnimeEarly) {
-        console.log('[SeriesDetailPage] Anime detected early, using TVDB-first flow')
+        console.log('[SeriesDetailPage] Anime detected, using TVDB-first flow')
 
         // IDs already resolved by early resolve above — use knownIds directly
         let tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
@@ -897,6 +934,13 @@ export default function SeriesDetailPage() {
           try {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
+            if (found.tmdbId) tmdbId = String(found.tmdbId)
+          } catch (_) { /* continue */ }
+        }
+        if (!tmdbId && tvdbId) {
+          try {
+            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+            const found = await tmdbFindByExternalId(tvdbId, 'tvdb_id')
             if (found.tmdbId) tmdbId = String(found.tmdbId)
           } catch (_) { /* continue */ }
         }
@@ -1076,10 +1120,14 @@ export default function SeriesDetailPage() {
           saveAnimeMapping(mapping).catch(() => {})
         }
       } else {
-        // Non-anime: TMDB first (existing flow)
+        // Non-anime: Respect settings metadata source configuration
+        const primarySource = useAppStore.getState().seriesMetadataSource ?? 'tmdb'
+        const useFallback = useAppStore.getState().seriesMetadataFallback ?? true
 
-        // Resolve TMDB ID if we don't have one
         let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
+        let tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
+
+        // Resolve TMDB ID if needed
         if (!tmdbId && knownIds.imdbId) {
           try {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
@@ -1087,12 +1135,75 @@ export default function SeriesDetailPage() {
             if (found.tmdbId) tmdbId = String(found.tmdbId)
           } catch (_) { /* continue */ }
         }
-
-        // Fetch from TMDB (primary for non-anime)
-        if (tmdbId) {
+        if (!tmdbId && tvdbId) {
           try {
-            appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+            const found = await tmdbFindByExternalId(tvdbId, 'tvdb_id')
+            if (found.tmdbId) tmdbId = String(found.tmdbId)
           } catch (_) { /* continue */ }
+        }
+
+        // Resolve TVDB ID if needed
+        if (!tvdbId && tmdbId) {
+          try {
+            const data = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            if (data.tvdbId) tvdbId = String(data.tvdbId).replace(/^[a-z_]+[-:]/i, '')
+          } catch (_) { /* continue */ }
+        }
+        if (!tvdbId && knownIds.imdbId) {
+          try {
+            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+            const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
+            if (found.tmdbId) {
+              const data = await tmdbProvider.getShow(`tmdb-${found.tmdbId}`)
+              if (data.tvdbId) tvdbId = String(data.tvdbId).replace(/^[a-z_]+[-:]/i, '')
+            }
+          } catch (_) { /* continue */ }
+        }
+
+        // Fetch using configuration priority
+        if (primarySource === 'tvdb') {
+          if (tvdbId) {
+            try {
+              appResult = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+            } catch (_) { /* continue */ }
+          }
+          if (!appResult && useFallback && tmdbId) {
+            try {
+              appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            } catch (_) { /* continue */ }
+          }
+        } else {
+          if (tmdbId) {
+            try {
+              appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            } catch (_) { /* continue */ }
+          }
+          if (!appResult && useFallback && tvdbId) {
+            try {
+              appResult = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+            } catch (_) { /* continue */ }
+          }
+        }
+
+        // Enrich TVDB series with TMDB artwork and supplementary metadata (logos, cast, trailers, etc.)
+        if (appResult && appResult.provider === 'tvdb' && tmdbId) {
+          try {
+            const tmdbData = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            appResult = {
+              ...appResult,
+              tmdbId: appResult.tmdbId || tmdbId,
+              poster: appResult.poster || tmdbData.poster,
+              backdrop: appResult.backdrop || tmdbData.backdrop,
+              logo: tmdbData.logo || appResult.logo,
+              overview: appResult.overview || tmdbData.overview,
+              rating: tmdbData.rating || appResult.rating,
+              cast: appResult.cast.length > 0 ? appResult.cast : tmdbData.cast,
+              recommendations: tmdbData.recommendations.length > 0 ? tmdbData.recommendations : appResult.recommendations,
+              trailers: tmdbData.trailers.length > 0 ? tmdbData.trailers : appResult.trailers,
+              imdbId: appResult.imdbId || tmdbData.imdbId,
+            }
+          } catch (_) { /* ignore fallback errors */ }
         }
 
         // Detect anime late (via anime-lists) and apply TVDB override
@@ -1112,8 +1223,10 @@ export default function SeriesDetailPage() {
               const resolved = await resolveAnimeIds({
                 imdbId: appResult.imdbId,
                 tmdbId: tmdbId ? Number(tmdbId) : undefined,
+                tvdbId: appResult.tvdbId ? Number(String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
               })
               if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
+              if (resolved?.tmdbId) appResult = { ...appResult, tmdbId: appResult.tmdbId || resolved.tmdbId }
               if (resolved?.anilistId) appResult = { ...appResult, anilistId: appResult.anilistId || resolved.anilistId }
               if (resolved?.malId) appResult = { ...appResult, malId: appResult.malId || resolved.malId }
             } catch (_) { /* continue */ }
@@ -1204,6 +1317,7 @@ export default function SeriesDetailPage() {
             id: id || appResult.id,
             malId: appResult.malId || knownIds.malId,
             anilistId: appResult.anilistId || knownIds.anilistId,
+            tmdbId: appResult.tmdbId || knownIds.tmdbId,
           }
 
           // Persist late-detected anime mapping

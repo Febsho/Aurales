@@ -26,6 +26,7 @@ import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { setDiscordBrowsingActivity } from '../services/discord'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -172,6 +173,7 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
+    meta: [settings.movieMetadataSource, settings.movieMetadataFallback],
   })
 }
 
@@ -201,11 +203,15 @@ export default function MovieDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
+  const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
+  const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const artSettingsSignature = useMemo(() => JSON.stringify({
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
-  }), [artProviders, fanartApiKey, customArtUrls])
+    meta: [movieMetadataSource, movieMetadataFallback],
+  }), [artProviders, fanartApiKey, customArtUrls, movieMetadataSource, movieMetadataFallback])
   const [movieWatched, setMovieWatched] = useState(false)
 
   useEffect(() => {
@@ -660,6 +666,21 @@ export default function MovieDetailPage() {
 
   useGlobalBackdrop(movie?.backdrop || movie?.poster)
 
+  const movieIsAnime = !!(movie?.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
+
+  useEffect(() => {
+    if (!movie || !discordRichPresence) return
+    const image = movie.poster?.startsWith('http') ? movie.poster : undefined
+    setDiscordBrowsingActivity({
+      details: `Browsing ${movie.title}`,
+      state: movieIsAnime ? 'Anime Movie' : 'Movie',
+      largeImage: image || 'aurales_logo',
+      largeText: movie.title,
+      activityType: 3,
+    }).catch(() => {})
+    return () => { setDiscordBrowsingActivity().catch(() => {}) }
+  }, [movie?.title, movie?.poster, movieIsAnime, discordRichPresence])
+
   if (loading || !movie) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -670,8 +691,6 @@ export default function MovieDetailPage() {
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''
   const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
-  const movieIsAnime = !!(movie.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
-
   return (
     <div className="min-h-screen bg-black pb-12">
       <DetailHero

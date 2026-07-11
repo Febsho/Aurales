@@ -28,6 +28,12 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
 
+  React.useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollLeft = 0
+    }
+  }, [items, title])
+
   const showAllWidthClass = useMemo(() => {
     if (layout === 'landscape') {
       switch (posterSize) {
@@ -72,6 +78,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const visibleItems = items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)
   const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > CATALOG_PREVIEW_LIMIT || items.length > CATALOG_PREVIEW_LIMIT))
   const rowItems = shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems
+  // Pass the full row along so catalogs without a backing config (e.g. Discover
+  // sections) can render everything even when the seeded cache is unavailable
+  const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: visibleItems } }) }
 
   if (visibleItems.length === 0) return null
 
@@ -103,7 +112,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           {headerLeftControls}
           {showAllPath ? (
             <button
-              onClick={() => navigate(showAllPath)}
+              onClick={openShowAll}
               className="group/title flex items-center gap-1.5 cursor-pointer focus-ring rounded-lg"
               title="Show all"
             >
@@ -163,7 +172,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         ))}
         {shouldShowAll && showAllPath && (
           <button
-            onClick={() => navigate(showAllPath)}
+            onClick={openShowAll}
             className={`flex-shrink-0 bg-white/5 hover:bg-white/10 border border-white/10 flex flex-col items-center justify-center text-white transition-colors self-start ${
               cinematic
                 ? 'w-[clamp(10rem,13vw,13rem)] h-[clamp(15rem,19.5vw,19.5rem)] rounded-2xl focus-ring'

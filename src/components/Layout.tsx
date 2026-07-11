@@ -16,6 +16,7 @@ const WatchTogetherAutoPlayer = lazy(() => import('./watch-together/WatchTogethe
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
@@ -57,7 +58,7 @@ export default function Layout() {
   }, [searchBarVisible, searchFocused, isSearchPage, scheduleHideSearchBar])
 
   useEffect(() => {
-    if (!cinematic) {
+    if (!usesTopNav) {
       setCinematicNavHidden(false)
       setCinematicAtTop(true)
       return
@@ -77,7 +78,7 @@ export default function Layout() {
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [cinematic, location.pathname])
+  }, [usesTopNav, location.pathname])
 
   useLayoutEffect(() => {
     if (!location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
@@ -104,9 +105,9 @@ export default function Layout() {
   // Cinematic has no persistent search bar elsewhere, so focus the input as
   // soon as the search page opens (e.g. via the top-nav search icon).
   useEffect(() => {
-    if (!cinematic || !isSearchPage) return
+    if (!usesTopNav || !isSearchPage) return
     requestAnimationFrame(() => inputRef.current?.focus())
-  }, [cinematic, isSearchPage])
+  }, [usesTopNav, isSearchPage])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -121,7 +122,7 @@ export default function Layout() {
       if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
         // In cinematic the search input only exists on the search page.
-        if (cinematic && location.pathname !== '/search') {
+        if (usesTopNav && location.pathname !== '/search') {
           navigate('/search')
           return
         }
@@ -137,7 +138,7 @@ export default function Layout() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goBack, cinematic, location.pathname, navigate])
+  }, [goBack, usesTopNav, location.pathname, navigate])
 
   useEffect(() => {
     if (!cinematic) return
@@ -253,14 +254,14 @@ export default function Layout() {
   )
 
   return (
-    <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${!cinematic && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`}>
+    <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${!usesTopNav && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`}>
       <TitleBar />
-      {cinematic
+      {usesTopNav
         ? <CinematicTopNav hidden={cinematicNavHidden} />
         : <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />}
       {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
           Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
-      {cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
+      {usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
         <div className="cinematic-nav-brand pointer-events-none absolute left-8 top-8 z-[71] flex h-20 items-center gap-3 px-2 transition-opacity duration-200">
           <img src="/app-logo.png?v=3" alt="" className="h-10 w-10 object-contain" />
           <span className="text-xl font-black tracking-tight text-white" style={{ textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>Aurales</span>
@@ -268,8 +269,8 @@ export default function Layout() {
       )}
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
-      <div className={`relative flex flex-col min-h-0 h-full ${!cinematic && sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
-        {!cinematic && location.pathname !== '/' && location.pathname !== '/discover' && (
+      <div className={`relative flex flex-col min-h-0 h-full ${!usesTopNav && sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
+        {!usesTopNav && location.pathname !== '/' && location.pathname !== '/discover' && (
           <button
             type="button"
             onClick={goBack}
@@ -291,12 +292,12 @@ export default function Layout() {
           </button>
         )}
         {/* Narrow center proximity zone — triggers search bar near the indicator */}
-        {!cinematic && <div
+        {!usesTopNav && <div
           className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-10 z-[9997]"
           onMouseEnter={showSearchBar}
         />}
         {/* Glowing indicator pill — visible when search bar is hidden */}
-        {!cinematic && !searchBarVisible && !searchFocused && !isSearchPage && (
+        {!usesTopNav && !searchBarVisible && !searchFocused && !isSearchPage && (
           <div
             className="absolute top-0 left-1/2 -translate-x-1/2 z-[9998] w-28 h-1 rounded-b-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
             aria-hidden="true"
@@ -304,15 +305,15 @@ export default function Layout() {
         )}
         {/* Search bar — slides down from top; in cinematic it only exists on
             the search page, sitting below the floating top nav */}
-        {(!cinematic || isSearchPage) && <header
-          onMouseEnter={cinematic ? undefined : showSearchBar}
-          onMouseLeave={cinematic ? undefined : scheduleHideSearchBar}
+        {(!usesTopNav || isSearchPage) && <header
+          onMouseEnter={usesTopNav ? undefined : showSearchBar}
+          onMouseLeave={usesTopNav ? undefined : scheduleHideSearchBar}
           className={[
             'absolute left-1/2 z-[9998]',
             'w-[min(32rem,calc(100vw-20rem))]',
             'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
-            cinematic || searchBarVisible || searchFocused || isSearchPage
-              ? `-translate-x-1/2 ${cinematic ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
+            usesTopNav || searchBarVisible || searchFocused || isSearchPage
+              ? `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
               : '-translate-x-1/2 -top-8 opacity-0 pointer-events-none',
           ].join(' ')}
         >

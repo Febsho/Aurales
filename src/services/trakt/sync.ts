@@ -1,4 +1,6 @@
 import { traktFetch } from './auth'
+import { cachedFetch } from '../cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 
 export interface TraktWatchedItem {
   plays: number
@@ -41,12 +43,17 @@ export interface TraktSeasonProgress {
 }
 
 export async function getShowWatchedProgress(showId: string): Promise<TraktSeasonProgress[]> {
-  const data = await traktFetch(`/shows/${showId}/progress/watched`) as Record<string, unknown>
-  const seasons = data.seasons as { number: number; episodes: { number: number; completed: boolean }[] }[]
-  return (seasons || []).map((s) => ({
-    number: s.number,
-    episodes: (s.episodes || []).map((e) => ({ number: e.number, completed: e.completed })),
-  }))
+  return cachedFetch<TraktSeasonProgress[]>(`watched:trakt:show-progress:${showId}`, async () => {
+    const data = await traktFetch(`/shows/${showId}/progress/watched`) as Record<string, unknown>
+    const seasons = data.seasons as { number: number; episodes: { number: number; completed: boolean }[] }[]
+    return (seasons || []).map((s) => ({
+      number: s.number,
+      episodes: (s.episodes || []).map((e) => ({ number: e.number, completed: e.completed })),
+    }))
+  }, {
+    category: CACHE_CATEGORIES.WATCHED_STATUS,
+    ttlSeconds: CACHE_TTLS.WATCHED_STATUS,
+  })
 }
 
 export async function getCollection(type: 'movies' | 'shows'): Promise<unknown[]> {

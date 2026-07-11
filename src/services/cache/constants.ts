@@ -17,7 +17,7 @@ export const CACHE_CATEGORIES = {
 export const CACHE_TTLS = {
   ADDON_CATALOG: 3 * 60 * 60,
   PROVIDER_LIST: 30 * 60,
-  DISCOVER: 12 * 60 * 60,
+  DISCOVER: 24 * 60 * 60,
   TMDB_CARD: 7 * 24 * 60 * 60,
   TVDB_CARD: 7 * 24 * 60 * 60,
   TMDB_TVDB_ID: 30 * 24 * 60 * 60,

@@ -31,6 +31,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
@@ -138,7 +139,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
     if (!onActiveBackdropChange || isSmall) return
     const activeItem = displayItems[activeIndex]
     if (!activeItem) { onActiveBackdropChange(undefined); return }
-    const backdrop = activeItem.backdrop || upgradedBackdrops[String(activeItem.id)] || activeItem.poster
+    const backdrop = upgradedBackdrops[String(activeItem.id)] || activeItem.backdrop || activeItem.poster
     onActiveBackdropChange(backdrop)
   }, [activeIndex, upgradedBackdrops, providerArt, customArtKey, isSmall])
 
@@ -235,7 +236,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
   return (
     <div
       ref={heroRef}
-      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 mt-[7.25rem] w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? 'mt-[7.25rem]' : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
@@ -271,7 +272,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
               <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
                 {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
                   <img
-                    src={itm.backdrop || upgradedBackdrops[String(itm.id)]}
+                    src={upgradedBackdrops[String(itm.id)] || itm.backdrop}
                     alt=""
                     className="absolute inset-0 w-full h-full object-cover"
                     style={{ objectPosition: 'center 20%' }}
