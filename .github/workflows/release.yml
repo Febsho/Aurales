@@ -38,7 +38,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Prepare bundled mpv
+      - name: Prepare bundled mpv and yt-dlp
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
@@ -65,6 +65,9 @@ jobs:
           Invoke-WebRequest -Uri $devAsset.browser_download_url -OutFile $dev7z
           & 7z x $dev7z -o"$tmp" -y libmpv-2.dll | Out-Null
           Copy-Item (Join-Path $tmp 'libmpv-2.dll') 'src-tauri/binaries/libmpv-2.dll' -Force
+
+          # Fetch the latest yt-dlp binary
+          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe' -UserAgent 'aurales-ci'
 
           Write-Host "Bundled binaries:"
           Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize
