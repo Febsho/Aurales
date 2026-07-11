@@ -86,9 +86,9 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
       <div className="flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
         <div className="flex items-center gap-2.5">
           <img
-            src="/app-logo.png?v=2"
+            src="/app-logo.png?v=3"
             alt=""
-            className="w-8 h-8 object-cover flex-shrink-0 shadow-[0_6px_18px_rgba(0,0,0,0.35)]"
+            className="w-8 h-8 object-contain flex-shrink-0"
             draggable={false}
           />
           <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>

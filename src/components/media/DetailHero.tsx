@@ -1,5 +1,34 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { CastMember, CrewMember } from '../../types'
+
+function ExpandableOverview({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  const textRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    setExpanded(false)
+    const el = textRef.current
+    if (!el) return
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text])
+
+  const interactive = clamped || expanded
+  return (
+    <p
+      ref={textRef}
+      onClick={interactive ? () => setExpanded((value) => !value) : undefined}
+      title={!expanded && clamped ? 'Show full description' : undefined}
+      className={`text-[15px] text-white/55 leading-relaxed max-w-xl mb-4 transition-colors ${expanded ? '' : 'line-clamp-3'} ${interactive ? 'cursor-pointer hover:text-white/75' : ''}`}
+    >
+      {text}
+    </p>
+  )
+}
 
 interface DetailHeroProps {
   title: string
@@ -140,12 +169,8 @@ export default function DetailHero({
         {/* Compact colored rating badges */}
         {ratingsStrip}
 
-        {/* Overview */}
-        {overview && (
-          <p className="text-[15px] text-white/55 leading-relaxed max-w-xl line-clamp-2 mb-4">
-            {overview}
-          </p>
-        )}
+        {/* Overview: clamped to 3 lines; click to expand when it overflows */}
+        {overview && <ExpandableOverview text={overview} />}
 
         {/* Actor avatars */}
         {topCast.length > 0 && (

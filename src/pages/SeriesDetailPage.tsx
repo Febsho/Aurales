@@ -80,6 +80,7 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  autoPlay?: boolean
 }
 
 interface SeriesDetailCacheEntry {
@@ -394,11 +395,21 @@ export default function SeriesDetailPage() {
   const tvdbMappedEpisodesRef = useRef<Record<number, SeasonDetails['episodes']>>({})
   const [streamOpen, setStreamOpen] = useState(false)
   const [streamEpisode, setStreamEpisode] = useState<{ season: number; episode: number } | null>(null)
+  const [streamResolving, setStreamResolving] = useState(false)
+  const autoPlayHandledRef = useRef(false)
   const [watchedEpisodes, setWatchedEpisodes] = useState<Set<string>>(new Set())
   const fetchedSeasonRef = useRef<string | null>(null)
   const episodeScrollRef = useRef<HTMLDivElement>(null)
   const seasonScrollRef = useRef<HTMLDivElement>(null)
   const [showSeasonArrows, setShowSeasonArrows] = useState(false)
+
+  useEffect(() => {
+    const episode = seasonData?.episodes[0]
+    if (!show || !state.autoPlay || autoPlayHandledRef.current || !episode) return
+    autoPlayHandledRef.current = true
+    setStreamEpisode({ season: episode.seasonNumber, episode: episode.episodeNumber })
+    setStreamOpen(true)
+  }, [show, seasonData, state.autoPlay])
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
   const resumePriorityOrder = useAppStore((s) => s.resumePriorityOrder)
@@ -1910,6 +1921,7 @@ export default function SeriesDetailPage() {
               <Button
                 variant="white"
                 size="xl"
+                loading={streamResolving && streamEpisode?.season === defaultEpisode.season && streamEpisode?.episode === defaultEpisode.episode}
                 icon={
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M8 5v14l11-7z" />
@@ -2097,6 +2109,11 @@ export default function SeriesDetailPage() {
                     className="episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer"
                   >
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated shadow-xl mb-3 ring-1 ring-white/10 group-hover:ring-accent/50 transition-all">
+                      {streamResolving && streamEpisode?.season === ep.seasonNumber && streamEpisode?.episode === ep.episodeNumber && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 backdrop-blur-sm">
+                          <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+                        </div>
+                      )}
                       {ep.still ? (
                         <img
                           src={highQualityEpisodeStill(ep.still)}
@@ -2256,6 +2273,7 @@ export default function SeriesDetailPage() {
         anilistId={show.anilistId != null ? Number(show.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        onResolvingChange={setStreamResolving}
       />
 
       {show.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={show.trailers} />}

@@ -370,10 +370,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         title={allDone ? 'Mark as unwatched' : 'Mark as watched'}
         className={[
           'min-w-13 h-13 px-4 rounded-full flex items-center justify-center gap-2 transition-all duration-200 cursor-pointer',
-          'border backdrop-blur-md',
+          'border backdrop-blur-xl shadow-2xl',
           allDone
             ? 'bg-accent/20 border-accent/35 text-accent hover:bg-accent/30'
-            : 'bg-white/[0.08] border-white/[0.12] text-white/70 hover:text-white hover:bg-white/[0.15] hover:border-white/25',
+            : 'bg-black/30 border-white/10 text-white/70 hover:text-white hover:bg-white/10 hover:border-white/20',
         ].join(' ')}
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">

@@ -35,7 +35,7 @@ import {
 } from '../services/simkl/auth'
 import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
 import { syncProviderNow } from '../services/providerSync'
-import { loadAddonManifest, installAddon } from '../services/addons'
+import { getAddonConfigureUrl, loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
@@ -46,7 +46,7 @@ import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
 // Lazy: debug player only loads when the test player is opened
 const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
-import { cacheStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
+import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { checkForUpdate, downloadAndInstall, getAppVersion } from '../services/updater'
 import type { UpdateInfo, UpdateProgress } from '../services/updater'
@@ -370,8 +370,13 @@ function AppUpdateSection() {
 function CacheManagementSection() {
   const [stats, setStats] = useState<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> } | null>(null)
   const [cacheMessage, setCacheMessage] = useState('')
+  const [runtimeStats, setRuntimeStats] = useState(cacheRuntimeStats())
 
-  useEffect(() => { cacheStats().then(setStats) }, [])
+  useEffect(() => {
+    cacheStats().then(setStats)
+    const timer = window.setInterval(() => setRuntimeStats(cacheRuntimeStats()), 2000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const handleClearCategory = async (category: string) => {
     const cleared = await cacheClearCategory(category)
@@ -393,6 +398,8 @@ function CacheManagementSection() {
     cacheStats().then(setStats)
     setTimeout(() => setCacheMessage(''), 3000)
   }
+
+  const handleRefreshCatalogs = () => window.location.reload()
 
   const categoryLabels: Record<string, string> = {
     [CACHE_CATEGORIES.ADDON_CATALOG]: 'Addon Catalogs',
@@ -419,9 +426,19 @@ function CacheManagementSection() {
       )}
       {stats && (
         <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 px-1 sm:grid-cols-4">
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Session</div><div className="text-sm font-bold">{runtimeStats.memoryEntries} entries</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Memory size</div><div className="text-sm font-bold">{(runtimeStats.approximateBytes / 1024 / 1024).toFixed(1)} MB</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Refreshing</div><div className="text-sm font-bold">{runtimeStats.pendingRequests}</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Errors</div><div className="text-sm font-bold">{runtimeStats.errorEntries}</div></div>
+          </div>
+          <div className="px-1 text-[11px] text-white/35">Last refresh: {runtimeStats.lastRefreshTime ? new Date(runtimeStats.lastRefreshTime).toLocaleString() : 'Not this session'}</div>
           <div className="flex items-center justify-between px-1">
             <span className="text-xs text-muted">{stats.totalEntries} cached entries ({stats.expiredEntries} expired)</span>
             <div className="flex gap-2">
+              <button onClick={handleRefreshCatalogs} className="px-3 py-1.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 text-accent rounded-lg text-xs font-bold cursor-pointer">
+                Refresh Catalogs
+              </button>
               <button onClick={handleClearAll} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 rounded-lg text-xs font-bold cursor-pointer">
                 Clear All
               </button>
@@ -1071,7 +1088,7 @@ export default function SettingsPage() {
         byId.set(addon.manifest.id, addon)
         imported++
       } else if (existing.url !== addon.url || JSON.stringify(existing.manifest) !== JSON.stringify(addon.manifest)) {
-        byId.set(addon.manifest.id, { ...addon, enabled: existing.enabled })
+        byId.set(addon.manifest.id, { ...addon, enabled: existing.enabled, displayName: existing.displayName })
         updated++
       }
     }
@@ -1531,10 +1548,12 @@ export default function SettingsPage() {
   // Find the active category item for header info
   const activeItem = categories.flatMap(c => c.items).find(i => i.id === activeTab)
 
+  const cinematicTheme = store.interfaceTheme === 'cinematic'
+
   return (
     <div className="flex h-full">
       {/* ─── Left Sidebar ─── */}
-      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 pt-14 space-y-5">
+      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
         {categories.map((cat) => (
           <div key={cat.title}>
             <div className="text-[10px] font-bold uppercase tracking-wider text-white/30 px-3 mb-1.5">{cat.title}</div>
@@ -1562,7 +1581,7 @@ export default function SettingsPage() {
       </div>
 
       {/* ─── Right Content ─── */}
-      <div className="flex-1 overflow-y-auto p-8 pt-14">
+      <div className="flex-1 overflow-y-auto p-8 pt-32">
         <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
         <p className="text-[13px] text-white/35 mb-8">{activeItem?.description ?? ''}</p>
 
@@ -2247,17 +2266,33 @@ export default function SettingsPage() {
                           <img src={addon.manifest.logo} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
                         )}
                         <div className="min-w-0">
-                          <div className="text-sm font-bold text-white truncate">{addon.manifest.name}</div>
+                          <input
+                            defaultValue={addon.displayName ?? addon.manifest.name}
+                            onBlur={(event) => store.renameAddon(addon.manifest.id, event.target.value)}
+                            onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                            aria-label={`Rename ${addon.manifest.name}`}
+                            className="w-full max-w-sm rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-bold text-white outline-none hover:border-white/10 hover:bg-white/[0.04] focus:border-accent/50 focus:bg-white/[0.06]"
+                          />
                           <div className="text-xs text-white/35 truncate mt-0.5">{addon.manifest.description || addon.url}</div>
 
                         </div>
                       </div>
-                      <button
-                        onClick={() => store.removeAddon(addon.manifest.id)}
-                        className="text-xs text-red-400 hover:text-red-300 font-semibold transition-colors flex-shrink-0 ml-3 cursor-pointer"
-                      >
-                        Remove
-                      </button>
+                      <div className="ml-3 flex flex-shrink-0 items-center gap-3">
+                        <a
+                          href={getAddonConfigureUrl(addon.url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg bg-white/[0.07] px-3 py-1.5 text-xs font-semibold text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+                        >
+                          Configure
+                        </a>
+                        <button
+                          onClick={() => store.removeAddon(addon.manifest.id)}
+                          className="text-xs text-red-400 hover:text-red-300 font-semibold transition-colors cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
                   ))
                 ) : (
@@ -2274,6 +2309,19 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'interface' && (
             <>
+              <SettingSection title="Interface Theme" description="Choose the classic Aurales layout or a cinematic TV-focused browsing experience.">
+                <SettingRow label="Theme" description="Cinematic TV uses top navigation, larger focus targets, and unified horizontal rows.">
+                  <select
+                    value={store.interfaceTheme}
+                    onChange={(event) => store.setInterfaceTheme(event.target.value as 'default' | 'cinematic')}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                  >
+                    <option value="default">Default Aurales</option>
+                    <option value="cinematic">Cinematic TV</option>
+                  </select>
+                </SettingRow>
+              </SettingSection>
+
               {/* Accent Color */}
               <SettingSection title="Accent Color" description="Choose your interface highlight color.">
                 <div className="px-6 py-4">
@@ -2512,38 +2560,6 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              {/* Continue Watching screenshots */}
-              <SettingSection title="Continue Watching Screenshots" description="Save a frame when you back out so the card shows where you left off.">
-                <div className="px-6 py-4">
-                  <label className="text-[10px] text-white/35 mb-2 block font-extrabold uppercase tracking-wider">Keep frames for</label>
-                  <div className="flex flex-wrap gap-2">
-                    {(['none', '1_week', '30_days', '3_months', '6_months', '1_year'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { none: 'None', '1_week': '1 week', '30_days': '30 days', '3_months': '3 months', '6_months': '6 months', '1_year': '1 year' }
-                      const active = store.keepFramesFor === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setKeepFramesFor(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {labelMap[opt]}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-                <SettingRow label="Clear all saved frames" description={store.savedFramesCount > 0 ? `${store.savedFramesCount} frames stored.` : 'No frames saved.'}>
-                  <button
-                    onClick={() => store.setSavedFramesCount(0)}
-                    disabled={store.savedFramesCount === 0}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-white/[0.06]"
-                  >
-                    Clear all
-                  </button>
-                </SettingRow>
-              </SettingSection>
             </>
           )}
 
@@ -3328,7 +3344,7 @@ export default function SettingsPage() {
 
               {/* Auto-skip */}
               <SettingSection>
-                <SettingRow label="Auto-play first stream" description="Skip stream selection and start the first playable stream automatically.">
+                <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
                   <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
                 </SettingRow>
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">

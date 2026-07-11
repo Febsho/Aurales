@@ -8,6 +8,8 @@ import type { SearchResult } from '../types'
 import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { saveRecommendationFeedback } from '../services/discovery/feedbackStore'
+import type { RecommendationFeedbackKind } from '../services/discovery/types'
 
 const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
   local: { label: 'Local', color: '#a3a3a3' },
@@ -220,6 +222,13 @@ export default function ContextMenu() {
     close()
   }, [target, toast, close])
 
+  const handleRecommendationFeedback = useCallback((kind: RecommendationFeedbackKind) => {
+    if (!target) return
+    saveRecommendationFeedback(target.item, kind)
+    toast('success', kind === 'more-like-this' ? 'Recommendations adjusted' : 'Feedback saved')
+    close()
+  }, [target, toast, close])
+
   if (!open || !target) return null
 
   const item = target.item
@@ -362,6 +371,10 @@ export default function ContextMenu() {
               <span className="text-[13px] text-white/70">Copy IDs</span>
             </button>
           </div>
+          {target.kind === 'media' && <div className="border-t border-white/[0.08] px-1.5 py-1.5">
+            <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/25">Recommendations</p>
+            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-white/70 transition-colors hover:bg-white/[0.08]">{label}</button>)}
+          </div>}
         </div>
       </div>
     </div>

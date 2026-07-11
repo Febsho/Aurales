@@ -23,9 +23,15 @@ interface MediaCardProps {
   disableArtOverride?: boolean
   disableTrailerPreview?: boolean
   rank?: number
+  onFocusItem?: (item: SearchResult) => void
+  onUnfocusItem?: (item: SearchResult) => void
+  cinematicMode?: boolean
+  cinematicFocused?: boolean
+  /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
+  cinematicExpand?: boolean
 }
 
-function MediaCard({ item, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank }: MediaCardProps) {
+function MediaCard({ item, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
@@ -290,6 +296,23 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     })
   }
 
+  const revealExpandedCard = useCallback(() => {
+    const card = cardRef.current
+    if (!card || !cinematicMode || !cinematicExpand) return
+    window.setTimeout(() => {
+      const row = card.closest<HTMLElement>('.cinematic-row-track')
+      if (!row) return
+      const cardRect = card.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const inset = 24
+      if (cardRect.right > rowRect.right - inset) {
+        row.scrollBy({ left: cardRect.right - rowRect.right + inset, behavior: 'smooth' })
+      } else if (cardRect.left < rowRect.left + inset) {
+        row.scrollBy({ left: cardRect.left - rowRect.left - inset, behavior: 'smooth' })
+      }
+    }, 380)
+  }, [cinematicMode, cinematicExpand])
+
   useEffect(() => {
     const query = window.matchMedia?.('(prefers-reduced-motion: reduce)')
     if (!query) return
@@ -328,7 +351,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
 
   const openHoverPreview = useCallback(() => {
     setSuppressPosterHover(false)
-    if (disableTrailerPreview || layout !== 'poster' || reducedMotion || !posterTrailerPreviews) return
+    if (cinematicMode && !cinematicExpand) return
+    if (disableTrailerPreview || (layout !== 'poster' && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
     if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
 
@@ -349,15 +373,67 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         setHoverPreviewOpen(true)
       }).catch(() => undefined)
     }, posterTrailerHoverDelayMs)
-  }, [disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
 
-  if (layout === 'landscape') {
+  if (cinematicMode) {
+    const cinematicGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+      || resolvedGenre
+    const focusMedia = landscapeBackdrop || posterUrl
+    const expanded = cinematicFocused && cinematicExpand
     return (
       <button
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
+        onFocus={() => { onFocusItem?.(displayItem); revealExpandedCard(); openHoverPreview() }}
+        onBlur={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        onMouseEnter={() => { onFocusItem?.(displayItem); revealExpandedCard(); openHoverPreview() }}
+        onMouseLeave={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
+      >
+        <div className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border bg-surface-elevated transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
+          {posterUrl && <img src={posterUrl} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
+          {expanded && focusMedia && <img src={focusMedia} alt="" className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
+          {expanded && hoverPreviewOpen && hoverTrailer && <TrailerPreview trailer={hoverTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} className="absolute inset-0 z-[5]" />}
+          {!posterUrl && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
+          <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
+          {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
+            {displayItem.logo ? <img src={displayItem.logo} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
+          </div>}
+          {!isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
+        </div>
+        <div className={`absolute left-0 top-full grid w-full transition-[grid-template-rows,opacity] duration-300 ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+          <div className="overflow-hidden">
+            <div className="px-2 pt-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
+                {cinematicGenre && <span>{cinematicGenre}</span>}
+                {cinematicGenre && displayItem.year && <span className="text-white/30">•</span>}
+                {displayItem.year && <span>{displayItem.year}</span>}
+                {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
+                {displayItem.provider && <><span className="text-white/30">•</span><span className="capitalize">{displayItem.provider}</span></>}
+              </div>
+              {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
+            </div>
+          </div>
+        </div>
+      </button>
+    )
+  }
+
+  if (layout === 'landscape') {
+    const cinematicLandscapeExpanded = cinematicMode && cinematicFocused && cinematicExpand
+    const cinematicWidth = cinematicMode
+      ? cinematicLandscapeExpanded ? 'w-[min(52vw,52rem)]' : 'w-[clamp(15rem,18vw,21rem)]'
+      : widthClass
+    return (
+      <button
+        ref={cardRef}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onFocus={() => onFocusItem?.(displayItem)}
+        onMouseEnter={() => onFocusItem?.(displayItem)}
+        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicWidth}`}
       >
         <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
           {landscapeBackdrop ? (
@@ -406,9 +482,13 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
 
           {/* Media Info Overlay */}
           <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1">
-            <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-              {displayItem.title}
-            </h3>
+            {cinematicLandscapeExpanded && displayItem.logo ? (
+              <img src={displayItem.logo} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" />
+            ) : (
+              <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+                {displayItem.title}
+              </h3>
+            )}
             <div className="flex items-center gap-2">
               {displayItem.year && (
                 <span className="text-xs text-gray-300 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
@@ -418,6 +498,18 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
             </div>
           </div>
         </div>
+        {cinematicLandscapeExpanded && (
+          <div className="px-2 pt-4 pb-1 animate-[cinematic-panel-in_180ms_cubic-bezier(.16,1,.3,1)]">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
+              {displayItem.genres?.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
+              {displayItem.genres?.length && displayItem.year ? <span className="text-white/30">•</span> : null}
+              {displayItem.year && <span>{displayItem.year}</span>}
+              {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
+              {displayItem.provider && <><span className="text-white/30">•</span><span className="capitalize">{displayItem.provider}</span></>}
+            </div>
+            {displayItem.overview && <p className="line-clamp-2 max-w-xl text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
+          </div>
+        )}
       </button>
     )
   }
@@ -436,9 +528,9 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      onMouseEnter={openHoverPreview}
+      onMouseEnter={() => { onFocusItem?.(displayItem); openHoverPreview() }}
       onMouseLeave={closeHoverPreview}
-      onFocus={openHoverPreview}
+      onFocus={() => { onFocusItem?.(displayItem); openHoverPreview() }}
       onBlur={closeHoverPreview}
       className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring ${snapCollapse ? 'transition-none' : 'transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]'} ${cardWidthClass} ${posterSlotHeightClass} ${cardLiftClass}`}
     >

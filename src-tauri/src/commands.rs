@@ -1082,6 +1082,75 @@ fn find_mpv() -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
+fn find_ytdlp() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("yt-dlp.exe"));
+            candidates.push(dir.join("yt-dlp-x86_64-pc-windows-msvc.exe"));
+            candidates.push(dir.join("binaries").join("yt-dlp.exe"));
+            candidates.push(dir.join("binaries").join("yt-dlp-x86_64-pc-windows-msvc.exe"));
+        }
+    }
+    candidates.push(
+        PathBuf::from("src-tauri")
+            .join("binaries")
+            .join("yt-dlp-x86_64-pc-windows-msvc.exe"),
+    );
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
+// Resolves a YouTube video to direct stream URLs via the bundled yt-dlp
+// (1080p video + audio; yt-dlp handles YouTube's anti-bot measures and keeps
+// itself current). Returns the printed URLs: [video] or [video, audio].
+#[tauri::command]
+pub async fn ytdlp_resolve(video_id: String) -> Result<Vec<String>, String> {
+    if video_id.len() != 11
+        || !video_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid YouTube video id.".to_string());
+    }
+    let ytdlp = find_ytdlp().ok_or_else(|| "yt-dlp binary not found.".to_string())?;
+    tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let mut command = std::process::Command::new(&ytdlp);
+        command
+            .arg("-f")
+            .arg("bv*[height<=1080][vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/b[height<=1080][protocol^=http]")
+            .arg("--no-playlist")
+            .arg("--no-warnings")
+            .arg("--quiet")
+            .arg("--get-url")
+            .arg(format!("https://www.youtube.com/watch?v={video_id}"));
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to run yt-dlp: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "yt-dlp failed: {}",
+                stderr.lines().last().unwrap_or("unknown error")
+            ));
+        }
+        let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| l.starts_with("http"))
+            .collect();
+        if urls.is_empty() {
+            return Err("yt-dlp returned no stream URLs.".to_string());
+        }
+        Ok(urls)
+    })
+    .await
+    .map_err(|e| format!("yt-dlp task failed: {e}"))?
+}
+
 #[tauri::command]
 pub fn launch_embedded_mpv(
     app: tauri::AppHandle,
@@ -2624,6 +2693,55 @@ fn validate_http_url(url: &str) -> Result<(), String> {
     } else {
         Err("Only HTTP(S) subtitle URLs are supported.".to_string())
     }
+}
+
+// Fetches the latest GitHub release (tag, name, body markdown) so the update
+// prompt can show real patch notes. Uses the same build-time PAT as the
+// updater since the repo is private.
+#[tauri::command]
+pub async fn github_release_notes() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| -> Result<String, String> {
+        let mut request = ureq::get("https://api.github.com/repos/Febsho/Aurales/releases/latest")
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", "Aurales-App");
+        if let Some(token) = option_env!("AURALES_UPDATE_TOKEN") {
+            if !token.is_empty() {
+                request = request.set("Authorization", &format!("Bearer {token}"));
+            }
+        }
+        let response = request
+            .call()
+            .map_err(|e| format!("GitHub release lookup failed: {e}"))?;
+        response
+            .into_string()
+            .map_err(|e| format!("Failed to read GitHub response: {e}"))
+    })
+    .await
+    .map_err(|e| format!("GitHub release task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn ytproxy_port() -> Result<u16, String> {
+    crate::ytproxy::ensure_started().await
+}
+
+// Innertube player API call routed through the ytproxy agent so the returned
+// stream URLs are bound to the same IP family the proxy fetches chunks with.
+#[tauri::command]
+pub async fn innertube_player(body: String, user_agent: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let response = crate::ytproxy::agent()
+            .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .set("Content-Type", "application/json")
+            .set("User-Agent", &user_agent)
+            .send_string(&body)
+            .map_err(|e| format!("Innertube request failed: {e}"))?;
+        response
+            .into_string()
+            .map_err(|e| format!("Failed to read Innertube response: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Innertube task failed: {e}"))?
 }
 
 #[tauri::command]
