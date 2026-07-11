@@ -1,7 +1,7 @@
 services:
   watch-together:
     build: .
-    container_name: orynt-watch-together
+    container_name: aurales-watch-together
     restart: unless-stopped
     ports:
       - "3009:3009"

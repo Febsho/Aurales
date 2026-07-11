@@ -1,7 +1,7 @@
 {
-  "name": "orynt-watch-together-server",
+  "name": "aurales-watch-together-server",
   "version": "1.0.0",
-  "description": "Public WebSocket room server for Orynt Watch Together",
+  "description": "Public WebSocket room server for Aurales Watch Together",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
