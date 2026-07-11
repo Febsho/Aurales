@@ -243,11 +243,11 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
         disabled={anyLoading}
         className={[
           'group/wb h-11 rounded-full flex items-center justify-center transition-all duration-300 ease-out cursor-pointer overflow-hidden',
-          'border backdrop-blur-md',
+          'border backdrop-blur-xl shadow-2xl',
           'w-11 hover:w-auto hover:px-5 hover:gap-2',
           anyInList
             ? 'bg-white/20 border-white/30 text-white'
-            : 'bg-white/[0.08] border-white/[0.12] text-white/70 hover:text-white hover:bg-white/[0.15] hover:border-white/25',
+            : 'bg-black/30 border-white/10 text-white/70 hover:text-white hover:bg-white/10 hover:border-white/20',
           anyLoading && 'opacity-50 pointer-events-none',
           className,
         ].join(' ')}

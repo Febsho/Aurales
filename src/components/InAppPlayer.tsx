@@ -40,6 +40,8 @@ interface InAppPlayerProps {
   onClose: () => void
   onPickAnother: () => void
   onPlaybackError?: (message: string) => void
+  onPlaybackStarted?: () => void
+  onReportBad?: () => void
 }
 
 interface AudioTrackInfo {
@@ -61,7 +63,7 @@ function srtToVtt(input: string): string {
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError }: InAppPlayerProps) {
+export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onReportBad }: InAppPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)
@@ -255,6 +257,7 @@ IMPORTANT RULES:
     video.load()
     const playTimer = setTimeout(() => {
       video.play().then(() => {
+        onPlaybackStarted?.()
         setPaused(false)
         if (startTime && startTime > 0) {
           video.currentTime = startTime
@@ -514,10 +517,6 @@ IMPORTANT RULES:
       const cur = video ? video.currentTime : 0
       const dur = video ? video.duration || 0 : 0
       saveLocalProgress(cur, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
         const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
@@ -544,10 +543,6 @@ IMPORTANT RULES:
       const cur = video ? video.currentTime : 0
       const dur = video ? video.duration || 0 : 0
       saveLocalProgress(cur, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
         const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
@@ -656,6 +651,7 @@ IMPORTANT RULES:
       onMouseMove={showControlsTemporarily}
       onClick={showControlsTemporarily}
     >
+      {onReportBad && controlsVisible && <button onClick={(event) => { event.stopPropagation(); onReportBad() }} className="absolute right-6 top-6 z-30 rounded-full bg-black/65 px-4 py-2 text-xs text-white/70 hover:text-white">Report bad stream</button>}
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full bg-black object-contain"

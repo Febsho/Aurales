@@ -10,7 +10,8 @@ import { getAniListContinueWatching } from '../services/anilist'
 import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 // Lazy: StreamSelector pulls in the full player stack; only load it on demand
 const StreamSelector = lazy(() => import('./StreamSelector'))
-import type { HomeRowConfig } from '../types'
+import type { HomeRowConfig, SearchResult } from '../types'
+import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
 import { useContextMenu } from '../hooks/useContextMenu'
 
@@ -24,6 +25,19 @@ const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
   { value: 'mdblist', label: 'MDBList' },
   { value: 'anilist', label: 'AniList' },
 ]
+
+function revealContinueCard(card: HTMLElement) {
+  const row = card.closest<HTMLElement>('.cinematic-row-track')
+  if (!row) return
+  const cardRect = card.getBoundingClientRect()
+  const rowRect = row.getBoundingClientRect()
+  const inset = 24
+  if (cardRect.right > rowRect.right - inset) {
+    row.scrollBy({ left: cardRect.right - rowRect.right + inset, behavior: 'smooth' })
+  } else if (cardRect.left < rowRect.left + inset) {
+    row.scrollBy({ left: cardRect.left - rowRect.left - inset, behavior: 'smooth' })
+  }
+}
 
 interface ContinueWatchingRowProps {
   row: HomeRowConfig
@@ -82,7 +96,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
   const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
-  const keepFramesFor = useAppStore((s) => s.keepFramesFor)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const [focusedItem, setFocusedItem] = useState<ContinueWatchingItem | null>(null)
   const source = (row.sourceType || continueWatchingSource) as SourceType
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -405,7 +420,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 if (item.mediaType === 'series' && item.season != null && item.episode != null) {
                   const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
                   const updated = { ...item }
-                  if (keepFramesFor !== 'none' && episode.still) updated.backdrop = episode.still
+                  if (episode.still) updated.backdrop = episode.still
                   if (episode.runtime && episode.runtime > 0) {
                     const runtimeSec = episode.runtime * 60
                     updated.durationSeconds = runtimeSec
@@ -434,6 +449,34 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 // Keep local/provider artwork if TMDB cannot enrich the row.
               }
               return item
+            })
+          )
+
+          // Posters go through the same artwork pipeline as every other card
+          // (custom art URLs, then the preferred art provider), instead of
+          // whatever the sync provider (Simkl/Trakt/…) returned.
+          list = await Promise.all(
+            list.map(async (item) => {
+              try {
+                const custom = getSearchResultCustomArt({
+                  id: item.mediaId,
+                  title: item.title,
+                  type: item.mediaType,
+                  imdbId: item.imdbId,
+                  tmdbId: item.tmdbId != null ? String(item.tmdbId) : undefined,
+                  malId: item.malId,
+                  anilistId: item.anilistId,
+                } as unknown as SearchResult)
+                const provider = await resolveArtFromProviders(
+                  item.mediaType,
+                  { tmdbId: item.tmdbId, imdbId: item.imdbId },
+                  Boolean(item.malId || item.anilistId),
+                )
+                const poster = custom.poster || provider.poster || item.poster
+                return poster !== item.poster ? { ...item, poster } : item
+              } catch (_) {
+                return item
+              }
             })
           )
         }
@@ -495,6 +538,29 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
   const displayTitle = row.title
 
+  const playItem = (item: ContinueWatchingItem) => setStreamSelectorData({
+    mediaId: item.mediaId,
+    mediaType: item.mediaType,
+    title: item.title,
+    artwork: { poster: item.poster, backdrop: item.backdrop },
+    seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+    startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
+    tmdbId: item.tmdbId,
+    malId: item.malId,
+    anilistId: item.anilistId,
+  })
+
+  const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!cinematic || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > button'))
+    const index = cards.indexOf(document.activeElement as HTMLElement)
+    const next = cards[index + (event.key === 'ArrowRight' ? 1 : -1)]
+    if (!next) return
+    event.preventDefault()
+    next.focus({ preventScroll: true })
+    next.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+  }
+
   if (loading) {
     return (
       <div className="mb-8 select-none">
@@ -544,11 +610,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   }
 
   return (
-    <div className="mb-8">
-      <div className="flex items-center justify-between px-6 mb-4">
+    <section className={`mb-8 ${cinematic ? 'cinematic-media-row !mb-0' : ''}`}>
+      <div className="flex items-center justify-between px-6 mb-4 relative z-[60]">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
+          <h2 className={cinematic ? 'text-sm font-light tracking-wider uppercase text-white/40' : 'text-xl font-bold tracking-tight text-white/95'}>{displayTitle}</h2>
         </div>
         <div className="flex items-center gap-3">
           {sourceSelector}
@@ -576,90 +642,134 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pt-4 -mt-4 pb-6 scrollbar-none scroll-gpu"
+        onKeyDown={handleRowKeyDown}
+        className={`flex overflow-x-auto overflow-y-visible overscroll-x-contain scrollbar-none scroll-gpu ${cinematic ? 'items-center h-[212px] pt-4 -mt-4 pb-4 px-8 gap-5 snap-x snap-mandatory scroll-px-8 relative z-50' : 'pt-4 -mt-4 pb-6 px-6 gap-4'}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {items.map((item) => {
+        {/* ── Cinematic: Resume Spotlight layout ────────────────────── */}
+        {cinematic && items.map((item) => {
           const progressPercent = Math.min(100, Math.max(0, item.progressPct))
+          const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
           return (
             <button
               key={item.id}
-              onClick={() => {
-                setStreamSelectorData({
-                  mediaId: item.mediaId,
-                  mediaType: item.mediaType,
-                  title: item.title,
-                  artwork: { poster: item.poster, backdrop: item.backdrop },
-                  seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
-                  startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
-                  tmdbId: item.tmdbId,
-                  malId: item.malId,
-                  anilistId: item.anilistId,
-                })
+              onClick={() => playItem(item)}
+              onMouseEnter={() => setFocusedItem(item)}
+              onMouseLeave={() => setFocusedItem((current) => current?.id === item.id ? null : current)}
+              onFocus={(event) => {
+                setFocusedItem(item)
+                const card = event.currentTarget
+                window.setTimeout(() => revealContinueCard(card), 80)
               }}
+              onBlur={() => setFocusedItem((current) => current?.id === item.id ? null : current)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setCwMenu({ x: e.clientX, y: e.clientY, item })
               }}
-              className="flex-shrink-0 w-72 group cursor-pointer focus:outline-none text-left transition-all duration-300"
+              className="snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out w-[320px]"
             >
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/5 transition-all duration-400 ease-out group-hover:border-white/20 group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.15)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
+              <div className="relative overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out h-[180px] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
+                {/* 16:9 backdrop */}
                 {item.backdrop ? (
-                  <img
-                    src={item.backdrop}
-                    alt={item.title}
-                    className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-                    loading="lazy"
+                  <img 
+                    src={item.backdrop} 
+                    alt={item.title} 
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
+                    loading="lazy" 
+                    draggable={false} 
                   />
-                ) : item.poster ? (
-                  <img
-                    src={item.poster}
-                    alt={item.title}
-                    className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-                    loading="lazy"
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface flex items-center justify-center">
+                    <span className="font-bold text-muted/30 text-lg">{item.title?.charAt(0) || '?'}</span>
+                  </div>
+                )}
+                {/* Dark gradient */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
+                
+                {/* Liquid Glass Play Button Overlay */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-300 ease-out z-20">
+                  <span className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
+                    <svg className="w-6 h-6 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                  </span>
+                </div>
+
+                {/* Info overlay */}
+                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
+                  <h3 className="text-[14px] font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
+                    {item.subtitle ? (
+                      <span className="text-[9px] bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
+                    ) : (
+                      <span className="text-[9px] bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
+                    )}
+                    <span className="text-[11px] text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="absolute bottom-0 inset-x-0 h-[3px] bg-white/10 transition-all duration-300 group-hover:h-[4px]">
+                  <div className="h-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
+                </div>
+              </div>
+            </button>
+          )
+        })}
+        {/* ── Default: existing landscape cards ────────────────────── */}
+        {!cinematic && items.map((item) => {
+          const progressPercent = Math.min(100, Math.max(0, item.progressPct))
+          const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
+          return (
+            <button
+              key={item.id}
+              onClick={() => playItem(item)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setCwMenu({ x: e.clientX, y: e.clientY, item })
+              }}
+              className="snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out w-72 focus:outline-none"
+            >
+              <div className="relative rounded-xl overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out aspect-video group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
+                {/* 16:9 backdrop */}
+                {(item.backdrop || item.poster) ? (
+                  <img 
+                    src={item.backdrop || item.poster} 
+                    alt={item.title} 
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
+                    loading="lazy" 
+                    draggable={false} 
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
                     <span className="text-xl font-bold text-muted/30">{item.title?.charAt(0) || '?'}</span>
                   </div>
                 )}
-
+                
                 {/* Permanent subtle dark gradient overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent transition-opacity duration-300 group-hover:from-black/95" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
 
-                {/* Resume Play Icon Overlay on Hover */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                  <span className="w-12 h-12 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xl flex items-center justify-center">
-                    <svg className="w-6 h-6 ml-0.5 text-accent" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
+                {/* Liquid Glass Play Button Overlay */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-300 ease-out z-20">
+                  <span className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
+                    <svg className="w-5 h-5 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                   </span>
                 </div>
 
-                {/* Media Info Overlay */}
-                <div className="absolute bottom-4 left-3 right-3 flex flex-col gap-1 z-10">
-                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-                    {item.title}
-                  </h3>
-                  <div className="flex items-center gap-2">
+                {/* Info overlay */}
+                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
+                  <h3 className="text-[13px] font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
                     {item.subtitle ? (
-                      <span className="text-[10px] bg-accent/20 border border-accent/20 text-accent font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider">
-                        {item.subtitle}
-                      </span>
+                      <span className="text-[9px] bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
                     ) : (
-                      <span className="text-[10px] bg-white/10 text-gray-300 font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider">
-                        Movie
-                      </span>
+                      <span className="text-[9px] bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
                     )}
-                    <span className="text-[10px] text-gray-400 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-                      {formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))} left
-                    </span>
+                    <span className="text-[10px] text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
                   </div>
                 </div>
 
-                {/* Thin progress bar at the bottom */}
-                <div className="absolute bottom-0 inset-x-0 h-1 bg-white/10">
-                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
+                {/* Progress bar */}
+                <div className="absolute bottom-0 inset-x-0 h-[3px] bg-white/10 transition-all duration-300 group-hover:h-[4px]">
+                  <div className="h-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -745,7 +855,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           }}
         />
       )}
-    </div>
+    </section>
   )
 }
 

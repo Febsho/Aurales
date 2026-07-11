@@ -881,6 +881,7 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
 
 export default function HomePage() {
   const { homeRows, reorderHomeRows, removeHomeRow, resetHomeRows } = useAppStore();
+  const cinematic = useAppStore((state) => state.interfaceTheme === 'cinematic')
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
@@ -1016,7 +1017,7 @@ export default function HomePage() {
         <>
           {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
 
-          <div className="relative z-10" style={{ marginTop: heroRow ? '-40px' : undefined }}>
+          <div className="relative z-10" style={{ marginTop: heroRow ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                 <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>

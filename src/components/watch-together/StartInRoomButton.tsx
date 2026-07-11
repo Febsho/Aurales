@@ -64,27 +64,8 @@ export default function StartInRoomButton({ media, episode, className = '' }: St
     wsClient.selectMedia(roomMedia, roomEpisode)
   }
 
-  // No room — disabled state
-  if (!currentRoom) {
-    return (
-      <Button
-        variant="glass"
-        size="sm"
-        disabled
-        className={className}
-        icon={
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-        }
-      >
-        Create Room First
-      </Button>
-    )
-  }
+  // No room — the button only appears once a Watch Together room exists.
+  if (!currentRoom) return null
 
   // Guest — disabled with tooltip info
   if (!isHost) {

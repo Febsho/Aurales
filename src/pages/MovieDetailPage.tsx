@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
@@ -74,6 +74,7 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  autoPlay?: boolean
 }
 
 function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetails {
@@ -190,6 +191,8 @@ export default function MovieDetailPage() {
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_TRENDING)
   const [loading, setLoading] = useState(true)
   const [streamOpen, setStreamOpen] = useState(false)
+  const [streamResolving, setStreamResolving] = useState(false)
+  const autoPlayHandledRef = useRef(false)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -204,6 +207,12 @@ export default function MovieDetailPage() {
     custom: customArtUrls,
   }), [artProviders, fanartApiKey, customArtUrls])
   const [movieWatched, setMovieWatched] = useState(false)
+
+  useEffect(() => {
+    if (!movie || !state.autoPlay || autoPlayHandledRef.current) return
+    autoPlayHandledRef.current = true
+    setStreamOpen(true)
+  }, [movie, state.autoPlay])
 
   const progressItem = useMemo(() => {
     if (!movie) return null
@@ -697,6 +706,7 @@ export default function MovieDetailPage() {
             <Button
               variant="white"
               size="xl"
+              loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
@@ -795,6 +805,7 @@ export default function MovieDetailPage() {
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        onResolvingChange={setStreamResolving}
       />
 
       <DetailContentShell

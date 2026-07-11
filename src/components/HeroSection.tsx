@@ -7,8 +7,9 @@ import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../services/trailers'
 import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
-import TrailerPreview from './TrailerPreview'
+import HeroMpvTrailer from './HeroMpvTrailer'
 import { Button } from './ui'
+import WatchlistButton from './WatchlistButton'
 
 interface HeroSectionProps {
   items: SearchResult[]
@@ -29,6 +30,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
@@ -37,6 +39,9 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
   const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
   const [heroTrailerPlaying, setHeroTrailerPlaying] = useState(false)
   const [heroTrailerMuted, setHeroTrailerMuted] = useState(true)
+  // True while the embedded mpv trailer renders frames — the slide's backdrop
+  // must stop painting so the video shows through the transparent webview.
+  const [heroMpvVisible, setHeroMpvVisible] = useState(false)
 
   const goTo = useCallback(
     (i: number) => setActiveIndex(((i % count) + count) % count),
@@ -216,26 +221,26 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
     provider: 'provider' in item ? item.provider : undefined,
   }
 
-  const nav = () =>
-    navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: sharedState })
+  const nav = (autoPlay = false) =>
+    navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...sharedState, autoPlay } })
 
   const genreStr = item.genres?.[0] || ''
   const ratingLabel = item.rating ? `R` : ''
   const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
 
-  const heroHeight = isSmall ? '380px' : 'clamp(550px, 85vh, 1200px)'
+  const heroHeight = isSmall ? '380px' : cinematic ? 'clamp(520px, 68vh, 820px)' : 'clamp(550px, 85vh, 1200px)'
 
   const maskGradient = 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
 
   return (
     <div
       ref={heroRef}
-      className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 mt-[7.25rem] w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
         <div
-          className="absolute inset-0 pointer-events-none"
+          className={`absolute inset-0 pointer-events-none ${cinematic ? 'cinematic-hero-artwork' : ''}`}
           style={{ maskImage: maskGradient, WebkitMaskImage: maskGradient }}
         >
           {renderBackdrops()}
@@ -258,43 +263,54 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
               style={{
                 opacity: i === activeIndex ? 1 : 0,
                 pointerEvents: 'none',
-                filter: scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
-                transform: scrollBlur > 0 ? 'scale(1.05)' : undefined,
+                filter: !cinematic && scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
+                transform: !cinematic && scrollBlur > 0 ? 'scale(1.05)' : undefined,
                 transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
               }}
             >
-              {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
-                <img
-                  src={itm.backdrop || upgradedBackdrops[String(itm.id)]}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-cover"
-                  style={{ objectPosition: 'center 20%' }}
-                  draggable={false}
-                  loading={i === activeIndex ? 'eager' : 'lazy'}
-                  decoding="async"
-                  fetchPriority={i === activeIndex ? 'high' : 'auto'}
-                />
-              ) : itm.poster ? (
-                <>
+              <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
+                {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
                   <img
-                    src={itm.poster}
+                    src={itm.backdrop || upgradedBackdrops[String(itm.id)]}
                     alt=""
-                    className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ objectPosition: 'center 20%' }}
                     draggable={false}
+                    loading={i === activeIndex ? 'eager' : 'lazy'}
+                    decoding="async"
+                    fetchPriority={i === activeIndex ? 'high' : 'auto'}
                   />
-                  <div className="absolute inset-0 bg-black/50" />
-                </>
-              ) : (
-                <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
-              )}
+                ) : itm.poster ? (
+                  <>
+                    <img
+                      src={itm.poster}
+                      alt=""
+                      className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
+                      draggable={false}
+                    />
+                    <div className="absolute inset-0 bg-black/50" />
+                  </>
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+                )}
+              </div>
               {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (
-                <TrailerPreview
+                <HeroMpvTrailer
                   trailer={heroTrailer}
                   title={itm.title}
                   muted={heroTrailerMuted}
-                  preferVideoOnly={heroTrailerMuted}
-                  eager
                   className="pointer-events-none absolute inset-0"
+                  onPlayingChange={setHeroMpvVisible}
+                  onEnded={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
+                  onUnavailable={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
                 />
               )}
             </div>
@@ -352,7 +368,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
         )}
 
         {/* Content — bottom-left */}
-        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
+        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
           {/* Title */}
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (
@@ -378,14 +394,14 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
           )}
 
           {/* Compact colored rating badges */}
-          <RatingsStrip
+          {!cinematic && <RatingsStrip
             mediaType={type}
             imdbId={item.imdbId}
             tmdbId={item.tmdbId}
             tvdbId={item.tvdbId}
             className={isSmall ? 'mb-2.5' : 'mb-3'}
             compact
-          />
+          />}
 
           {/* Overview */}
           {item.overview && (
@@ -395,7 +411,7 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
           )}
 
           {/* Actor avatars */}
-          {!isSmall && cast.length > 0 && (
+          {!isSmall && !cinematic && cast.length > 0 && (
             <div className="flex items-center gap-2 mb-5">
               <div className="flex -space-x-1.5">
                 {cast.map((actor) => (
@@ -418,13 +434,17 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
 
           {/* Actions + dots */}
           <div className="flex items-center gap-3">
-            <Button
-              variant="white"
-              size={isSmall ? 'md' : 'lg'}
-              onClick={nav}
-            >
-              Go to {type === 'movie' ? 'Movie' : 'Series'}
-            </Button>
+            {cinematic ? (
+              <>
+                <Button variant="white" size="lg" onClick={() => nav(true)}>Play</Button>
+                <Button variant="secondary" size="lg" onClick={() => nav(false)}>More Info</Button>
+                <WatchlistButton mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
+              </>
+            ) : (
+              <Button variant="white" size={isSmall ? 'md' : 'lg'} onClick={() => nav(false)}>
+                Go to {type === 'movie' ? 'Movie' : 'Series'}
+              </Button>
+            )}
 
             {count > 1 && (
               <div className="flex items-center gap-1.5 ml-auto">
