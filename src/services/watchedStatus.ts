@@ -4,8 +4,8 @@ import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, lookupTmdbId, type PMDBWatchedItem } from './pmdb'
 import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
-import { getAniListEpisodeExactState, getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } from './anilist'
-import { mapTvdbEpisodeToAniList } from './animeLists'
+import { getAniListEpisodeExactState, getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId, searchAniListMediaId } from './anilist'
+import { mapTvdbEpisodeToAniList, resolveAnimeIds } from './animeLists'
 import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
@@ -15,6 +15,8 @@ export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | '
 export interface WatchedLookupItem {
   id: string
   type: 'movie' | 'series'
+  title?: string
+  year?: number
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
@@ -39,6 +41,8 @@ export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
   return {
     id: item.id,
     type: item.type,
+    title: item.title,
+    year: item.year,
     imdbId: item.imdbId,
     tmdbId: item.tmdbId,
     tvdbId: item.tvdbId,
@@ -162,6 +166,43 @@ export async function batchIsWatchedFromProviders(
   return result
 }
 
+/**
+ * Resolve the AniList media id for a lookup. Prefers the item's own AniList/MAL
+ * id, then falls back to the Fribb map via TVDB/TMDB/IMDB so anime that only
+ * carries TVDB/TMDB metadata (the common case in Aurales) still matches. The
+ * TVDB/TMDB fallback returns the series' primary (season-1) AniList entry, so
+ * callers must only use it where absolute-episode math or season===1 prevents
+ * leaking season-1 progress into later seasons.
+ */
+async function resolveAniListIdForLookup(item: WatchedLookupItem): Promise<number | null> {
+  const direct = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
+  if (direct) return direct
+  const tvdbId = item.tvdbId != null ? Number(String(item.tvdbId).replace('tvdb-', '')) : undefined
+  const tmdbId = item.tmdbId != null ? Number(String(item.tmdbId).replace('tmdb-', '')) : undefined
+  const mapped = await resolveAnimeIds({
+    tvdbId: Number.isFinite(tvdbId) ? tvdbId : undefined,
+    tmdbId: Number.isFinite(tmdbId) ? tmdbId : undefined,
+    imdbId: item.imdbId,
+  }).catch(() => null)
+  if (mapped?.anilistId || mapped?.malId) {
+    const viaMap = await resolveAniListMediaId({ anilistId: mapped.anilistId, malId: mapped.malId })
+    if (viaMap) return viaMap
+  }
+  // Last resort: fuzzy title search — for recent/obscure anime absent from the
+  // offline map and when the online mapping services are unavailable.
+  if (item.title) return searchAniListMediaId(item.title, typeof item.year === 'number' ? item.year : undefined)
+  return null
+}
+
+// The TVDB/TMDB→AniList fallback maps to the season-1 entry, so it is only safe
+// for episode checks when absolute-episode counts guard the comparison or the
+// episode belongs to season 1. Title/season checks use absolute ranges already.
+function canUseAniListSeriesFallback(item: WatchedLookupItem): boolean {
+  if (item.episode == null) return true
+  if (item.season == null || item.season === 1) return true
+  return Boolean(item.appSeasonEpCounts && item.appSeasonEpCounts.length > 0)
+}
+
 async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   // AniList tracks both episodic anime and anime movies. Ordinary movies do
   // not belong to AniList and must still be rejected.
@@ -169,7 +210,7 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
     let exactUnwatchedAt: number | null = null
     if (item.season != null && item.episode == null && item.seasonEpisodeCount && item.appSeasonEpCounts) {
-      const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
+      const mediaId = await resolveAniListIdForLookup(item)
       if (!mediaId) return false
       const entries = await getAniListTrackedProgress()
       const entry = entries.find((e) => e.mediaId === mediaId)
@@ -179,10 +220,11 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     }
 
     if (item.episode == null) {
-      const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
+      const mediaId = await resolveAniListIdForLookup(item)
       if (!mediaId) return false
       const entries = await getAniListTrackedProgress()
-      return entries.some((entry) => entry.mediaId === mediaId && entry.status === 'COMPLETED')
+      // COMPLETED, or an ongoing entry whose progress already covers all episodes.
+      return entries.some((entry) => entry.mediaId === mediaId && (entry.status === 'COMPLETED' || (entry.episodes != null && entry.episodes > 0 && entry.progress >= entry.episodes)))
     }
 
     if (item.season != null && item.episode != null) {
@@ -196,9 +238,12 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     }
 
     let anilistId = item.anilistId
-    let progressEpisode = item.absoluteEpisode ?? (item.isAnime && item.appSeasonEpCounts && item.season != null
+    // Global absolute episode number (across ALL seasons), independent of the
+    // per-cour mapping below. Used to correct long-running single-entry anime.
+    const globalAbsolute = item.absoluteEpisode ?? (item.isAnime && item.appSeasonEpCounts && item.season != null
       ? seasonEpToAbsolute(item.season, item.episode, item.appSeasonEpCounts)
       : item.episode)
+    let progressEpisode = globalAbsolute
 
     // Try animeApi mapping first
     if (item.tvdbId != null && item.season != null && item.episode != null) {
@@ -225,16 +270,51 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
       }
     }
 
+    // If the item carried no AniList/MAL id and TVDB episode mapping missed,
+    // resolve the series' AniList id from TVDB/TMDB/IMDB. Absolute-episode math
+    // (progressEpisode) keeps later-season episodes from matching season-1 progress.
+    if (anilistId == null && item.malId == null && canUseAniListSeriesFallback(item)) {
+      anilistId = await resolveAniListIdForLookup(item) ?? undefined
+    }
+
     const entry = await getAniListProgress(
       anilistId != null ? Number(anilistId) : undefined,
       item.malId != null ? Number(item.malId) : undefined,
     )
+
+    // Long-running single AniList entry (e.g. One Piece: id 21, absolute numbering
+    // over 1000+ eps split across many TVDB seasons). The mapping above yields a
+    // cour-relative number, which a high absolute progress would falsely cover for
+    // later seasons — so compare with the global absolute when the matched entry
+    // looks continuous (unknown or large episode count, or large progress).
+    if (entry && item.season != null && item.season > 1 && item.appSeasonEpCounts && item.appSeasonEpCounts.length > 1 && globalAbsolute != null) {
+      const looksContinuous = entry.episodes == null || entry.episodes > 50 || (entry.progress ?? 0) > 50
+      if (looksContinuous) progressEpisode = globalAbsolute
+    }
+
+    // A COMPLETED (or REPEATING — currently rewatching, so already watched once)
+    // entry means every episode of that AniList entry is watched, even when the
+    // numeric progress lags at 0 (AniList does this for many movies/OVAs and some
+    // completed shows). Requirement: don't require the progress number for COMPLETED.
+    let watchedThrough = entry?.progress ?? 0
+    if (entry && (entry.status === 'COMPLETED' || entry.status === 'REPEATING')) {
+      if (entry.episodes && entry.episodes > 0) {
+        watchedThrough = Math.max(watchedThrough, entry.episodes)
+      } else if (item.season == null || item.season === 1 || !item.appSeasonEpCounts || item.appSeasonEpCounts.length <= 1) {
+        // Single-season / single-entry show with unknown episode count: completed
+        // ⇒ this episode is watched. (Multi-season with unknown count stays strict
+        // to avoid marking a later season from a season-1 entry.)
+        watchedThrough = Math.max(watchedThrough, progressEpisode ?? watchedThrough)
+      }
+    }
+
+    if (import.meta.env.DEV) console.log(`[anilist-watched] "${item.title ?? item.id}" S${item.season}E${item.episode} → mediaId=${anilistId ?? 'UNRESOLVED'} status=${entry?.status ?? '-'} progress=${entry?.progress ?? '-'}/${entry?.episodes ?? '?'} watchedThrough=${watchedThrough} need=${progressEpisode} verdict=${entry ? (progressEpisode != null && watchedThrough >= progressEpisode) : false}`)
     if (!entry) return false
     // A local unmark only overrides the provider until AniList is changed
     // again. This allows episodes watched directly on AniList to sync back.
     if (exactUnwatchedAt != null && (!entry.updatedAt || exactUnwatchedAt >= entry.updatedAt * 1000)) return false
-    if (item.episode == null) return entry.progress > 0
-    if (progressEpisode != null && entry.progress >= progressEpisode) return true
+    if (item.episode == null) return watchedThrough > 0
+    if (progressEpisode != null && watchedThrough >= progressEpisode) return true
 
     // Some aggregate TVDB shows map a season/cour to a different AniList entry
     // than the ID carried by the catalog item. For season 1, also check that

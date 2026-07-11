@@ -198,6 +198,8 @@ export default function MovieDetailPage() {
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const animeTrackingProvider = useAppStore((s) => s.animeTrackingProvider)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const artProviders = useAppStore((s) => s.artProviders)
@@ -637,21 +639,28 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!movie) return
     let cancelled = false
+    const isAnimeMovie = Boolean(movie.isAnime || movie.anilistId || movie.malId)
+    const effectiveSources = isAnimeMovie && anilistConnected && animeTrackingProvider === 'anilist' && !watchedCheckmarkSources.includes('anilist')
+      ? [...watchedCheckmarkSources, 'anilist' as const]
+      : watchedCheckmarkSources
     isWatchedFromProviders({
       id: movie.id,
       type: 'movie',
+      title: movie.title,
+      year: movie.year,
       imdbId: movie.imdbId,
       tmdbId: movie.tmdbId,
       tvdbId: movie.tvdbId,
       malId: movie.malId,
       anilistId: movie.anilistId,
-    }, watchedCheckmarkSources, watchedProgress).then((watched) => {
+      isAnime: isAnimeMovie,
+    }, effectiveSources, watchedProgress).then((watched) => {
       if (!cancelled) setMovieWatched(watched)
     }).catch(() => {
       if (!cancelled) setMovieWatched(false)
     })
     return () => { cancelled = true }
-  }, [movie, watchedCheckmarkSources, watchedProgress])
+  }, [movie, watchedCheckmarkSources, watchedProgress, anilistConnected, animeTrackingProvider])
 
   useEffect(() => {
     if (!movie || movie.recommendations.length > 0) return

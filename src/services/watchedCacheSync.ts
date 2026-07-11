@@ -122,6 +122,19 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
       return [] as WatchedKey[]
     })
 
+  // AniList resolves ids itself (async), so it can't use the sync extract() shape.
+  if (sources.includes('anilist')) {
+    tasks.push((async () => {
+      try {
+        const { getAniListWatchedTitleKeys } = await import('./anilist')
+        return await getAniListWatchedTitleKeys()
+      } catch (e) {
+        console.warn('[WatchedCache] failed to fetch anilist:', e)
+        return [] as WatchedKey[]
+      }
+    })())
+  }
+
   const results = await Promise.all(tasks)
   for (const keys of results) allKeys.push(...keys)
   return allKeys

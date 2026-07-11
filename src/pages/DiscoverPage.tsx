@@ -15,6 +15,7 @@ import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktW
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from '../services/simkl/history'
 import { getSimklWatchlist } from '../services/simkl/lists'
 import { getStremioAuth, getStremioWatchHistory, type StremioLibraryEntry } from '../services/stremio'
+import type { AniListFullEntry } from '../services/anilist'
 import { useDiscoverPrefsStore, getDiscoverPrefs, excludeGenreIds, onlyGenreIds, candidatePassesPrefs, prefsSignature, prefsWeights, type DiscoverPrefs, DEFAULT_DISCOVER_PREFS } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import { loadRecommendationImpressions, recordRecommendationImpressions } from '../services/discovery/impressionStore'
@@ -305,6 +306,7 @@ export default function DiscoverPage() {
   const watchProgress = useAppStore((s) => s.watchProgress)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
   const [mode, setMode] = useState<DiscoveryMode>(() => (localStorage.getItem('aurales_discovery_mode') as DiscoveryMode) || 'for-you')
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
@@ -460,13 +462,14 @@ export default function DiscoverPage() {
   }, [watchedForSeeds, tab, contentType])
 
   useEffect(() => {
-    if (!traktConnected && !simklConnected && !stremioAuthKey) { const timer=window.setTimeout(()=>setConnectedActivity({items:[],progress:[],ratings:[],watchlist:[],rewatches:[],bingeItems:[]}),0); return()=>window.clearTimeout(timer) }
+    if (!traktConnected && !simklConnected && !stremioAuthKey && !anilistConnected) { const timer=window.setTimeout(()=>setConnectedActivity({items:[],progress:[],ratings:[],watchlist:[],rewatches:[],bingeItems:[]}),0); return()=>window.clearTimeout(timer) }
     let cancelled = false
     Promise.allSettled([
       traktConnected ? Promise.all([getTraktWatchedMovies(),getTraktWatchedShows(),getTraktRatings('movies'),getTraktRatings('shows'),import('../services/trakt/sync').then((m)=>m.getWatchlist('movies')),import('../services/trakt/sync').then((m)=>m.getWatchlist('shows'))]) : Promise.resolve([[],[],[],[],[],[]] as const),
       simklConnected ? Promise.all([getSimklWatchedMovies(),getSimklWatchedEpisodes(),getSimklWatchlist()]) : Promise.resolve([[],[],[]] as const),
       stremioAuthKey ? getStremioWatchHistory(stremioAuthKey) : Promise.resolve([] as StremioLibraryEntry[]),
-    ]).then(async ([traktResult,simklResult,stremioResult]) => {
+      anilistConnected ? import('../services/anilist').then((m)=>m.getAniListFullList()) : Promise.resolve([] as AniListFullEntry[]),
+    ]).then(async ([traktResult,simklResult,stremioResult,anilistResult]) => {
       const items: SearchResult[] = []
       const rawRatings: Array<{item:SearchResult;rating:number}> = []
       const rewatches:SearchResult[]=[]; const bingeItems:SearchResult[]=[]; const watchlist:SearchResult[]=[]
@@ -476,14 +479,17 @@ export default function DiscoverPage() {
       if (simklResult.status === 'fulfilled') for (const entry of [...simklResult.value[0],...simklResult.value[1]]) items.push({id:entry.tmdbId?`tmdb-${entry.tmdbId}`:entry.id,title:entry.title,type:entry.type==='movie'?'movie':'series',year:entry.year,provider:'simkl',tmdbId:entry.tmdbId,imdbId:entry.imdbId,simklId:entry.simklId,isAnime:entry.type==='anime',poster:entry.poster,backdrop:entry.backdrop})
       if(simklResult.status==='fulfilled')for(const entry of simklResult.value[2])watchlist.push({id:entry.tmdbId?`tmdb-${entry.tmdbId}`:entry.id,title:entry.title,type:entry.type==='movie'?'movie':'series',year:entry.year,provider:'simkl',tmdbId:entry.tmdbId,imdbId:entry.imdbId,simklId:entry.simklId,isAnime:entry.type==='anime',poster:entry.poster,backdrop:entry.backdrop})
       if(stremioResult.status==='fulfilled')for(const entry of stremioResult.value){const mapped={id:entry.imdbId||entry.id,title:entry.title,type:entry.type,year:entry.year,provider:'stremio',imdbId:entry.imdbId,poster:entry.poster};items.push(mapped)}
-      const unique=[...new Map(items.map((item)=>[`${item.type}:${item.tmdbId||item.imdbId||item.id}`,item])).values()].slice(0,120)
+      // AniList watched anime → taste/Discovery. Include anything the user engaged
+      // with (progress > 0 or completed); enrichment resolves tmdb ids downstream.
+      if(anilistResult.status==='fulfilled')for(const entry of anilistResult.value){if(entry.status==='PLANNING'||(entry.progress<=0&&entry.status!=='COMPLETED'))continue;const mapped={id:`anilist-${entry.mediaId}`,title:entry.title,type:'series' as const,year:entry.seasonYear,provider:'anilist',malId:entry.idMal,anilistId:entry.mediaId,isAnime:true,poster:entry.poster,backdrop:entry.backdrop};items.push(mapped);if((entry.repeat||0)>0)rewatches.push(mapped)}
+      const unique=[...new Map(items.map((item)=>[`${item.type}:${item.tmdbId||item.imdbId||item.malId||item.anilistId||item.id}`,item])).values()].slice(0,150)
       const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
       const enriched=await enrichSearchResultsWithAppMetadata(unique)
       if(cancelled)return
       setConnectedActivity({items:enriched,ratings:rawRatings,watchlist,rewatches,bingeItems,progress:enriched.map((item,index)=>({id:`connected:${index}`,mediaType:item.type,mediaId:item.id,progressSeconds:1,durationSeconds:1,completed:true,title:item.title,poster:item.poster,backdrop:item.backdrop,tmdbId:item.tmdbId,imdbId:item.imdbId}))})
     }).catch(()=>undefined)
     return()=>{cancelled=true}
-  },[traktConnected,simklConnected,stremioAuthKey])
+  },[traktConnected,simklConnected,stremioAuthKey,anilistConnected])
 
   const starterTasteItems=useMemo<SearchResult[]>(()=>starterGenres.map((genreId)=>({id:`taste-genre-${genreId}`,title:genreMap[genreId]||`Genre ${genreId}`,type:contentType,provider:'preference',genreIds:[genreId]})),[starterGenres,genreMap,contentType])
   const activity = useMemo(() => ({ progress: [...Array.from(watchProgress.values()),...connectedActivity.progress], recent: [...starterTasteItems,...recentlyViewed,...connectedActivity.items], ratings:connectedActivity.ratings,watchlist:connectedActivity.watchlist,rewatches:connectedActivity.rewatches,bingeItems:connectedActivity.bingeItems }), [watchProgress, recentlyViewed, connectedActivity,starterTasteItems])

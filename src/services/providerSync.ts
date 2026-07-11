@@ -56,9 +56,12 @@ export async function syncProviderNow(provider: SyncProvider): Promise<void> {
     const store = useAppStore.getState()
 
     if (provider === 'anilist') {
-      // Warms the AniList continue-watching/list caches (same as "Sync Now").
-      const { getAniListContinueWatching } = await import('./anilist')
-      await getAniListContinueWatching()
+      // Warms the AniList continue-watching/list caches and refreshes the
+      // title-level watched snapshot so completed anime shows as watched.
+      const { getAniListContinueWatching, clearAniListProgressCaches } = await import('./anilist')
+      clearAniListProgressCaches()
+      await getAniListContinueWatching().catch((e) => console.warn('[ProviderSync] anilist continue warm failed:', e))
+      await refreshWatchedCache(store.watchedCheckmarkSources as WatchedSource[])
       return
     }
 
