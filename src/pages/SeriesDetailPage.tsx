@@ -666,6 +666,8 @@ export default function SeriesDetailPage() {
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const animeTrackingProvider = useAppStore((s) => s.animeTrackingProvider)
   const showCtxMenu = useContextMenu((s) => s.show)
   const blurSpoilers = useAppStore((s) => s.blurSpoilers)
   const blurThumbnails = useAppStore((s) => s.blurThumbnails)
@@ -1744,9 +1746,15 @@ export default function SeriesDetailPage() {
     const toLookup = (episode: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }): WatchedLookupItem => ({
       id: show.id,
       type: 'series',
+      title: show.title,
+      year: show.year,
       imdbId: show.imdbId,
       tmdbId: show.tmdbId ?? episode.tmdbId,
       tvdbId: show.tvdbId ?? episode.tvdbId,
+      // Pass the show's AniList/MAL ids so AniList resolution can use the strongest
+      // identifier directly instead of relying only on TVDB→AniList episode mapping.
+      malId: show.malId,
+      anilistId: show.anilistId,
       season: episode.seasonNumber,
       episode: episode.episodeNumber,
       absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
@@ -1754,9 +1762,15 @@ export default function SeriesDetailPage() {
       appSeasonEpCounts,
     })
 
+    // For anime, honour the "Anime Tracking Provider: AniList" setting by consulting
+    // AniList even when the user hasn't toggled it into the global watched sources.
+    const effectiveSources = isAnime && anilistConnected && animeTrackingProvider === 'anilist' && !watchedCheckmarkSources.includes('anilist')
+      ? [...watchedCheckmarkSources, 'anilist' as const]
+      : watchedCheckmarkSources
+
     // Check visible season first via batch
     const visibleLookups = visibleSeason.episodes.map(toLookup)
-    batchIsWatchedFromProviders(visibleLookups, watchedCheckmarkSources, completedIdsRef.current).then((watchedKeys) => {
+    batchIsWatchedFromProviders(visibleLookups, effectiveSources, completedIdsRef.current).then((watchedKeys) => {
       if (cancelled) return
       setWatchedEpisodes((prev) => {
         const next = new Set(prev)
@@ -1774,7 +1788,7 @@ export default function SeriesDetailPage() {
         .flatMap(([, season]) => season.episodes)
       if (otherEpisodes.length === 0 || cancelled) return
       const otherLookups = otherEpisodes.map(toLookup)
-      batchIsWatchedFromProviders(otherLookups, watchedCheckmarkSources, completedIdsRef.current).then((otherKeys) => {
+      batchIsWatchedFromProviders(otherLookups, effectiveSources, completedIdsRef.current).then((otherKeys) => {
         if (cancelled) return
         setWatchedEpisodes((prev) => {
           const next = new Set(prev)
@@ -1790,7 +1804,7 @@ export default function SeriesDetailPage() {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonCache, watchedCheckmarkSources])
+  }, [show, selectedSeason, seasonCache, watchedCheckmarkSources, isAnime, anilistConnected, animeTrackingProvider])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return

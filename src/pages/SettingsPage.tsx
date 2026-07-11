@@ -41,7 +41,7 @@ import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearS
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
-import { clearAniListProgressCaches, fetchAniListViewer, getAniListContinueWatching, getAniListToken, getAniListTrackedProgress, setAniListToken } from '../services/anilist'
+import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken, syncAniListWatchedHistory } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
 // Lazy: debug player only loads when the test player is opened
@@ -1060,11 +1060,27 @@ export default function SettingsPage() {
 
   const syncAniListNow = async () => {
     setAnilistLoading(true)
-    setAnilistMessage('')
+    setAnilistMessage('Syncing from AniList…')
     try {
-      clearAniListProgressCaches()
-      const [items, progress] = await Promise.all([getAniListContinueWatching(), getAniListTrackedProgress()])
-      setAnilistMessage(`Synced ${progress.length} tracked AniList title${progress.length === 1 ? '' : 's'} (${items.length} in progress).`)
+      const report = await syncAniListWatchedHistory()
+      // Warm the continue-watching cache too (best-effort).
+      await getAniListContinueWatching().catch(() => undefined)
+      // Refresh the watched snapshot so checkmarks update immediately.
+      const { refreshWatchedCache } = await import('../services/watchedCacheSync')
+      await refreshWatchedCache(store.watchedCheckmarkSources as any).catch(() => undefined)
+
+      if (report.errors.length && report.found === 0) {
+        setAnilistMessage(report.errors[0])
+      } else {
+        const parts = [
+          `Found ${report.found} anime`,
+          `matched ${report.matched}`,
+          `${report.episodesImported} episodes imported`,
+        ]
+        if (report.unmatched.length) parts.push(`${report.unmatched.length} unmatched`)
+        if (report.errors.length) parts.push(`${report.errors.length} error${report.errors.length === 1 ? '' : 's'}`)
+        setAnilistMessage(parts.join(' · '))
+      }
     } catch (err: any) {
       setAnilistMessage(err?.message || 'AniList sync failed')
     } finally {
@@ -2121,7 +2137,7 @@ export default function SettingsPage() {
                       disabled={anilistLoading || !store.anilistConnected}
                       className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 text-white rounded-xl text-xs font-semibold cursor-pointer"
                     >
-                      Sync Now
+                      {anilistLoading ? 'Syncing…' : 'Sync from AniList'}
                     </button>
                     {store.anilistConnected && (
                       <button
