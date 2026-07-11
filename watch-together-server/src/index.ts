@@ -62,7 +62,7 @@ const server = http.createServer((req, res) => {
           code: room.code,
           userId,
           wsUrl,
-          inviteUrl: `orynt://watch/${room.code}`,
+          inviteUrl: `aurales://watch/${room.code}`,
         })
       } catch {
         json(res, 400, { error: 'Invalid JSON body' })
@@ -111,7 +111,7 @@ setInterval(() => {
 server.listen(config.port, '0.0.0.0', () => {
   console.log(`
 ╔══════════════════════════════════════════════════╗
-║       Orynt Watch Together Server                ║
+║       Aurales Watch Together Server              ║
 ╠══════════════════════════════════════════════════╣
 ║  HTTP:  http://0.0.0.0:${String(config.port).padEnd(25)}║
 ║  WS:    ws://0.0.0.0:${String(config.port + config.wsPath).padEnd(27)}║

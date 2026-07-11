@@ -1,6 +1,6 @@
-# Orynt Watch Together Server
+# Aurales Watch Together Server
 
-Public WebSocket room server for Orynt Watch Together. Syncs room state (media selection, playback, chat) between participants — does **not** stream video.
+Public WebSocket room server for Aurales Watch Together. Syncs room state (media selection, playback, chat) between participants — does **not** stream video.
 
 ## Quick Start (Local)
 
@@ -38,7 +38,7 @@ cp .env.example .env
 nano .env
 ```
 
-Set `PUBLIC_URL=https://watch.orynt.app` (or your domain).
+Set `PUBLIC_URL=https://aurales.febsho.me` (or your domain).
 
 ### 4. Build and run
 
@@ -49,7 +49,7 @@ docker compose up -d --build
 ### 5. Verify
 
 ```bash
-docker logs -f orynt-watch-together
+docker logs -f aurales-watch-together
 curl http://localhost:3009/health
 ```
 
@@ -70,7 +70,7 @@ sudo nano /etc/nginx/sites-available/watch-together
 ```nginx
 server {
     listen 80;
-    server_name watch.orynt.app;
+    server_name aurales.febsho.me;
 
     location / {
         proxy_pass http://127.0.0.1:3009;
@@ -103,10 +103,10 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d watch.orynt.app
+sudo certbot --nginx -d aurales.febsho.me
 ```
 
-After HTTPS is set up, the app connects to: `wss://watch.orynt.app/ws`
+After HTTPS is set up, the app connects to: `wss://aurales.febsho.me/ws`
 
 ## Oracle VPS Firewall
 
@@ -158,8 +158,8 @@ sudo netfilter-persistent save
   "roomId": "uuid",
   "code": "ABCD-1234",
   "userId": "uuid",
-  "wsUrl": "wss://watch.orynt.app/ws",
-  "inviteUrl": "orynt://watch/ABCD-1234"
+  "wsUrl": "wss://aurales.febsho.me/ws",
+  "inviteUrl": "aurales://watch/ABCD-1234"
 }
 ```
 
