@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { tmdbProvider } from '../services/tmdb'
@@ -202,6 +202,7 @@ export default function SearchPage() {
   const seriesSearchEnabled = useAppStore((s) => s.seriesSearchEnabled)
   const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
   const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const requestIdRef = useRef(0)
 
   const movies = useMemo(() => results.filter((item) => item.type === 'movie' && !isAnime(item)).slice(0, 24), [results])
@@ -276,7 +277,7 @@ export default function SearchPage() {
     await Promise.allSettled(pending)
     if (requestId !== requestIdRef.current) return
 
-    // Only remember searches that finished and found something — recording on
+    // Only remember searches that finished and found something â€” recording on
     // keystroke fills the history with partial queries.
     if (allResults.length > 0) {
       addToSearchHistory(text)
@@ -358,7 +359,7 @@ export default function SearchPage() {
   const noResults = searched && !loading && totalMovies === 0 && totalSeries === 0
 
   return (
-    <div className="py-8 space-y-4">
+    <div className={`${cinematic ? 'pt-44' : 'pt-8'} pb-8 space-y-4`}>
       {searched && (
         <div className="px-6 flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -368,7 +369,7 @@ export default function SearchPage() {
                 <span className="inline-block w-4 h-4 border-2 border-white/25 border-t-white/70 rounded-full animate-spin" aria-label="Refining results" />
               )}
             </h1>
-            <p className="text-sm text-white/35 mt-1">{totalMovies} movies · {totalSeries} series</p>
+            <p className="text-sm text-white/35 mt-1">{totalMovies} movies Â· {totalSeries} series</p>
           </div>
           {(totalMovies > 0 || totalSeries > 0) && (
             <div className="flex items-center gap-2">
@@ -388,7 +389,7 @@ export default function SearchPage() {
                       : 'text-white/45 hover:text-white/75 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
                   }`}
                 >
-                  {label}{count > 0 ? ` · ${count}` : ''}
+                  {label}{count > 0 ? ` Â· ${count}` : ''}
                 </button>
               ))}
             </div>
@@ -403,10 +404,10 @@ export default function SearchPage() {
         </div>
       )}
 
-      {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
-      {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview />}
-      {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
-      {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
 
       {noResults && (
         <EmptyState
@@ -428,15 +429,15 @@ export default function SearchPage() {
               disabled={!apiKey || aiLoading}
               className="px-4 py-2 rounded-xl bg-purple-500/20 border border-purple-400/20 text-sm font-semibold text-purple-200 disabled:opacity-40"
             >
-              {aiLoading ? 'Searching…' : aiRequested ? 'Search again' : 'Ask AI'}
+              {aiLoading ? 'Searchingâ€¦' : aiRequested ? 'Search again' : 'Ask AI'}
             </button>
           </div>
           {!apiKey && <p className="mt-3 text-xs text-amber-300/70">Add an OpenRouter API key in Settings to enable optional AI search.</p>}
         </section>
       )}
 
-      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview />}
-      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview />}
+      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI Â· Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI Â· Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
 
       {!searched && !loading && (
         searchHistory.length > 0 ? (

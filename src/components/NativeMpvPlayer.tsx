@@ -60,6 +60,9 @@ interface NativeMpvPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
+  onPlaybackError?: (message: string) => void
+  onPlaybackStarted?: () => void
+  onReportBad?: () => void
 }
 
 interface MpvTrack {
@@ -537,6 +540,9 @@ function FullNativeMpvPlayer({
   backdrop,
   onClose,
   onPickAnother,
+  onPlaybackError,
+  onPlaybackStarted,
+  onReportBad,
 }: NativeMpvPlayerProps) {
 
   // ─ Refs ───────────────────────────────────────────────────────────────────
@@ -606,6 +612,15 @@ function FullNativeMpvPlayer({
   const [tracksLoaded, setTracksLoaded] = useState(false)
   const [playerReady, setPlayerReady] = useState(false)
   const [playerRunning, setPlayerRunning] = useState(true)
+  const smartStartedNotifiedRef = useRef(false)
+  const smartErrorNotifiedRef = useRef(false)
+  useEffect(() => { smartStartedNotifiedRef.current = false; smartErrorNotifiedRef.current = false }, [url])
+  useEffect(() => {
+    if (playerReady && !smartStartedNotifiedRef.current) { smartStartedNotifiedRef.current = true; onPlaybackStarted?.() }
+  }, [playerReady, onPlaybackStarted])
+  useEffect(() => {
+    if (error && !playerReady && !smartErrorNotifiedRef.current) { smartErrorNotifiedRef.current = true; onPlaybackError?.(error) }
+  }, [error, playerReady, onPlaybackError])
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [skips, setSkips] = useState<PMDBSkipSegment[]>([])
@@ -2188,10 +2203,6 @@ function FullNativeMpvPlayer({
       const { currentTime: pos, duration: dur } = progressRef.current
       const progress = dur > 0 ? pos / dur : 0
       saveLocalProgress(pos, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
         promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
@@ -2222,10 +2233,6 @@ function FullNativeMpvPlayer({
       const { currentTime: pos, duration: dur } = progressRef.current
       const progress = dur > 0 ? pos / dur : 0
       saveLocalProgress(pos, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
         promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
@@ -2463,6 +2470,7 @@ function FullNativeMpvPlayer({
       style={{ background: playerReady ? 'rgba(0,0,0,0.05)' : '#000' }}
       onMouseMove={showControls}
     >
+      {onReportBad && controlsVisible && <button onClick={onReportBad} className="absolute right-6 top-6 z-30 rounded-full bg-black/65 px-4 py-2 text-xs text-white/70 hover:text-white">Report bad stream</button>}
       {!playerReady && !error && (
         <div className="absolute inset-0 z-[3] flex items-center justify-center bg-black pointer-events-none">
           <div className="flex flex-col items-center gap-4">

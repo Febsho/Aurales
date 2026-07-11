@@ -6,6 +6,7 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import WatchTogetherPanel from './watch-together/WatchTogetherPanel'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import TitleBar from './TitleBar'
+import CinematicTopNav from './CinematicTopNav'
 
 // Statically importing this pulls NativeMpvPlayer (and its scrobbler/discord
 // dependency tree) into the eager startup bundle. Lazy keeps it off the
@@ -14,6 +15,7 @@ const WatchTogetherAutoPlayer = lazy(() => import('./watch-together/WatchTogethe
 
 export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
@@ -23,10 +25,13 @@ export default function Layout() {
   const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false)
   const [searchBarVisible, setSearchBarVisible] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
+  const [cinematicNavHidden, setCinematicNavHidden] = useState(false)
+  const [cinematicAtTop, setCinematicAtTop] = useState(true)
   const isSearchPage = location.pathname === '/search'
   const inputRef = useRef<HTMLInputElement>(null)
   const mainRef = useRef<HTMLElement>(null)
   const searchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastMainScrollTop = useRef(0)
 
   const showSearchBar = useCallback(() => {
     if (searchHideTimer.current) { clearTimeout(searchHideTimer.current); searchHideTimer.current = null }
@@ -51,6 +56,29 @@ export default function Layout() {
     return () => el.removeEventListener('scroll', onScroll)
   }, [searchBarVisible, searchFocused, isSearchPage, scheduleHideSearchBar])
 
+  useEffect(() => {
+    if (!cinematic) {
+      setCinematicNavHidden(false)
+      setCinematicAtTop(true)
+      return
+    }
+    const el = mainRef.current
+    if (!el) return
+    lastMainScrollTop.current = el.scrollTop
+    setCinematicAtTop(el.scrollTop <= 24)
+    const onScroll = () => {
+      const current = el.scrollTop
+      const delta = current - lastMainScrollTop.current
+      if (current <= 24) setCinematicNavHidden(false)
+      else if (delta > 6) setCinematicNavHidden(true)
+      else if (delta < -6) setCinematicNavHidden(false)
+      setCinematicAtTop(current <= 24)
+      lastMainScrollTop.current = current
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [cinematic, location.pathname])
+
   useLayoutEffect(() => {
     if (!location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
     mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
@@ -73,6 +101,13 @@ export default function Layout() {
     setQuery(q)
   }, [searchParams])
 
+  // Cinematic has no persistent search bar elsewhere, so focus the input as
+  // soon as the search page opens (e.g. via the top-nav search icon).
+  useEffect(() => {
+    if (!cinematic || !isSearchPage) return
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }, [cinematic, isSearchPage])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -85,6 +120,11 @@ export default function Layout() {
 
       if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
+        // In cinematic the search input only exists on the search page.
+        if (cinematic && location.pathname !== '/search') {
+          navigate('/search')
+          return
+        }
         setSearchBarVisible(true)
         requestAnimationFrame(() => {
           inputRef.current?.focus()
@@ -97,7 +137,27 @@ export default function Layout() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goBack])
+  }, [goBack, cinematic, location.pathname, navigate])
+
+  useEffect(() => {
+    if (!cinematic) return
+    const handleTvNavigation = (event: KeyboardEvent) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      const active = document.activeElement as HTMLElement | null
+      const currentRow = active?.closest('.cinematic-row-track')
+      if (!currentRow) return
+      const rows = Array.from(document.querySelectorAll<HTMLElement>('.cinematic-row-track'))
+      const rowIndex = rows.indexOf(currentRow as HTMLElement)
+      const targetRow = rows[rowIndex + (event.key === 'ArrowDown' ? 1 : -1)]
+      const target = targetRow?.querySelector<HTMLElement>(':scope > button')
+      if (!target) return
+      event.preventDefault()
+      target.focus({ preventScroll: true })
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' })
+    }
+    window.addEventListener('keydown', handleTvNavigation)
+    return () => window.removeEventListener('keydown', handleTvNavigation)
+  }, [cinematic])
 
   useEffect(() => {
     const handleMouseBack = (event: MouseEvent) => {
@@ -193,13 +253,23 @@ export default function Layout() {
   )
 
   return (
-    <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${sidebarPinned ? 'flex' : 'relative'}`}>
+    <div className={`h-screen overflow-hidden bg-black hero-bg-transparent ${!cinematic && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`}>
       <TitleBar />
-      <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />
+      {cinematic
+        ? <CinematicTopNav hidden={cinematicNavHidden} />
+        : <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />}
+      {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
+          Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
+      {cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
+        <div className="cinematic-nav-brand pointer-events-none absolute left-8 top-8 z-[71] flex h-20 items-center gap-3 px-2 transition-opacity duration-200">
+          <img src="/app-logo.png?v=3" alt="" className="h-10 w-10 object-contain" />
+          <span className="text-xl font-black tracking-tight text-white" style={{ textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>Aurales</span>
+        </div>
+      )}
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
-      <div className={`relative flex flex-col min-h-0 h-full ${sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
-        {location.pathname !== '/' && location.pathname !== '/discover' && (
+      <div className={`relative flex flex-col min-h-0 h-full ${!cinematic && sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
+        {!cinematic && location.pathname !== '/' && location.pathname !== '/discover' && (
           <button
             type="button"
             onClick={goBack}
@@ -221,34 +291,35 @@ export default function Layout() {
           </button>
         )}
         {/* Narrow center proximity zone — triggers search bar near the indicator */}
-        <div
+        {!cinematic && <div
           className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-10 z-[9997]"
           onMouseEnter={showSearchBar}
-        />
+        />}
         {/* Glowing indicator pill — visible when search bar is hidden */}
-        {!searchBarVisible && !searchFocused && !isSearchPage && (
+        {!cinematic && !searchBarVisible && !searchFocused && !isSearchPage && (
           <div
             className="absolute top-0 left-1/2 -translate-x-1/2 z-[9998] w-28 h-1 rounded-b-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
             aria-hidden="true"
           />
         )}
-        {/* Search bar — slides down from top */}
-        <header
-          onMouseEnter={showSearchBar}
-          onMouseLeave={scheduleHideSearchBar}
+        {/* Search bar — slides down from top; in cinematic it only exists on
+            the search page, sitting below the floating top nav */}
+        {(!cinematic || isSearchPage) && <header
+          onMouseEnter={cinematic ? undefined : showSearchBar}
+          onMouseLeave={cinematic ? undefined : scheduleHideSearchBar}
           className={[
             'absolute left-1/2 z-[9998]',
             'w-[min(32rem,calc(100vw-20rem))]',
             'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
-            searchBarVisible || searchFocused || isSearchPage
-              ? '-translate-x-1/2 top-9 opacity-100 pointer-events-auto'
+            cinematic || searchBarVisible || searchFocused || isSearchPage
+              ? `-translate-x-1/2 ${cinematic ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
               : '-translate-x-1/2 -top-8 opacity-0 pointer-events-none',
           ].join(' ')}
         >
           {searchInput}
-        </header>
+        </header>}
 
-        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'mr-[380px]' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
+        <main ref={mainRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
           <Outlet />
         </main>
       </div>

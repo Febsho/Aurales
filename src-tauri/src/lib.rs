@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod libmpv_player;
 mod thumbnails;
+mod ytproxy;
 
 use db::Database;
 use tauri::Manager;
@@ -89,6 +90,10 @@ pub fn run() {
             commands::pmdb_request,
             commands::http_get_text,
             commands::http_request,
+            commands::ytproxy_port,
+            commands::innertube_player,
+            commands::github_release_notes,
+            commands::ytdlp_resolve,
             commands::openrouter_chat,
             commands::download_subtitle,
             commands::write_temp_subtitle,

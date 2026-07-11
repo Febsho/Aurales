@@ -1,5 +1,6 @@
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
+import { invoke } from '@tauri-apps/api/core'
 
 export interface UpdateInfo {
   version: string
@@ -47,6 +48,31 @@ export async function downloadAndInstall(
   })
 
   await relaunch()
+}
+
+export interface ReleaseNotes {
+  tag: string
+  title?: string
+  body: string
+  publishedAt?: string
+}
+
+/** Patch notes from the latest GitHub release; null when unavailable. */
+export async function getLatestReleaseNotes(): Promise<ReleaseNotes | null> {
+  try {
+    const raw = await invoke<string>('github_release_notes')
+    const data = JSON.parse(raw) as { tag_name?: string; name?: string; body?: string; published_at?: string }
+    if (!data.tag_name && !data.body) return null
+    return {
+      tag: data.tag_name || '',
+      title: data.name || undefined,
+      body: data.body || '',
+      publishedAt: data.published_at || undefined,
+    }
+  } catch (e) {
+    console.warn('[Updater] Release notes fetch failed:', e)
+    return null
+  }
 }
 
 export function getAppVersion(): string {

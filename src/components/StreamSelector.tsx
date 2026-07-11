@@ -15,6 +15,9 @@ import { createStreamFingerprint } from '../services/watch-together/streamMatche
 import type { RoomStream } from '../services/watch-together/types'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { stopEmbeddedPlayer } from '../services/player'
+import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
+import { SmartFallbackQueue } from '../services/streams/smartFallback'
+import { loadReliabilityHistory, recordReliabilityEvent } from '../services/streams/reliabilityHistory'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -39,6 +42,7 @@ interface StreamSelectorProps {
   anilistId?: number
   sourceAddonId?: string
   sourceAddonItemId?: string
+  onResolvingChange?: (resolving: boolean) => void
 }
 
 type FilterGroupId = 'quality' | 'resolution' | 'visual' | 'audio' | 'source'
@@ -126,17 +130,26 @@ function loadStreamFilters(): StreamFilterState {
   }
 }
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId }: StreamSelectorProps) {
+export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, onResolvingChange }: StreamSelectorProps) {
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
   const [playError, setPlayError] = useState('')
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
   const [playback, setPlayback] = useState<{ url: string; stream: AddonStream } | null>(null)
+  const [smartMode, setSmartMode] = useState<SmartPlayMode>(() => (localStorage.getItem('aurales_smart_play_mode') as SmartPlayMode) || 'best')
+  const [smartStatus, setSmartStatus] = useState('')
+  const [selectedProvider, setSelectedProvider] = useState<string>('all')
+  const smartQueueRef = useRef<SmartFallbackQueue<AddonStream> | null>(null)
+  const smartActiveRef = useRef(false)
+  const autoSmartStartedRef = useRef(false)
+  const manualSelectionRequestedRef = useRef(false)
+  const startSmartPlayRef = useRef<() => void>(() => {})
   const hadPlaybackRef = useRef(false)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [streamFilters, setStreamFilters] = useState<StreamFilterState>(loadStreamFilters)
   const addons = useAppStore((s) => s.addons)
+  const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
 
   // Stream card display toggles — persisted in localStorage
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
@@ -209,7 +222,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         const results = await getAddonStreams(addon.url, mediaType, streamId)
         return results.map((s) => ({
           ...s,
-          addonName: addon.manifest.name,
+          addonName: addon.displayName || addon.manifest.name,
           addonId: addon.manifest.id,
         }))
       } catch (_) {
@@ -394,6 +407,18 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     })
   }, [streams, streamFilters])
 
+  const providerOptions = useMemo(() => Array.from(new Map(
+    streams.map((stream) => [stream.addonId, stream.addonName] as const)
+  ).entries()), [streams])
+
+  const providerStreams = useMemo(() => selectedProvider === 'all'
+    ? streams
+    : streams.filter((stream) => stream.addonId === selectedProvider), [streams, selectedProvider])
+
+  const visibleStreams = useMemo(() => selectedProvider === 'all'
+    ? filteredStreams
+    : filteredStreams.filter((stream) => stream.addonId === selectedProvider), [filteredStreams, selectedProvider])
+
   const toggleFilter = (groupId: FilterGroupId, optionId: string) => {
     setStreamFilters((current) => {
       const selected = current[groupId] || []
@@ -420,6 +445,24 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [playback?.stream, subtitles]
   )
+
+  useEffect(() => {
+    if (!open || loading || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || streams.length === 0 || autoSmartStartedRef.current) return
+    autoSmartStartedRef.current = true
+    startSmartPlayRef.current()
+  }, [open, loading, playback, autoPlayFirstStream, streams.length])
+
+  useEffect(() => {
+    const resolving = open && autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)
+    onResolvingChange?.(resolving)
+    return () => onResolvingChange?.(false)
+  }, [open, autoPlayFirstStream, playback, loading, streams.length, onResolvingChange])
+
+  useEffect(() => {
+    if (!open) return
+    autoSmartStartedRef.current = false
+    manualSelectionRequestedRef.current = false
+  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
 
   if (!open) return null
 
@@ -453,9 +496,58 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     }
   }
 
+  const startSmartPlay = () => {
+    const store = useAppStore.getState()
+    const ranked = rankStreams(providerStreams as SmartStream[], {
+      title, season: seasonEpisode?.season, episode: seasonEpisode?.episode,
+      preferredAudio: store.preferredAudio, preferredSubtitles: store.preferredSubtitles,
+      subtitles, mode: smartMode, player: (window as any).__TAURI_INTERNALS__ ? 'mpv' : 'web',
+      maxSizeGb: store.cacheBufferSize === 'default' ? 20 : store.cacheBufferSize === 'large' ? 45 : 80,
+      history: loadReliabilityHistory(),
+    }).filter((candidate) => candidate.score > -500).map((candidate) => candidate.stream as AddonStream)
+    smartQueueRef.current = new SmartFallbackQueue(ranked)
+    smartActiveRef.current = true
+    const first = smartQueueRef.current.next()
+    if (!first) { setPlayError('No playable streams were found.'); return }
+    setSmartStatus(`Smart Play selected ${first.addonName}`)
+    handlePlay(first, streams.indexOf(first))
+  }
+  startSmartPlayRef.current = startSmartPlay
+
+  const handlePlaybackError = () => {
+    if (!playback) return
+    recordReliabilityEvent(playback.stream, 'failed_start')
+    if (!smartActiveRef.current) return
+    const next = smartQueueRef.current?.next()
+    if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
+    setSmartStatus(`Stream failed — trying ${next.addonName}`)
+    handlePlay(next, streams.indexOf(next))
+  }
+
+  const handlePlaybackStarted = () => {
+    if (playback) recordReliabilityEvent(playback.stream, 'success')
+    if (smartActiveRef.current) setSmartStatus(`Playing from ${playback?.stream.addonName || 'the best source'}`)
+  }
+
+  const reportBad = () => {
+    if (!playback) return
+    recordReliabilityEvent(playback.stream, 'reported_bad')
+    setSmartStatus('Bad stream reported; choosing another source.')
+    handlePlaybackError()
+  }
+
+  const pickAnotherManually = () => {
+    autoSmartStartedRef.current = true
+    manualSelectionRequestedRef.current = true
+    smartActiveRef.current = false
+    setPlayback(null)
+  }
+
   const displayTitle = seasonEpisode
     ? `${title} S${seasonEpisode.season}E${seasonEpisode.episode}`
     : title
+
+  if (autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)) return null
 
   if (playback) {
     const simklMediaType: 'movie' | 'show' | 'anime' = anilistId || malId ? 'anime' : mediaType === 'series' ? 'show' : 'movie'
@@ -489,7 +581,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
           onClose={onClose}
-          onPickAnother={() => setPlayback(null)}
+          onPickAnother={pickAnotherManually}
+          onPlaybackError={handlePlaybackError}
+          onPlaybackStarted={handlePlaybackStarted}
+          onReportBad={reportBad}
         />,
         document.body
       )
@@ -507,7 +602,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
           onClose={onClose}
-          onPickAnother={() => setPlayback(null)}
+          onPickAnother={pickAnotherManually}
+          onPlaybackError={handlePlaybackError}
+          onPlaybackStarted={handlePlaybackStarted}
+          onReportBad={reportBad}
         />
       </Suspense>,
       document.body
@@ -540,6 +638,22 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                 </svg>
               </button>
             </div>
+          </div>
+
+          <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+            <span className="mr-1 flex-shrink-0 text-[11px] uppercase tracking-widest text-white/35">Provider</span>
+            <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${selectedProvider === 'all' ? 'bg-white text-black' : 'bg-white/10 text-white/65 hover:bg-white/15'}`}>All providers ({streams.length})</button>
+            {providerOptions.map(([id, name]) => (
+              <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${selectedProvider === id ? 'bg-white text-black' : 'bg-white/10 text-white/65 hover:bg-white/15'}`}>{name} ({streams.filter((stream) => stream.addonId === id).length})</button>
+            ))}
+          </div>
+
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/10 p-3">
+            <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-black disabled:opacity-40">Smart Play</button>
+            {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Highest Quality'], ['smallest-file', 'Smallest File']] as const).map(([mode, label]) => (
+              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-full px-3 py-1.5 text-xs ${smartMode === mode ? 'bg-white text-black' : 'bg-white/10 text-white/65'}`}>{label}</button>
+            ))}
+            {smartStatus && <span className="ml-auto text-xs text-white/60">{smartStatus}</span>}
           </div>
 
           {/* Display toggles */}
@@ -584,7 +698,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             </div>
           )}
 
-          {!loading && streams.length > 0 && filteredStreams.length === 0 && (
+          {!loading && streams.length > 0 && visibleStreams.length === 0 && (
             <div className="text-center py-12">
               <p className="text-sm text-muted mb-1">No streams match these filters</p>
               <button onClick={resetFilters} className="text-xs text-accent hover:underline">Reset filters</button>
@@ -597,14 +711,14 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             </div>
           )}
 
-          {!loading && filteredStreams.map((stream, i) => {
+          {!loading && visibleStreams.map((stream, i) => {
             const playable = !!getPlayableUrl(stream)
             const description = getStreamDescription(stream)
             const filterBadges = matchedFilterLabels(stream)
             return (
             <button
               key={`${stream.addonId}-${i}`}
-              onClick={() => handlePlay(stream, i)}
+              onClick={() => { smartActiveRef.current = false; recordReliabilityEvent(stream, 'preferred'); handlePlay(stream, streams.indexOf(stream)) }}
               className="w-full min-h-[90px] flex items-start gap-5 py-3.5 px-5 rounded-2xl bg-white/14 hover:bg-white/22 border border-white/10 backdrop-blur-xl shadow-2xl transition-all text-left group"
             >
               <div className={`flex-shrink-0 mt-0.5 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
@@ -685,7 +799,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                   Reset to Defaults
                 </button>
                 <span className="text-sm text-white/35">
-                  Showing {filteredStreams.length} of {streams.length}
+                  Showing {visibleStreams.length} of {providerStreams.length}
                 </span>
               </div>
             </div>

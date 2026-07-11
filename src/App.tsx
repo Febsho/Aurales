@@ -1,6 +1,7 @@
 import { useEffect, lazy, Suspense } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
+import UpdatePrompt from './components/UpdatePrompt'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
 
@@ -47,6 +48,7 @@ function scheduleIdleWork(callback: () => void, timeout = 1500) {
 export default function App() {
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
+  const interfaceTheme = useAppStore((s) => s.interfaceTheme)
   const defaultStartPage = useAppStore((s) => s.defaultStartPage)
   const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
@@ -139,6 +141,10 @@ export default function App() {
   }, [accentColor])
 
   useEffect(() => {
+    document.documentElement.setAttribute('data-interface-theme', interfaceTheme)
+  }, [interfaceTheme])
+
+  useEffect(() => {
     document.documentElement.style.setProperty('--sub-font-size', `${subtitleFontSize}px`)
     document.documentElement.style.setProperty('--sub-bg-opacity', subtitleBgOpacity)
     document.documentElement.style.setProperty('--sub-color', subtitleColor)
@@ -179,6 +185,7 @@ export default function App() {
             <Route path="/collections" element={<CollectionsPage />} />
           </Route>
         </Routes>
+        <UpdatePrompt />
       </Suspense>
     </ErrorBoundary>
   )

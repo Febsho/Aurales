@@ -33,17 +33,25 @@ function ageMs(entry: RawCacheEntry): number {
 }
 
 export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
+  const memory = sessionCache.get(key)
+  if (memory) return memory as CacheResult<T>
   try {
     const entry = await invoke<RawCacheEntry | null>('cache_entry_get', { key })
     if (!entry) return null
     const data = JSON.parse(entry.value) as T
-    return { data, stale: isExpired(entry), age: ageMs(entry) }
+    const result = { data, stale: isExpired(entry) || STARTUP_REFRESH_CATEGORIES.has(entry.category), age: ageMs(entry) }
+    sessionCache.set(key, result)
+    sessionCategories.set(key, entry.category)
+    return result
   } catch (_) {
     return null
   }
 }
 
 export async function cacheSet(key: string, value: unknown, options: CacheOptions): Promise<void> {
+  sessionCache.set(key, { data: value, stale: false, age: 0 })
+  sessionCategories.set(key, options.category)
+  refreshErrors.delete(key)
   try {
     await invoke('cache_entry_set', {
       key,
@@ -64,6 +72,8 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
     for (const entry of entries) {
       const data = JSON.parse(entry.value) as T
       map.set(entry.key, { data, stale: isExpired(entry), age: ageMs(entry) })
+      sessionCache.set(entry.key, map.get(entry.key)!)
+      sessionCategories.set(entry.key, entry.category)
     }
     return map
   } catch (_) {
@@ -72,6 +82,14 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
 }
 
 export async function cacheClearCategory(category: string): Promise<number> {
+  for (const [key, value] of sessionCategories) {
+    if (value === category) {
+      sessionCache.delete(key)
+      sessionCategories.delete(key)
+      refreshedThisSession.delete(key)
+      refreshErrors.delete(key)
+    }
+  }
   try {
     return await invoke<number>('cache_entry_clear_category', { category })
   } catch (_) {
@@ -80,6 +98,10 @@ export async function cacheClearCategory(category: string): Promise<number> {
 }
 
 export async function cacheClearAll(): Promise<number> {
+  sessionCache.clear()
+  sessionCategories.clear()
+  refreshedThisSession.clear()
+  refreshErrors.clear()
   const { CACHE_CATEGORIES } = await import('./constants')
   let total = 0
   for (const category of Object.values(CACHE_CATEGORIES)) {
@@ -105,6 +127,30 @@ export async function cacheStats(): Promise<{ totalEntries: number; expiredEntri
 }
 
 const pendingRefreshes = new Map<string, Promise<unknown>>()
+const sessionCache = new Map<string, CacheResult<unknown>>()
+const sessionCategories = new Map<string, string>()
+const refreshedThisSession = new Set<string>()
+const refreshErrors = new Map<string, { message: string; at: number }>()
+let lastRefreshTime = 0
+
+export function cacheRuntimeStats() {
+  let approximateBytes = 0
+  for (const [key, value] of sessionCache) {
+    try { approximateBytes += key.length * 2 + JSON.stringify(value.data).length * 2 } catch { /* ignore */ }
+  }
+  return {
+    memoryEntries: sessionCache.size,
+    approximateBytes,
+    pendingRequests: pendingRefreshes.size,
+    lastRefreshTime,
+    errorEntries: refreshErrors.size,
+    errors: Array.from(refreshErrors.entries()).map(([key, value]) => ({ key, ...value })),
+  }
+}
+
+const STARTUP_REFRESH_CATEGORIES = new Set([
+  'addon_catalog', 'provider_list', 'discover', 'tmdb_card', 'tvdb_card', 'artwork', 'home_row', 'detail_page',
+])
 
 export async function cachedFetch<T>(
   key: string,
@@ -124,7 +170,8 @@ export async function cachedFetch<T>(
   if (cached) {
     perfLog(`[PERF] stale-serve category=${options.category} age=${cached.age}ms`)
 
-    if (!pendingRefreshes.has(key) && !(options.skipRefreshIf?.(cached.data))) {
+    if (!pendingRefreshes.has(key) && !refreshedThisSession.has(key) && !(options.skipRefreshIf?.(cached.data))) {
+      refreshedThisSession.add(key)
       const refresh = (async () => {
         const t0 = performance.now()
         try {
@@ -134,9 +181,11 @@ export async function cachedFetch<T>(
             return
           }
           await cacheSet(key, fresh, options)
+          lastRefreshTime = Date.now()
           perfLog(`[PERF] stale-refresh category=${options.category} time=${Math.round(performance.now() - t0)}ms`)
           options.onStaleRefreshed?.(fresh)
         } catch (e) {
+          refreshErrors.set(key, { message: e instanceof Error ? e.message : String(e), at: Date.now() })
           perfLog(`[PERF] stale-kept-on-error category=${options.category}`, e)
         }
       })().finally(() => pendingRefreshes.delete(key))
@@ -146,14 +195,24 @@ export async function cachedFetch<T>(
     return cached.data
   }
 
-  const t0 = performance.now()
-  try {
-    const fresh = await fetcher()
-    perfLog(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
-    await cacheSet(key, fresh, options)
-    return fresh
-  } catch (e) {
-    console.error(`[PERF] fetch-error category=${options.category}`, e)
-    throw e
-  }
+  const existingRequest = pendingRefreshes.get(key) as Promise<T> | undefined
+  if (existingRequest) return existingRequest
+  const request = (async () => {
+    const t0 = performance.now()
+    try {
+      const fresh = await fetcher()
+      perfLog(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
+      await cacheSet(key, fresh, options)
+      lastRefreshTime = Date.now()
+      return fresh
+    } catch (e) {
+      refreshErrors.set(key, { message: e instanceof Error ? e.message : String(e), at: Date.now() })
+      console.error(`[PERF] fetch-error category=${options.category}`, e)
+      throw e
+    } finally {
+      pendingRefreshes.delete(key)
+    }
+  })()
+  pendingRefreshes.set(key, request)
+  return request
 }

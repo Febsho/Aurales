@@ -2,20 +2,27 @@ import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult }
 import { invoke } from '@tauri-apps/api/core'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { appMediaToSearchResult, resolveMetadataBatch } from './metadata'
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { catalogCacheKey } from './cache/catalogCacheKeys'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
   url: string
   enabled: boolean
+  /** Local-only label. The manifest identity and name remain untouched. */
+  displayName?: string
 }
 
 const installedAddons: Map<string, InstalledAddon> = new Map()
 
 export function syncAddonsFromStore(addons: InstalledAddon[]): void {
+  const currentIds = new Set(addons.map((addon) => addon.manifest.id))
+  for (const id of installedAddons.keys()) {
+    if (!currentIds.has(id)) installedAddons.delete(id)
+  }
   for (const addon of addons) {
-    if (!installedAddons.has(addon.manifest.id)) {
-      installedAddons.set(addon.manifest.id, addon)
-    }
+    installedAddons.set(addon.manifest.id, addon)
   }
 }
 
@@ -56,6 +63,15 @@ export function getAddonById(addonId: string): InstalledAddon | undefined {
 
 function baseUrl(addonUrl: string): string {
   return addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
+}
+
+export function getAddonConfigureUrl(addonUrl: string): string {
+  try {
+    const url = new URL(addonUrl)
+    return new URL('/configure', url.origin).toString()
+  } catch {
+    return `${baseUrl(addonUrl)}/configure`
+  }
 }
 
 function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined {
@@ -138,7 +154,7 @@ function catalogExtraPath(extra?: Record<string, string>): string {
   return parts.length ? `/${parts.join('&')}` : ''
 }
 
-export async function getAddonCatalog(
+async function fetchAddonCatalog(
   addonUrl: string,
   type: string,
   catalogId: string,
@@ -174,6 +190,21 @@ export async function getAddonCatalog(
   } catch (_) {
     return []
   }
+}
+
+export async function getAddonCatalog(
+  addonUrl: string,
+  type: string,
+  catalogId: string,
+  extra?: Record<string, string>,
+  addonId?: string,
+): Promise<SearchResult[]> {
+  const key = catalogCacheKey({ scope: 'catalog', id: catalogId, mediaType: type, provider: addonId || addonUrl, source: addonUrl, filters: extra })
+  return cachedFetch(key, () => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId), {
+    category: CACHE_CATEGORIES.ADDON_CATALOG,
+    ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+    skipRefreshIf: (cached) => cached.length > 0 && typeof navigator !== 'undefined' && !navigator.onLine,
+  })
 }
 
 export async function getAddonStreams(

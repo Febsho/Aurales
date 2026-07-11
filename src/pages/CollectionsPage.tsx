@@ -3020,6 +3020,7 @@ export default function CollectionsPage() {
   const reorderHomeRows = useAppStore((s) => s.reorderHomeRows)
   const addHomeRow = useAppStore((s) => s.addHomeRow)
   const addons = useAppStore((s) => s.addons)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
 
   const [addOverlay, setAddOverlay] = useState(false)
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
@@ -3074,7 +3075,7 @@ export default function CollectionsPage() {
   }
 
   return (
-    <div className="pb-12">
+    <div className={`pb-12 ${cinematic ? 'cinematic-library' : ''}`}>
       {/* Header */}
       <div className="px-8 pt-8 pb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -3186,7 +3187,7 @@ export default function CollectionsPage() {
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={visibleRows.map((r) => r.id)} strategy={rectSortingStrategy}>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                <div className={`grid gap-4 ${cinematic ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'}`}>
                   {visibleRows.map((row) => (
                     <SortableShelfCard
                       key={row.id}

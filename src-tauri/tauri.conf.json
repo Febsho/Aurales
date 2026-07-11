@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Aurales",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "identifier": "com.aurales.app",
   "build": {
     "frontendDist": "../dist",
@@ -43,7 +43,7 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["msi", "nsis"],
-    "externalBin": ["binaries/mpv"],
+    "externalBin": ["binaries/mpv", "binaries/yt-dlp"],
     "resources": {
       "binaries/*.dll": "",
       "resources/mpv-scripts/*": "mpv-scripts/",

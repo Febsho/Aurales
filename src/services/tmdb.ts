@@ -1,6 +1,7 @@
 import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonDetails, EpisodeDetails, CastMember, Video, DiscoverConfig } from '../types'
 import { getTmdbApiKey } from './apiKeys'
-import { cachedFetch } from './cache/sqliteCache'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
+import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 const BASE_URL = 'https://api.themoviedb.org/3'
@@ -131,6 +132,11 @@ function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'
     backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
     overview: item.overview as string,
     rating: item.vote_average as number,
+    voteCount: item.vote_count as number | undefined,
+    popularity: item.popularity as number | undefined,
+    releaseDate: (item.release_date || item.first_air_date) as string | undefined,
+    originalLanguage: item.original_language as string | undefined,
+    originCountry: Array.isArray(item.origin_country) ? item.origin_country as string[] : undefined,
     provider: 'tmdb',
     tmdbId: item.id as string | number,
     genreIds: Array.isArray(item.genre_ids) ? item.genre_ids as number[] : undefined,
@@ -684,16 +690,19 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1): Promise<Se
   return items
 }
 
-export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: string, forceRefresh = false): Promise<SearchResult[]> {
-  const cacheKey = `discover:${rowId || JSON.stringify(config)}`
+export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: string, forceRefresh = false, onStaleRefreshed?: (items: SearchResult[]) => void): Promise<SearchResult[]> {
+  const cacheKey = catalogCacheKey({ scope: 'discover', id: rowId || 'row', mediaType: config.contentType, region: config.releaseRegion, provider: config.source, filters: config })
   const ttlSeconds = config.cacheTtl || CACHE_TTLS.DISCOVER
 
   if (forceRefresh) {
-    return discoverTmdb(config)
+    const fresh = await discoverTmdb(config)
+    await cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds })
+    return fresh
   }
 
   return cachedFetch<SearchResult[]>(cacheKey, () => discoverTmdb(config), {
     category: CACHE_CATEGORIES.DISCOVER,
     ttlSeconds,
+    onStaleRefreshed,
   })
 }

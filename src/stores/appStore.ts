@@ -5,6 +5,16 @@ import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
 import { buildDefaultHomeRows } from '../data/defaultHomeRows'
 import { v4 as uuid } from 'uuid'
+import { cacheClearCategory } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
+
+function invalidateCatalogData(): void {
+  ;[
+    CACHE_CATEGORIES.ADDON_CATALOG, CACHE_CATEGORIES.PROVIDER_LIST, CACHE_CATEGORIES.DISCOVER,
+    CACHE_CATEGORIES.HOME_ROW, CACHE_CATEGORIES.TMDB_CARD, CACHE_CATEGORIES.TVDB_CARD, CACHE_CATEGORIES.ARTWORK,
+  ].forEach((category) => { cacheClearCategory(category).catch(() => {}) })
+}
 
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
@@ -100,6 +110,7 @@ interface AppState {
   setAddons: (addons: InstalledAddon[]) => void
   addAddon: (addon: InstalledAddon) => void
   removeAddon: (addonId: string) => void
+  renameAddon: (addonId: string, displayName: string) => void
 
   // Home layout
   homeRows: HomeRowConfig[]
@@ -171,16 +182,12 @@ interface AppState {
   blurTitles: boolean
   blurDescriptions: boolean
   keepNextEpisodeVisible: boolean
-  keepFramesFor: 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year'
-  savedFramesCount: number
 
   setBlurSpoilers: (val: boolean) => void
   setBlurThumbnails: (val: boolean) => void
   setBlurTitles: (val: boolean) => void
   setBlurDescriptions: (val: boolean) => void
   setKeepNextEpisodeVisible: (val: boolean) => void
-  setKeepFramesFor: (val: 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year') => void
-  setSavedFramesCount: (count: number) => void
 
   posterSize: 'compact' | 'default' | 'large' | 'huge'
   nextEpisodePrompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m'
@@ -191,6 +198,7 @@ interface AppState {
 
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
+  interfaceTheme: InterfaceTheme
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
   showGenreOnCards: boolean
@@ -294,6 +302,7 @@ interface AppState {
   setContextAwareTranslation: (val: boolean) => void
 
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
+  setInterfaceTheme: (theme: InterfaceTheme) => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
   setShowGenreOnCards: (show: boolean) => void
@@ -477,11 +486,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as TraktAccount : null
     } catch (_) { return null }
   })(),
-  setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); set({ tmdbApiKey: key }) },
-  setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); set({ tvdbApiKey: key }) },
+  setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); invalidateCatalogData(); set({ tmdbApiKey: key }) },
+  setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); invalidateCatalogData(); set({ tvdbApiKey: key }) },
   setTraktClientId: (key) => { localStorage.setItem('trakt_client_id', key); set({ traktClientId: key }) },
   setTraktClientSecret: (key) => { localStorage.setItem('trakt_client_secret', key); set({ traktClientSecret: key }) },
-  setTraktConnected: (connected) => set({ traktConnected: connected }),
+  setTraktConnected: (connected) => { invalidateCatalogData(); set({ traktConnected: connected }) },
   setTraktAccount: (account) => {
     if (account) localStorage.setItem('trakt_account', JSON.stringify(account))
     else localStorage.removeItem('trakt_account')
@@ -507,7 +516,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as SimklAccount : null
     } catch (_) { return null }
   })(),
-  setSimklConnected: (connected) => set({ simklConnected: connected }),
+  setSimklConnected: (connected) => { invalidateCatalogData(); set({ simklConnected: connected }) },
   setSimklAccount: (account) => {
     if (account) localStorage.setItem('simkl_account', JSON.stringify(account))
     else localStorage.removeItem('simkl_account')
@@ -521,7 +530,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as AniListAccount : null
     } catch (_) { return null }
   })(),
-  setAnilistConnected: (connected) => set({ anilistConnected: connected }),
+  setAnilistConnected: (connected) => { invalidateCatalogData(); set({ anilistConnected: connected }) },
   setAnilistAccount: (account) => {
     if (account) localStorage.setItem('anilist_account', JSON.stringify(account))
     else localStorage.removeItem('anilist_account')
@@ -529,14 +538,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addons: loadPersistedAddons(),
-  setAddons: (addons) => { persistAddons(addons); set({ addons }) },
+  setAddons: (addons) => { persistAddons(addons); invalidateCatalogData(); set({ addons }) },
   addAddon: (addon) => set((s) => {
+    invalidateCatalogData()
     const next = [...s.addons, addon]
     persistAddons(next)
     return { addons: next }
   }),
   removeAddon: (addonId) => set((s) => {
+    invalidateCatalogData()
     const next = s.addons.filter((a) => a.manifest.id !== addonId)
+    persistAddons(next)
+    return { addons: next }
+  }),
+  renameAddon: (addonId, displayName) => set((s) => {
+    const next = s.addons.map((addon) => addon.manifest.id === addonId
+      ? { ...addon, displayName: displayName.trim() || undefined }
+      : addon)
     persistAddons(next)
     return { addons: next }
   }),
@@ -642,8 +660,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   blurTitles: localStorage.getItem('aurales_blur_titles') !== 'false',
   blurDescriptions: localStorage.getItem('aurales_blur_descriptions') !== 'false',
   keepNextEpisodeVisible: localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
-  keepFramesFor: (localStorage.getItem('aurales_keep_frames_for') || '30_days') as 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year',
-  savedFramesCount: Number(localStorage.getItem('aurales_saved_frames_count') || '2'),
   posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
   heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '0'),
@@ -657,6 +673,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // New settings options initial values
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
+  interfaceTheme: loadInterfaceTheme(),
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
   showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') !== 'false',
@@ -720,8 +737,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBlurTitles: (val) => { localStorage.setItem('aurales_blur_titles', String(val)); set({ blurTitles: val }) },
   setBlurDescriptions: (val) => { localStorage.setItem('aurales_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
   setKeepNextEpisodeVisible: (val) => { localStorage.setItem('aurales_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
-  setKeepFramesFor: (val) => { localStorage.setItem('aurales_keep_frames_for', val); set({ keepFramesFor: val }) },
-  setSavedFramesCount: (count) => { localStorage.setItem('aurales_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
   setPosterSize: (size) => { localStorage.setItem('aurales_poster_size', size); set({ posterSize: size }) },
   setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
   setHeroTrailerDelay: (seconds) => {
@@ -732,6 +747,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
+  setInterfaceTheme: (theme) => { persistInterfaceTheme(theme); set({ interfaceTheme: theme }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
   setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
@@ -747,7 +763,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_trailer_volume', String(safe))
     set({ trailerVolume: safe })
   },
-  setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); set({ discoveryRegion: region }) },
+  setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); invalidateCatalogData(); set({ discoveryRegion: region }) },
   setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
   setHwdecMode: (mode) => { localStorage.setItem('aurales_hwdec_mode', mode); set({ hwdecMode: mode }) },
@@ -764,7 +780,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style }) },
   setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
   fanartApiKey: localStorage.getItem('fanart_api_key') || '',
-  setFanartApiKey: (key) => { localStorage.setItem('fanart_api_key', key); set({ fanartApiKey: key }) },
+  setFanartApiKey: (key) => { localStorage.setItem('fanart_api_key', key); invalidateCatalogData(); set({ fanartApiKey: key }) },
   openrouterApiKey: localStorage.getItem('openrouter_api_key') || '',
   openrouterModel: localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash',
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
@@ -797,6 +813,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setArtProviders: (providers) => {
     const normalized = normalizeArtProviderSettings(providers)
     localStorage.setItem('aurales_art_providers', JSON.stringify(normalized))
+    invalidateCatalogData()
     set({ artProviders: normalized })
   },
   customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
@@ -820,14 +837,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',
   useGenericAnimeSeasonLabels: localStorage.getItem('aurales_generic_anime_season_labels') !== 'false',
   avoidJapaneseSeasonNames: localStorage.getItem('aurales_avoid_jp_season_names') !== 'false',
-  setMovieMetadataSource: (src) => { localStorage.setItem('aurales_movie_meta_src', src); set({ movieMetadataSource: src }); get().clearAnimeCache() },
-  setSeriesMetadataSource: (src) => { localStorage.setItem('aurales_series_meta_src', src); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
-  setAnimeMetadataSource: (src) => { localStorage.setItem('aurales_anime_meta_src', src); set({ animeMetadataSource: src }); get().clearAnimeCache() },
+  setMovieMetadataSource: (src) => { localStorage.setItem('aurales_movie_meta_src', src); invalidateCatalogData(); set({ movieMetadataSource: src }); get().clearAnimeCache() },
+  setSeriesMetadataSource: (src) => { localStorage.setItem('aurales_series_meta_src', src); invalidateCatalogData(); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
+  setAnimeMetadataSource: (src) => { localStorage.setItem('aurales_anime_meta_src', src); invalidateCatalogData(); set({ animeMetadataSource: src }); get().clearAnimeCache() },
   setMovieMetadataFallback: (val) => { localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
   setSeriesMetadataFallback: (val) => { localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
   setAnimeMetadataFallback: (val) => { localStorage.setItem('aurales_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
   setEnableCommunityRatings: (val) => { localStorage.setItem('aurales_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
-  setAppManagedMetadata: (val) => { localStorage.setItem('aurales_app_managed_metadata', String(val)); set({ appManagedMetadata: val }) },
+  setAppManagedMetadata: (val) => { localStorage.setItem('aurales_app_managed_metadata', String(val)); invalidateCatalogData(); set({ appManagedMetadata: val }) },
   setUseAddonMetadataFallback: (val) => { localStorage.setItem('aurales_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
   setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('aurales_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
   setAnimeTitleLanguage: (val) => { localStorage.setItem('aurales_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },

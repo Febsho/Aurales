@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import MediaCard from '../components/MediaCard'
 import { EmptyState } from '../components/ui'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
@@ -9,8 +9,10 @@ import type { SearchResult } from '../types'
 import { discoverTmdb, discoverTmdbWithCache } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
+import WatchlistButton from '../components/WatchlistButton'
 
 export default function CatalogPage() {
+  const navigate = useNavigate()
   const { rowId } = useParams<{ rowId: string }>()
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState<SearchResult[]>([])
@@ -28,6 +30,8 @@ export default function CatalogPage() {
   const region = useAppStore((s) => s.discoveryRegion)
   const minRating = useAppStore((s) => s.discoveryMinRating)
   const includeAdult = useAppStore((s) => s.discoveryIncludeAdult)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
 
   const row = useMemo(() => {
     const candidate = homeRows.find((r) => r.id === rowId)
@@ -330,7 +334,7 @@ export default function CatalogPage() {
   }, [row, addons])
 
   return (
-    <div className="p-6 pb-12">
+    <div className={`p-6 pb-12 ${cinematic ? 'px-8' : ''}`}>
       <div className="mb-6">
         <p className="text-sm uppercase tracking-[0.24em] text-muted mb-2">Catalog</p>
         <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
@@ -357,9 +361,32 @@ export default function CatalogPage() {
         />
       ) : (
         <>
-          <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
+          {false && cinematic && (focusedItem || items[0]) && (() => {
+            const preview = focusedItem || items[0]
+            const open = (autoPlay = false) => navigate(preview.type === 'movie' ? `/movie/${preview.id}` : `/series/${preview.id}`, { state: { ...preview, autoPlay } })
+            return <div className="cinematic-focus-panel relative mb-8 min-h-[280px] overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.05]">
+              {(preview.backdrop || preview.poster) && <img src={preview.backdrop || preview.poster} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
+              <div className="absolute inset-0 bg-gradient-to-r from-black via-black/75 to-transparent" />
+              <div className="relative z-10 flex min-h-[280px] max-w-2xl flex-col justify-end p-8">
+                {preview.logo ? <img src={preview.logo} alt={preview.title} className="mb-3 max-h-16 max-w-sm object-contain object-left" /> : <h2 className="text-4xl font-black">{preview.title}</h2>}
+                <div className="my-3 flex flex-wrap gap-2">{preview.rating != null && <span className="cinematic-pill">★ {Number(preview.rating).toFixed(1)}</span>}{preview.year && <span className="cinematic-pill">{preview.year}</span>}{preview.genres?.slice(0, 2).map((genre) => <span key={genre} className="cinematic-pill">{genre}</span>)}</div>
+                {preview.overview && <p className="mb-5 line-clamp-2 text-white/70">{preview.overview}</p>}
+                <div className="flex gap-3"><button onClick={() => open(true)} className="focus-ring rounded-full bg-white px-6 py-2.5 font-black text-black">Play</button><button onClick={() => open(false)} className="focus-ring rounded-full bg-white/15 px-6 py-2.5 font-bold text-white">More Info</button><WatchlistButton mediaRef={{ localId: preview.id, title: preview.title, year: preview.year, type: preview.isAnime ? 'anime' : preview.type === 'series' ? 'show' : 'movie', imdbId: preview.imdbId, tmdbId: preview.tmdbId ? Number(preview.tmdbId) : undefined }} mediaType={preview.type} anilistId={preview.anilistId} malId={preview.malId} tvdbId={preview.tvdbId} /></div>
+              </div>
+            </div>
+          })()}
+          <div className={cinematic ? 'flex flex-wrap items-start gap-5' : 'grid gap-5'} style={cinematic ? undefined : { gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
             {items.map((item) => (
-              <MediaCard key={item.id} item={item} />
+              <MediaCard
+                key={item.id}
+                item={item}
+                layout="poster"
+                cinematicMode={cinematic}
+                cinematicFocused={cinematic && focusedItem?.id === item.id}
+                cinematicExpand={false}
+                onFocusItem={cinematic ? setFocusedItem : undefined}
+                onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current?.id === unfocused.id ? null : current) : undefined}
+              />
             ))}
           </div>
           {loadingMore && (

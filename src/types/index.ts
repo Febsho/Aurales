@@ -26,6 +26,12 @@ export interface SearchResult {
   metadataFallback?: boolean
   genreIds?: number[]
   genres?: string[]
+  voteCount?: number
+  popularity?: number
+  runtime?: number
+  releaseDate?: string
+  originalLanguage?: string
+  originCountry?: string[]
 }
 
 export interface MovieDetails {
@@ -170,6 +176,10 @@ export interface StremioAddonResource {
   name: string
   types?: string[]
   idPrefixes?: string[]
+  behaviorHints?: {
+    configurable?: boolean
+    configurationRequired?: boolean
+  }
 }
 
 export interface StremioAddonManifest {
