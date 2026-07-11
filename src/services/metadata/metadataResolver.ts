@@ -9,18 +9,28 @@ import type { AddonMediaInput, AppMediaItem } from './types'
 import type { SearchResult } from '../../types'
 
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
-const ANIME_RESOLVER_VERSION = 6
+const ANIME_RESOLVER_VERSION = 8
+const METADATA_CLASSIFIER_VERSION = 4
+
+function numericProviderId(value: string | number | undefined): number | undefined {
+  if (value == null) return undefined
+  const parsed = Number(String(value).trim().replace(/^[a-z_]+[-:]/i, ''))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
 
 function animeSettingsSignature(): string {
   const settings = useAppStore.getState()
   return [
+    settings.animeMetadataSource,
+    settings.animeMetadataFallback,
+    settings.animeTitleLanguage,
     settings.hideUnairedAnimeSeasons,
     settings.hideUnairedAnimeEpisodes,
     settings.includeAnimeSpecials,
     settings.useGenericAnimeSeasonLabels,
     settings.avoidJapaneseSeasonNames,
     settings.preferTvdbAnimeSeasons,
-  ].map(Number).join('')
+  ].map(String).join('|')
 }
 
 const pending = new Map<string, Promise<AppMediaItem>>()
@@ -101,9 +111,9 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
     const ids = {
       id: item.id,
       imdbId: item.imdbId,
-      tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined,
-      tvdbId: item.tvdbId ? Number(item.tvdbId) : undefined,
-      anilistId: item.anilistId ? Number(item.anilistId) : undefined,
+      tmdbId: numericProviderId(item.tmdbId),
+      tvdbId: numericProviderId(item.tvdbId),
+      anilistId: numericProviderId(item.anilistId),
     }
     return memCacheGet(ids)
   })
@@ -115,9 +125,9 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
     const batchInput = needsDbLookup.map((i) => ({
       id: items[i].id,
       imdbId: items[i].imdbId,
-      tmdbId: items[i].tmdbId ? Number(items[i].tmdbId) : undefined,
-      tvdbId: items[i].tvdbId ? Number(items[i].tvdbId) : undefined,
-      anilistId: items[i].anilistId ? Number(items[i].anilistId) : undefined,
+      tmdbId: numericProviderId(items[i].tmdbId),
+      tvdbId: numericProviderId(items[i].tvdbId),
+      anilistId: numericProviderId(items[i].anilistId),
     }))
     const fetched = await getAppMetadataByIdsBatch(batchInput)
     needsDbLookup.forEach((origIdx, batchIdx) => {
@@ -129,7 +139,7 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
 
   const cacheLookupResults = items.map((item, i) => {
     const raw = dbResults[i]
-    const cached = raw?.sourceMetadataProvider === 'fallback_addon' ? null : raw
+    const cached = raw?.sourceMetadataProvider === 'fallback_addon' || raw?.metadataClassifierVersion !== METADATA_CLASSIFIER_VERSION ? null : raw
     return { item, cached }
   })
 
@@ -138,9 +148,9 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   
   cacheLookupResults.forEach(({ item, cached }, index) => {
     if (!cached) {
-      const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
-      const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
-      const anilistId = item.anilistId ? Number(item.anilistId) : undefined
+      const tmdbId = numericProviderId(item.tmdbId)
+      const tvdbId = numericProviderId(item.tvdbId)
+      const anilistId = numericProviderId(item.anilistId)
       
       uncachedInputs.push({
         index,
@@ -154,6 +164,7 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
           tmdbId,
           tvdbId,
           anilistId,
+          rawAddonMeta: item,
         }
       })
     }
@@ -170,9 +181,9 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
         if (!resolvedItem) return
         if (resolvedItem.sourceMetadataProvider === 'fallback_addon') return
         const matched = cacheLookupResults.find(({ item }) => {
-          const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
-          const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
-          const anilistId = item.anilistId ? Number(item.anilistId) : undefined
+          const tmdbId = numericProviderId(item.tmdbId)
+          const tvdbId = numericProviderId(item.tvdbId)
+          const anilistId = numericProviderId(item.anilistId)
 
           return (
             (resolvedItem.imdbId && resolvedItem.imdbId === item.imdbId) ||
@@ -212,7 +223,9 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
         const parsed = JSON.parse(cached) as AppMediaItem
         if (parsed.sourceMetadataProvider === 'fallback_addon') {
           await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
-        } else if (parsed.type === 'anime') {
+        } else if (parsed.metadataClassifierVersion !== METADATA_CLASSIFIER_VERSION) {
+          await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
+        } else if (parsed.type === 'anime' || parsed.isAnime) {
           const activeSettings = animeSettingsSignature()
           if (parsed.animeResolverVersion !== ANIME_RESOLVER_VERSION || parsed.animeSettingsSignature !== activeSettings) {
             console.log('[metadata] Anime cache stale, re-resolving:', input.id)
@@ -258,10 +271,11 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
       if (!settings.useAddonMetadataFallback) throw new Error('No app metadata match')
       item = addonFallback({ ...input, ...ids }, kind)
     }
-    if (item && item.type === 'anime') {
+    if (item && (item.type === 'anime' || item.isAnime)) {
       item.animeResolverVersion = ANIME_RESOLVER_VERSION
       item.animeSettingsSignature = animeSettingsSignature()
     }
+    item.metadataClassifierVersion = METADATA_CLASSIFIER_VERSION
     if (item.sourceMetadataProvider !== 'fallback_addon') {
       await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
         addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)

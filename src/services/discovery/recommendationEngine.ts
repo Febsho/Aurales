@@ -68,10 +68,32 @@ export function dedupeCandidates(candidates: RecommendationCandidate[]): Recomme
   return [...merged.values()]
 }
 
-export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}): RankedRecommendation[] {
+export interface RankingWeightOverrides {
+  genre?: number
+  keyword?: number
+  people?: number
+  quality?: number
+  popularity?: number
+  novelty?: number
+  recency?: number
+  era?: number
+  language?: number
+}
+
+export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}, weights: RankingWeightOverrides = {}): RankedRecommendation[] {
   const completed = watchedKeys(activity)
   const rewatchKeys=new Set((activity.rewatches||[]).flatMap((item)=>[item.id,String(item.tmdbId||''),item.imdbId||'']).filter(Boolean))
   const feedbackMap = new Map(feedback.map((entry) => [entry.mediaKey, entry]))
+  // User weight nudges scale a dimension: -1 → suppress (×0), 0 → preset (×1), +1 → ×2
+  const wGenre = 1 + (weights.genre || 0)
+  const wKeyword = 1 + (weights.keyword || 0)
+  const wPeople = 1 + (weights.people || 0)
+  const wQuality = 1 + (weights.quality || 0)
+  const wPopularity = 1 + (weights.popularity || 0)
+  const wNovelty = 1 + (weights.novelty || 0)
+  const wRecency = 1 + (weights.recency || 0)
+  const wEra = 1 + (weights.era || 0)
+  const wLanguage = 1 + (weights.language || 0)
   const ranked = dedupeCandidates(candidates).map((candidate) => {
     const item = candidate.item
     const key = mediaKey(item)
@@ -80,10 +102,30 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const formatAffinity=item.type==='movie'?profile.movieWeight:profile.seriesWeight
     const languageAffinity=item.originalLanguage?(profile.languageWeights[item.originalLanguage]||0):0
     const countryAffinity=(item.originCountry||[]).reduce((sum,country)=>sum+(profile.countryWeights[country]||0),0)
-    const preference = Math.min(28, (genreAffinity * RECOMMENDATION_WEIGHTS.genreAffinity + formatAffinity + languageAffinity + countryAffinity) / Math.max(2, profile.activityCount))
-    const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality)
+    
+    // Genre preference
+    const preference = Math.min(28, (genreAffinity * RECOMMENDATION_WEIGHTS.genreAffinity + formatAffinity + countryAffinity) / Math.max(2, profile.activityCount)) * wGenre
+    
+    // Decade/Era affinity
+    const decade = item.year ? `${Math.floor(item.year / 10) * 10}s` : null
+    const decadeAffinity = decade ? (profile.decadeWeights[decade] || 0) : 0
+    const eraScore = (decadeAffinity * 2.0) * wEra
+
+    // Language affinity
+    const languageScore = (languageAffinity * 3.0) * wLanguage
+
+    // People (cast / director seeds)
+    const isPeopleSeed = candidate.source === 'tmdb-cast' || candidate.source === 'tmdb-director'
+    const peopleScore = (isPeopleSeed ? 8 : 0) * wPeople
+
+    // Recency (similar seeds / actor/director from recent watches)
+    const isRecentSeed = candidate.source === 'tmdb-similar' || candidate.source === 'tmdb-cast' || candidate.source === 'tmdb-director'
+    const recencyScore = (isRecentSeed ? 6 : 0) * wRecency
+
+    // Quality
+    const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
     const yearAge = item.year ? Math.max(0, new Date(now).getFullYear() - item.year) : 8
-    const novelty = Math.max(0, 8 - Math.min(8, yearAge)) / 2
+    const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
     const hiddenGem = (candidate.popularity || 0) < 35 && (item.rating || 0) >= 7
     const quick = (candidate.runtimeMinutes || 999) <= (item.type === 'movie' ? 105 : 40)
     const ignoredPenalty = -Math.min(6, Math.max(0, (impressions[key] || 0) - 2) * .75)
@@ -105,7 +147,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     if (mode === 'recently-released') modeBonus = novelty * 4
     if (mode === 'quick-watch') modeBonus = quick ? 18 : -8
     const availability=item.title&&(item.poster||item.backdrop)&&item.tmdbId!=null?4:-15
-    const score: RecommendationScore = { total: 0, contentSimilarity: preference, preference, recency: novelty, quality, popularityConfidence: Math.min(6, Math.log10((candidate.voteCount || 10) + 1) * 2), availability, novelty, exploration: exploration + modeBonus, feedbackPenalty, watchedPenalty: watched ? (rewatchSuitable?-5:-100) : 0 }
+    const score: RecommendationScore = { total: 0, contentSimilarity: preference, preference: preference + languageScore + eraScore + peopleScore + recencyScore, recency: novelty, quality, popularityConfidence: Math.min(6, Math.log10((candidate.voteCount || 10) + 1) * 2) * wPopularity, availability, novelty, exploration: exploration + modeBonus, feedbackPenalty, watchedPenalty: watched ? (rewatchSuitable?-5:-100) : 0 }
     score.total = Object.entries(score).filter(([name]) => name !== 'total').reduce((sum, [,value]) => sum + value, 48)
     const reasons: RecommendationReason[] = []
     if (candidate.source === 'tmdb-similar' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`Because you watched ${candidate.seedTitle}`,strength:12})
@@ -159,7 +201,9 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
 
 export function generateDiscoverySections(ranked: RankedRecommendation[], profile: TasteProfile, mode: DiscoveryMode, minSize = 5): DiscoverySection[] {
   const used = new Set<string>()
-  const take = (predicate: (item: RankedRecommendation) => boolean, count = 16) => ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item))).slice(0, count).filter((item) => { used.add(mediaKey(item.item)); return true })
+  // Keep one broad section from exhausting the entire ranked pool before the
+  // specialized catalogs get a chance to select their titles.
+  const take = (predicate: (item: RankedRecommendation) => boolean, count = 20) => ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item))).slice(0, count).filter((item) => { used.add(mediaKey(item.item)); return true })
   const similaritySeed=ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle)?.seedTitle
   const definitions: Array<[string,string,(item:RankedRecommendation)=>boolean]> = [
     ['made-for-you', profile.confidence === 'low' ? 'Popular Right Now' : 'Made for You', () => true],

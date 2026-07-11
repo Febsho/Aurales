@@ -1,6 +1,6 @@
 [package]
 name = "aurales-app"
-version = "0.1.18"
+version = "0.1.19"
 description = "Aurales - A modern streaming catalog app"
 authors = ["you"]
 license = "MIT"

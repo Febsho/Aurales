@@ -32,7 +32,7 @@ import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
 import { getAddonStreams, getStreamAddons } from '../services/addons'
 import { useAppStore, getLanguageCodeFromTrack, APP_LANGUAGES } from '../stores/appStore'
-import { setDiscordActivity, clearDiscordActivity } from '../services/discord'
+import { setDiscordActivity, restoreDiscordBrowsingActivity } from '../services/discord'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -699,6 +699,20 @@ function FullNativeMpvPlayer({
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
   const subtitleColor = useAppStore((s) => s.subtitleColor)
   const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
+  const subtitleScale = useAppStore((s) => s.subtitleScale)
+  const subtitleBold = useAppStore((s) => s.subtitleBold)
+  const subtitleItalic = useAppStore((s) => s.subtitleItalic)
+  const subtitleOutlineColor = useAppStore((s) => s.subtitleOutlineColor)
+  const subtitleBgColor = useAppStore((s) => s.subtitleBgColor)
+  const subtitleOutlineThickness = useAppStore((s) => s.subtitleOutlineThickness)
+  const subtitleShadowOffset = useAppStore((s) => s.subtitleShadowOffset)
+  const subtitleShadowOpacity = useAppStore((s) => s.subtitleShadowOpacity)
+  const subtitleVerticalPosition = useAppStore((s) => s.subtitleVerticalPosition)
+  const subtitleAlignment = useAppStore((s) => s.subtitleAlignment)
+  const subtitleHorizontalMargin = useAppStore((s) => s.subtitleHorizontalMargin)
+  const subtitleTextBlur = useAppStore((s) => s.subtitleTextBlur)
+  const subtitleScaleWithWindow = useAppStore((s) => s.subtitleScaleWithWindow)
+  const subtitleAssOverride = useAppStore((s) => s.subtitleAssOverride)
   const contextAwareTranslation = useAppStore((s) => s.contextAwareTranslation)
   const seekStepSeconds = useAppStore((s) => s.seekStepSeconds)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
@@ -734,22 +748,49 @@ function FullNativeMpvPlayer({
   useEffect(() => { playerRunningRef.current = playerRunning }, [playerRunning])
   useEffect(() => {
     if (!playerRunningRef.current) return
+    
     sendPlayerCommand('set_property', ['sub-font-size', subtitleFontSize]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-scale', subtitleScale]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-bold', subtitleBold ? 'yes' : 'no']).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-italic', subtitleItalic ? 'yes' : 'no']).catch(() => {})
     sendPlayerCommand('set_property', ['sub-color', subtitleColor]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-border-color', subtitleOutlineColor]).catch(() => {})
+    
     const bgAlpha = Math.round(Number(subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
-    sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
+    const cleanBgColor = subtitleBgColor.replace('#', '')
+    sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}${cleanBgColor}`]).catch(() => {})
+    
     if (subtitleBorderStyle === 'outline') {
-      sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-border-size', subtitleOutlineThickness]).catch(() => {})
       sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
     } else if (subtitleBorderStyle === 'shadow') {
       sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
-      sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
-      sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', subtitleShadowOffset]).catch(() => {})
+      const shadowAlpha = Math.round(subtitleShadowOpacity * 255).toString(16).padStart(2, '0')
+      sendPlayerCommand('set_property', ['sub-shadow-color', `#${shadowAlpha}000000`]).catch(() => {})
     } else {
       sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
       sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
     }
-  }, [subtitleFontSize, subtitleColor, subtitleBgOpacity, subtitleBorderStyle])
+
+    sendPlayerCommand('set_property', ['sub-pos', subtitleVerticalPosition]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-align-x', subtitleAlignment]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-margin-x', subtitleHorizontalMargin]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-blur', subtitleTextBlur]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-scale-with-window', subtitleScaleWithWindow ? 'yes' : 'no']).catch(() => {})
+    
+    const overrideMap: Record<string, string> = {
+      apply: 'no',
+      scale_only: 'scale_only',
+      ignore: 'yes'
+    }
+    sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subtitleAssOverride] || 'scale_only']).catch(() => {})
+  }, [
+    subtitleFontSize, subtitleColor, subtitleBgOpacity, subtitleBorderStyle, subtitleScale,
+    subtitleBold, subtitleItalic, subtitleOutlineColor, subtitleBgColor, subtitleOutlineThickness,
+    subtitleShadowOffset, subtitleShadowOpacity, subtitleVerticalPosition, subtitleAlignment,
+    subtitleHorizontalMargin, subtitleTextBlur, subtitleScaleWithWindow, subtitleAssOverride
+  ])
 
   const applySavedVolume = useCallback((delays = [0, 250, 750, 1500, 3000]) => {
     const target = volumeRef.current
@@ -1473,21 +1514,41 @@ function FullNativeMpvPlayer({
         applySavedVolume()
         const subState = useAppStore.getState()
         sendPlayerCommand('set_property', ['sub-font-size', subState.subtitleFontSize]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-scale', subState.subtitleScale]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-bold', subState.subtitleBold ? 'yes' : 'no']).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-italic', subState.subtitleItalic ? 'yes' : 'no']).catch(() => {})
         sendPlayerCommand('set_property', ['sub-color', subState.subtitleColor]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-border-color', subState.subtitleOutlineColor]).catch(() => {})
+        
         const bgAlpha = Math.round(Number(subState.subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
-        sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}000000`]).catch(() => {})
+        const cleanBgColor = subState.subtitleBgColor.replace('#', '')
+        sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}${cleanBgColor}`]).catch(() => {})
+        
         if (subState.subtitleBorderStyle === 'outline') {
-          sendPlayerCommand('set_property', ['sub-border-size', 2]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-border-size', subState.subtitleOutlineThickness]).catch(() => {})
           sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
         } else if (subState.subtitleBorderStyle === 'shadow') {
           sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
-          sendPlayerCommand('set_property', ['sub-shadow-offset', 2]).catch(() => {})
-          sendPlayerCommand('set_property', ['sub-shadow-color', '#80000000']).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', subState.subtitleShadowOffset]).catch(() => {})
+          const shadowAlpha = Math.round(subState.subtitleShadowOpacity * 255).toString(16).padStart(2, '0')
+          sendPlayerCommand('set_property', ['sub-shadow-color', `#${shadowAlpha}000000`]).catch(() => {})
         } else {
           sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
           sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
         }
-        sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
+
+        sendPlayerCommand('set_property', ['sub-pos', subState.subtitleVerticalPosition]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-align-x', subState.subtitleAlignment]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-margin-x', subState.subtitleHorizontalMargin]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-blur', subState.subtitleTextBlur]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-scale-with-window', subState.subtitleScaleWithWindow ? 'yes' : 'no']).catch(() => {})
+        
+        const overrideMap: Record<string, string> = {
+          apply: 'no',
+          scale_only: 'scale_only',
+          ignore: 'yes'
+        }
+        sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subState.subtitleAssOverride] || 'scale_only']).catch(() => {})
 
         if (playbackItem) {
           const startProgress = startTime && progressRef.current.duration > 0
@@ -1712,7 +1773,7 @@ function FullNativeMpvPlayer({
       activityType: 3,
     }).catch(() => {})
 
-    return () => { clearDiscordActivity().catch(() => {}) }
+    return () => { restoreDiscordBrowsingActivity().catch(() => {}) }
   }, [discordRichPresence, title, playbackItem, paused, poster])
 
   // Periodically sync Discord timestamps with actual playback position

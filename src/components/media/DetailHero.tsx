@@ -61,6 +61,13 @@ function formatRuntime(minutes?: number): string | null {
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
 }
 
+function safeDisplayText(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const text = String(value).trim()
+  if (!text || text === '[object Object]' || text === 'undefined' || text === 'null') return null
+  return text
+}
+
 export default function DetailHero({
   title,
   year,
@@ -89,12 +96,29 @@ export default function DetailHero({
   const runtimeStr = formatRuntime(runtime)
   const topCast = cast?.slice(0, 3) ?? []
 
+  const rawGenre = genres?.[0] as unknown
+  const genreStr = rawGenre && typeof rawGenre === 'object'
+    ? safeDisplayText((rawGenre as Record<string, unknown>).name || (rawGenre as Record<string, unknown>).title)
+    : safeDisplayText(rawGenre)
+
+  let certStr: string | null = null
+  if (certification) {
+    if (typeof certification === 'string') {
+      certStr = safeDisplayText(certification)
+    } else if (typeof certification === 'object') {
+      const record = certification as unknown as Record<string, unknown>
+      certStr = safeDisplayText(record.certification || record.rating || record.name || record.value)
+    }
+  }
+
+  const statusStr = safeDisplayText(status)
+
   const metaParts = [
     year,
-    genres?.[0],
+    genreStr,
     runtimeStr,
     numberOfSeasons ? `${numberOfSeasons} Season${numberOfSeasons > 1 ? 's' : ''}` : null,
-    certification,
+    certStr,
   ].filter(Boolean)
   const metaLine = metaParts.join(' · ')
 
@@ -158,9 +182,9 @@ export default function DetailHero({
         {metaLine && (
           <p className="text-sm text-white/50 font-medium tracking-wide mb-3">
             {metaLine}
-            {status && status !== 'Released' && status !== 'Ended' && (
+            {statusStr && statusStr !== 'Released' && statusStr !== 'Ended' && (
               <span className="ml-2 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-white/10 text-white/60 rounded-full">
-                {status}
+                {statusStr}
               </span>
             )}
           </p>

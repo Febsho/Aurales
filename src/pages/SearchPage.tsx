@@ -202,7 +202,7 @@ export default function SearchPage() {
   const seriesSearchEnabled = useAppStore((s) => s.seriesSearchEnabled)
   const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
   const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
-  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const requestIdRef = useRef(0)
 
   const movies = useMemo(() => results.filter((item) => item.type === 'movie' && !isAnime(item)).slice(0, 24), [results])
@@ -359,7 +359,7 @@ export default function SearchPage() {
   const noResults = searched && !loading && totalMovies === 0 && totalSeries === 0
 
   return (
-    <div className={`${cinematic ? 'pt-44' : 'pt-8'} pb-8 space-y-4`}>
+    <div className={`${usesTopNav ? 'pt-44' : 'pt-8'} pb-8 space-y-4`}>
       {searched && (
         <div className="px-6 flex flex-wrap items-end justify-between gap-4">
           <div>

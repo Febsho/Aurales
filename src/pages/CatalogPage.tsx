@@ -1,18 +1,20 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from 'react-router-dom'
 import MediaCard from '../components/MediaCard'
 import { EmptyState } from '../components/ui'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
 import type { SearchResult } from '../types'
-import { discoverTmdb, discoverTmdbWithCache } from '../services/tmdb'
+import { discoverTmdb, discoverTmdbWithCache, DISCOVER_ROW_LIMIT, DISCOVER_ROW_PAGES } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 import WatchlistButton from '../components/WatchlistButton'
 
 export default function CatalogPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const navigationType = useNavigationType()
   const { rowId } = useParams<{ rowId: string }>()
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState<SearchResult[]>([])
@@ -95,7 +97,9 @@ export default function CatalogPage() {
   }, [posterSize])
 
   const saveScrollPosition = useCallback(() => {
-    if (!rowId) return
+    // Never overwrite a seeded/filled cache with an empty snapshot (stale cleanup runs
+    // fire with the previous render's state)
+    if (!rowId || items.length === 0) return
     const scrollRoot = document.querySelector('main') || document.documentElement
     catalogSetCache(rowId, {
       items,
@@ -121,9 +125,12 @@ export default function CatalogPage() {
       pageRef.current = cached.page
       setLoading(false)
       restoredRef.current = true
+      // Restore the saved scroll only when returning via back/forward (POP). Opening
+      // "Show all" is a fresh PUSH and must start at the top, like Home.
+      const targetScroll = navigationType === 'POP' ? cached.scrollTop : 0
       requestAnimationFrame(() => {
         const scrollRoot = document.querySelector('main') || document.documentElement
-        scrollRoot.scrollTop = cached.scrollTop
+        scrollRoot.scrollTop = targetScroll
       })
       return
     }
@@ -133,6 +140,21 @@ export default function CatalogPage() {
     setHasMore(false)
     setItems([])
     pageRef.current = 0
+
+    // Fresh catalog (not a cache restore): start at the top. The shared <main>
+    // scroll container otherwise keeps the scroll offset from the previous page.
+    const scrollRootReset = document.querySelector('main') || document.documentElement
+    scrollRootReset.scrollTop = 0
+
+    // Rows without a config (e.g. Discover's computed sections) pass their items
+    // through navigation state — more reliable than the seeded cache alone
+    const stateItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
+    if (!row && stateItems && stateItems.length > 0) {
+      setItems(stateItems)
+      setHasMore(false)
+      setLoading(false)
+      return
+    }
 
     if (!row) {
       setLoading(false)
@@ -162,7 +184,8 @@ export default function CatalogPage() {
         }
 
         try {
-          const results = page === 1
+          const isFirst = page === 1
+          const results = isFirst
             ? await discoverTmdbWithCache(row.discoverConfig!, `catalog-${rowId}-p${page}`)
             : await discoverTmdb(row.discoverConfig!, page)
           if (cancelled) return
@@ -171,11 +194,12 @@ export default function CatalogPage() {
           const enriched = await enrichSearchResultsWithAppMetadata(results)
           if (cancelled) return
 
-          if (enriched.length === 0 || enriched.length < 20) {
+          if (enriched.length === 0 || enriched.length < (isFirst ? DISCOVER_ROW_LIMIT : 20)) {
             canLoadMore = false
             setHasMore(false)
           } else {
-            page += 1
+            // First load covers TMDB pages 1-DISCOVER_ROW_PAGES via the cached row
+            page = isFirst ? DISCOVER_ROW_PAGES + 1 : page + 1
             pageRef.current = page
             setHasMore(true)
           }

@@ -121,6 +121,24 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     return formatted.replace(/\/10$/, '').trim()
   }, [displayItem.rating])
 
+  const getDisplayProvider = (item: SearchResult) => {
+    if (item.provider === 'addon') {
+      const genres = item.genres?.map((g) => g.toLowerCase()) || []
+      const isAnime = item.isAnime || 
+                      /^(mal|anilist)[-:]/i.test(item.id) || 
+                      genres.includes('anime') || 
+                      ((item.genreIds?.includes(16) || genres.includes('animation')) && item.originalLanguage === 'ja')
+      if (isAnime) {
+        return useAppStore.getState().animeMetadataSource ?? 'tvdb'
+      }
+      if (item.type === 'movie') {
+        return useAppStore.getState().movieMetadataSource ?? 'tmdb'
+      }
+      return useAppStore.getState().seriesMetadataSource ?? 'tmdb'
+    }
+    return item.provider
+  }
+
   const widthClass = useMemo(() => {
     if (layout === 'landscape') {
       switch (posterSize) {
@@ -411,7 +429,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
                 {cinematicGenre && displayItem.year && <span className="text-white/30">•</span>}
                 {displayItem.year && <span>{displayItem.year}</span>}
                 {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
-                {displayItem.provider && <><span className="text-white/30">•</span><span className="capitalize">{displayItem.provider}</span></>}
+                {getDisplayProvider(displayItem) && <><span className="text-white/30">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
               </div>
               {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
             </div>
@@ -501,11 +519,14 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         {cinematicLandscapeExpanded && (
           <div className="px-2 pt-4 pb-1 animate-[cinematic-panel-in_180ms_cubic-bezier(.16,1,.3,1)]">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
-              {displayItem.genres?.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
+              {displayItem.genres?.slice(0, 2).map((genre) => {
+                const text = typeof genre === 'object' && genre ? (genre as any).name || (genre as any).title || JSON.stringify(genre) : genre
+                return <span key={text}>{text}</span>
+              })}
               {displayItem.genres?.length && displayItem.year ? <span className="text-white/30">•</span> : null}
               {displayItem.year && <span>{displayItem.year}</span>}
               {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
-              {displayItem.provider && <><span className="text-white/30">•</span><span className="capitalize">{displayItem.provider}</span></>}
+              {getDisplayProvider(displayItem) && <><span className="text-white/30">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
             </div>
             {displayItem.overview && <p className="line-clamp-2 max-w-xl text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
           </div>
@@ -514,9 +535,12 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     )
   }
 
-  const genre = displayItem.genres?.[0]
+  const rawGenre = displayItem.genres?.[0]
     || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
     || resolvedGenre
+  const genre = typeof rawGenre === 'object' && rawGenre
+    ? (rawGenre as any).name || (rawGenre as any).title || JSON.stringify(rawGenre)
+    : rawGenre
   const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
   const cardWidthClass = inlineTrailerPreview ? expandedPosterWidthClass : widthClass
   const cardLiftClass = inlineTrailerPreview ? '-translate-y-2' : ''

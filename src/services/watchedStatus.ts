@@ -4,7 +4,7 @@ import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, lookupTmdbId, type PMDBWatchedItem } from './pmdb'
 import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
-import { getAniListProgress, getAniListTrackedProgress, hasAnyAniListExactEpisodeMarks, isAniListEpisodeMarkedExact, resolveAniListMediaId } from './anilist'
+import { getAniListEpisodeExactState, getAniListProgress, getAniListTrackedProgress, resolveAniListMediaId } from './anilist'
 import { mapTvdbEpisodeToAniList } from './animeLists'
 import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
@@ -163,8 +163,11 @@ export async function batchIsWatchedFromProviders(
 }
 
 async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
-  if (item.type !== 'series') return false
+  // AniList tracks both episodic anime and anime movies. Ordinary movies do
+  // not belong to AniList and must still be rejected.
+  if (item.type !== 'series' && !item.isAnime) return false
   try {
+    let exactUnwatchedAt: number | null = null
     if (item.season != null && item.episode == null && item.seasonEpisodeCount && item.appSeasonEpCounts) {
       const mediaId = await resolveAniListMediaId({ anilistId: item.anilistId, malId: item.malId })
       if (!mediaId) return false
@@ -183,10 +186,13 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     }
 
     if (item.season != null && item.episode != null) {
-      const exactMatch = normalizedIds(item).some((id) =>
-        hasAnyAniListExactEpisodeMarks(id) && isAniListEpisodeMarkedExact(id, item.season!, item.episode!)
-      )
-      if (exactMatch) return true
+      const exactStates = normalizedIds(item)
+        .map((id) => getAniListEpisodeExactState(id, item.season!, item.episode!))
+        .filter((state): state is NonNullable<typeof state> => Boolean(state))
+      if (exactStates.some((state) => state.watched !== false)) return true
+      if (exactStates.length > 0) {
+        exactUnwatchedAt = Math.max(...exactStates.map((state) => Date.parse(state.markedAt) || 0))
+      }
     }
 
     let anilistId = item.anilistId
@@ -198,25 +204,23 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
     if (item.tvdbId != null && item.season != null && item.episode != null) {
       const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
       if (Number.isFinite(tvdbId)) {
-        try {
-          const apiMapping = await mapEpisodeToProviders({
-            localMediaId: item.id,
-            tvdbSeriesId: tvdbId,
-            tvdbSeasonNumber: item.season,
-            tvdbEpisodeNumber: item.episode,
-          })
-          if (apiMapping?.anilist && isConfidenceSufficient(apiMapping)) {
-            anilistId = apiMapping.anilist.mediaId
-            progressEpisode = apiMapping.anilist.episodeNumber ?? progressEpisode
-          }
-        } catch (_) { /* fall through to animeLists */ }
-
-        if (anilistId === item.anilistId) {
-          const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
-          if (mapped) {
-            anilistId = mapped.anilistId
-            progressEpisode = mapped.absoluteEpisode
-          }
+        const mapped = await mapTvdbEpisodeToAniList(tvdbId, item.season, item.episode).catch(() => null)
+        if (mapped) {
+          anilistId = mapped.anilistId
+          progressEpisode = mapped.absoluteEpisode
+        } else {
+          try {
+            const apiMapping = await mapEpisodeToProviders({
+              localMediaId: item.id,
+              tvdbSeriesId: tvdbId,
+              tvdbSeasonNumber: item.season,
+              tvdbEpisodeNumber: item.episode,
+            })
+            if (apiMapping?.anilist?.mediaId && apiMapping.anilist.episodeNumber != null && isConfidenceSufficient(apiMapping)) {
+              anilistId = apiMapping.anilist.mediaId
+              progressEpisode = apiMapping.anilist.episodeNumber
+            }
+          } catch (_) { /* retain the direct episode fallback */ }
         }
       }
     }
@@ -226,8 +230,23 @@ async function isAniListWatched(item: WatchedLookupItem): Promise<boolean> {
       item.malId != null ? Number(item.malId) : undefined,
     )
     if (!entry) return false
+    // A local unmark only overrides the provider until AniList is changed
+    // again. This allows episodes watched directly on AniList to sync back.
+    if (exactUnwatchedAt != null && (!entry.updatedAt || exactUnwatchedAt >= entry.updatedAt * 1000)) return false
     if (item.episode == null) return entry.progress > 0
-    return progressEpisode != null && entry.progress >= progressEpisode
+    if (progressEpisode != null && entry.progress >= progressEpisode) return true
+
+    // Some aggregate TVDB shows map a season/cour to a different AniList entry
+    // than the ID carried by the catalog item. For season 1, also check that
+    // direct entry against the selected episode number (never title-level).
+    if (item.season === 1 && item.anilistId != null && Number(item.anilistId) !== Number(anilistId)) {
+      const direct = await getAniListProgress(Number(item.anilistId), item.malId != null ? Number(item.malId) : undefined)
+      if (direct && direct.progress >= item.episode) {
+        if (exactUnwatchedAt != null && (!direct.updatedAt || exactUnwatchedAt >= direct.updatedAt * 1000)) return false
+        return true
+      }
+    }
+    return false
   } catch (_) {
     return false
   }

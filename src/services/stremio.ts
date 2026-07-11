@@ -85,6 +85,70 @@ export async function getStremioAddons(authKey: string): Promise<InstalledAddon[
     }))
 }
 
+export interface StremioLibraryEntry {
+  id: string
+  imdbId?: string
+  type: 'movie' | 'series'
+  title: string
+  poster?: string
+  year?: number
+  watched: boolean
+  lastWatched?: string
+}
+
+interface StremioDatastoreItem {
+  _id?: string
+  name?: string
+  type?: string
+  poster?: string
+  year?: number
+  removed?: boolean
+  temp?: boolean
+  state?: {
+    timeOffset?: number
+    duration?: number
+    flaggedWatched?: number
+    timesWatched?: number
+    lastWatched?: string
+  }
+}
+
+/**
+ * Fetch the user's Stremio library from their cloud datastore. Library items carry
+ * playback state, so we can surface genuinely-watched titles for Discover seeding.
+ */
+export async function getStremioWatchHistory(authKey: string): Promise<StremioLibraryEntry[]> {
+  const res = await fetch(`${STREMIO_API}/datastoreGet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'DatastoreGet', authKey, collection: 'libraryItem', all: true }),
+  })
+  const data = await parseStremioResponse(res, 'Failed to fetch Stremio library')
+  const items = (data.result as StremioDatastoreItem[] | undefined) || []
+
+  return items
+    .map((item): StremioLibraryEntry | null => {
+      const rawId = item._id
+      if (!rawId || !item.name) return null
+      // Library ids are the meta id (imdb like "tt123", optionally ":season:episode")
+      const baseId = rawId.split(':')[0]
+      const imdbId = /^tt\d+$/.test(baseId) ? baseId : undefined
+      const state = item.state || {}
+      const watched = Boolean((state.timeOffset && state.timeOffset > 0) || state.flaggedWatched || (state.timesWatched && state.timesWatched > 0))
+      return {
+        id: baseId,
+        imdbId,
+        type: item.type === 'movie' ? 'movie' : 'series',
+        title: item.name,
+        poster: item.poster,
+        year: item.year,
+        watched,
+        lastWatched: state.lastWatched,
+      }
+    })
+    .filter((entry): entry is StremioLibraryEntry => entry !== null && entry.watched)
+}
+
 export function saveStremioAuth(authKey: string, email: string): void {
   localStorage.setItem('stremio_auth_key', authKey)
   localStorage.setItem('stremio_email', email)
