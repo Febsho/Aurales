@@ -205,7 +205,15 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   // 4. Map everything to SearchResult
   return cacheLookupResults.map(({ item, cached }) => {
     if (cached) {
-      return appMediaToSearchResult(cached, item.addonUrl)
+      const result = appMediaToSearchResult(cached, item.addonUrl)
+      // Anime detection relies on genreIds/originalLanguage (dropped by the app
+      // metadata layer) and on isAnime — which is only 'anime'-typed for series,
+      // so anime MOVIES would otherwise look like plain movies. Carry the source
+      // item's fields forward so anime movies keep their AniList option and label.
+      const genreIds = result.genreIds ?? item.genreIds
+      const originalLanguage = result.originalLanguage ?? item.originalLanguage
+      const isAnime = result.isAnime || item.isAnime || Boolean(genreIds?.includes(16) && originalLanguage === 'ja')
+      return { ...result, genreIds, originalLanguage, isAnime }
     }
     return item
   })
