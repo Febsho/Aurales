@@ -86,6 +86,7 @@ export interface AppSeason {
 export interface AppMediaItem {
   id: string
   type: MediaKind
+  isAnime?: boolean
   title: string
   originalTitle?: string
   localizedTitle?: string
@@ -108,11 +109,12 @@ export interface AppMediaItem {
   anilistId?: number
   malId?: number
   seasons?: AppSeason[]
-  sourceMetadataProvider: 'tmdb' | 'tvdb' | 'anilist' | 'fallback_addon'
+  sourceMetadataProvider: 'tmdb' | 'tvdb' | 'anilist' | 'mal' | 'kitsu' | 'fallback_addon'
   sourceAddonId?: string
   sourceAddonItemId?: string
   animeResolverVersion?: number
   animeSettingsSignature?: string
+  metadataClassifierVersion?: number
   updatedAt: string
 }
 

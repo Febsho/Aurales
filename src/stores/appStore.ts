@@ -13,6 +13,7 @@ function invalidateCatalogData(): void {
   ;[
     CACHE_CATEGORIES.ADDON_CATALOG, CACHE_CATEGORIES.PROVIDER_LIST, CACHE_CATEGORIES.DISCOVER,
     CACHE_CATEGORIES.HOME_ROW, CACHE_CATEGORIES.TMDB_CARD, CACHE_CATEGORIES.TVDB_CARD, CACHE_CATEGORIES.ARTWORK,
+    CACHE_CATEGORIES.DETAIL_PAGE,
   ].forEach((category) => { cacheClearCategory(category).catch(() => {}) })
 }
 
@@ -199,6 +200,7 @@ interface AppState {
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
   interfaceTheme: InterfaceTheme
+  navigationStyle: 'sidebar' | 'topbar'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
   showGenreOnCards: boolean
@@ -221,6 +223,21 @@ interface AppState {
   subtitleBgOpacity: string
   subtitleColor: string
   subtitleBorderStyle: 'outline' | 'shadow' | 'none'
+  subtitlePreset: 'standard' | 'boxed' | 'classic' | 'minimal' | 'bold' | 'custom'
+  subtitleScale: number
+  subtitleBold: boolean
+  subtitleItalic: boolean
+  subtitleOutlineColor: string
+  subtitleBgColor: string
+  subtitleOutlineThickness: number
+  subtitleShadowOffset: number
+  subtitleShadowOpacity: number
+  subtitleVerticalPosition: number
+  subtitleAlignment: 'left' | 'center' | 'right'
+  subtitleHorizontalMargin: number
+  subtitleTextBlur: number
+  subtitleScaleWithWindow: boolean
+  subtitleAssOverride: 'apply' | 'scale_only' | 'ignore'
   visibleHeroRatings: string[]
   fanartApiKey: string
   setFanartApiKey: (key: string) => void
@@ -303,6 +320,7 @@ interface AppState {
 
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
   setInterfaceTheme: (theme: InterfaceTheme) => void
+  setNavigationStyle: (style: 'sidebar' | 'topbar') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
   setShowGenreOnCards: (show: boolean) => void
@@ -325,6 +343,22 @@ interface AppState {
   setSubtitleBgOpacity: (opacity: string) => void
   setSubtitleColor: (color: string) => void
   setSubtitleBorderStyle: (style: 'outline' | 'shadow' | 'none') => void
+  setSubtitlePreset: (preset: 'standard' | 'boxed' | 'classic' | 'minimal' | 'bold' | 'custom') => void
+  setSubtitleScale: (scale: number) => void
+  setSubtitleBold: (bold: boolean) => void
+  setSubtitleItalic: (italic: boolean) => void
+  setSubtitleOutlineColor: (color: string) => void
+  setSubtitleBgColor: (color: string) => void
+  setSubtitleOutlineThickness: (thickness: number) => void
+  setSubtitleShadowOffset: (offset: number) => void
+  setSubtitleShadowOpacity: (opacity: number) => void
+  setSubtitleVerticalPosition: (pos: number) => void
+  setSubtitleAlignment: (align: 'left' | 'center' | 'right') => void
+  setSubtitleHorizontalMargin: (margin: number) => void
+  setSubtitleTextBlur: (blur: number) => void
+  setSubtitleScaleWithWindow: (scale: boolean) => void
+  setSubtitleAssOverride: (override: 'apply' | 'scale_only' | 'ignore') => void
+  resetSubtitleSettings: () => void
   setVisibleHeroRatings: (ratings: string[]) => void
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
@@ -674,6 +708,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // New settings options initial values
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
   interfaceTheme: loadInterfaceTheme(),
+  navigationStyle: (localStorage.getItem('aurales_navigation_style') || (loadInterfaceTheme() === 'cinematic' ? 'topbar' : 'sidebar')) as 'sidebar' | 'topbar',
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
   showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') !== 'false',
@@ -702,6 +737,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
   subtitleBorderStyle: (localStorage.getItem('aurales_sub_border_style') as 'outline' | 'shadow' | 'none') || 'outline',
+  subtitlePreset: (localStorage.getItem('aurales_sub_preset') as any) || 'standard',
+  subtitleScale: Number(localStorage.getItem('aurales_sub_scale') || '1.0'),
+  subtitleBold: localStorage.getItem('aurales_sub_bold') === 'true',
+  subtitleItalic: localStorage.getItem('aurales_sub_italic') === 'true',
+  subtitleOutlineColor: localStorage.getItem('aurales_sub_outline_color') || '#000000',
+  subtitleBgColor: localStorage.getItem('aurales_sub_bg_color') || '#000000',
+  subtitleOutlineThickness: Number(localStorage.getItem('aurales_sub_outline_thickness') || '1.4'),
+  subtitleShadowOffset: Number(localStorage.getItem('aurales_sub_shadow_offset') || '1.0'),
+  subtitleShadowOpacity: Number(localStorage.getItem('aurales_sub_shadow_opacity') || '0.5'),
+  subtitleVerticalPosition: Number(localStorage.getItem('aurales_sub_vertical_position') || '100'),
+  subtitleAlignment: (localStorage.getItem('aurales_sub_alignment') as any) || 'center',
+  subtitleHorizontalMargin: Number(localStorage.getItem('aurales_sub_horizontal_margin') || '19'),
+  subtitleTextBlur: Number(localStorage.getItem('aurales_sub_text_blur') || '0.0'),
+  subtitleScaleWithWindow: localStorage.getItem('aurales_sub_scale_with_window') !== 'false',
+  subtitleAssOverride: (localStorage.getItem('aurales_sub_ass_override') as any) || 'scale_only',
   visibleHeroRatings: (() => {
     try {
       const raw = localStorage.getItem('aurales_visible_hero_ratings')
@@ -748,6 +798,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setInterfaceTheme: (theme) => { persistInterfaceTheme(theme); set({ interfaceTheme: theme }) },
+  setNavigationStyle: (style) => { localStorage.setItem('aurales_navigation_style', style); set({ navigationStyle: style }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
   setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
@@ -774,10 +825,143 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
   setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
-  setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
-  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
-  setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color }) },
-  setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style }) },
+  setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitlePreset: (preset) => {
+    localStorage.setItem('aurales_sub_preset', preset)
+    const updates: Partial<AppState> = { subtitlePreset: preset }
+    if (preset === 'standard') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 1.4
+      updates.subtitleShadowOffset = 1.0
+      updates.subtitleShadowOpacity = 0.5
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    } else if (preset === 'boxed') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0.8'
+      updates.subtitleOutlineThickness = 0
+      updates.subtitleShadowOffset = 0
+      updates.subtitleShadowOpacity = 0
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'none'
+    } else if (preset === 'classic') {
+      updates.subtitleColor = '#FFFF00'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 1.4
+      updates.subtitleShadowOffset = 1.0
+      updates.subtitleShadowOpacity = 0.5
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    } else if (preset === 'minimal') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 0
+      updates.subtitleShadowOffset = 1.5
+      updates.subtitleShadowOpacity = 0.6
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'shadow'
+    } else if (preset === 'bold') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 2.0
+      updates.subtitleShadowOffset = 1.5
+      updates.subtitleShadowOpacity = 0.6
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = true
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    }
+    if (updates.subtitleColor) localStorage.setItem('aurales_sub_color', updates.subtitleColor)
+    if (updates.subtitleOutlineColor) localStorage.setItem('aurales_sub_outline_color', updates.subtitleOutlineColor)
+    if (updates.subtitleBgColor) localStorage.setItem('aurales_sub_bg_color', updates.subtitleBgColor)
+    if (updates.subtitleBgOpacity) localStorage.setItem('aurales_sub_bg_opacity', updates.subtitleBgOpacity)
+    if (updates.subtitleOutlineThickness !== undefined) localStorage.setItem('aurales_sub_outline_thickness', String(updates.subtitleOutlineThickness))
+    if (updates.subtitleShadowOffset !== undefined) localStorage.setItem('aurales_sub_shadow_offset', String(updates.subtitleShadowOffset))
+    if (updates.subtitleShadowOpacity !== undefined) localStorage.setItem('aurales_sub_shadow_opacity', String(updates.subtitleShadowOpacity))
+    if (updates.subtitleTextBlur !== undefined) localStorage.setItem('aurales_sub_text_blur', String(updates.subtitleTextBlur))
+    if (updates.subtitleBold !== undefined) localStorage.setItem('aurales_sub_bold', String(updates.subtitleBold))
+    if (updates.subtitleItalic !== undefined) localStorage.setItem('aurales_sub_italic', String(updates.subtitleItalic))
+    if (updates.subtitleBorderStyle) localStorage.setItem('aurales_sub_border_style', updates.subtitleBorderStyle)
+    set(updates)
+  },
+  setSubtitleScale: (scale) => { localStorage.setItem('aurales_sub_scale', String(scale)); set({ subtitleScale: scale }) },
+  setSubtitleBold: (bold) => { localStorage.setItem('aurales_sub_bold', String(bold)); set({ subtitleBold: bold, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleItalic: (italic) => { localStorage.setItem('aurales_sub_italic', String(italic)); set({ subtitleItalic: italic, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleOutlineColor: (color) => { localStorage.setItem('aurales_sub_outline_color', color); set({ subtitleOutlineColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBgColor: (color) => { localStorage.setItem('aurales_sub_bg_color', color); set({ subtitleBgColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleOutlineThickness: (thickness) => { localStorage.setItem('aurales_sub_outline_thickness', String(thickness)); set({ subtitleOutlineThickness: thickness, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleShadowOffset: (offset) => { localStorage.setItem('aurales_sub_shadow_offset', String(offset)); set({ subtitleShadowOffset: offset, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleShadowOpacity: (opacity) => { localStorage.setItem('aurales_sub_shadow_opacity', String(opacity)); set({ subtitleShadowOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleVerticalPosition: (pos) => { localStorage.setItem('aurales_sub_vertical_position', String(pos)); set({ subtitleVerticalPosition: pos }) },
+  setSubtitleAlignment: (align) => { localStorage.setItem('aurales_sub_alignment', align); set({ subtitleAlignment: align }) },
+  setSubtitleHorizontalMargin: (margin) => { localStorage.setItem('aurales_sub_horizontal_margin', String(margin)); set({ subtitleHorizontalMargin: margin }) },
+  setSubtitleTextBlur: (blur) => { localStorage.setItem('aurales_sub_text_blur', String(blur)); set({ subtitleTextBlur: blur, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleScaleWithWindow: (scale) => { localStorage.setItem('aurales_sub_scale_with_window', String(scale)); set({ subtitleScaleWithWindow: scale }) },
+  setSubtitleAssOverride: (override) => { localStorage.setItem('aurales_sub_ass_override', override); set({ subtitleAssOverride: override }) },
+  resetSubtitleSettings: () => {
+    localStorage.removeItem('aurales_sub_preset')
+    localStorage.removeItem('aurales_sub_scale')
+    localStorage.removeItem('aurales_sub_bold')
+    localStorage.removeItem('aurales_sub_italic')
+    localStorage.removeItem('aurales_sub_outline_color')
+    localStorage.removeItem('aurales_sub_bg_color')
+    localStorage.removeItem('aurales_sub_outline_thickness')
+    localStorage.removeItem('aurales_sub_shadow_offset')
+    localStorage.removeItem('aurales_sub_shadow_opacity')
+    localStorage.removeItem('aurales_sub_vertical_position')
+    localStorage.removeItem('aurales_sub_alignment')
+    localStorage.removeItem('aurales_sub_horizontal_margin')
+    localStorage.removeItem('aurales_sub_text_blur')
+    localStorage.removeItem('aurales_sub_scale_with_window')
+    localStorage.removeItem('aurales_sub_ass_override')
+    localStorage.removeItem('aurales_sub_font_size')
+    localStorage.removeItem('aurales_sub_bg_opacity')
+    localStorage.removeItem('aurales_sub_color')
+    localStorage.removeItem('aurales_sub_border_style')
+    set({
+      subtitlePreset: 'standard',
+      subtitleScale: 1.0,
+      subtitleBold: false,
+      subtitleItalic: false,
+      subtitleOutlineColor: '#000000',
+      subtitleBgColor: '#000000',
+      subtitleOutlineThickness: 1.4,
+      subtitleShadowOffset: 1.0,
+      subtitleShadowOpacity: 0.5,
+      subtitleVerticalPosition: 100,
+      subtitleAlignment: 'center',
+      subtitleHorizontalMargin: 19,
+      subtitleTextBlur: 0.0,
+      subtitleScaleWithWindow: true,
+      subtitleAssOverride: 'scale_only',
+      subtitleFontSize: 24,
+      subtitleBgOpacity: '0',
+      subtitleColor: '#FFFFFF',
+      subtitleBorderStyle: 'outline'
+    })
+  },
   setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
   fanartApiKey: localStorage.getItem('fanart_api_key') || '',
   setFanartApiKey: (key) => { localStorage.setItem('fanart_api_key', key); invalidateCatalogData(); set({ fanartApiKey: key }) },
@@ -819,7 +1003,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
     posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
   } as CustomArtUrls,
-  setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); set({ customArtUrls: urls }) },
+  setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
   movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
   seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
   animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',

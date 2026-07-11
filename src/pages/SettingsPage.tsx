@@ -41,7 +41,7 @@ import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearS
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
-import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
+import { clearAniListProgressCaches, fetchAniListViewer, getAniListContinueWatching, getAniListToken, getAniListTrackedProgress, setAniListToken } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
 // Lazy: debug player only loads when the test player is opened
@@ -50,6 +50,8 @@ import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, c
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { checkForUpdate, downloadAndInstall, getAppVersion } from '../services/updater'
 import type { UpdateInfo, UpdateProgress } from '../services/updater'
+import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
+import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -849,10 +851,40 @@ function ResumePriorityList() {
   )
 }
 
+const AUDIENCE_OPTIONS = [
+  { mode: 'auto', title: 'AUTO', subtitle: 'Infer from taste' },
+  { mode: 'grown-up', title: 'GROWN-UP', subtitle: 'Block kids networks' },
+  { mode: 'kid-safe', title: 'KID-SAFE', subtitle: 'Family-friendly only' },
+] as const
+
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery'>('accounts')
+  
+  const prefs = useDiscoverPrefsStore((s) => s.prefs)
+  const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
+  const [localPrefs, setLocalPrefs] = useState<DiscoverPrefs>(prefs)
+
+  useEffect(() => {
+    setLocalPrefs(prefs)
+  }, [prefs])
+
+  const handlePrefsChange = (patch: Partial<DiscoverPrefs>) => {
+    setLocalPrefs((prev) => ({ ...prev, ...patch }))
+  }
+
+  const handleReset = () => {
+    setLocalPrefs(DEFAULT_DISCOVER_PREFS)
+  }
+
+  const handleCancel = () => {
+    setLocalPrefs(prefs)
+  }
+
+  const handleSave = () => {
+    setPrefs(localPrefs)
+  }
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
@@ -1030,8 +1062,9 @@ export default function SettingsPage() {
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
-      const items = await getAniListContinueWatching()
-      setAnilistMessage(`Pulled ${items.length} AniList in-progress item${items.length === 1 ? '' : 's'}.`)
+      clearAniListProgressCaches()
+      const [items, progress] = await Promise.all([getAniListContinueWatching(), getAniListTrackedProgress()])
+      setAnilistMessage(`Synced ${progress.length} tracked AniList title${progress.length === 1 ? '' : 's'} (${items.length} in progress).`)
     } catch (err: any) {
       setAnilistMessage(err?.message || 'AniList sync failed')
     } finally {
@@ -1512,6 +1545,16 @@ export default function SettingsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
               <circle cx="9" cy="7" r="4" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
+            </svg>
+          )
+        },
+        {
+          id: 'discovery',
+          label: 'Discovery & Taste',
+          description: 'Tune recommendation weights, language/genre filters, and content ratings.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-12.728l.707.707m11.314 11.314l.707.707M12 5a7 7 0 100 14 7 7 0 000-14z" />
             </svg>
           )
         },
@@ -2310,7 +2353,7 @@ export default function SettingsPage() {
           {activeTab === 'interface' && (
             <>
               <SettingSection title="Interface Theme" description="Choose the classic Aurales layout or a cinematic TV-focused browsing experience.">
-                <SettingRow label="Theme" description="Cinematic TV uses top navigation, larger focus targets, and unified horizontal rows.">
+                <SettingRow label="Theme" description="Cinematic TV uses larger focus targets and unified horizontal rows. Navigation is configured separately below.">
                   <select
                     value={store.interfaceTheme}
                     onChange={(event) => store.setInterfaceTheme(event.target.value as 'default' | 'cinematic')}
@@ -2318,6 +2361,16 @@ export default function SettingsPage() {
                   >
                     <option value="default">Default Aurales</option>
                     <option value="cinematic">Cinematic TV</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
+                  <select
+                    value={store.navigationStyle}
+                    onChange={(event) => store.setNavigationStyle(event.target.value as 'sidebar' | 'topbar')}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                  >
+                    <option value="sidebar">Sidebar</option>
+                    <option value="topbar">Cinematic top bar</option>
                   </select>
                 </SettingRow>
               </SettingSection>
@@ -3053,98 +3106,366 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Subtitle Styling */}
-              <SettingSection title="Appearance" description="These styles apply to all subtitles including live translation.">
-                <div className="px-6 py-4 space-y-6">
+              <SettingSection title="Appearance" description="Preset styles or individual customize settings for player subtitles.">
+                <div className="px-6 py-5 space-y-6">
+                  {/* Preset Styles */}
                   <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Font Size</span>
-                      <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
-                    </div>
-                    <input
-                      type="range" min="16" max="64"
-                      value={store.subtitleFontSize}
-                      onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Background Opacity</span>
-                      <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
-                    </div>
-                    <input
-                      type="range" min="0" max="1" step="0.05"
-                      value={store.subtitleBgOpacity}
-                      onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white">Text Color</span>
-                    <div className="flex flex-wrap gap-2 mt-1">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Presets</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl divide-y divide-white/[0.04] overflow-hidden">
                       {[
-                        { label: 'White', value: '#FFFFFF' },
-                        { label: 'Yellow', value: '#FFFF00' },
-                        { label: 'Cyan', value: '#00FFFF' },
-                        { label: 'Green', value: '#00FF00' },
-                        { label: 'Pink', value: '#FF88CC' },
-                      ].map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => store.setSubtitleColor(opt.value)}
-                          className={`h-8 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-2 ${
-                            store.subtitleColor === opt.value
-                              ? 'bg-white/15 border-accent text-white'
-                              : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                          }`}
-                        >
-                          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: opt.value }} />
-                          {opt.label}
-                        </button>
-                      ))}
+                        { id: 'standard', title: 'Standard', desc: 'White text with black outline' },
+                        { id: 'boxed', title: 'Boxed', desc: 'White text with dark background' },
+                        { id: 'classic', title: 'Classic', desc: 'Yellow text, cinema style' },
+                        { id: 'minimal', title: 'Minimal', desc: 'Clean, subtle shadow only' },
+                        { id: 'bold', title: 'Bold', desc: 'Large, high contrast' },
+                      ].map((preset) => {
+                        const active = store.subtitlePreset === preset.id
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => store.setSubtitlePreset(preset.id as any)}
+                            className={`w-full flex items-center justify-between px-5 py-3.5 text-left transition-all hover:bg-white/[0.04] cursor-pointer ${
+                              active ? 'bg-white/[0.02]' : ''
+                            }`}
+                          >
+                            <div>
+                              <p className={`text-sm font-semibold ${active ? 'text-accent' : 'text-white'}`}>{preset.title}</p>
+                              <p className="text-xs text-white/35 mt-0.5">{preset.desc}</p>
+                            </div>
+                            <svg className={`w-4 h-4 transition-colors ${active ? 'text-accent' : 'text-white/20'}`} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        )
+                      })}
                     </div>
+                    <p className="text-[10px] text-white/30 italic">Apply a preset style or customize individual settings below</p>
                   </div>
+
+                  {/* AA Font */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white">Border Style</span>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {([
-                        { label: 'Outline', value: 'outline' as const },
-                        { label: 'Drop Shadow', value: 'shadow' as const },
-                        { label: 'None', value: 'none' as const },
-                      ]).map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => store.setSubtitleBorderStyle(opt.value)}
-                          className={`h-8 px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            store.subtitleBorderStyle === opt.value
-                              ? 'bg-white text-black border-white'
-                              : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">AA Font</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                      {/* Font Size */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Font Size</span>
+                          <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
+                        </div>
+                        <input
+                          type="range" min="16" max="64" step="1"
+                          value={store.subtitleFontSize}
+                          onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                        <p className="text-[10px] text-white/30">Size at 720p reference - scales with screen</p>
+                      </div>
+
+                      {/* Scale */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Scale</span>
+                          <span className="text-accent font-bold">{store.subtitleScale.toFixed(1)}x</span>
+                        </div>
+                        <input
+                          type="range" min="0.5" max="2.5" step="0.1"
+                          value={store.subtitleScale}
+                          onChange={(e) => store.setSubtitleScale(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Bold & Italic Toggles */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Bold</span>
+                        <SettingToggle checked={store.subtitleBold} onChange={(v) => store.setSubtitleBold(v)} />
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Italic</span>
+                        <SettingToggle checked={store.subtitleItalic} onChange={(v) => store.setSubtitleItalic(v)} />
+                      </div>
                     </div>
                   </div>
-                  {/* Preview */}
-                  <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.04] flex items-center justify-center min-h-[100px] relative overflow-hidden">
-                    <div className="absolute inset-0 bg-cover bg-center opacity-30" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
-                    <div className="relative z-10 text-center font-semibold tracking-wide" style={{
-                      fontSize: `${store.subtitleFontSize * 0.75}px`,
-                      color: store.subtitleColor,
-                      textShadow: store.subtitleBorderStyle === 'outline'
-                        ? '0 0 3px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.8), -1px -1px 0 rgba(0,0,0,0.8)'
-                        : store.subtitleBorderStyle === 'shadow'
-                          ? '2px 2px 4px rgba(0,0,0,0.9)'
-                          : 'none'
-                    }}>
-                      <span className="px-2 py-0.5 rounded" style={{ backgroundColor: `rgba(0, 0, 0, ${store.subtitleBgOpacity})` }}>
-                        This is how your subtitles will look
-                      </span>
+
+                  {/* Colors */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Colors</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl divide-y divide-white/[0.04]">
+                      {/* Text Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Text Color</span>
+                        <select
+                          value={store.subtitleColor}
+                          onChange={(e) => store.setSubtitleColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#FFFFFF">White</option>
+                          <option value="#FFFF00">Yellow (Classic)</option>
+                          <option value="#000000">Black</option>
+                          <option value="#00FFFF">Cyan</option>
+                          <option value="#00FF00">Green</option>
+                          <option value="#FF88CC">Pink</option>
+                          <option value="#888888">Gray</option>
+                        </select>
+                      </div>
+
+                      {/* Outline Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Outline Color</span>
+                        <select
+                          value={store.subtitleOutlineColor}
+                          onChange={(e) => store.setSubtitleOutlineColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#000000">Black</option>
+                          <option value="#FFFFFF">White</option>
+                          <option value="#FFFF00">Yellow</option>
+                          <option value="#888888">Gray</option>
+                        </select>
+                      </div>
+
+                      {/* Background Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Background Color</span>
+                        <select
+                          value={store.subtitleBgColor}
+                          onChange={(e) => store.setSubtitleBgColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#000000">Black</option>
+                          <option value="#FFFFFF">White</option>
+                          <option value="#888888">Gray</option>
+                        </select>
+                      </div>
+
+                      {/* Background Opacity */}
+                      <div className="px-5 py-4 space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Background Opacity</span>
+                          <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
+                        </div>
+                        <input
+                          type="range" min="0" max="1" step="0.05"
+                          value={store.subtitleBgOpacity}
+                          onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
                     </div>
+                  </div>
+
+                  {/* Outline & Shadow */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Outline & Shadow</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                      {/* Style select */}
+                      <div className="flex items-center justify-between pb-1">
+                        <span className="text-xs font-semibold text-white/70">Style</span>
+                        <select
+                          value={store.subtitleBorderStyle}
+                          onChange={(e) => store.setSubtitleBorderStyle(e.target.value as any)}
+                          className="w-40 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="outline">Outline & Shadow</option>
+                          <option value="shadow">Shadow Only</option>
+                          <option value="none">None</option>
+                        </select>
+                      </div>
+
+                      {/* Outline Thickness */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Outline Thickness</span>
+                          <span className="text-accent font-bold">{store.subtitleOutlineThickness.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="4.0" step="0.1"
+                          value={store.subtitleOutlineThickness}
+                          onChange={(e) => store.setSubtitleOutlineThickness(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Shadow Offset */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Shadow Offset</span>
+                          <span className="text-accent font-bold">{store.subtitleShadowOffset.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="5.0" step="0.5"
+                          value={store.subtitleShadowOffset}
+                          onChange={(e) => store.setSubtitleShadowOffset(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Shadow Opacity */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Shadow Opacity</span>
+                          <span className="text-accent font-bold">{Math.round(store.subtitleShadowOpacity * 100)}%</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="1.0" step="0.05"
+                          value={store.subtitleShadowOpacity}
+                          onChange={(e) => store.setSubtitleShadowOpacity(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Position */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Position</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                      {/* Vertical Position */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Vertical Position</span>
+                          <span className="text-accent font-bold">{store.subtitleVerticalPosition}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-[10px] text-white/30 w-10 text-left">Higher</span>
+                          <input
+                            type="range" min="50" max="150" step="1"
+                            value={store.subtitleVerticalPosition}
+                            onChange={(e) => store.setSubtitleVerticalPosition(Number(e.target.value))}
+                            className="flex-grow h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                          />
+                          <span className="text-[10px] text-white/30 w-10 text-right">Lower</span>
+                        </div>
+                        <p className="text-[10px] text-white/30">100 = Default. Lower values move up, higher values push down.</p>
+                      </div>
+
+                      {/* Alignment */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Alignment</span>
+                        <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08] p-0.5">
+                          {(['left', 'center', 'right'] as const).map((align) => (
+                            <button
+                              key={align}
+                              type="button"
+                              onClick={() => store.setSubtitleAlignment(align)}
+                              className={`px-4 py-1.5 rounded-lg text-xs font-bold capitalize transition-all cursor-pointer ${
+                                store.subtitleAlignment === align
+                                  ? 'bg-white text-black shadow-md'
+                                  : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              {align}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Horizontal Margin */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Horizontal Margin</span>
+                          <span className="text-accent font-bold">{store.subtitleHorizontalMargin}px</span>
+                        </div>
+                        <input
+                          type="range" min="0" max="100" step="1"
+                          value={store.subtitleHorizontalMargin}
+                          onChange={(e) => store.setSubtitleHorizontalMargin(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Advanced */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Advanced</span>
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                      {/* Text Blur */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Text Blur</span>
+                          <span className="text-accent font-bold">{store.subtitleTextBlur.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="5.0" step="0.1"
+                          value={store.subtitleTextBlur}
+                          onChange={(e) => store.setSubtitleTextBlur(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Scale with Window Size */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Scale with Window Size</span>
+                        <SettingToggle checked={store.subtitleScaleWithWindow} onChange={(v) => store.setSubtitleScaleWithWindow(v)} />
+                      </div>
+
+                      {/* ASS Style Override */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex items-center justify-between pb-1">
+                          <span className="text-xs font-semibold text-white/70">ASS Style Override</span>
+                          <select
+                            value={store.subtitleAssOverride}
+                            onChange={(e) => store.setSubtitleAssOverride(e.target.value as any)}
+                            className="w-48 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                          >
+                            <option value="apply">Apply Style Overrides</option>
+                            <option value="scale_only">Scale Only</option>
+                            <option value="ignore">Ignore Styles</option>
+                          </select>
+                        </div>
+                        <p className="text-[10px] text-white/30">ASS override controls how styled subtitle files are handled. 'Scale Only' is recommended.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Preview */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Preview</span>
+                    <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] flex items-center min-h-[120px] relative overflow-hidden">
+                      <div className="absolute inset-0 bg-cover bg-center opacity-30 pointer-events-none" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
+                      <div className="relative z-10 w-full" style={{
+                        textAlign: store.subtitleAlignment as any,
+                      }}>
+                        <span
+                          className="px-2.5 py-1 rounded select-none"
+                          style={{
+                            fontSize: `${Math.round(store.subtitleFontSize * store.subtitleScale * 0.75)}px`,
+                            fontWeight: store.subtitleBold ? 'bold' : 'normal',
+                            fontStyle: store.subtitleItalic ? 'italic' : 'normal',
+                            color: store.subtitleColor,
+                            backgroundColor: `rgba(${parseInt(store.subtitleBgColor.replace('#','').substring(0,2),16) || 0}, ${parseInt(store.subtitleBgColor.replace('#','').substring(2,4),16) || 0}, ${parseInt(store.subtitleBgColor.replace('#','').substring(4,6),16) || 0}, ${store.subtitleBgOpacity})`,
+                            filter: store.subtitleTextBlur > 0 ? `blur(${store.subtitleTextBlur}px)` : 'none',
+                            textShadow: store.subtitleBorderStyle === 'outline'
+                              ? `0 0 ${store.subtitleOutlineThickness}px ${store.subtitleOutlineColor}, 0 0 1px ${store.subtitleOutlineColor}, 1px 1px 0 ${store.subtitleOutlineColor}, -1px -1px 0 ${store.subtitleOutlineColor}`
+                              : store.subtitleBorderStyle === 'shadow'
+                                ? `${store.subtitleShadowOffset}px ${store.subtitleShadowOffset}px ${store.subtitleShadowOffset * 2}px rgba(0,0,0,${store.subtitleShadowOpacity})`
+                                : 'none'
+                          }}
+                        >
+                          This is how your subtitles will look
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Reset to Defaults */}
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => store.resetSubtitleSettings()}
+                      className="w-full flex items-center justify-center gap-2 px-5 py-3.5 rounded-2xl border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 text-sm font-semibold transition-all cursor-pointer active:scale-[0.99]"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      Reset to Defaults
+                    </button>
                   </div>
                 </div>
               </SettingSection>
+
 
               {/* Subtitle Translation */}
               <SettingSection title="Live Translation" description="AI-powered subtitle translation via OpenRouter.">
@@ -3485,6 +3806,71 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
             </>
+          )}
+
+          {/* ═══════════════════════════════════════════════
+              DISCOVERY TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'discovery' && (
+            <div className="space-y-6">
+              {/* AUDIENCE PRESET MODES */}
+              <SettingSection title="Audience" description="Configure default age suitability rules and content filters.">
+                <div className="px-6 py-5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {AUDIENCE_OPTIONS.map(({ mode: m, title, subtitle }) => {
+                      const active = localPrefs.audienceMode === m
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => handlePrefsChange({ audienceMode: m })}
+                          className={`flex flex-col items-start p-4 rounded-xl text-left transition-all border cursor-pointer ${
+                            active
+                              ? 'bg-white text-black border-white shadow-xl scale-[1.01]'
+                              : 'bg-white/[0.03] text-white hover:bg-white/[0.06] border-white/[0.06] hover:border-white/10'
+                          }`}
+                        >
+                          <span className="text-sm font-black tracking-wide">{title}</span>
+                          <span className={`text-xs mt-1 ${active ? 'text-black/60' : 'text-white/35'}`}>{subtitle}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* ADVANCED WEIGHTS & FILTERS */}
+              <SettingSection title="Advanced Weights & Filters" description="Fine-tune scoring weights, languages, year ranges, keywords, and sorting.">
+                <div className="px-6 py-6">
+                  <DiscoverPrefsPanel
+                    localPrefs={localPrefs}
+                    onChange={handlePrefsChange}
+                    onReset={handleReset}
+                  />
+                </div>
+              </SettingSection>
+              
+              {/* SAVE / CANCEL BAR */}
+              <div className="flex items-center justify-between pt-4 mt-6">
+                <span className="text-xs text-white/35">Ready to save</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="px-5 py-2 rounded-full text-xs font-bold text-white/60 hover:text-white transition-all cursor-pointer"
+                  >
+                    CANCEL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    className="px-6 py-2.5 rounded-full text-xs font-black bg-white text-black hover:bg-white/90 active:scale-[0.97] transition-all cursor-pointer shadow-lg shadow-black/30"
+                  >
+                    SAVE CHANGES
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* ═══════════════════════════════════════════════

@@ -6,9 +6,10 @@ interface AnimeMapping {
   trakt_id?: number
   tvdb_id?: number
   themoviedb_id?: number | { tv?: number; movie?: number }
-  imdb_id?: string
+  imdb_id?: string | string[]
   tvdb_season?: number
   tvdb_epoffset?: number
+  episode_offset?: { tvdb?: number; tmdb?: number }
   season?: { tvdb?: number; tmdb?: number; trakt?: number }
   type?: string
 }
@@ -50,7 +51,7 @@ function getTvdbSeason(entry: AnimeMapping): number | undefined {
 }
 
 function getTvdbEpisodeOffset(entry: AnimeMapping): number {
-  return entry.tvdb_epoffset ?? 0
+  return entry.tvdb_epoffset ?? entry.episode_offset?.tvdb ?? 0
 }
 
 function buildIndexes(data: AnimeMapping[]): void {
@@ -83,7 +84,8 @@ function buildIndexes(data: AnimeMapping[]): void {
       else byTmdb.set(tmdb, [entry])
     }
     if (entry.imdb_id != null) {
-      byImdb.set(entry.imdb_id, entry)
+      const imdbIds = Array.isArray(entry.imdb_id) ? entry.imdb_id : [entry.imdb_id]
+      for (const imdbId of imdbIds) byImdb.set(imdbId, entry)
     }
   }
 
@@ -195,6 +197,11 @@ export async function lookupByTvdbId(tvdbId: number): Promise<AnimeMapping[]> {
   return indexByTvdb.get(tvdbId) ?? []
 }
 
+export async function lookupByTmdbId(tmdbId: number): Promise<AnimeMapping[]> {
+  await loadAnimeLists()
+  return indexByTmdb.get(tmdbId) ?? []
+}
+
 export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | undefined> {
   await loadAnimeLists()
   return indexByImdb.get(imdbId)
@@ -237,7 +244,7 @@ export async function resolveAnimeIds(known: {
       malId: match.mal_id,
       tvdbId: match.tvdb_id,
       tmdbId: extractTmdbId(match.themoviedb_id),
-      imdbId: match.imdb_id,
+      imdbId: Array.isArray(match.imdb_id) ? match.imdb_id[0] : match.imdb_id,
       tvdbSeason: getTvdbSeason(match),
       tvdbEpOffset: getTvdbEpisodeOffset(match),
     }
@@ -333,15 +340,21 @@ export async function mapTvdbEpisodeToAniList(
   await loadAnimeLists()
 
   const entries = indexByTvdb.get(tvdbId)
-  const entry = entries?.find(
-    (e) => getTvdbSeason(e) === season && e.anilist_id != null
-  )
+  const seasonEntries = (entries || [])
+    .filter((e) => getTvdbSeason(e) === season && e.anilist_id != null)
+    .sort((a, b) => getTvdbEpisodeOffset(a) - getTvdbEpisodeOffset(b))
+  let entry = seasonEntries[0]
+  for (const candidate of seasonEntries) {
+    if (episode > getTvdbEpisodeOffset(candidate)) entry = candidate
+    else break
+  }
 
   if (!entry) return null
 
   return {
     anilistId: entry.anilist_id!,
-    absoluteEpisode: getTvdbEpisodeOffset(entry) + episode,
+    // AniList progress is relative to the matched cour/media entry.
+    absoluteEpisode: episode - getTvdbEpisodeOffset(entry),
   }
 }
 

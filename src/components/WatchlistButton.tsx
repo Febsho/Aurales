@@ -272,7 +272,16 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
       </button>
 
       {open && (
-        <div className="absolute left-0 bottom-full mb-2 z-50 min-w-[200px] rounded-xl bg-neutral-900/95 backdrop-blur-2xl border border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden">
+        <div
+          className="absolute left-0 bottom-full mb-2 z-50 min-w-[200px] overflow-hidden rounded-2xl border border-white/[0.10]"
+          style={{
+            background: 'rgba(10, 10, 12, 0.45)',
+            backdropFilter: 'blur(40px) saturate(220%)',
+            WebkitBackdropFilter: 'blur(40px) saturate(220%)',
+            boxShadow: '0 24px 56px rgba(0,0,0,0.62), inset 0 1px 1px rgba(255,255,255,0.12)',
+          }}
+        >
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.09] to-white/[0.02]" />
           {connectedProviders.map((provider) => {
             const st = states[provider]
             return (
@@ -280,7 +289,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', anilist
                 key={provider}
                 onClick={(e) => { e.stopPropagation(); toggleProvider(provider) }}
                 disabled={st.loading}
-                className="w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 text-[13px] font-medium text-white/80 hover:bg-white/[0.08] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                className="relative w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 text-[13px] font-medium text-white/80 hover:bg-white/[0.10] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
               >
                 <span className="flex items-center gap-2.5">
                   {st.loading ? (

@@ -1,5 +1,6 @@
 import type { SearchResult } from '../types'
 import type { PlaybackItem } from './simkl/playback'
+import { invoke } from '@tauri-apps/api/core'
 import { resolveAnimeIds, mapAniListEpisodeToTvdb } from './animeLists'
 import { getTmdbApiKey } from './apiKeys'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
@@ -66,6 +67,7 @@ export interface AniListProgress {
   mediaId: number
   progress: number
   status?: AniListStatus
+  updatedAt?: number
 }
 
 export interface AniListExactEpisodeMark {
@@ -74,6 +76,7 @@ export interface AniListExactEpisodeMark {
   episode: number
   anilistEpisode: number
   markedAt: string
+  watched?: boolean
 }
 
 export const ANILIST_LIST_SOURCES: { id: string; label: string; layout: 'poster' | 'landscape' }[] = [
@@ -137,38 +140,75 @@ export function hasAnyAniListExactEpisodeMarks(localId: string): boolean {
 
 export function isAniListEpisodeMarkedExact(localId: string, season: number, episode: number): boolean {
   const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().some((mark) => exactMarkKey(mark) === key && mark.watched !== false)
+}
+
+export function hasAniListEpisodeExactState(localId: string, season: number, episode: number): boolean {
+  const key = exactMarkKey({ localId, season, episode })
   return readExactEpisodeMarks().some((mark) => exactMarkKey(mark) === key)
+}
+
+export function getAniListEpisodeExactState(localId: string, season: number, episode: number): AniListExactEpisodeMark | null {
+  const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().find((mark) => exactMarkKey(mark) === key) || null
 }
 
 export function markAniListEpisodeExact(localId: string, season: number, episode: number, anilistEpisode: number): void {
   const key = exactMarkKey({ localId, season, episode })
   const next = readExactEpisodeMarks().filter((mark) => exactMarkKey(mark) !== key)
-  next.push({ localId, season, episode, anilistEpisode, markedAt: new Date().toISOString() })
+  next.push({ localId, season, episode, anilistEpisode, markedAt: new Date().toISOString(), watched: true })
   writeExactEpisodeMarks(next)
 }
 
 export function unmarkAniListEpisodeExact(localId: string, season: number, episode: number): void {
   const key = exactMarkKey({ localId, season, episode })
-  writeExactEpisodeMarks(readExactEpisodeMarks().filter((mark) => exactMarkKey(mark) !== key))
+  const marks = readExactEpisodeMarks()
+  const previous = marks.find((mark) => exactMarkKey(mark) === key)
+  const next = marks.filter((mark) => exactMarkKey(mark) !== key)
+  next.push({ localId, season, episode, anilistEpisode: previous?.anilistEpisode ?? episode, markedAt: new Date().toISOString(), watched: false })
+  writeExactEpisodeMarks(next)
 }
 
 async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
   const token = getAniListToken()
   if (requireAuth && !token) throw new Error('AniList token is missing')
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ query, variables }),
-  })
-  const data = await res.json().catch(() => null)
-  if (!res.ok || data?.errors?.length) {
-    const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
-    throw new Error(message)
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+  const body = JSON.stringify({ query, variables })
+  let data: any
+  try {
+    const res = await fetch(API_URL, { method: 'POST', headers, body })
+    data = await res.json().catch(() => null)
+    if (!res.ok || data?.errors?.length) {
+      const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
+      throw new Error(message)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/failed to fetch|networkerror|load failed/i.test(message)) throw error
+    try {
+      const raw = await invoke<string>('http_request', { method: 'POST', url: API_URL, headers, body })
+      data = JSON.parse(raw)
+    } catch (nativeError) {
+      throw new Error(`AniList network request failed: ${nativeError instanceof Error ? nativeError.message : nativeError}`)
+    }
+    if (data?.errors?.length) throw new Error(data.errors[0]?.message || 'AniList returned an error')
   }
   return data.data as T
+}
+
+export function clearAniListProgressCaches(): void {
+  entriesCache.clear()
+  progressCache.clear()
+  progressPending.clear()
+  trackedProgressCache = null
+  trackedProgressPending = null
+  // A manual provider sync means AniList is the source of truth. Remove local
+  // exact mark/unmark overrides left by previous dropdown actions so they
+  // cannot permanently mask newer remote progress.
+  localStorage.removeItem(EXACT_EPISODE_MARKS_KEY)
 }
 
 export async function fetchAniListViewer(): Promise<AniListAccount> {
@@ -229,6 +269,8 @@ export async function removeFromAniListList(anilistId?: number | string, malId?:
     }
   `, { id: data.MediaList.id })
   entriesCache.clear()
+  progressCache.delete(mediaId)
+  trackedProgressCache = null
 }
 
 export async function isInAniListList(anilistId?: number | string, malId?: number | string): Promise<boolean> {
@@ -252,15 +294,16 @@ export async function getAniListProgress(anilistId?: number | string, malId?: nu
   const existing = progressPending.get(mediaId)
   if (existing) return existing
 
-  const request = anilistRequest<{ MediaList?: { mediaId?: number; progress?: number; status?: AniListStatus } }>(`
+  const request = anilistRequest<{ MediaList?: { mediaId?: number; progress?: number; status?: AniListStatus; updatedAt?: number } }>(`
       query GetProgress($mediaId: Int) {
-        MediaList(mediaId: $mediaId) { mediaId progress status }
+        MediaList(mediaId: $mediaId) { mediaId progress status updatedAt }
       }
     `, { mediaId })
     .then((data) => data.MediaList ? {
       mediaId: data.MediaList.mediaId || mediaId,
       progress: Math.max(0, Number(data.MediaList.progress) || 0),
       status: data.MediaList.status,
+      updatedAt: data.MediaList.updatedAt,
     } : null)
     .then((data) => {
       progressCache.set(mediaId, { data, timestamp: Date.now() })
@@ -285,6 +328,7 @@ export async function getAniListTrackedProgress(): Promise<AniListProgress[]> {
       mediaId: entry.media?.id || 0,
       progress: Math.max(0, Number(entry.progress) || 0),
       status: entry.status,
+      updatedAt: entry.updatedAt,
     }))).filter((entry) => entry.mediaId > 0)
     trackedProgressCache = { data: items, timestamp: Date.now() }
     return items

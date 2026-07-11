@@ -53,6 +53,19 @@ export default function App() {
   const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
   const subtitleColor = useAppStore((s) => s.subtitleColor)
+  const subtitleScale = useAppStore((s) => s.subtitleScale)
+  const subtitleBold = useAppStore((s) => s.subtitleBold)
+  const subtitleItalic = useAppStore((s) => s.subtitleItalic)
+  const subtitleOutlineColor = useAppStore((s) => s.subtitleOutlineColor)
+  const subtitleBgColor = useAppStore((s) => s.subtitleBgColor)
+  const subtitleOutlineThickness = useAppStore((s) => s.subtitleOutlineThickness)
+  const subtitleShadowOffset = useAppStore((s) => s.subtitleShadowOffset)
+  const subtitleShadowOpacity = useAppStore((s) => s.subtitleShadowOpacity)
+  const subtitleVerticalPosition = useAppStore((s) => s.subtitleVerticalPosition)
+  const subtitleAlignment = useAppStore((s) => s.subtitleAlignment)
+  const subtitleHorizontalMargin = useAppStore((s) => s.subtitleHorizontalMargin)
+  const subtitleTextBlur = useAppStore((s) => s.subtitleTextBlur)
+  const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
 
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
@@ -112,19 +125,14 @@ export default function App() {
 
     const cancelIdle = scheduleIdleWork(() => {
       import('./services/discord')
-        .then(({ clearDiscordActivity, setDiscordActivity }) => {
+        .then(({ clearDiscordActivity, setDiscordBrowsingActivity }) => {
           clearActivity = clearDiscordActivity
           if (cancelled) return
           if (!discordRichPresence) {
             clearDiscordActivity().catch(() => {})
             return
           }
-          setDiscordActivity({
-            details: 'Browsing',
-            largeImage: 'aurales_logo',
-            largeText: 'Aurales',
-            activityType: 3,
-          }).catch(() => {})
+          setDiscordBrowsingActivity().catch(() => {})
         })
         .catch(() => {})
     }, 2500)
@@ -145,10 +153,44 @@ export default function App() {
   }, [interfaceTheme])
 
   useEffect(() => {
+    const cleanBgHex = subtitleBgColor.replace('#', '')
+    const bgR = parseInt(cleanBgHex.substring(0, 2), 16) || 0
+    const bgG = parseInt(cleanBgHex.substring(2, 4), 16) || 0
+    const bgB = parseInt(cleanBgHex.substring(4, 6), 16) || 0
+    const bgRgb = `rgba(${bgR}, ${bgG}, ${bgB}, ${subtitleBgOpacity})`
+
+    let textShadow = 'none'
+    if (subtitleBorderStyle === 'outline') {
+      textShadow = `0 0 ${subtitleOutlineThickness}px ${subtitleOutlineColor}, 0 0 1px ${subtitleOutlineColor}, 1px 1px 0 ${subtitleOutlineColor}, -1px -1px 0 ${subtitleOutlineColor}`
+    } else if (subtitleBorderStyle === 'shadow') {
+      textShadow = `${subtitleShadowOffset}px ${subtitleShadowOffset}px ${subtitleShadowOffset * 2}px rgba(0,0,0,${subtitleShadowOpacity})`
+    }
+
     document.documentElement.style.setProperty('--sub-font-size', `${subtitleFontSize}px`)
     document.documentElement.style.setProperty('--sub-bg-opacity', subtitleBgOpacity)
     document.documentElement.style.setProperty('--sub-color', subtitleColor)
-  }, [subtitleFontSize, subtitleBgOpacity, subtitleColor])
+    document.documentElement.style.setProperty('--sub-scale', String(subtitleScale))
+    document.documentElement.style.setProperty('--sub-bold', subtitleBold ? 'bold' : 'normal')
+    document.documentElement.style.setProperty('--sub-italic', subtitleItalic ? 'italic' : 'normal')
+    document.documentElement.style.setProperty('--sub-outline-color', subtitleOutlineColor)
+    document.documentElement.style.setProperty('--sub-bg-color', subtitleBgColor)
+    document.documentElement.style.setProperty('--sub-bg-rgba', bgRgb)
+    document.documentElement.style.setProperty('--sub-outline-thickness', `${subtitleOutlineThickness}px`)
+    document.documentElement.style.setProperty('--sub-shadow-offset', `${subtitleShadowOffset}px`)
+    document.documentElement.style.setProperty('--sub-shadow-opacity', String(subtitleShadowOpacity))
+    document.documentElement.style.setProperty('--sub-vertical-position', String(subtitleVerticalPosition))
+    document.documentElement.style.setProperty('--sub-alignment', subtitleAlignment)
+    document.documentElement.style.setProperty('--sub-horizontal-margin', `${subtitleHorizontalMargin}px`)
+    document.documentElement.style.setProperty('--sub-text-blur', `${subtitleTextBlur}px`)
+    document.documentElement.style.setProperty('--sub-blur-filter', subtitleTextBlur > 0 ? `blur(${subtitleTextBlur}px)` : 'none')
+    document.documentElement.style.setProperty('--sub-text-shadow', textShadow)
+    document.documentElement.style.setProperty('--sub-border-style', subtitleBorderStyle)
+  }, [
+    subtitleFontSize, subtitleBgOpacity, subtitleColor, subtitleScale, subtitleBold,
+    subtitleItalic, subtitleOutlineColor, subtitleBgColor, subtitleOutlineThickness,
+    subtitleShadowOffset, subtitleShadowOpacity, subtitleVerticalPosition, subtitleAlignment,
+    subtitleHorizontalMargin, subtitleTextBlur, subtitleBorderStyle
+  ])
 
   const startPagePath =
     defaultStartPage === 'collections'
