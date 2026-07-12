@@ -15,6 +15,8 @@ interface TrailerPreviewProps {
   onEnded?: () => void
   allowIframeFallback?: boolean
   onUnavailable?: () => void
+  /** Artwork to keep visible while playback starts instead of a trailer thumbnail. */
+  placeholderUrl?: string
 }
 
 const AUDIO_SYNC_THRESHOLD_SECONDS = 0.3
@@ -29,6 +31,7 @@ export default function TrailerPreview({
   onEnded,
   allowIframeFallback = true,
   onUnavailable,
+  placeholderUrl,
 }: TrailerPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -36,14 +39,19 @@ export default function TrailerPreview({
   const trailerVolume = useAppStore((s) => s.trailerVolume)
   const [embedLoadedKey, setEmbedLoadedKey] = useState<string | null>(null)
   const [thumbnailFailedKey, setThumbnailFailedKey] = useState<string | null>(null)
+  const [placeholderFailedKey, setPlaceholderFailedKey] = useState<string | null>(null)
   // undefined = resolving, null = no direct stream (use iframe fallback)
   const [directStream, setDirectStream] = useState<DirectStream | null | undefined>(undefined)
   const [videoPlaying, setVideoPlaying] = useState(false)
   const embedLoaded = embedLoadedKey === trailer.key
   const thumbnailFailed = thumbnailFailedKey === trailer.key
+  const placeholderFailed = placeholderFailedKey === trailer.key
   const thumbnailSrc = useMemo(
-    () => thumbnailFailed ? youtubeThumbnailUrl(trailer.key, 'high') : trailer.thumbnailUrl || youtubeThumbnailUrl(trailer.key),
-    [thumbnailFailed, trailer.key, trailer.thumbnailUrl],
+    () => {
+      if (placeholderUrl) return placeholderFailed ? undefined : placeholderUrl
+      return thumbnailFailed ? youtubeThumbnailUrl(trailer.key, 'high') : trailer.thumbnailUrl || youtubeThumbnailUrl(trailer.key)
+    },
+    [placeholderFailed, placeholderUrl, thumbnailFailed, trailer.key, trailer.thumbnailUrl],
   )
   const embedUrl = useMemo(
     () => buildYoutubeEmbedUrl(trailer.key, { muted: true }),
@@ -54,6 +62,10 @@ export default function TrailerPreview({
     let cancelled = false
     setDirectStream(undefined)
     setVideoPlaying(false)
+    if (trailer.directUrl) {
+      setDirectStream({ videoUrl: trailer.directUrl, expiresAt: Date.now() + 60 * 60 * 1000 })
+      return () => { cancelled = true }
+    }
     getDirectYoutubeStream(trailer.key)
       .then((stream) => {
         if (!cancelled) setDirectStream(stream)
@@ -64,7 +76,7 @@ export default function TrailerPreview({
     return () => {
       cancelled = true
     }
-  }, [trailer.key])
+  }, [trailer.key, trailer.directUrl])
 
   useEffect(() => {
     if (directStream === null && !allowIframeFallback) onUnavailable?.()
@@ -150,15 +162,15 @@ export default function TrailerPreview({
 
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
-      <img
-        src={thumbnailSrc}
-        alt=""
-        className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${showMedia ? 'opacity-0' : 'opacity-100'}`}
-        loading={eager ? 'eager' : 'lazy'}
-        decoding="async"
-        draggable={false}
-        onError={() => setThumbnailFailedKey(trailer.key)}
-      />
+      {thumbnailSrc && <img
+          src={thumbnailSrc}
+          alt=""
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${showMedia ? 'opacity-0' : 'opacity-100'}`}
+          loading={eager ? 'eager' : 'lazy'}
+          decoding="async"
+          draggable={false}
+          onError={() => placeholderUrl ? setPlaceholderFailedKey(trailer.key) : setThumbnailFailedKey(trailer.key)}
+        />}
       {directStream ? (
         <>
           <video

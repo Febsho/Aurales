@@ -49,6 +49,9 @@ export default function App() {
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)
+  const themeBackground = useAppStore((s) => s.themeBackground)
+  const navigationStyle = useAppStore((s) => s.navigationStyle)
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const defaultStartPage = useAppStore((s) => s.defaultStartPage)
   const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
   const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
@@ -151,6 +154,17 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-interface-theme', interfaceTheme)
   }, [interfaceTheme])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme-background', themeBackground)
+  }, [themeBackground])
+
+  // Expose the nav layout so the fixed hero (position: fixed, spans the whole
+  // viewport) can offset itself past a pinned sidebar.
+  useEffect(() => {
+    const pinnedSidebar = navigationStyle !== 'topbar' && !sidebarCollapsed
+    document.documentElement.setAttribute('data-nav', pinnedSidebar ? 'sidebar-pinned' : navigationStyle === 'topbar' ? 'topbar' : 'sidebar-overlay')
+  }, [navigationStyle, sidebarCollapsed])
 
   useEffect(() => {
     const cleanBgHex = subtitleBgColor.replace('#', '')

@@ -6,12 +6,14 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 
 export type TrailerSource = {
-  source: 'tmdb' | 'youtube'
-  site: 'YouTube'
+  source: 'trailerio' | 'tmdb' | 'youtube'
+  site: 'Trailerio' | 'YouTube'
   key: string
   url: string
   embedUrl: string
   thumbnailUrl: string
+  /** A native HLS/MP4 URL supplied by Trailerio. */
+  directUrl?: string
   language?: string
   official?: boolean
 }
@@ -19,9 +21,19 @@ export type TrailerSource = {
 interface TrailerLookupInput {
   type: 'movie' | 'series' | 'show' | 'anime'
   tmdbId?: string | number
+  imdbId?: string
   title: string
   year?: number
   language?: string
+}
+
+type TrailerioLink = {
+  trailers?: string | string[]
+  provider?: string
+}
+
+type TrailerioResponse = {
+  meta?: { links?: TrailerioLink[] }
 }
 
 interface TmdbVideo {
@@ -189,21 +201,67 @@ async function fetchYoutubeFallback(input: TrailerLookupInput): Promise<TrailerS
   return extractYoutubeFallback(html, input.title)
 }
 
+/**
+ * Trailerio is a Stremio metadata addon that exposes publisher-hosted trailer
+ * streams (Apple TV HLS and Plex/IVA MP4) for IMDb IDs. Prefer it over a
+ * YouTube page so the hero player receives a real high-resolution stream.
+ */
+async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource | null> {
+  const imdbId = String(input.imdbId || '').trim()
+  if (!/^tt\d+$/.test(imdbId)) return null
+
+  const mediaType = mediaTypeForTmdb(input.type) === 'movie' ? 'movie' : 'series'
+  const responseText = await invoke<string>('http_get_text', {
+    url: `https://trailerio.cc/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`,
+  })
+  const payload = JSON.parse(responseText) as TrailerioResponse
+  const links = payload.meta?.links || []
+  const candidates = links.flatMap((link) => {
+    const urls = Array.isArray(link.trailers) ? link.trailers : [link.trailers]
+    return urls.filter((url): url is string => typeof url === 'string' && /^https:\/\//.test(url))
+      .map((url) => ({ url, provider: link.provider || 'Trailerio' }))
+  })
+  if (!candidates.length) return null
+
+  // Apple TV exposes adaptive HLS variants up to 1080p/10 Mbps. Prefer that
+  // master playlist for the Hero; Plex/IVA is retained as a direct MP4
+  // fallback (many of its "1080p" links resolve to 540p in practice).
+  const preferred = candidates.find(({ provider }) => /apple/i.test(provider))
+    || candidates.find(({ provider, url }) => /1080|plex|iva/i.test(provider) || /\.mp4(?:\?|$)/i.test(url))
+    || candidates[0]
+  return {
+    source: 'trailerio',
+    site: 'Trailerio',
+    key: `trailerio:${imdbId}`,
+    url: preferred.url,
+    embedUrl: '',
+    thumbnailUrl: '',
+    directUrl: preferred.url,
+    official: true,
+  }
+}
+
 export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const tmdbId = input.tmdbId ? String(input.tmdbId).replace('tmdb-', '') : ''
   const cacheKey = [
-    'trailer_source_v1',
+    'trailer_source_v5',
     mediaTypeForTmdb(input.type),
     tmdbId || 'no-tmdb',
+    input.imdbId || 'no-imdb',
     input.title.trim().toLowerCase(),
     input.year || 'no-year',
     input.language || 'en',
   ].join(':')
 
   return cachedFetch<TrailerSource | null>(cacheKey, async () => {
+    // Prefer an official YouTube trailer ID: HeroMpvTrailer resolves it through
+    // bundled yt-dlp and plays the 1080p streams in mpv without YouTube UI.
     const tmdbTrailer = await fetchTmdbTrailer(input).catch(() => null)
     if (tmdbTrailer) return tmdbTrailer
-    return fetchYoutubeFallback(input).catch(() => null)
+    const youtubeTrailer = await fetchYoutubeFallback(input).catch(() => null)
+    if (youtubeTrailer) return youtubeTrailer
+    // Publisher-hosted Trailerio media remains the final direct-stream fallback.
+    return fetchTrailerio(input).catch(() => null)
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
 }
 

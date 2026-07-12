@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 
 function highQualityBackdropUrl(url: string): string {
-  return url.replace('/w780/', '/original/').replace('/w1280/', '/original/')
+  if (url.includes('image.tmdb.org/t/p/')) return url.replace(/\/t\/p\/(?:w\d+|h\d+|original)\//, '/t/p/original/')
+  return url
 }
 
 export function useGlobalBackdrop(url?: string | null) {

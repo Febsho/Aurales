@@ -8,7 +8,7 @@ export async function classifyMediaItem(input: AddonMediaInput): Promise<MediaKi
   const genreIds = Array.isArray(raw.genreIds) ? raw.genreIds.map(Number) : []
   const genres = Array.isArray(raw.genres) ? raw.genres.map((genre) => typeof genre === 'string' ? genre.toLowerCase() : '') : []
   const language = String(raw.originalLanguage || raw.original_language || '').toLowerCase()
-  if ((genreIds.includes(16) || genres.includes('animation') || genres.includes('anime')) && language === 'ja') return 'anime'
+  if ((genreIds.includes(16) || genres.includes('animation') || genres.includes('anime')) && ['ja', 'zh', 'ko'].includes(language)) return 'anime'
   if (explicit === 'anime' || input.anilistId || input.malId) return 'anime'
   if (input.tvdbId) {
     const animeMatches = await lookupByTvdbId(input.tvdbId).catch(() => [])

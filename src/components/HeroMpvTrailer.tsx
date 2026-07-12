@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import TrailerPreview from './TrailerPreview'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { TrailerSource } from '../services/trailers'
+import { resolveHeroStreams } from '../services/heroTrailerStreams'
 import {
   getEmbeddedPlayerOwner,
   launchEmbeddedPlayer,
@@ -15,55 +15,16 @@ import { useAppStore } from '../stores/appStore'
 // Hero trailer via embedded mpv + yt-dlp: real 1080p, no YouTube UI. The mpv
 // child window renders behind the transparent webview, so while the video is
 // visible this component (and HeroSection via onPlayingChange) must keep the
-// pixels above the hero rect transparent. Falls back to TrailerPreview
-// (proxied 360p muxed stream) when yt-dlp is unavailable or resolution fails.
+// pixels above the hero rect transparent. If native playback is unavailable,
+// the attempt ends without exposing a YouTube iframe or thumbnail.
 
 interface HeroMpvTrailerProps {
   trailer: TrailerSource
-  title: string
   muted: boolean
   className?: string
   onEnded?: () => void
   onUnavailable?: () => void
   onPlayingChange?: (playing: boolean) => void
-}
-
-interface ResolvedStreams {
-  videoUrl: string
-  audioUrl?: string
-  expiresAt: number
-}
-
-const resolveCache = new Map<string, Promise<ResolvedStreams | null>>()
-
-function resolveHeroStreams(videoId: string): Promise<ResolvedStreams | null> {
-  const cached = resolveCache.get(videoId)
-  if (cached) {
-    return cached.then((streams) => {
-      if (streams && streams.expiresAt > Date.now() + 60_000) return streams
-      resolveCache.delete(videoId)
-      return resolveHeroStreams(videoId)
-    })
-  }
-  const promise = invoke<string[]>('ytdlp_resolve', { videoId })
-    .then((urls) => {
-      if (!urls.length) return null
-      return {
-        videoUrl: urls[0],
-        audioUrl: urls[1],
-        // googlevideo URLs expire after ~6h; refresh well before that.
-        expiresAt: Date.now() + 4 * 60 * 60 * 1000,
-      }
-    })
-    .catch((err) => {
-      console.warn('[HeroMpvTrailer] yt-dlp resolve failed:', err)
-      return null
-    })
-  resolveCache.set(videoId, promise)
-  promise.then((streams) => {
-    if (!streams) resolveCache.delete(videoId)
-  })
-  return promise
 }
 
 function physicalViewport(el: HTMLElement) {
@@ -77,9 +38,18 @@ function physicalViewport(el: HTMLElement) {
   }
 }
 
+function cssViewport(el: HTMLElement) {
+  const rect = el.getBoundingClientRect()
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  }
+}
+
 export default function HeroMpvTrailer({
   trailer,
-  title,
   muted,
   className = '',
   onEnded,
@@ -90,6 +60,8 @@ export default function HeroMpvTrailer({
   const trailerVolume = useAppStore((s) => s.trailerVolume)
   const [mode, setMode] = useState<'pending' | 'mpv' | 'fallback'>('pending')
   const [videoVisible, setVideoVisible] = useState(false)
+  const [heroViewport, setHeroViewport] = useState(() => ({ x: 0, y: 0, width: 1, height: 1 }))
+  const [maxHeight, setMaxHeight] = useState(2160)
   const launchedRef = useRef(false)
   const endedRef = useRef(false)
 
@@ -102,7 +74,9 @@ export default function HeroMpvTrailer({
     setMode('pending')
 
     ;(async () => {
-      const streams = await resolveHeroStreams(trailer.key)
+      const streams = trailer.directUrl
+        ? { videoUrl: trailer.directUrl, expiresAt: Date.now() + 60 * 60 * 1000 }
+        : await resolveHeroStreams(trailer.key, maxHeight)
       if (cancelled) return
       if (!streams) {
         setMode('fallback')
@@ -110,10 +84,22 @@ export default function HeroMpvTrailer({
       }
       const el = containerRef.current
       if (!el) return
+      const viewportEl = el.closest<HTMLElement>('[data-hero-viewport]') || el
+      setHeroViewport(cssViewport(viewportEl))
       const args = [
         streams.audioUrl ? `--audio-files=${streams.audioUrl}` : '',
+        trailer.directUrl?.includes('itunes.apple.com') ? '--hls-bitrate=max' : '',
         `--mute=${muted ? 'yes' : 'no'}`,
         '--loop-file=no',
+        '--profile=high-quality',
+        // Hero trailers are backgrounds: fill the banner like CSS object-cover
+        // instead of letterboxing a 16:9 video inside an ultrawide viewport.
+        '--panscan=1.0',
+        '--scale=ewa_lanczossharp',
+        '--cscale=ewa_lanczossharp',
+        '--dscale=mitchell',
+        '--deband=yes',
+        '--deband-iterations=2',
         '--force-media-title=trailer',
       ].filter(Boolean).join(' ')
       try {
@@ -124,8 +110,8 @@ export default function HeroMpvTrailer({
         await launchEmbeddedPlayer(
           {
             url: streams.videoUrl,
-            volume: Math.min(100, Math.max(0, trailerVolume)),
-            viewport: physicalViewport(el),
+            volume: muted ? trailerVolume : Math.max(30, trailerVolume),
+            viewport: physicalViewport(viewportEl),
             mpvCustomArgs: args,
           },
           'hero-trailer',
@@ -150,6 +136,10 @@ export default function HeroMpvTrailer({
       onPlayingChange?.(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trailer.key, maxHeight])
+
+  useEffect(() => {
+    setMaxHeight(2160)
   }, [trailer.key])
 
   // Track playback state: reveal video once frames are rendering, detect EOF,
@@ -190,28 +180,60 @@ export default function HeroMpvTrailer({
     return () => window.clearInterval(interval)
   }, [mode, videoVisible, onEnded, onPlayingChange])
 
+  // launch_embedded_mpv can succeed even when the remote host subsequently
+  // rejects the stream. Do not leave the Hero frozen on its artwork forever:
+  // promote the browser video fallback when no decoded frame arrives.
+  useEffect(() => {
+    if (mode !== 'mpv' || videoVisible) return
+    const timeout = window.setTimeout(() => {
+      if (videoVisible || getEmbeddedPlayerOwner() !== 'hero-trailer') return
+      stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+      launchedRef.current = false
+      if (!trailer.directUrl && maxHeight > 1080) {
+        // Some YouTube 1440p/4K streams require delivery features that direct
+        // URLs cannot satisfy. Retry once with the broadly compatible AVC tier.
+        setMaxHeight(1080)
+      } else {
+        setMode('fallback')
+      }
+    }, 7000)
+    return () => window.clearTimeout(timeout)
+  }, [mode, videoVisible, trailer.directUrl, maxHeight])
+
+  // Hero playback intentionally has no browser/iframe fallback: those paths
+  // expose a YouTube thumbnail or UI before playback. Keep the normal hero art
+  // and end the attempt when native yt-dlp/mpv playback is unavailable.
+  useEffect(() => {
+    if (mode === 'fallback') onUnavailable?.()
+  }, [mode, onUnavailable])
+
   // The transparent-hole compositing only holds while the app window is
   // focused — unfocused, the hole exposes the desktop. End the trailer on
   // blur (pausing embedded mpv is not an option: known WASAPI wedge).
   useEffect(() => {
     if (mode !== 'mpv') return
+    let blurTimer: ReturnType<typeof window.setTimeout> | undefined
     const onBlur = () => {
-      if (endedRef.current) return
-      endedRef.current = true
-      setVideoVisible(false)
-      onPlayingChange?.(false)
-      stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
-      launchedRef.current = false
-      onEnded?.()
+      if (blurTimer) window.clearTimeout(blurTimer)
+      blurTimer = window.setTimeout(() => {
+        if (document.hasFocus() || endedRef.current) return
+        endedRef.current = true
+        setVideoVisible(false)
+        onPlayingChange?.(false)
+        stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+        launchedRef.current = false
+        onEnded?.()
+      }, 750)
     }
-    
-    if (!document.hasFocus()) {
-      onBlur()
-      return
-    }
+    const onFocus = () => { if (blurTimer) window.clearTimeout(blurTimer) }
 
     window.addEventListener('blur', onBlur)
-    return () => window.removeEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      if (blurTimer) window.clearTimeout(blurTimer)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [mode, onEnded, onPlayingChange])
 
   // Keep the mpv child window glued to the hero rect through scroll/resize.
@@ -219,20 +241,22 @@ export default function HeroMpvTrailer({
     if (mode !== 'mpv') return
     const el = containerRef.current
     if (!el) return
+    const viewportEl = el.closest<HTMLElement>('[data-hero-viewport]') || el
     let frame = 0
     const sync = () => {
       if (frame) return
       frame = window.requestAnimationFrame(() => {
         frame = 0
         if (getEmbeddedPlayerOwner() !== 'hero-trailer') return
-        resizeEmbeddedPlayer(physicalViewport(el)).catch(() => undefined)
+        setHeroViewport(cssViewport(viewportEl))
+        resizeEmbeddedPlayer(physicalViewport(viewportEl)).catch(() => undefined)
       })
     }
     const scrollParent = el.closest('main') || window
     scrollParent.addEventListener('scroll', sync, { passive: true })
     window.addEventListener('resize', sync)
     const observer = new ResizeObserver(sync)
-    observer.observe(el)
+    observer.observe(viewportEl)
     return () => {
       scrollParent.removeEventListener('scroll', sync)
       window.removeEventListener('resize', sync)
@@ -246,12 +270,12 @@ export default function HeroMpvTrailer({
     if (mode !== 'mpv' || !launchedRef.current) return
     if (getEmbeddedPlayerOwner() !== 'hero-trailer') return
     sendPlayerCommand('set_property', ['mute', muted ? 'yes' : 'no']).catch(() => undefined)
-    sendPlayerCommand('set_property', ['volume', Math.min(100, Math.max(0, trailerVolume))]).catch(() => undefined)
+    sendPlayerCommand('set_property', ['volume', muted ? trailerVolume : Math.max(30, trailerVolume)]).catch(() => undefined)
   }, [mode, muted, trailerVolume])
 
   // Transparent hole: while the video is visible, everything above the hero
   // rect must not paint opaque pixels (same trick NativeMpvPlayer uses).
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!videoVisible) return
     const html = document.documentElement
     const body = document.body
@@ -269,31 +293,38 @@ export default function HeroMpvTrailer({
     }
   }, [videoVisible])
 
-  if (mode === 'fallback') {
-    return (
-      <TrailerPreview
-        trailer={trailer}
-        title={title}
-        muted={muted}
-        eager
-        className={className}
-        allowIframeFallback={false}
-        onEnded={onEnded}
-        onUnavailable={onUnavailable}
-      />
-    )
-  }
-
   return (
-    <div ref={containerRef} className={`relative h-full w-full ${className}`}>
-      {/* Thumbnail cover until mpv renders frames; afterwards this area stays
-          fully transparent so the mpv child window shows through. */}
-      <img
-        src={trailer.thumbnailUrl}
-        alt=""
-        className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${videoVisible ? 'opacity-0' : 'opacity-100'}`}
-        draggable={false}
-      />
-    </div>
+    <>
+      {videoVisible && createPortal(
+        <div className="hero-mpv-shell-backdrop" aria-hidden="true">
+          <div style={{ inset: `0 0 auto 0`, height: heroViewport.y }}><span /></div>
+          <div style={{ left: 0, top: heroViewport.y, width: heroViewport.x, height: heroViewport.height }}>
+            <span style={{ top: -heroViewport.y }} />
+          </div>
+          <div style={{ left: heroViewport.x + heroViewport.width, right: 0, top: heroViewport.y, height: heroViewport.height }}>
+            <span style={{ left: -(heroViewport.x + heroViewport.width), top: -heroViewport.y }} />
+          </div>
+          <div style={{ inset: `${heroViewport.y + heroViewport.height}px 0 0 0` }}>
+            <span style={{ top: -(heroViewport.y + heroViewport.height) }} />
+          </div>
+          <div className="hero-mpv-corner hero-mpv-corner-tl" style={{ left: heroViewport.x, top: heroViewport.y }}>
+            <span style={{ left: -heroViewport.x, top: -heroViewport.y }} />
+          </div>
+          <div className="hero-mpv-corner hero-mpv-corner-tr" style={{ left: heroViewport.x + heroViewport.width - 32, top: heroViewport.y }}>
+            <span style={{ left: -(heroViewport.x + heroViewport.width - 32), top: -heroViewport.y }} />
+          </div>
+          <div className="hero-mpv-corner hero-mpv-corner-bl" style={{ left: heroViewport.x, top: heroViewport.y + heroViewport.height - 32 }}>
+            <span style={{ left: -heroViewport.x, top: -(heroViewport.y + heroViewport.height - 32) }} />
+          </div>
+          <div className="hero-mpv-corner hero-mpv-corner-br" style={{ left: heroViewport.x + heroViewport.width - 32, top: heroViewport.y + heroViewport.height - 32 }}>
+            <span style={{ left: -(heroViewport.x + heroViewport.width - 32), top: -(heroViewport.y + heroViewport.height - 32) }} />
+          </div>
+        </div>,
+        document.body,
+      )}
+      {/* HeroSection keeps its normal artwork visible until mpv renders the
+          first frame, so there is no YouTube thumbnail flash in between. */}
+      <div ref={containerRef} className={`relative h-full w-full ${className}`} />
+    </>
   )
 }

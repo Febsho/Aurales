@@ -14,6 +14,7 @@ import type { HomeRowConfig, SearchResult } from '../types'
 import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
 import { useContextMenu } from '../hooks/useContextMenu'
+import { streamPreloadManager } from '../services/streams/preloadManager'
 
 type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
 
@@ -71,9 +72,19 @@ function normalizeResumeMediaId(mediaId: string, season?: number, episode?: numb
   return mediaId.endsWith(suffix) ? mediaId.slice(0, -suffix.length) : mediaId
 }
 
+// Module-level cache survives component remounts (e.g. switching tabs and back),
+// so the row shows its last result instantly and revalidates in the background
+// instead of flashing a loading skeleton and refetching from scratch each time.
+const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
+
 export default function ContinueWatchingRow({ row, headerLeftControls, headerRightControls }: ContinueWatchingRowProps) {
-  const [items, setItems] = useState<ContinueWatchingItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
+  const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
+  const source = (row.sourceType || continueWatchingSource) as SourceType
+  const cwKey = `${source}:${continueWatchingLimit}`
+
+  const [items, setItems] = useState<ContinueWatchingItem[]>(() => cwItemsCache.get(cwKey) ?? [])
+  const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey))
   const [error, setError] = useState<string | null>(null)
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
@@ -92,13 +103,14 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const navigate = useNavigate()
   const watchProgress = useAppStore((s) => s.watchProgress)
   const updateHomeRow = useAppStore((s) => s.updateHomeRow)
-  const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
-  const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
   const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const posterSize = useAppStore((s) => s.posterSize)
+  // Landscape cards scale with the global poster-size setting so the Continue
+  // Watching row fits the same way the poster rows do.
+  const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
   const [focusedItem, setFocusedItem] = useState<ContinueWatchingItem | null>(null)
-  const source = (row.sourceType || continueWatchingSource) as SourceType
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -137,7 +149,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     // unmount the portal and stop the native player.
     if (streamSelectorData) return
     let cancelled = false
-    setLoading(true)
+    // Show the cached result for this source immediately; only fall back to the
+    // loading skeleton when we have nothing cached yet. Either way we revalidate
+    // in the background below and update the cache when it resolves.
+    const cached = cwItemsCache.get(cwKey)
+    if (cached) { setItems(cached); setLoading(false) } else { setLoading(true) }
     setError(null)
 
     const loadProgress = async () => {
@@ -482,7 +498,17 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         }
 
         if (!cancelled) {
-          setItems(list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit))
+          const visible = list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit)
+          cwItemsCache.set(cwKey, visible)
+          setItems(visible)
+          streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
+            mediaType: item.mediaType,
+            mediaId: item.imdbId || item.mediaId,
+            imdbId: item.imdbId,
+            tmdbId: item.tmdbId,
+            seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+            progressPct: item.progressPct,
+          })))
         }
       } catch (err: any) {
         if (!cancelled) {
@@ -610,7 +636,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   }
 
   return (
-    <section className={`mb-8 ${cinematic ? 'cinematic-media-row !mb-0' : ''}`}>
+    <section className={`cw-fixed mb-8 ${cinematic ? 'cinematic-media-row !mb-0' : ''}`}>
       <div className="flex items-center justify-between px-6 mb-4 relative z-[60]">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
@@ -726,7 +752,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 e.preventDefault()
                 setCwMenu({ x: e.clientX, y: e.clientY, item })
               }}
-              className="snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out w-72 focus:outline-none"
+              className={`snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out ${cwWidthClass} focus:outline-none`}
             >
               <div className="relative rounded-xl overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out aspect-video group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
                 {/* 16:9 backdrop */}
@@ -825,7 +851,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 removedItem.imdbId,
               ).catch((e) => console.warn('[CW] MDBList remove failed:', e))
             }
-            setItems((prev) => prev.filter((i) => i.id !== removedItem.id))
+            setItems((prev) => {
+              const next = prev.filter((i) => i.id !== removedItem.id)
+              cwItemsCache.set(cwKey, next)
+              return next
+            })
             setCwMenu(null)
           }}
           onGoTo={(item) => {

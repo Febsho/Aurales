@@ -34,8 +34,8 @@ export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number
   return result ?? undefined
 }
 
-function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
-  const backdrops = ((images.backdrops as Record<string, unknown>[]) || [])
+function sortedBackdrops(images: Record<string, unknown>): Record<string, unknown>[] {
+  return ((images.backdrops as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
       const aVotes = Number(a.vote_count || 0)
@@ -43,11 +43,21 @@ function pickBestBackdrop(images: Record<string, unknown>): string | undefined {
       if (aVotes !== bVotes) return bVotes - aVotes
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
-  const selected = backdrops[0]
-  return selected ? `${IMG_BASE}/original${selected.file_path}` : undefined
+}
+
+// Prefer TMDB's curated primary backdrop (the first image on its title page).
+// Vote sorting is only a fallback when the title has no primary path.
+// just whatever order TMDB returned — often a bad close-up — so fall back to
+function pickBestBackdrop(images: Record<string, unknown>, primaryPath?: string): string | undefined {
+  if (primaryPath) return `${IMG_BASE}/original${primaryPath}`
+  const top = sortedBackdrops(images)[0]
+  return top ? `${IMG_BASE}/original${top.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
+  // Match TMDB's title page: its curated poster_path is the primary artwork.
+  // Community vote sorting is only a fallback when no primary is assigned.
+  if (defaultPosterPath) return `${IMG_BASE}/w780${defaultPosterPath}`
   const posters = ((images.posters as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
@@ -58,7 +68,7 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
     })
   const selected = posters[0]
   if (selected) return `${IMG_BASE}/w780${selected.file_path}`
-  return defaultPosterPath ? `${IMG_BASE}/w780${defaultPosterPath}` : undefined
+  return undefined
 }
 
 export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
@@ -67,10 +77,13 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
-  const result = await cachedFetch<string | null>(`tmdb_backdrop_v2:${mediaType}:${id}`, async () => {
+  const result = await cachedFetch<string | null>(`tmdb_backdrop_v4:${mediaType}:${id}`, async () => {
     try {
-      const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Record<string, unknown>
-      return pickBestBackdrop(images) || null
+      const [details, images] = await Promise.all([
+        tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
+        tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
+      ])
+      return pickBestBackdrop(images, details.backdrop_path as string) || null
     } catch (_) {
       return null
     }
@@ -81,24 +94,44 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
 export async function getTmdbCardMetadata(
   type: 'movie' | 'series' | 'show' | 'anime',
   tmdbId: string | number,
-): Promise<{ poster?: string; backdrop?: string; logo?: string; genre?: string }> {
+  imdbId?: string,
+): Promise<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return {}
-  const mediaType = type === 'movie' ? 'movie' : 'tv'
+  let mediaType: 'movie' | 'tv' = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return {}
 
-  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; genre?: string }>(`tmdb_card_v2:${mediaType}:${id}`, async () => {
+  // Some addon/anime catalogs label movies as series. When IMDb is known,
+  // use TMDB's external-ID mapping to select the authoritative endpoint.
+  if (imdbId) {
+    const resolvedType = await cachedFetch<'movie' | 'tv' | null>(`tmdb_media_type_v1:${imdbId}:${id}`, async () => {
+      try {
+        const found = await tmdbFetch(`/find/${encodeURIComponent(imdbId)}`, { external_source: 'imdb_id' }) as Record<string, unknown>
+        const movieMatch = ((found.movie_results as Record<string, unknown>[]) || []).some((item) => String(item.id) === id)
+        if (movieMatch) return 'movie'
+        const tvMatch = ((found.tv_results as Record<string, unknown>[]) || []).some((item) => String(item.id) === id)
+        return tvMatch ? 'tv' : null
+      } catch {
+        return null
+      }
+    }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+    if (resolvedType) mediaType = resolvedType
+  }
+
+  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }>(`tmdb_card_v9:${mediaType}:${id}`, async () => {
     const [details, images] = await Promise.all([
       tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
     ])
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
     const logos = (images.logos as Record<string, unknown>[]) || []
-    const enLogo = logos.find((logo) => logo.iso_639_1 === 'en') || logos.find((logo) => logo.iso_639_1 === null) || logos[0]
+    const englishLogo = logos.find((logo) => logo.iso_639_1 === 'en')
+    const primaryLogo = englishLogo || logos[0]
     return {
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: pickBestBackdrop(images) || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
-      logo: enLogo ? `${IMG_BASE}/w500${enLogo.file_path as string}` : undefined,
+      backdrop: pickBestBackdrop(images, details.backdrop_path as string),
+      logo: primaryLogo ? `${IMG_BASE}/w500${primaryLogo.file_path as string}` : undefined,
+      englishLogo: englishLogo ? `${IMG_BASE}/w500${englishLogo.file_path as string}` : undefined,
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
@@ -207,8 +240,8 @@ export const tmdbProvider: MetadataProvider = {
       }))
 
     const logos = (images.logos as Record<string, unknown>[]) || []
-    const enLogo = logos.find((l) => l.iso_639_1 === 'en') || logos[0]
-    const bestBackdrop = pickBestBackdrop(images)
+    const primaryLogo = logos.find((logo) => logo.iso_639_1 === 'en') || logos[0]
+    const bestBackdrop = pickBestBackdrop(images, details.backdrop_path as string)
 
     const genres = ((details.genres as Record<string, unknown>[]) || []).map((g) => g.name as string)
     const recResults = ((recs.results as Record<string, unknown>[]) || []).slice(0, 10).map((r) => mapSearchResult(r, 'movie'))
@@ -227,7 +260,7 @@ export const tmdbProvider: MetadataProvider = {
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
       backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
-      logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
+      logo: primaryLogo ? `${IMG_BASE}/w300${primaryLogo.file_path as string}` : undefined,
       certification: undefined,
       cast,
       crew,
@@ -269,8 +302,8 @@ export const tmdbProvider: MetadataProvider = {
       }))
 
     const logos = (images.logos as Record<string, unknown>[]) || []
-    const enLogo = logos.find((l) => l.iso_639_1 === 'en') || logos[0]
-    const bestBackdrop = pickBestBackdrop(images)
+    const primaryLogo = logos.find((logo) => logo.iso_639_1 === 'en') || logos[0]
+    const bestBackdrop = pickBestBackdrop(images, details.backdrop_path as string)
 
     const seasons = ((details.seasons as Record<string, unknown>[]) || [])
       .filter((s) => (s.season_number as number) > 0)
@@ -298,7 +331,7 @@ export const tmdbProvider: MetadataProvider = {
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
       backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
-      logo: enLogo ? `${IMG_BASE}/w300${(enLogo as Record<string, unknown>).file_path}` : undefined,
+      logo: primaryLogo ? `${IMG_BASE}/w300${primaryLogo.file_path as string}` : undefined,
       certification: undefined,
       status: details.status as string,
       numberOfSeasons: details.number_of_seasons as number,

@@ -2,7 +2,8 @@ import { lazy, Suspense, useMemo, useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
-import { getAddonStreams, getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
+import { getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
+import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import NativeMpvPlayer from './NativeMpvPlayer'
 
 // Lazy: keeps the heavy player stack out of page chunks — it only loads once
@@ -215,25 +216,23 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       return
     }
 
-    const fetches = allAddons.map(async (addon) => {
-      try {
-        const baseId = addon.manifest.id === sourceAddonId && sourceAddonItemId ? sourceAddonItemId : cleanMediaId
-        const streamId = makeStreamId(baseId)
-        const results = await getAddonStreams(addon.url, mediaType, streamId)
-        return results.map((s) => ({
-          ...s,
-          addonName: addon.displayName || addon.manifest.name,
-          addonId: addon.manifest.id,
-        }))
-      } catch (_) {
-        return []
-      }
-    })
-
-    Promise.all(fetches).then((results) => {
-      setStreams(results.flat())
+    streamPreloadManager.request({
+      mediaType,
+      mediaId: cleanMediaId,
+      tmdbId,
+      seasonEpisode,
+      sourceAddonId,
+      sourceAddonItemId,
+    }, {
+      priority: StreamPreloadPriority.PLAYBACK,
+      onUpdate: (results, status) => {
+        setStreams(results)
+        if (results.length > 0 || status.complete) setLoading(false)
+      },
+    }).then((results) => {
+      setStreams(results)
       setLoading(false)
-    })
+    }).catch(() => setLoading(false))
 
     const subtitleAddons = getSubtitleAddons(mediaType)
     const subtitleSeenUrls = new Set(seenUrls)

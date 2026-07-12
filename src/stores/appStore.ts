@@ -20,6 +20,8 @@ function invalidateCatalogData(): void {
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
+export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
+export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
 
 export interface ArtProviderSettings {
   moviePoster: ArtProvider
@@ -154,7 +156,6 @@ interface AppState {
   anilistSyncFrequency: string
   introdbApiKey: string
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
-  animeShowWatchedFrom: 'all' | 'provider'
   resumePriorityOrder: ProgressProvider[]
 
   setContinueWatchingSource: (src: ProgressProvider) => void
@@ -175,7 +176,6 @@ interface AppState {
   setAnilistSyncFrequency: (freq: string) => void
   setIntrodbApiKey: (key: string) => void
   setAnimeTrackingProvider: (prov: 'anilist' | 'simkl' | 'trakt' | 'local') => void
-  setAnimeShowWatchedFrom: (watchedFrom: 'all' | 'provider') => void
 
   // Library & Spoilers
   blurSpoilers: boolean
@@ -193,13 +193,20 @@ interface AppState {
   posterSize: 'compact' | 'default' | 'large' | 'huge'
   nextEpisodePrompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m'
   heroTrailerDelay: number
+  homeHeroMode: HomeHeroMode
+  fixedHeroSource: FixedHeroSource
+  fixedHeroManualItem: SearchResult | null
   setPosterSize: (size: 'compact' | 'default' | 'large' | 'huge') => void
   setNextEpisodePrompt: (prompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m') => void
   setHeroTrailerDelay: (seconds: number) => void
+  setHomeHeroMode: (mode: HomeHeroMode) => void
+  setFixedHeroSource: (source: FixedHeroSource) => void
+  setFixedHeroManualItem: (item: SearchResult | null) => void
 
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
   interfaceTheme: InterfaceTheme
+  themeBackground: 'theme' | 'oled'
   navigationStyle: 'sidebar' | 'topbar'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
@@ -320,6 +327,7 @@ interface AppState {
 
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
   setInterfaceTheme: (theme: InterfaceTheme) => void
+  setThemeBackground: (bg: 'theme' | 'oled') => void
   setNavigationStyle: (style: 'sidebar' | 'topbar') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
@@ -687,7 +695,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   anilistSyncFrequency: localStorage.getItem('anilist_sync_freq') || 'every_5',
   introdbApiKey: localStorage.getItem('introdb_api_key') || '',
   animeTrackingProvider: (localStorage.getItem('anime_tracking_provider') || 'anilist') as 'anilist' | 'simkl' | 'trakt' | 'local',
-  animeShowWatchedFrom: (localStorage.getItem('anime_show_watched') || 'all') as 'all' | 'provider',
 
   blurSpoilers: localStorage.getItem('aurales_blur_spoilers') === 'true',
   blurThumbnails: localStorage.getItem('aurales_blur_thumbnails') !== 'false',
@@ -696,7 +703,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   keepNextEpisodeVisible: localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
   posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
-  heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '0'),
+  heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '3'),
+  homeHeroMode: (localStorage.getItem('aurales_home_hero_mode') || 'dynamic') as HomeHeroMode,
+  fixedHeroSource: (localStorage.getItem('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
+  fixedHeroManualItem: (() => {
+    try { return JSON.parse(localStorage.getItem('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null }
+    catch { return null }
+  })(),
   resumePriorityOrder: (() => {
     try {
       const raw = localStorage.getItem('aurales_resume_priority')
@@ -708,19 +721,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   // New settings options initial values
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
   interfaceTheme: loadInterfaceTheme(),
+  themeBackground: (localStorage.getItem('aurales_theme_background') || 'theme') as 'theme' | 'oled',
   navigationStyle: (localStorage.getItem('aurales_navigation_style') || (loadInterfaceTheme() === 'cinematic' ? 'topbar' : 'sidebar')) as 'sidebar' | 'topbar',
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
-  showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') !== 'false',
-  showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') !== 'false',
+  showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') === 'true',
+  showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') === 'true',
   posterTrailerPreviews: localStorage.getItem('aurales_poster_trailer_previews') !== 'false',
   posterTrailerHoverDelayMs: (() => {
-    const delayMs = Number(localStorage.getItem('aurales_poster_trailer_hover_delay_ms') || '500')
-    return [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 500
+    const delayMs = Number(localStorage.getItem('aurales_poster_trailer_hover_delay_ms') || '2000')
+    return [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 2000
   })(),
-  posterTrailerSound: localStorage.getItem('aurales_poster_trailer_sound') === 'true',
+  posterTrailerSound: localStorage.getItem('aurales_poster_trailer_sound') !== 'false',
   trailerVolume: (() => {
-    const volume = Number(localStorage.getItem('aurales_trailer_volume') || '80')
-    return Number.isFinite(volume) ? Math.min(100, Math.max(0, volume)) : 80
+    const volume = Number(localStorage.getItem('aurales_trailer_volume') || '50')
+    return Number.isFinite(volume) ? Math.min(100, Math.max(0, volume)) : 50
   })(),
   discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
   discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
@@ -780,7 +794,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAnilistSyncFrequency: (freq) => { localStorage.setItem('anilist_sync_freq', freq); set({ anilistSyncFrequency: freq }) },
   setIntrodbApiKey: (key) => { localStorage.setItem('introdb_api_key', key); set({ introdbApiKey: key }) },
   setAnimeTrackingProvider: (prov) => { localStorage.setItem('anime_tracking_provider', prov); set({ animeTrackingProvider: prov }) },
-  setAnimeShowWatchedFrom: (watchedFrom) => { localStorage.setItem('anime_show_watched', watchedFrom); set({ animeShowWatchedFrom: watchedFrom }) },
 
   setBlurSpoilers: (val) => { localStorage.setItem('aurales_blur_spoilers', String(val)); set({ blurSpoilers: val }) },
   setBlurThumbnails: (val) => { localStorage.setItem('aurales_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
@@ -794,10 +807,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_hero_trailer_delay', String(safe))
     set({ heroTrailerDelay: safe })
   },
+  setHomeHeroMode: (mode) => { localStorage.setItem('aurales_home_hero_mode', mode); set({ homeHeroMode: mode }) },
+  setFixedHeroSource: (source) => { localStorage.setItem('aurales_fixed_hero_source', source); set({ fixedHeroSource: source }) },
+  setFixedHeroManualItem: (item) => {
+    if (item) localStorage.setItem('aurales_fixed_hero_manual_item', JSON.stringify(item))
+    else localStorage.removeItem('aurales_fixed_hero_manual_item')
+    set({ fixedHeroManualItem: item })
+  },
   setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setInterfaceTheme: (theme) => { persistInterfaceTheme(theme); set({ interfaceTheme: theme }) },
+  setThemeBackground: (bg) => { localStorage.setItem('aurales_theme_background', bg); set({ themeBackground: bg }) },
   setNavigationStyle: (style) => { localStorage.setItem('aurales_navigation_style', style); set({ navigationStyle: style }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },

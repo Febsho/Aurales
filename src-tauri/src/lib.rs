@@ -99,6 +99,7 @@ pub fn run() {
             commands::write_temp_subtitle,
             commands::read_temp_subtitle,
             commands::update_temp_subtitle,
+            commands::extract_embedded_subtitle,
             commands::request_simkl_pin,
             commands::check_simkl_pin,
             commands::fetch_simkl_user,

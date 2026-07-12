@@ -70,12 +70,14 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         onMouseEnter={() => !pinned && handleMouseEnter()}
         onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
-          'flex flex-col z-30',
+          'flex flex-col',
           'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
           pinned
-            ? 'relative w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
+            ? 'relative z-30 w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
             : [
-                'absolute top-3 bottom-3 rounded-2xl overflow-hidden',
+                // z-40 so the floating sidebar sits above the fixed hero shelf
+                // (z-30) instead of the posters bleeding over it.
+                'absolute top-3 bottom-3 z-40 rounded-2xl overflow-hidden',
                 visible
                   ? 'left-3 w-52 bg-white/[0.08] backdrop-blur-2xl saturate-150 border border-white/[0.1] shadow-[0_8px_40px_rgba(0,0,0,0.5)] opacity-100'
                   : '-left-56 w-52 opacity-0 pointer-events-none',

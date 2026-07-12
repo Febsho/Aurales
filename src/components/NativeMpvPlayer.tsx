@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window'
+import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, openRouterChat } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -76,6 +77,7 @@ interface MpvTrack {
   external?: boolean
   'external-filename'?: string
   filename?: string
+  'ff-index'?: number
 }
 
 interface TrackOption {
@@ -150,6 +152,43 @@ function formatSrtTimestamp(seconds: number): string {
   const wholeSeconds = Math.floor(safe % 60)
   const millis = Math.floor((safe - Math.floor(safe)) * 1000)
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
+}
+
+interface SubCue {
+  start: number // seconds
+  end: number   // seconds
+  text: string
+}
+
+// Parses SRT or WebVTT content into ordered cues. Strips markup/ASS overrides.
+function parseSubCueTimestamp(ts: string): number {
+  const m = ts.trim().replace(',', '.').match(/(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)/)
+  if (!m) return NaN
+  const h = m[1] ? Number(m[1]) : 0
+  return h * 3600 + Number(m[2]) * 60 + Number(m[3])
+}
+
+function parseSubtitleCues(content: string): SubCue[] {
+  const cues: SubCue[] = []
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  for (const block of normalized.split(/\n\s*\n/)) {
+    const lines = block.split('\n')
+    const tlIdx = lines.findIndex((l) => l.includes('-->'))
+    if (tlIdx === -1) continue
+    const [rawStart, rawEnd] = lines[tlIdx].split('-->')
+    const start = parseSubCueTimestamp(rawStart)
+    if (!Number.isFinite(start)) continue
+    const end = parseSubCueTimestamp(rawEnd || '')
+    const text = lines
+      .slice(tlIdx + 1)
+      .join('\n')
+      .replace(/<[^>]+>/g, '')       // HTML/VTT tags
+      .replace(/\{\\[^}]*\}/g, '')   // ASS override blocks
+      .trim()
+    if (!text) continue
+    cues.push({ start, end: Number.isFinite(end) && end > start ? end : start + 3, text })
+  }
+  return cues.sort((a, b) => a.start - b.start)
 }
 
 function buildVideoViewport() {
@@ -249,6 +288,80 @@ async function fetchNextEpisodeFromTmdb(
   if (next) return next
   // If it's the last episode of the season, try S+1 E1
   return tryFetch(season + 1, 1)
+}
+
+// Metadata for the currently-playing item, shown in the paused info overlay.
+interface CurrentItemMeta {
+  overview?: string
+  runtime?: number      // minutes
+  year?: number
+  genres?: string[]
+  rating?: number       // vote_average (0–10)
+  episodeTitle?: string // TV only
+  epCode?: string       // "S01E03", TV only
+  stillPath?: string    // TV episode still (original quality)
+}
+
+// Fetches rich metadata about the *current* item for the paused overlay.
+// TV/anime → episode name/overview/runtime/still plus show-level genres/rating.
+// Movie → overview/runtime/year/genres/rating.
+async function fetchCurrentItemMeta(
+  tmdbId: number,
+  isEpisodic: boolean,
+  season?: number,
+  episode?: number,
+): Promise<CurrentItemMeta | null> {
+  const apiKey = getTmdbApiKey()
+  if (!apiKey) return null
+  const tmdbGet = async (path: string): Promise<any | null> => {
+    try {
+      const res = await fetch(`https://api.themoviedb.org/3${path}?api_key=${apiKey}`)
+      if (!res.ok) return null
+      return await res.json()
+    } catch (_) {
+      return null
+    }
+  }
+
+  if (isEpisodic && season != null && episode != null) {
+    const [ep, show] = await Promise.all([
+      tmdbGet(`/tv/${tmdbId}/season/${season}/episode/${episode}`),
+      tmdbGet(`/tv/${tmdbId}`),
+    ])
+    if (!ep && !show) return null
+    const genres = Array.isArray(show?.genres)
+      ? show.genres.map((g: any) => g?.name).filter(Boolean) as string[]
+      : undefined
+    return {
+      overview: ep?.overview || show?.overview || undefined,
+      runtime: ep?.runtime || undefined,
+      year: (show?.first_air_date as string)?.slice(0, 4)
+        ? Number((show.first_air_date as string).slice(0, 4))
+        : undefined,
+      genres: genres?.length ? genres : undefined,
+      rating: typeof show?.vote_average === 'number' ? show.vote_average : undefined,
+      episodeTitle: ep?.name || undefined,
+      epCode: `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`,
+      stillPath: ep?.still_path
+        ? `https://image.tmdb.org/t/p/original${ep.still_path}`
+        : undefined,
+    }
+  }
+
+  const movie = await tmdbGet(`/movie/${tmdbId}`)
+  if (!movie) return null
+  const genres = Array.isArray(movie.genres)
+    ? movie.genres.map((g: any) => g?.name).filter(Boolean) as string[]
+    : undefined
+  return {
+    overview: movie.overview || undefined,
+    runtime: movie.runtime || undefined,
+    year: (movie.release_date as string)?.slice(0, 4)
+      ? Number((movie.release_date as string).slice(0, 4))
+      : undefined,
+    genres: genres?.length ? genres : undefined,
+    rating: typeof movie.vote_average === 'number' ? movie.vote_average : undefined,
+  }
 }
 
 // ── Sub-component: Up Next Overlay ────────────────────────────────────────────
@@ -370,6 +483,67 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
             style={{ width: `${((15 - countdown) / 15) * 100}%` }}
           />
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Sub-component: Paused Info Overlay (Netflix-style) ────────────────────────
+
+interface PausedInfoOverlayProps {
+  title: string
+  subtitle?: string
+  backdrop?: string
+  meta: CurrentItemMeta | null
+}
+
+function PausedInfoOverlay({ title, subtitle, backdrop, meta }: PausedInfoOverlayProps) {
+  const image = highQualityTmdbImage(meta?.stillPath || backdrop)
+  const isEpisodic = !!meta?.epCode
+  // Meta line: TV → "S01E03 · Episode Name"; movie → "2024 · ★ 8.1 · 142 min".
+  const metaBits: string[] = []
+  if (isEpisodic) {
+    if (meta?.epCode) metaBits.push(meta.epCode)
+    if (meta?.episodeTitle) metaBits.push(meta.episodeTitle)
+  } else {
+    if (meta?.year != null) metaBits.push(String(meta.year))
+    if (meta?.rating != null && meta.rating > 0) metaBits.push(`★ ${meta.rating.toFixed(1)}`)
+    if (meta?.runtime != null) metaBits.push(`${meta.runtime} min`)
+  }
+  return (
+    <div className="absolute inset-0 z-[5] overflow-hidden pointer-events-none animate-fade-in">
+      {/* Backdrop (covers the frozen mpv frame when artwork exists) */}
+      {image && (
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: `url(${image})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+          }}
+        />
+      )}
+      {/* Scrims: darken left + bottom for legibility */}
+      <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/45 to-black/20" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-black/25" />
+
+      {/* Info block — lower third, left aligned */}
+      <div className="absolute left-0 bottom-0 px-16 pb-24 max-w-3xl">
+        <p className="text-sm font-semibold tracking-[0.2em] uppercase text-white/55 mb-3">You're watching</p>
+        <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight drop-shadow-lg">{title}</h1>
+        {metaBits.length > 0 && (
+          <p className="mt-3 text-base text-white/70 font-medium">{metaBits.join('  ·  ')}</p>
+        )}
+        {!metaBits.length && subtitle && (
+          <p className="mt-3 text-sm text-white/60 tracking-wider uppercase">{subtitle}</p>
+        )}
+        {meta?.genres?.length ? (
+          <p className="mt-2 text-sm text-white/45">{meta.genres.slice(0, 3).join(' · ')}</p>
+        ) : null}
+        {meta?.overview && (
+          <p className="mt-4 text-base text-white/70 leading-relaxed line-clamp-3">{meta.overview}</p>
+        )}
       </div>
     </div>
   )
@@ -589,6 +763,9 @@ function FullNativeMpvPlayer({
   const currentItemRef = useRef<PlaybackItem | undefined>(playbackItem)
   const currentPosterRef = useRef<string | undefined>(poster)
   const currentBackdropRef = useRef<string | undefined>(backdrop)
+  // The URL mpv is currently playing (updated on autoplay transition). Used as a
+  // fallback source for embedded-subtitle extraction when mpv's `path` is empty.
+  const currentStreamUrlRef = useRef<string | undefined>(url)
   const volumeRef = useRef<number>(100)
 
   // Up Next refs (accessed inside stale poll closure)
@@ -604,6 +781,10 @@ function FullNativeMpvPlayer({
   const eofClosedRef = useRef(false)
   const closeRef = useRef<(() => Promise<void>) | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  // Ref mirror avoids stale closures; windowedBoundsRef restores size on exit.
+  const isFullscreenRef = useRef(false)
+  useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
+  const windowedBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
   const [subTracks, setSubTracks] = useState<TrackOption[]>([])
@@ -656,10 +837,30 @@ function FullNativeMpvPlayer({
   const liveAiSubtitleContentRef = useRef('')
   const liveAiCueIndexRef = useRef(0)
   const liveAiLastCueRef = useRef('')
+  // Full source subtitle cue list (with original timestamps) for ahead-of-time
+  // translation, plus a reentry guard so start can't run twice concurrently.
+  const sourceCuesRef = useRef<SubCue[]>([])
+  const sourceNextIdxRef = useRef(0) // next source cue to translate (persists across effect re-runs)
+  const aiStartInProgressRef = useRef(false)
 
   // Current display title/subtitle — updated when autoplay transitions episodes
   const [currentDisplayTitle, setCurrentDisplayTitle] = useState(title)
   const [currentDisplaySubtitle, setCurrentDisplaySubtitle] = useState(subtitle)
+
+  // Netflix-style paused info overlay — metadata fetched lazily on first pause.
+  const [currentMeta, setCurrentMeta] = useState<CurrentItemMeta | null>(null)
+  useEffect(() => {
+    if (!paused || currentMeta) return
+    const tmdbId = tmdbIdRef.current
+    if (!tmdbId) return
+    const item = currentItemRef.current
+    const isEpisodic = item?.mediaType === 'show' || item?.mediaType === 'anime'
+    let cancelled = false
+    fetchCurrentItemMeta(tmdbId, isEpisodic, item?.season, item?.episode)
+      .then((info) => { if (!cancelled && info) setCurrentMeta(info) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [paused, currentMeta])
 
   // Volume — persisted in localStorage between sessions
   const [volume, setVolume] = useState<number>(() => {
@@ -1064,6 +1265,9 @@ function FullNativeMpvPlayer({
       .map((t) => ({ id: t.id, label: trackLabel(t, `Audio ${t.id}`), lang: t.lang, priority: 0 }))
     const subs = data
       .filter((t) => t.type === 'sub')
+      // Hide the AI-translated track from the list — it's driven only by the
+      // "Live Translate" toggle, not picked as a normal subtitle option.
+      .filter((t) => t.id !== aiSubtitleTrackIdRef.current && !t.title?.endsWith('(Translated)'))
       .map((t) => ({ id: t.id, label: trackLabel(t, `Sub ${t.id}`), lang: t.lang, priority: trackPriority(t) }))
       .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label))
     const selAudio = data.find((t) => t.type === 'audio' && t.selected)
@@ -1200,9 +1404,16 @@ function FullNativeMpvPlayer({
     if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang || !liveAiSubtitlePathRef.current) return
     const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
     if (!lang) return
+    if (sourceCuesRef.current.length === 0) return
 
+    // Translate the source cue list ahead of playback. Each translated cue keeps
+    // its ORIGINAL start/end, so it displays in perfect sync no matter how long
+    // the API call took. We stay ~AHEAD cues in front of the playhead.
+    const AHEAD = 10
+    const RESYNC_GAP = AHEAD * 3 // a jump this far behind playback means a seek
     let cancelled = false
-    const inflight = new Set<string>()
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
     const appendTranslatedCue = async (text: string, start: number, end: number) => {
       const path = liveAiSubtitlePathRef.current
@@ -1210,7 +1421,7 @@ function FullNativeMpvPlayer({
       liveAiCueIndexRef.current += 1
       const cue = [
         String(liveAiCueIndexRef.current),
-        `${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(Math.max(end, start + 1.5))}`,
+        `${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(Math.max(end, start + 1))}`,
         text,
         '',
         '',
@@ -1220,57 +1431,51 @@ function FullNativeMpvPlayer({
       await sendPlayerCommand('sub-reload').catch(() => {})
     }
 
-    const translateCue = async (line: string, start: number, end: number) => {
-      const cueKey = `${start.toFixed(2)}-${end.toFixed(2)}-${line}`
-      if (inflight.has(cueKey) || liveAiLastCueRef.current === cueKey) return
-      inflight.add(cueKey)
-      liveAiLastCueRef.current = cueKey
-      try {
-        let result = liveTranslateCacheRef.current.get(line)
-        if (!result) {
-          const raw = await openRouterChat(openrouterApiKey, {
-            model: openrouterModel || 'google/gemini-2.5-flash',
-            messages: [
-              { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
-              { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
-            ]
-          })
+    const translateLine = async (line: string): Promise<string> => {
+      const cached = liveTranslateCacheRef.current.get(line)
+      if (cached) return cached
+      const raw = await openRouterChat(openrouterApiKey, {
+        model: openrouterModel || 'google/gemini-2.5-flash',
+        messages: [
+          { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
+          { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
+        ]
+      })
+      const data = JSON.parse(raw)
+      const result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
+      if (result) liveTranslateCacheRef.current.set(line, result)
+      return result
+    }
+
+    const pump = async () => {
+      while (!cancelled) {
+        const cues = sourceCuesRef.current
+        if (sourceNextIdxRef.current >= cues.length) { await sleep(1500); continue }
+
+        const now = progressRef.current.currentTime
+        // Number of cues whose start time is at/behind the playhead.
+        let currentIdx = 0
+        while (currentIdx < cues.length && cues[currentIdx].start <= now) currentIdx++
+        // Big forward jump (seek) → don't waste calls translating skipped cues.
+        if (currentIdx - sourceNextIdxRef.current > RESYNC_GAP) sourceNextIdxRef.current = currentIdx
+
+        if (sourceNextIdxRef.current >= currentIdx + AHEAD) { await sleep(400); continue }
+
+        const cue = cues[sourceNextIdxRef.current]
+        try {
+          const translated = await translateLine(cue.text)
           if (cancelled) return
-          const data = JSON.parse(raw)
-          result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
-          if (!result) return
-          liveTranslateCacheRef.current.set(line, result)
+          if (translated) await appendTranslatedCue(translated, cue.start, cue.end)
+        } catch (_) {
+          // Skip a failed cue rather than stalling the whole track.
         }
-        await appendTranslatedCue(result, start, end)
-      } catch (_) {
-        liveAiLastCueRef.current = ''
-      } finally {
-        inflight.delete(cueKey)
+        sourceNextIdxRef.current += 1
       }
     }
 
-    const poll = setInterval(async () => {
-      if (cancelled) return
-      try {
-        const text = await getPlayerProperty('secondary-sub-text') as string | null
-        const trimmed = (text || '').trim()
-        if (!trimmed) return
+    pump()
 
-        const startProp = await getPlayerProperty('secondary-sub-start').catch(() => null)
-        const endProp = await getPlayerProperty('secondary-sub-end').catch(() => null)
-        const fallbackStart = progressRef.current.currentTime
-        const start = typeof startProp === 'number' && Number.isFinite(startProp) ? startProp : fallbackStart
-        const end = typeof endProp === 'number' && Number.isFinite(endProp) ? endProp : start + 4
-        translateCue(trimmed, start, end)
-      } catch (_) {
-        // Poll again on the next tick.
-      }
-    }, 250)
-
-    return () => {
-      cancelled = true
-      clearInterval(poll)
-    }
+    return () => { cancelled = true }
   }, [contextAwareTranslation, currentDisplayTitle, liveTranslateOn, openrouterApiKey, openrouterModel, subtitleTranslationLang])
 
   // Addon subtitle requests can finish after playback has already started.
@@ -1319,16 +1524,81 @@ function FullNativeMpvPlayer({
     }
   }, [showControls])
 
+  // Size the mpv child window to the host's REAL physical client size. Using
+  // window.innerWidth * devicePixelRatio drifts from the true client size across
+  // a fullscreen transition (DPI/timing), which left the video not filling the
+  // screen. innerSize() is already in physical pixels — exactly what mpv wants.
+  const applyFullVideoViewport = useCallback(async () => {
+    if (showUpNextRef.current) {
+      await resizeEmbeddedPlayer(buildUpNextPipViewport()).catch(() => {})
+      return
+    }
+    // While fullscreen, always target the full monitor. Focus changes (alt-tab)
+    // can fire stray resize events with a transient/shrunken client size; using
+    // the monitor size keeps the video full instead of snapping it to a strip.
+    if (isFullscreenRef.current) {
+      const mon = await currentMonitor().catch(() => null)
+      if (mon && mon.size.width > 0 && mon.size.height > 0) {
+        // Overscan a couple px so no sliver of the top/edge shows through when the
+        // window and mpv child round differently at the monitor bounds.
+        await resizeEmbeddedPlayer({ x: -2, y: -2, width: mon.size.width + 4, height: mon.size.height + 4 }).catch(() => {})
+        return
+      }
+    }
+    try {
+      const size = await getCurrentWindow().innerSize()
+      if (size.width > 0 && size.height > 0) {
+        await resizeEmbeddedPlayer({ x: 0, y: 0, width: size.width, height: size.height })
+        return
+      }
+    } catch (_) { /* fall through to the CSS-based estimate */ }
+    await resizeEmbeddedPlayer(buildVideoViewport()).catch(() => {})
+  }, [])
+
+  const exitFullscreenWindow = useCallback(async () => {
+    const win = getCurrentWindow()
+    await win.setFullscreen(false).catch(() => {})
+    const b = windowedBoundsRef.current
+    if (b) {
+      await win.setPosition(new PhysicalPosition(b.x, b.y)).catch(() => {})
+      await win.setSize(new PhysicalSize(b.width, b.height)).catch(() => {})
+    }
+    windowedBoundsRef.current = null
+    isFullscreenRef.current = false
+    setIsFullscreen(false)
+  }, [])
+
   const toggleFullscreen = useCallback(async () => {
     const win = getCurrentWindow()
-    const current = await win.isFullscreen().catch(() => false)
-    const next = !current
-    setIsFullscreen(next)
-    await win.setFullscreen(next).catch((e) => setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`))
-    const doResize = () => resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
-    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(doResize, d))
+    if (isFullscreenRef.current) {
+      await exitFullscreenWindow()
+    } else {
+      // Flip state up front so the window-drag strip is gated off immediately —
+      // otherwise it lingers over the top of the video until the next re-render.
+      isFullscreenRef.current = true
+      setIsFullscreen(true)
+      try {
+        const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
+        windowedBoundsRef.current = { x: pos.x, y: pos.y, width: size.width, height: size.height }
+        // setFullscreen hides the taskbar but (on a transparent, decorationless
+        // window) doesn't resize the window; force the window to the monitor's
+        // full bounds so the video stretches edge-to-edge as well.
+        await win.setFullscreen(true)
+        const mon = await currentMonitor().catch(() => null)
+        if (mon) {
+          await win.setPosition(new PhysicalPosition(mon.position.x, mon.position.y)).catch(() => {})
+          await win.setSize(new PhysicalSize(mon.size.width, mon.size.height)).catch(() => {})
+        }
+      } catch (e) {
+        isFullscreenRef.current = false
+        setIsFullscreen(false)
+        setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    // Re-sync the mpv child to the new client size (retries as the transition settles).
+    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(() => { applyFullVideoViewport() }, d))
     showControls()
-  }, [showControls])
+  }, [showControls, applyFullVideoViewport, exitFullscreenWindow])
 
   useEffect(() => {
     let pressedKey: string | null = null
@@ -1718,19 +1988,45 @@ function FullNativeMpvPlayer({
   // ─ Resize ────────────────────────────────────────────────────────────────
   useEffect(() => {
     const onResize = () => {
-      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+      applyFullVideoViewport()
       setTimeout(() => invoke('setup_player_click_through').catch(() => {}), 300)
     }
     let unlistenMoved: (() => void) | undefined
+    let unlistenResized: (() => void) | undefined
     window.addEventListener('resize', onResize)
+    // Tauri's onResized fires on the fullscreen transition with the true new
+    // size, which the DOM 'resize' event can miss or report stale.
     getCurrentWindow().onMoved(() => onResize())
       .then((unlisten) => { unlistenMoved = unlisten })
+      .catch(() => {})
+    getCurrentWindow().onResized(() => onResize())
+      .then((unlisten) => { unlistenResized = unlisten })
       .catch(() => {})
     return () => {
       window.removeEventListener('resize', onResize)
       unlistenMoved?.()
+      unlistenResized?.()
     }
-  }, [])
+  }, [applyFullVideoViewport])
+
+  // Alt-tabbing away from a borderless fullscreen window can leave Windows
+  // knocking it out of its monitor bounds (title bar reappears, video jumps to
+  // the top). When focus returns, re-assert fullscreen + monitor bounds.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    getCurrentWindow().onFocusChanged(async ({ payload: focused }) => {
+      if (!focused || !isFullscreenRef.current) return
+      const win = getCurrentWindow()
+      await win.setFullscreen(true).catch(() => {})
+      const mon = await currentMonitor().catch(() => null)
+      if (mon) {
+        await win.setPosition(new PhysicalPosition(mon.position.x, mon.position.y)).catch(() => {})
+        await win.setSize(new PhysicalSize(mon.size.width, mon.size.height)).catch(() => {})
+      }
+      ;[0, 150, 400].forEach((d) => setTimeout(() => { applyFullVideoViewport() }, d))
+    }).then((u) => { unlisten = u }).catch(() => {})
+    return () => { unlisten?.() }
+  }, [applyFullVideoViewport])
 
   useEffect(() => {
     const viewport = showUpNext ? buildUpNextPipViewport() : buildVideoViewport()
@@ -2142,6 +2438,7 @@ function FullNativeMpvPlayer({
     // Update current playback item refs
     const newItem: PlaybackItem = { ...item, season: nextEp.season, episode: nextEp.episode, title: `${title} · ${nextEp.title}` }
     currentItemRef.current = newItem
+    currentStreamUrlRef.current = foundUrl
     currentPosterRef.current = nextEp.stillPath ?? currentPosterRef.current
     currentBackdropRef.current = nextEp.stillPath ?? currentBackdropRef.current
 
@@ -2164,6 +2461,7 @@ function FullNativeMpvPlayer({
       const epCode = `S${String(nextEp.season).padStart(2, '0')}E${String(nextEp.episode).padStart(2, '0')}`
       setCurrentDisplayTitle(title)
       setCurrentDisplaySubtitle(`${epCode} · ${nextEp.title}`)
+      setCurrentMeta(null) // refetch paused-overlay metadata for the new episode
 
       // Reset progress state
       setCurrentTime(0); setDuration(0); setPaused(false); setPlayerReady(false)
@@ -2183,6 +2481,15 @@ function FullNativeMpvPlayer({
       loadedSubtitleUrlsRef.current = new Set()
       subtitleSourcesRef.current = new Map()
       autoSkippedSegmentsRef.current = new Set()
+      // Reset AI-translation state — mpv relaunches with a new file, so old
+      // track ids and the previous source cue list no longer apply.
+      setLiveTranslateOn(false)
+      aiSubtitleTrackIdRef.current = null
+      aiSubtitleSourceTrackIdRef.current = null
+      liveAiSubtitlePathRef.current = null
+      sourceCuesRef.current = []
+      sourceNextIdxRef.current = 0
+      autoTranslateStartedRef.current = false
 
       // Start scrobble for new episode
       if (scrobbleSimkl) onSimklPlaybackStart(newItem, 0).catch(() => {})
@@ -2282,7 +2589,7 @@ function FullNativeMpvPlayer({
       promises.push(saveMdblistProgressHelper(pos, dur, true))
       await Promise.allSettled(promises)
     }
-    if (isFullscreen) await getCurrentWindow().setFullscreen(false).catch(() => {})
+    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
     await stopEmbeddedPlayer().catch(() => {})
     onClose()
   }
@@ -2312,7 +2619,7 @@ function FullNativeMpvPlayer({
       promises.push(saveMdblistProgressHelper(pos, dur, true))
       await Promise.allSettled(promises)
     }
-    if (isFullscreen) { await getCurrentWindow().setFullscreen(false).catch(() => {}); setIsFullscreen(false) }
+    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
     await stopEmbeddedPlayer().catch(() => {})
     onPickAnother()
   }
@@ -2409,6 +2716,8 @@ function FullNativeMpvPlayer({
       setError('Set an OpenRouter key and target subtitle language first.')
       return
     }
+    if (aiStartInProgressRef.current) return
+    aiStartInProgressRef.current = true
 
     setTranslatingSubtitles(true)
     setError('')
@@ -2424,8 +2733,44 @@ function FullNativeMpvPlayer({
         return
       }
 
+      // Pull the full source cue list up front so we can translate ahead of
+      // playback with the ORIGINAL timestamps (exact sync, latency-proof).
+      const rawList = (await getPlayerProperty('track-list').catch(() => null)) as MpvTrack[] | null
+      const sourceTrack = Array.isArray(rawList) ? rawList.find((t) => t.id === sourceTrackId) : undefined
+      const externalPath = subtitleTrackSourcesRef.current.get(sourceTrackId)?.localPath
+      let sourceContent = ''
+      if (externalPath) {
+        sourceContent = await readTempSubtitle(externalPath).catch(() => '')
+      } else if (sourceTrack?.['ff-index'] != null && Array.isArray(rawList)) {
+        const pathProp = (await getPlayerProperty('path').catch(() => null)) as string | null
+        const streamName = (await getPlayerProperty('stream-open-filename').catch(() => null)) as string | null
+        const mediaPath = pathProp || streamName || currentStreamUrlRef.current
+        if (!mediaPath) throw new Error('Could not resolve the media path for extraction.')
+        // ffmpeg maps subtitles by their relative index (0:s:N). Embedded sub
+        // streams keep the same order as mpv's ff-index, so the chosen track's
+        // position among embedded subs (sorted by ff-index) is that N.
+        const embeddedSubs = rawList
+          .filter((t) => t.type === 'sub' && t['ff-index'] != null)
+          .sort((a, b) => (a['ff-index'] as number) - (b['ff-index'] as number))
+        const subIndex = embeddedSubs.findIndex((t) => t.id === sourceTrackId)
+        if (subIndex < 0) throw new Error('Could not locate the source subtitle stream.')
+        sourceContent = await extractEmbeddedSubtitle(mediaPath, subIndex)
+      } else {
+        throw new Error('Could not access the source subtitle track.')
+      }
+      const cues = parseSubtitleCues(sourceContent)
+      if (cues.length === 0) throw new Error('No subtitle cues found in the source track.')
+      sourceCuesRef.current = cues
+
+      // Reuse an existing AI track if we made one earlier (avoids duplicates).
+      if (aiSubtitleTrackIdRef.current != null) {
+        await sendPlayerCommand('sub-remove', [aiSubtitleTrackIdRef.current]).catch(() => {})
+        aiSubtitleTrackIdRef.current = null
+      }
+
       liveAiCueIndexRef.current = 0
       liveAiLastCueRef.current = ''
+      sourceNextIdxRef.current = 0
       liveAiSubtitleContentRef.current = '1\n00:00:00,000 --> 00:00:00,100\n.\n\n'
       const translatedPath = await writeTempSubtitle(liveAiSubtitleContentRef.current, 'srt')
       liveAiSubtitlePathRef.current = translatedPath
@@ -2433,8 +2778,6 @@ function FullNativeMpvPlayer({
       const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
       const label = `AI ${lang?.name || subtitleTranslationLang} (Translated)`
       await sendPlayerCommand('sub-add', [translatedPath, 'select', label, subtitleTranslationLang])
-      await sendPlayerCommand('set_property', ['secondary-sid', sourceTrackId])
-      await sendPlayerCommand('set_property', ['secondary-sub-visibility', false]).catch(() => {})
       await sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
       await sendPlayerCommand('set_property', ['sub-visibility', true])
       await refreshTracks().catch(() => false)
@@ -2450,6 +2793,7 @@ function FullNativeMpvPlayer({
       setError(`AI subtitle translation failed: ${String(e)}`)
     } finally {
       setTranslatingSubtitles(false)
+      aiStartInProgressRef.current = false
     }
   }, [loadAddonSubtitles, openrouterApiKey, refreshTracks, selectedSub, subTracks, subtitleTranslationLang])
 
@@ -2547,6 +2891,12 @@ function FullNativeMpvPlayer({
         onDoubleClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) toggleFullscreen() }}
       />
 
+      {/* Window drag strip — the player overlay covers the TitleBar, so give back a
+          draggable region across the top. Top-corner buttons sit above this (higher z). */}
+      {!isFullscreen && (
+        <div data-tauri-drag-region className="absolute top-0 inset-x-0 h-14 z-[3]" />
+      )}
+
       {/* Buffering spinner */}
       {buffering && !paused && playerReady && (
         <div className="absolute inset-0 z-[2] flex items-center justify-center pointer-events-none">
@@ -2556,8 +2906,18 @@ function FullNativeMpvPlayer({
         </div>
       )}
 
-      {/* Center play/pause indicator */}
-      {paused && (
+      {/* Netflix-style paused info overlay — shown once controls auto-hide */}
+      {paused && playerReady && !buffering && !error && !controlsVisible && (
+        <PausedInfoOverlay
+          title={currentDisplayTitle}
+          subtitle={currentDisplaySubtitle}
+          backdrop={currentBackdropRef.current}
+          meta={currentMeta}
+        />
+      )}
+
+      {/* Center play/pause indicator — hidden while the paused info panel is up */}
+      {paused && controlsVisible && (
         <div className="absolute inset-0 z-[2] flex items-center justify-center pointer-events-none">
           <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
             <svg className="w-10 h-10 ml-1" fill="currentColor" viewBox="0 0 24 24">
@@ -2954,12 +3314,20 @@ function FullNativeMpvPlayer({
                   setDraggingProgress(clickPct)
                   updateTimelinePreviewAtPct(clickPct)
                 }}
-                onMouseUp={() => {
+                onMouseUp={(e) => {
+                  // Seek to the exact release position. Relying on draggingProgressRef
+                  // is unreliable: the native range's onChange can overwrite it with a
+                  // stepped value on a plain click, which broke backward-clicks.
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const upPct = rect.width > 0
+                    ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
+                    : draggingProgressRef.current
+                  draggingProgressRef.current = upPct
                   setIsDragging(false)
                   hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  command('seek', [draggingProgressRef.current, 'absolute-percent'])
-                  if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
+                  command('seek', [upPct, 'absolute-percent'])
+                  if (duration > 0) sendWatchTogetherSeek((upPct / 100) * duration)
                 }}
                 onTouchStart={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect()
@@ -2971,12 +3339,18 @@ function FullNativeMpvPlayer({
                   setDraggingProgress(clickPct)
                   updateTimelinePreviewAtPct(clickPct)
                 }}
-                onTouchEnd={() => {
+                onTouchEnd={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const touch = e.changedTouches[0]
+                  const upPct = rect.width > 0 && touch
+                    ? Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100))
+                    : draggingProgressRef.current
+                  draggingProgressRef.current = upPct
                   setIsDragging(false)
                   hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  command('seek', [draggingProgressRef.current, 'absolute-percent'])
-                  if (duration > 0) sendWatchTogetherSeek((draggingProgressRef.current / 100) * duration)
+                  command('seek', [upPct, 'absolute-percent'])
+                  if (duration > 0) sendWatchTogetherSeek((upPct / 100) * duration)
                 }}
                 onChange={(e) => {
                   const val = Number(e.target.value)

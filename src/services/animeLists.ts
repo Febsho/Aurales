@@ -192,14 +192,16 @@ export async function lookupByMalId(malId: number): Promise<AnimeMapping[]> {
   return indexByMal.get(malId) ?? []
 }
 
-export async function lookupByTvdbId(tvdbId: number): Promise<AnimeMapping[]> {
+export async function lookupByTvdbId(tvdbId: number | string): Promise<AnimeMapping[]> {
   await loadAnimeLists()
-  return indexByTvdb.get(tvdbId) ?? []
+  const num = Number(String(tvdbId).replace(/^tvdb[-:]/i, ''))
+  return isNaN(num) ? [] : (indexByTvdb.get(num) ?? [])
 }
 
-export async function lookupByTmdbId(tmdbId: number): Promise<AnimeMapping[]> {
+export async function lookupByTmdbId(tmdbId: number | string): Promise<AnimeMapping[]> {
   await loadAnimeLists()
-  return indexByTmdb.get(tmdbId) ?? []
+  const num = Number(String(tmdbId).replace(/^tmdb[-:]/i, ''))
+  return isNaN(num) ? [] : (indexByTmdb.get(num) ?? [])
 }
 
 export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | undefined> {
@@ -210,10 +212,10 @@ export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | und
 // ── Main resolver ───────────────────────────────────────────────────
 
 export async function resolveAnimeIds(known: {
-  anilistId?: number
-  malId?: number
-  tvdbId?: number
-  tmdbId?: number
+  anilistId?: number | string
+  malId?: number | string
+  tvdbId?: number | string
+  tmdbId?: number | string
   imdbId?: string
 }): Promise<{
   anilistId?: number
@@ -229,14 +231,20 @@ export async function resolveAnimeIds(known: {
   // Ensure indexes are loaded
   await loadAnimeLists()
 
+  const malId = known.malId ? Number(known.malId) : undefined
+  const anilistId = known.anilistId ? Number(known.anilistId) : undefined
+  const tvdbId = known.tvdbId ? Number(String(known.tvdbId).replace(/^tvdb[-:]/i, '')) : undefined
+  const tmdbId = known.tmdbId ? Number(String(known.tmdbId).replace(/^tmdb[-:]/i, '')) : undefined
+  const imdbId = known.imdbId
+
   // 1. Instant local lookup via indexed maps (O(1))
   let match: AnimeMapping | undefined
 
-  if (known.malId != null) match = indexByMal.get(known.malId)?.[0]
-  if (!match && known.anilistId != null) match = indexByAnilist.get(known.anilistId)?.[0]
-  if (!match && known.tvdbId != null) match = indexByTvdb.get(known.tvdbId)?.[0]
-  if (!match && known.tmdbId != null) match = indexByTmdb.get(known.tmdbId)?.[0]
-  if (!match && known.imdbId != null) match = indexByImdb.get(known.imdbId)
+  if (malId != null && !isNaN(malId)) match = indexByMal.get(malId)?.[0]
+  if (!match && anilistId != null && !isNaN(anilistId)) match = indexByAnilist.get(anilistId)?.[0]
+  if (!match && tvdbId != null && !isNaN(tvdbId)) match = indexByTvdb.get(tvdbId)?.[0]
+  if (!match && tmdbId != null && !isNaN(tmdbId)) match = indexByTmdb.get(tmdbId)?.[0]
+  if (!match && imdbId != null) match = indexByImdb.get(imdbId)
 
   if (match) {
     const base = {

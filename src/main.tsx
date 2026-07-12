@@ -6,6 +6,7 @@ import { ToastProvider } from './components/ui/Toast'
 import './index.css'
 
 const ContextMenu = lazy(() => import('./components/ContextMenu'))
+const ArtworkDebugOverlay = lazy(() => import('./components/ArtworkDebugOverlay'))
 
 if (import.meta.hot) {
   import.meta.hot.on('vite:beforeUpdate', async () => {
@@ -30,6 +31,7 @@ createRoot(document.getElementById('root')!).render(
         <App />
         <Suspense fallback={null}>
           <ContextMenu />
+          {import.meta.env.DEV && <ArtworkDebugOverlay />}
         </Suspense>
       </ToastProvider>
     </BrowserRouter>

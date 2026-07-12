@@ -10,7 +10,7 @@ import type { SearchResult } from '../../types'
 
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
 const ANIME_RESOLVER_VERSION = 8
-const METADATA_CLASSIFIER_VERSION = 4
+const METADATA_CLASSIFIER_VERSION = 5
 
 function numericProviderId(value: string | number | undefined): number | undefined {
   if (value == null) return undefined
@@ -212,7 +212,7 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
       // item's fields forward so anime movies keep their AniList option and label.
       const genreIds = result.genreIds ?? item.genreIds
       const originalLanguage = result.originalLanguage ?? item.originalLanguage
-      const isAnime = result.isAnime || item.isAnime || Boolean(genreIds?.includes(16) && originalLanguage === 'ja')
+      const isAnime = result.isAnime || item.isAnime || Boolean(genreIds?.includes(16) && ['ja', 'zh', 'ko'].includes(originalLanguage || ''))
       return { ...result, genreIds, originalLanguage, isAnime }
     }
     return item
@@ -257,6 +257,24 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
           avoidJapaneseSeasonNames: settings.avoidJapaneseSeasonNames ?? true,
         })
       : await fetchAppProviderMetadata(input, ids, kind)
+
+    if (item && kind !== 'anime') {
+      const genres = (item.genres || []).map((g) => g.toLowerCase())
+      const originalLanguage = String(item.originalLanguage || '').toLowerCase()
+      const isAnime = (genres.includes('animation') || genres.includes('anime')) && ['ja', 'zh', 'ko'].includes(originalLanguage)
+      if (isAnime) {
+        const animeItem = await resolveAnimeMetadata(input, ids, settings.animeTitleLanguage, settings.preferTvdbAnimeSeasons, {
+          hideUnairedSeasons: settings.hideUnairedAnimeSeasons,
+          hideUnairedEpisodes: settings.hideUnairedAnimeEpisodes,
+          includeSpecials: settings.includeAnimeSpecials,
+          useGenericSeasonLabels: settings.useGenericAnimeSeasonLabels ?? true,
+          avoidJapaneseSeasonNames: settings.avoidJapaneseSeasonNames ?? true,
+        }).catch(() => null)
+        if (animeItem) {
+          item = animeItem
+        }
+      }
+    }
     if (item && kind === 'anime') {
       try {
         const { getMdblistRatings } = await import('../mdblist')

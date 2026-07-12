@@ -66,12 +66,7 @@ function baseUrl(addonUrl: string): string {
 }
 
 export function getAddonConfigureUrl(addonUrl: string): string {
-  try {
-    const url = new URL(addonUrl)
-    return new URL('/configure', url.origin).toString()
-  } catch {
-    return `${baseUrl(addonUrl)}/configure`
-  }
+  return `${baseUrl(addonUrl)}/configure`
 }
 
 function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined {
@@ -220,6 +215,27 @@ export async function getAddonStreams(
   } catch (_) {
     return []
   }
+}
+
+/**
+ * Strict stream fetch used by the preload scheduler. Unlike getAddonStreams,
+ * this preserves timeout/network/malformed-response failures so one bad addon
+ * can be measured and isolated without being mistaken for a valid empty result.
+ */
+export async function fetchAddonStreamsStrict(
+  addonUrl: string,
+  type: string,
+  id: string,
+  signal?: AbortSignal,
+): Promise<StreamResult[]> {
+  const res = await fetch(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, { signal })
+  if (!res.ok) throw new Error(`Addon stream error: ${res.status}`)
+  const data = await res.json() as { streams?: unknown }
+  if (data.streams != null && !Array.isArray(data.streams)) throw new Error('Malformed streams response')
+  return ((data.streams || []) as unknown[]).filter((stream): stream is StreamResult => Boolean(
+    stream && typeof stream === 'object' &&
+    ['url', 'externalUrl', 'ytId', 'infoHash'].some((key) => typeof (stream as Record<string, unknown>)[key] === 'string')
+  ))
 }
 
 export async function getAddonMeta(

@@ -12,6 +12,7 @@ export const CACHE_CATEGORIES = {
   DETAIL_PAGE: 'detail_page',
   TVDB_SEASON: 'tvdb_season',
   ANIME_MAPPING: 'anime_mapping',
+  STREAM_PRELOAD: 'stream_preload',
 } as const
 
 export const CACHE_TTLS = {

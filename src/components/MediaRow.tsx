@@ -1,5 +1,5 @@
 import React, { useRef, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
@@ -24,15 +24,18 @@ interface MediaRowProps {
 function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, showRank = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const location = useLocation()
   const posterSize = useAppStore((s) => s.posterSize)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
   const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
+  const rowIdentity = items.map((item) => `${item.type}:${item.id}`).join('|')
 
   React.useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = 0
     }
-  }, [items, title])
+  }, [rowIdentity, title])
 
   const showAllWidthClass = useMemo(() => {
     if (layout === 'landscape') {
@@ -159,15 +162,15 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           <MediaCard
             key={item.id}
             item={item}
-            layout={cinematic || layout === 'landscape' ? 'landscape' : 'poster'}
+            layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
-            disableTrailerPreview={disableTrailerPreview}
+            disableTrailerPreview={disableTrailerPreview || fixedHome}
             rank={showRank ? idx + 1 : undefined}
             onFocusItem={cinematic ? setFocusedItem : undefined}
             onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current?.id === unfocused.id ? null : current) : undefined}
             cinematicMode={cinematic}
             cinematicFocused={cinematic && focusedItem?.id === item.id}
-            cinematicExpand={cinematicExpand}
+            cinematicExpand={cinematicExpand && !fixedHome}
           />
         ))}
         {shouldShowAll && showAllPath && (

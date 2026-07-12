@@ -117,30 +117,53 @@ export async function resolveArtFromProviders(
   const logoProvider = artProviders[getProviderKey(mediaType, isAnime, 'Logo')]
 
   const needed = new Set([posterProvider, backdropProvider, logoProvider])
+  // A connected personal Fanart key also provides the preferred English-logo
+  // fallback when TMDB only has a non-English logo.
+  if (fanartApiKey) needed.add('fanart')
 
   const results: Record<string, { poster?: string; backdrop?: string; logo?: string }> = {}
 
   const fetches: Promise<void>[] = []
   let resolvedTvdbId = ids.tvdbId
+  let tmdbEnglishLogo: string | undefined
 
-  if (needed.has('tmdb') && ids.tmdbId) {
+  // Catalog previews often carry TMDB/IMDb but omit TVDB. Resolve that missing
+  // bridge before deciding that a configured TVDB/Fanart source is unavailable.
+  // This is especially important for movies, whose TVDB IDs use `movie-*`.
+  if ((needed.has('tvdb') || needed.has('fanart')) && !resolvedTvdbId) {
+    const { getTvdbIdByRemoteId } = await import('./tvdb')
+    if (ids.imdbId) resolvedTvdbId = await getTvdbIdByRemoteId(ids.imdbId).catch(() => undefined)
+    if (!resolvedTvdbId && ids.tmdbId) resolvedTvdbId = await getTvdbIdByRemoteId(String(ids.tmdbId)).catch(() => undefined)
+  }
+
+  // TMDB is the universal safety fallback (see the return below, which falls
+  // back to results.tmdb for poster/backdrop/logo). Fetch it whenever a tmdbId
+  // exists — not just for series/TMDB-selected. Anime *movies* select the
+  // anime providers (TVDB/Fanart), which have no movie record, so without this
+  // they'd resolve no logo at all.
+  if (ids.tmdbId) {
     fetches.push(
       import('./tmdb').then(({ getTmdbCardMetadata, getTmdbLandscapeBackdrop }) =>
         Promise.all([
-          getTmdbCardMetadata(mediaType, ids.tmdbId!),
+          getTmdbCardMetadata(mediaType, ids.tmdbId!, ids.imdbId),
           getTmdbLandscapeBackdrop(mediaType, ids.tmdbId!),
         ]).then(([card, backdrop]) => {
+          tmdbEnglishLogo = card.englishLogo
           results.tmdb = { poster: card.poster, backdrop: backdrop || card.backdrop, logo: card.logo }
         })
       ).catch(() => undefined)
     )
   }
 
-  if (needed.has('tvdb') && ids.tvdbId) {
+  if (needed.has('tvdb') && resolvedTvdbId) {
     fetches.push(
       import('./tvdb').then(({ tvdbProvider }) => {
-        const tvdbId = String(ids.tvdbId).replace('tvdb-', '')
-        return tvdbProvider.getShow(`tvdb-${tvdbId}`).then((show) => {
+        const tvdbId = String(resolvedTvdbId).replace('tvdb-', '')
+        const isMovie = tvdbId.startsWith('movie-') || mediaType === 'movie'
+        const fetchPromise = isMovie
+          ? tvdbProvider.getMovie(`tvdb-${tvdbId}`)
+          : tvdbProvider.getShow(`tvdb-${tvdbId}`)
+        return fetchPromise.then((show) => {
           results.tvdb = { poster: show.poster, backdrop: show.backdrop, logo: show.logo }
         })
       }).catch(() => undefined)
@@ -149,19 +172,28 @@ export async function resolveArtFromProviders(
 
   if (needed.has('fanart') && fanartApiKey) {
     fetches.push(
-      import('./fanart').then(({ getFanartMovieArt, getFanartShowArt }) => {
-        if (mediaType === 'movie' && ids.tmdbId) {
-          return getFanartMovieArt(ids.tmdbId).then((art) => { results.fanart = art })
-        } else if (mediaType === 'series') {
-          return (async () => {
-            if (!resolvedTvdbId && ids.tmdbId) {
-              const { getTvdbIdFromTmdb } = await import('./tmdb')
-              resolvedTvdbId = await getTvdbIdFromTmdb(ids.tmdbId)
-            }
-            if (!resolvedTvdbId) return
-            const tvdbId = String(resolvedTvdbId).replace('tvdb-', '')
-            return getFanartShowArt(tvdbId).then((art) => { results.fanart = art })
-          })()
+      import('./fanart').then(async ({ getFanartMovieArt, getFanartShowArt }) => {
+        const isFanartMovie = mediaType === 'movie' || String(resolvedTvdbId || '').replace('tvdb-', '').startsWith('movie-')
+        if (isFanartMovie && ids.tmdbId) {
+          const art = await getFanartMovieArt(ids.tmdbId).catch(() => null)
+          if (art && (art.poster || art.backdrop || art.logo)) {
+            results.fanart = art
+            return
+          }
+        }
+
+        // Fallback to TVDB lookup for Fanart (some anime movies are cataloged under TV/TVDB on Fanart)
+        if (!resolvedTvdbId && ids.tmdbId && mediaType !== 'movie') {
+          const { getTvdbIdFromTmdb } = await import('./tmdb')
+          resolvedTvdbId = await getTvdbIdFromTmdb(ids.tmdbId).catch(() => null) || undefined
+        }
+        const tvdbId = resolvedTvdbId || ids.tvdbId
+        if (tvdbId) {
+          const cleanTvdbId = String(tvdbId).replace('tvdb-', '')
+          const art = await getFanartShowArt(cleanTvdbId).catch(() => null)
+          if (art && (art.poster || art.backdrop || art.logo)) {
+            results.fanart = art
+          }
         }
       }).catch(() => undefined)
     )
@@ -170,8 +202,10 @@ export async function resolveArtFromProviders(
   await Promise.all(fetches)
 
   return {
-    poster: results[posterProvider]?.poster,
-    backdrop: results[backdropProvider]?.backdrop,
-    logo: results[logoProvider]?.logo,
+    poster: results[posterProvider]?.poster || results.tmdb?.poster,
+    backdrop: results[backdropProvider]?.backdrop || results.tmdb?.backdrop,
+    logo: logoProvider === 'tmdb'
+      ? tmdbEnglishLogo || results.fanart?.logo || results.tmdb?.logo
+      : results[logoProvider]?.logo || tmdbEnglishLogo || results.tmdb?.logo,
   }
 }

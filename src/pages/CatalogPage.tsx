@@ -405,6 +405,7 @@ export default function CatalogPage() {
                 key={item.id}
                 item={item}
                 layout="poster"
+                disableTrailerPreview
                 cinematicMode={cinematic}
                 cinematicFocused={cinematic && focusedItem?.id === item.id}
                 cinematicExpand={false}
