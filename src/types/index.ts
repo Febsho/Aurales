@@ -50,6 +50,7 @@ export interface MovieDetails {
   backdrop?: string
   logo?: string
   certification?: string
+  originalLanguage?: string
   cast: CastMember[]
   crew: CrewMember[]
   recommendations: SearchResult[]
@@ -81,6 +82,7 @@ export interface ShowDetails {
   status?: string
   numberOfSeasons?: number
   numberOfEpisodes?: number
+  originalLanguage?: string
   seasons: SeasonSummary[]
   cast: CastMember[]
   crew: CrewMember[]

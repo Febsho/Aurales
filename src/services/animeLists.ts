@@ -261,10 +261,10 @@ export async function resolveAnimeIds(known: {
     try {
       const { resolveViaIdsMoe } = await import('./idsMoe')
       const idsMoe = await resolveViaIdsMoe({
-        malId: base.malId ?? known.malId,
-        anilistId: base.anilistId ?? known.anilistId,
-        tmdbId: base.tmdbId ?? known.tmdbId,
-        imdbId: base.imdbId ?? known.imdbId,
+        malId: base.malId ?? malId,
+        anilistId: base.anilistId ?? anilistId,
+        tmdbId: base.tmdbId ?? tmdbId,
+        imdbId: base.imdbId ?? imdbId,
       })
       if (idsMoe) {
         return {
@@ -285,21 +285,26 @@ export async function resolveAnimeIds(known: {
   // 3. Not in local data — try IDS.moe API (for new/rare anime)
   try {
     const { resolveViaIdsMoe } = await import('./idsMoe')
-    const idsMoe = await resolveViaIdsMoe(known)
+    const idsMoe = await resolveViaIdsMoe({
+      malId,
+      anilistId,
+      tmdbId,
+      imdbId,
+    })
     if (idsMoe && (idsMoe.malId || idsMoe.anilistId || idsMoe.tmdbId)) {
-      let tvdbId = known.tvdbId
-      if (!tvdbId && idsMoe.tmdbId && idsMoe.tmdbType !== 'movie') {
+      let resolvedTvdbId = tvdbId
+      if (!resolvedTvdbId && idsMoe.tmdbId && idsMoe.tmdbType !== 'movie') {
         try {
           const { getTvdbIdFromTmdb } = await import('./tmdb')
-          tvdbId = await getTvdbIdFromTmdb(idsMoe.tmdbId)
+          resolvedTvdbId = await getTvdbIdFromTmdb(idsMoe.tmdbId)
         } catch (_) { /* ok */ }
       }
       return {
-        anilistId: idsMoe.anilistId ?? known.anilistId,
-        malId: idsMoe.malId ?? known.malId,
-        tvdbId: tvdbId,
-        tmdbId: idsMoe.tmdbId ?? known.tmdbId,
-        imdbId: idsMoe.imdbId ?? known.imdbId,
+        anilistId: idsMoe.anilistId ?? anilistId,
+        malId: idsMoe.malId ?? malId,
+        tvdbId: resolvedTvdbId,
+        tmdbId: idsMoe.tmdbId ?? tmdbId,
+        imdbId: idsMoe.imdbId ?? imdbId,
         traktId: idsMoe.traktId,
         simklId: idsMoe.simklId,
       }

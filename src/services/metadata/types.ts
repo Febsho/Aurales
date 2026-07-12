@@ -100,6 +100,7 @@ export interface AppMediaItem {
   rating?: number
   ageRating?: string
   language?: string
+  originalLanguage?: string
   country?: string
   tmdbId?: number
   tvdbId?: number

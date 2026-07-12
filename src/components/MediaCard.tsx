@@ -291,8 +291,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         // Preload final images into the browser cache before updating state,
         // so the <img> src swap is visually instant with no blank frame.
         const preloads: Promise<void>[] = []
-        if (finalPoster) preloads.push(preloadImage(finalPoster).catch(() => { finalPoster = undefined }))
-        if (finalBackdrop) preloads.push(preloadImage(finalBackdrop).catch(() => { finalBackdrop = undefined }))
+        if (finalPoster) preloads.push(preloadImage(finalPoster).then(() => {}).catch(() => { finalPoster = undefined }))
+        if (finalBackdrop) preloads.push(preloadImage(finalBackdrop).then(() => {}).catch(() => { finalBackdrop = undefined }))
         await Promise.all(preloads)
 
         if (!cancelled) {

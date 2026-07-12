@@ -14,6 +14,7 @@ import WatchlistButton from './WatchlistButton'
 interface HeroSectionProps {
   items: SearchResult[]
   isSmall?: boolean
+  fixed?: boolean
   onActiveBackdropChange?: (url: string | undefined) => void
   enableTrailers?: boolean
 }
@@ -27,7 +28,7 @@ function preloadImage(url: string): Promise<string> {
   })
 }
 
-function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
+function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
   const [logoError, setLogoError] = useState(false)
@@ -329,7 +330,6 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
               {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (
                 <HeroMpvTrailer
                   trailer={heroTrailer}
-                  title={itm.title}
                   muted={heroTrailerMuted}
                   className="pointer-events-none absolute inset-0"
                   onPlayingChange={setHeroMpvVisible}
