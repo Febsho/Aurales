@@ -1,6 +1,6 @@
 import type { SearchResult, WatchProgress } from '../types'
 import { getWatchedMovies, getWatchedShows, getTraktShowSeasons, getShowWatchedProgress, type TraktWatchedItem, type TraktSeasonSummary } from './trakt/sync'
-import { getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
+import { findExactSimklHistoryItem, getSimklEpisodeExactState, getSimklWatchedEpisodes, getSimklWatchedMovies } from './simkl/history'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched, lookupTmdbId, type PMDBWatchedItem } from './pmdb'
 import { getMdblistWatched, type MdblistWatchedItem } from './mdblist'
@@ -9,6 +9,7 @@ import { mapTvdbEpisodeToAniList, resolveAnimeIds } from './animeLists'
 import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
+import { resolveSimklId } from './simkl/mappings'
 
 export type WatchedSource = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
@@ -489,11 +490,36 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
 
 async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
+    if (item.type === 'series' && item.season != null && item.episode != null) {
+      const { isSimklEpisodePending } = await import('./simkl/history')
+      if (isSimklEpisodePending(item.id, Number(item.season), Number(item.episode))) return true
+    }
     const data = await getSimklCache()
 
     // Pre-resolve anime mapping outside the sync .some() loop
     let mappedSimkl: { season: number; episode: number } | null = null
     let mappedSimklShowId: number | null = null
+    let mappedSimklType: 'movie' | 'show' | 'anime' | null = null
+    if (item.isAnime && item.title) {
+      const exactMapping = await resolveSimklId({
+        localId: item.id,
+        title: item.title,
+        year: item.year,
+        type: 'anime',
+        contentType: item.type === 'movie' ? 'movie' : 'series',
+        isAnime: true,
+        imdbId: item.imdbId,
+        tmdbId: item.tmdbId != null ? Number(String(item.tmdbId).replace(/^tmdb[-:]/i, '')) : undefined,
+        tvdbId: item.tvdbId != null ? Number(String(item.tvdbId).replace(/^tvdb[-:]/i, '')) : undefined,
+        malId: item.malId != null ? Number(item.malId) : undefined,
+        anilistId: item.anilistId != null ? Number(item.anilistId) : undefined,
+        simklId: item.simklId != null ? Number(item.simklId) : undefined,
+      }, { allowTitleFallback: false, allowExactTitleFallback: true }).catch(() => null)
+      if (exactMapping?.simklId) {
+        mappedSimklShowId = exactMapping.simklId
+        mappedSimklType = exactMapping.type
+      }
+    }
     if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
       try {
         const tvdbId = Number(String(item.tvdbId).replace('tvdb-', ''))
@@ -515,12 +541,32 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
       } catch (_) { /* fall through */ }
     }
 
+    if (item.type === 'series' && item.season != null && item.episode != null) {
+      const exactSeason = mappedSimkl?.season ?? item.season
+      const exactEpisode = mappedSimkl?.episode ?? item.episode
+      const exactState = getSimklEpisodeExactState(item.id, exactSeason, exactEpisode)
+      if (exactState != null) return exactState
+    }
+
     return data.items.some((entry) => {
-      if (item.type === 'movie' && entry.type !== 'movie') return false
+      const historyTitleMatch = item.type === 'movie' && item.isAnime
+        ? findExactSimklHistoryItem({
+            title: item.title ?? '',
+            year: item.year,
+            contentType: 'movie',
+            isAnime: true,
+          }, [entry]) != null
+        : false
+      if (item.type === 'movie' && entry.type !== (mappedSimklType ?? 'movie') && !historyTitleMatch) return false
       if (item.type === 'series' && entry.type === 'movie') return false
-      const idsMatch = matchesFlatIds(item, entry) || (mappedSimklShowId != null && sameNumber(mappedSimklShowId, entry.simklId))
+      const idsMatch = matchesFlatIds(item, entry) || historyTitleMatch || (mappedSimklShowId != null && sameNumber(mappedSimklShowId, entry.simklId))
       if (!idsMatch) return false
-      if (item.type === 'movie') return true
+      if (item.type === 'movie') {
+        if (entry.type === 'anime') {
+          return entry.status === 'completed' || Boolean(entry.watchedEpisodes?.some((episode) => Number(episode.episode) === 1))
+        }
+        return entry.status === 'completed'
+      }
       if (item.season == null) return false
       if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return false
       if (item.episode == null) {

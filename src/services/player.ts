@@ -19,6 +19,18 @@ export interface PlaybackRequest {
   }
 }
 
+export interface PlayerSnapshot {
+  timePos: number | null
+  duration: number | null
+  paused: boolean | null
+  buffering: boolean | null
+  cacheBufferingState: number | null
+  demuxerCacheDuration: number | null
+  eofReached: boolean | null
+  idleActive: boolean | null
+  coreIdle: boolean | null
+}
+
 export interface ThumbnailGenerationRequest {
   streamUrl: string
   cacheKey: string
@@ -155,6 +167,10 @@ export async function stopEmbeddedPlayer(): Promise<void> {
 
 export async function getPlayerProperty(property: string): Promise<unknown> {
   return await invoke('mpv_get_property', { property })
+}
+
+export async function getPlayerSnapshot(): Promise<PlayerSnapshot> {
+  return await invoke<PlayerSnapshot>('get_player_snapshot')
 }
 
 export async function isEmbeddedPlayerRunning(): Promise<boolean> {

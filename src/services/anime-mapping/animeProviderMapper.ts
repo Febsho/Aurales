@@ -29,10 +29,11 @@ export async function resolveFromAnimeApi(input: AnimeMappingInput): Promise<Ani
 }
 
 function buildMappingResult(input: AnimeMappingInput, entries: AnimeApiEntry[]): AnimeMappingResult {
-  const primary = entries[0]
+  const orderedEntries = [...entries].sort((left, right) => (left.trakt_season ?? Number.MAX_SAFE_INTEGER) - (right.trakt_season ?? Number.MAX_SAFE_INTEGER))
+  const primary = orderedEntries[0]
   const now = new Date().toISOString()
 
-  const seasons: AnimeSeasonMapping[] = entries.map((entry, idx) => {
+  const seasons: AnimeSeasonMapping[] = orderedEntries.map((entry, idx) => {
     const seasonNum = entry.trakt_season ?? (idx + 1)
     return {
       localMediaId: input.localMediaId,
@@ -49,10 +50,12 @@ function buildMappingResult(input: AnimeMappingInput, entries: AnimeApiEntry[]):
     }
   })
 
-  const confidence = computeConfidence(primary, input)
+  const hasAmbiguousSeasonOrder = orderedEntries.length > 1 && orderedEntries.some((entry) => entry.trakt_season == null)
+  const confidence = hasAmbiguousSeasonOrder ? Math.min(0.4, computeConfidence(primary, input)) : computeConfidence(primary, input)
 
   return {
     localMediaId: input.localMediaId,
+    contentType: input.contentType,
     tvdbId: primary.thetvdb ?? input.tvdbId,
     tmdbId: primary.themoviedb ?? input.tmdbId,
     anilistId: primary.anilist ?? input.anilistId,
@@ -65,13 +68,12 @@ function buildMappingResult(input: AnimeMappingInput, entries: AnimeApiEntry[]):
     seasons,
     confidence,
     source: 'animeApi',
-    raw: entries.length === 1 ? primary : entries,
+    raw: orderedEntries.length === 1 ? primary : orderedEntries,
     updatedAt: now,
   }
 }
 
 function computeConfidence(entry: AnimeApiEntry, input: AnimeMappingInput): number {
-  let score = 0.5
   let matches = 0
 
   if (entry.thetvdb && input.tvdbId && entry.thetvdb === input.tvdbId) matches++
@@ -81,10 +83,7 @@ function computeConfidence(entry: AnimeApiEntry, input: AnimeMappingInput): numb
   if (entry.simkl && input.simklId && entry.simkl === input.simklId) matches++
   if (entry.trakt && input.traktId && entry.trakt === input.traktId) matches++
 
-  if (matches >= 3) score = 1.0
-  else if (matches === 2) score = 0.9
-  else if (matches === 1) score = 0.7
-  else score = 0.4
+  const score = matches >= 3 ? 1.0 : matches === 2 ? 0.9 : matches === 1 ? 0.7 : 0.4
 
   return score
 }

@@ -10,6 +10,7 @@ import { discoverTmdb, discoverTmdbWithCache, DISCOVER_ROW_LIMIT, DISCOVER_ROW_P
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 import WatchlistButton from '../components/WatchlistButton'
+import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 
 export default function CatalogPage() {
   const navigate = useNavigate()
@@ -119,49 +120,59 @@ export default function CatalogPage() {
     loadMoreRef.current = null
 
     const cached = catalogGetCache(rowId)
-    if (cached && cached.items.length > 0 && !cached.hasMore) {
-      setItems(cached.items)
-      setHasMore(cached.hasMore)
-      pageRef.current = cached.page
+    const restoredCache = cached && cached.items.length > 0 ? cached : null
+    if (restoredCache) {
+      setItems(restoredCache.items)
+      setHasMore(restoredCache.hasMore)
+      pageRef.current = restoredCache.page
       setLoading(false)
       restoredRef.current = true
       // Restore the saved scroll only when returning via back/forward (POP). Opening
       // "Show all" is a fresh PUSH and must start at the top, like Home.
-      const targetScroll = navigationType === 'POP' ? cached.scrollTop : 0
+      const targetScroll = navigationType === 'POP' ? restoredCache.scrollTop : 0
       requestAnimationFrame(() => {
         const scrollRoot = document.querySelector('main') || document.documentElement
         scrollRoot.scrollTop = targetScroll
       })
-      return
+      if (!restoredCache.hasMore) return
     }
 
-    setLoading(true)
-    setLoadingMore(false)
-    setHasMore(false)
-    setItems([])
-    pageRef.current = 0
+    if (!restoredCache) {
+      setLoading(true)
+      setLoadingMore(false)
+      setHasMore(false)
+      setItems([])
+      pageRef.current = 0
 
     // Fresh catalog (not a cache restore): start at the top. The shared <main>
     // scroll container otherwise keeps the scroll offset from the previous page.
-    const scrollRootReset = document.querySelector('main') || document.documentElement
-    scrollRootReset.scrollTop = 0
+      const scrollRootReset = document.querySelector('main') || document.documentElement
+      scrollRootReset.scrollTop = 0
 
     // Rows without a config (e.g. Discover's computed sections) pass their items
     // through navigation state — more reliable than the seeded cache alone
-    const stateItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
-    if (!row && stateItems && stateItems.length > 0) {
-      setItems(stateItems)
-      setHasMore(false)
-      setLoading(false)
-      return
+      const stateItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
+      if (!row && stateItems && stateItems.length > 0) {
+        setItems(stateItems)
+        setHasMore(false)
+        setLoading(false)
+        return
+      }
+
+      if (!row) {
+        setLoading(false)
+        return
+      }
     }
 
+    // ─── Discover Row loading ───
+    // A cached partial catalog can outlive its source row. Keep those items
+    // visible, but do not fetch another page without its source configuration.
     if (!row) {
       setLoading(false)
       return
     }
 
-    // ─── Discover Row loading ───
     if (row.sourceType === 'discover') {
       if (!row.discoverConfig) {
         setLoading(false)
@@ -169,9 +180,10 @@ export default function CatalogPage() {
       }
 
       let cancelled = false
-      let page = 1
+      let page = restoredCache ? Math.max(1, restoredCache.page) : 1
       let loadingPage = false
       let canLoadMore = true
+      let scrollFrame = 0
       const scrollRoot = document.querySelector('main') || document.documentElement
 
       const loadNextPage = async (initial = false) => {
@@ -205,10 +217,7 @@ export default function CatalogPage() {
           }
 
           if (enriched.length > 0) {
-            setItems((current) => {
-              const merged = [...current, ...enriched]
-              return merged.filter((item, idx, self) => self.findIndex(i => i.id === item.id) === idx)
-            })
+            setItems((current) => dedupeMediaItems([...current, ...enriched]))
           }
         } catch (_) {
           canLoadMore = false
@@ -223,7 +232,7 @@ export default function CatalogPage() {
         }
 
         if (canLoadMore && !cancelled) {
-          window.setTimeout(onScroll, 0)
+          scheduleScrollCheck()
         }
       }
 
@@ -231,17 +240,21 @@ export default function CatalogPage() {
         const distanceFromBottom = scrollRoot.scrollHeight - scrollRoot.scrollTop - scrollRoot.clientHeight
         if (distanceFromBottom < 900) loadNextPage(false)
       }
+      const scheduleScrollCheck = () => {
+        cancelAnimationFrame(scrollFrame)
+        scrollFrame = requestAnimationFrame(onScroll)
+      }
 
       loadMoreRef.current = () => loadNextPage(false)
-      loadNextPage(true).then(() => {
-        if (!cancelled) window.setTimeout(onScroll, 0)
-      })
-      scrollRoot.addEventListener('scroll', onScroll, { passive: true })
+      if (restoredCache) scheduleScrollCheck()
+      else loadNextPage(true).then(() => { if (!cancelled) scheduleScrollCheck() })
+      scrollRoot.addEventListener('scroll', scheduleScrollCheck, { passive: true })
 
       return () => {
         cancelled = true
+        cancelAnimationFrame(scrollFrame)
         loadMoreRef.current = null
-        scrollRoot.removeEventListener('scroll', onScroll)
+        scrollRoot.removeEventListener('scroll', scheduleScrollCheck)
       }
     }
 
@@ -278,11 +291,12 @@ export default function CatalogPage() {
     }
 
     let cancelled = false
-    let page = 0
+    let page = restoredCache ? Math.max(0, restoredCache.page) : 0
     let loadingPage = false
     let canLoadMore = true
-    const seen = new Set<string>()
+    const seen = new Set<string>((restoredCache?.items || []).map(mediaIdentity))
     const pageSize = 20
+    let scrollFrame = 0
     const scrollRoot = document.querySelector('main') || document.documentElement
 
     const loadNextPage = async (initial = false) => {
@@ -304,8 +318,9 @@ export default function CatalogPage() {
         if (cancelled) return
 
         const unique = results.filter((item) => {
-          if (seen.has(item.id)) return false
-          seen.add(item.id)
+          const identity = mediaIdentity(item)
+          if (seen.has(identity)) return false
+          seen.add(identity)
           return true
         })
 
@@ -334,7 +349,7 @@ export default function CatalogPage() {
       }
 
       if (canLoadMore && !cancelled) {
-        window.setTimeout(onScroll, 0)
+        scheduleScrollCheck()
       }
     }
 
@@ -342,17 +357,21 @@ export default function CatalogPage() {
       const distanceFromBottom = scrollRoot.scrollHeight - scrollRoot.scrollTop - scrollRoot.clientHeight
       if (distanceFromBottom < 900) loadNextPage(false)
     }
+    const scheduleScrollCheck = () => {
+      cancelAnimationFrame(scrollFrame)
+      scrollFrame = requestAnimationFrame(onScroll)
+    }
 
     loadMoreRef.current = () => loadNextPage(false)
-    loadNextPage(true).then(() => {
-      if (!cancelled) window.setTimeout(onScroll, 0)
-    })
-    scrollRoot.addEventListener('scroll', onScroll, { passive: true })
+    if (restoredCache) scheduleScrollCheck()
+    else loadNextPage(true).then(() => { if (!cancelled) scheduleScrollCheck() })
+    scrollRoot.addEventListener('scroll', scheduleScrollCheck, { passive: true })
 
     return () => {
       cancelled = true
+      cancelAnimationFrame(scrollFrame)
       loadMoreRef.current = null
-      scrollRoot.removeEventListener('scroll', onScroll)
+      scrollRoot.removeEventListener('scroll', scheduleScrollCheck)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row, addons])

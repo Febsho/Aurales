@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
+import { mediaIdentity } from '../services/mediaPresentation'
 
 const CATALOG_PREVIEW_LIMIT = 25
 
@@ -29,14 +30,6 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
   const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
-  const rowIdentity = items.map((item) => `${item.type}:${item.id}`).join('|')
-
-  React.useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollLeft = 0
-    }
-  }, [rowIdentity, title])
-
   const showAllWidthClass = useMemo(() => {
     if (layout === 'landscape') {
       switch (posterSize) {
@@ -78,9 +71,15 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     next.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   }
 
-  const visibleItems = items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)
+  const visibleItems = useMemo(
+    () => items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId),
+    [items],
+  )
   const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > CATALOG_PREVIEW_LIMIT || items.length > CATALOG_PREVIEW_LIMIT))
-  const rowItems = shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems
+  const rowItems = useMemo(
+    () => shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems,
+    [shouldShowAll, visibleItems],
+  )
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
   const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: visibleItems } }) }
@@ -101,7 +100,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         </div>
         <div className="space-y-2">
           {rowItems.map((item) => (
-            <MediaCard key={item.id} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
+            <MediaCard key={mediaIdentity(item)} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
           ))}
         </div>
       </div>
@@ -155,21 +154,21 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
-        className={`flex items-start gap-4 overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none scroll-gpu ${cinematic ? 'cinematic-row-track gap-5 px-8 pb-8' : ''}`}
+        className={`flex items-start gap-4 overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${cinematic ? 'cinematic-row-track gap-5 px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {rowItems.map((item, idx) => (
           <MediaCard
-            key={item.id}
+            key={mediaIdentity(item)}
             item={item}
             layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
             disableTrailerPreview={disableTrailerPreview || fixedHome}
             rank={showRank ? idx + 1 : undefined}
             onFocusItem={cinematic ? setFocusedItem : undefined}
-            onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current?.id === unfocused.id ? null : current) : undefined}
+            onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current && mediaIdentity(current) === mediaIdentity(unfocused) ? null : current) : undefined}
             cinematicMode={cinematic}
-            cinematicFocused={cinematic && focusedItem?.id === item.id}
+            cinematicFocused={cinematic && focusedItem ? mediaIdentity(focusedItem) === mediaIdentity(item) : false}
             cinematicExpand={cinematicExpand && !fixedHome}
           />
         ))}

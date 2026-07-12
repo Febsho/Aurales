@@ -12,7 +12,6 @@ const SeriesDetailPage = lazy(() => import('./pages/SeriesDetailPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const DeveloperPage = lazy(() => import('./pages/DeveloperPage'))
 const CatalogPage = lazy(() => import('./pages/CatalogPage'))
-const HomeEditorPage = lazy(() => import('./pages/HomeEditorPage'))
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'))
 const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 const PersonPage = lazy(() => import('./pages/PersonPage'))
@@ -237,7 +236,7 @@ export default function App() {
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/catalog/:rowId" element={<CatalogPage />} />
-            <Route path="/home-editor" element={<HomeEditorPage />} />
+            <Route path="/home-editor" element={<Navigate to="/collections?tab=shelves" replace />} />
             <Route path="/collections" element={<CollectionsPage />} />
           </Route>
         </Routes>

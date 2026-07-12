@@ -4,7 +4,6 @@ import type {
   TvdbEpisodeMappingInput,
   ProviderEpisodeMapping,
   ProviderProgressMappingInput,
-  AnimeMappingOverride,
   AnimeMappingCacheKey,
 } from './types'
 import { isAnimeApiEnabled } from './animeApiClient'
@@ -51,13 +50,36 @@ export async function resolveAnimeMappings(input: AnimeMappingInput): Promise<An
 }
 
 export async function mapEpisodeToProviders(input: TvdbEpisodeMappingInput): Promise<ProviderEpisodeMapping | null> {
-  if (!isAnimeApiEnabled()) return null
-
   const anibridge = await mapTvdbEpisodeWithAniBridge(input).catch(() => null)
-  if (anibridge) {
-    await saveEpisodeMapping(anibridge).catch(() => {})
-    return anibridge
+  const local = await import('../animeLists')
+    .then(({ mapTvdbEpisodeToAnimeProvidersLocal }) => mapTvdbEpisodeToAnimeProvidersLocal(
+      input.tvdbSeriesId,
+      input.tvdbSeasonNumber,
+      input.tvdbEpisodeNumber,
+    ))
+    .catch(() => null)
+
+  if (anibridge || local) {
+    const now = new Date().toISOString()
+    const merged: ProviderEpisodeMapping = {
+      tvdbSeriesId: input.tvdbSeriesId,
+      tvdbSeasonNumber: input.tvdbSeasonNumber,
+      tvdbEpisodeNumber: input.tvdbEpisodeNumber,
+      tvdbEpisodeId: input.tvdbEpisodeId,
+      anilist: anibridge?.anilist ?? (local?.anilistId ? { mediaId: local.anilistId, episodeNumber: local.episode } : undefined),
+      mal: anibridge?.mal ?? (local?.malId ? { id: local.malId, episodeNumber: local.episode } : undefined),
+      simkl: local?.simklId ? { id: local.simklId, seasonNumber: 1, episodeNumber: local.episode } : undefined,
+      trakt: anibridge?.trakt ?? (local?.traktId ? { id: local.traktId, seasonNumber: local.season, episodeNumber: input.tvdbEpisodeNumber } : undefined),
+      tmdb: anibridge?.tmdb ?? (local?.tmdbId ? { id: local.tmdbId, seasonNumber: local.season, episodeNumber: input.tvdbEpisodeNumber } : undefined),
+      confidence: anibridge ? anibridge.confidence : 0.85,
+      source: anibridge ? anibridge.source : 'animeLists',
+      updatedAt: now,
+    }
+    await saveEpisodeMapping(merged).catch(() => {})
+    return merged
   }
+
+  if (!isAnimeApiEnabled()) return null
 
   const cached = await getCachedEpisodeMapping(input.tvdbSeriesId, input.tvdbSeasonNumber, input.tvdbEpisodeNumber)
   if (cached) return cached
@@ -129,11 +151,11 @@ export async function reResolveMapping(input: AnimeMappingInput): Promise<AnimeM
 export { isConfidenceSufficient } from './animeProgressMapper'
 
 function buildCacheKey(input: AnimeMappingInput): AnimeMappingCacheKey {
-  if (input.localMediaId) return { localMediaId: input.localMediaId }
-  if (input.tvdbId) return { tvdbId: input.tvdbId }
-  if (input.anilistId) return { anilistId: input.anilistId }
-  if (input.malId) return { malId: input.malId }
-  return { localMediaId: input.localMediaId }
+  if (input.localMediaId) return { localMediaId: input.localMediaId, contentType: input.contentType }
+  if (input.tvdbId) return { tvdbId: input.tvdbId, contentType: input.contentType }
+  if (input.anilistId) return { anilistId: input.anilistId, contentType: input.contentType }
+  if (input.malId) return { malId: input.malId, contentType: input.contentType }
+  return { localMediaId: input.localMediaId, contentType: input.contentType }
 }
 
 function refreshInBackground(input: AnimeMappingInput): void {

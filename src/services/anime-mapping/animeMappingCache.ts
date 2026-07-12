@@ -3,15 +3,16 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 import type { AnimeMappingResult, ProviderEpisodeMapping, AnimeMappingCacheKey, AnimeMappingOverride } from './types'
 
 function seriesCacheKey(key: AnimeMappingCacheKey): string | null {
-  if (key.localMediaId) return `anime-map:local:${key.localMediaId}`
-  if (key.tvdbId) return `anime-map:tvdb:${key.tvdbId}`
-  if (key.anilistId) return `anime-map:anilist:${key.anilistId}`
-  if (key.malId) return `anime-map:mal:${key.malId}`
+  const kind = key.contentType ?? 'series'
+  if (key.localMediaId) return `anime-map:v2:${kind}:local:${key.localMediaId}`
+  if (key.tvdbId) return `anime-map:v2:${kind}:tvdb:${key.tvdbId}`
+  if (key.anilistId) return `anime-map:v2:${kind}:anilist:${key.anilistId}`
+  if (key.malId) return `anime-map:v2:${kind}:mal:${key.malId}`
   return null
 }
 
 function episodeCacheKey(tvdbSeriesId: number, season: number, episode: number): string {
-  return `anime-ep-map:${tvdbSeriesId}:${season}:${episode}`
+  return `anime-ep-map:v2:${tvdbSeriesId}:${season}:${episode}`
 }
 
 function overrideCacheKey(localMediaId: string): string {
@@ -30,10 +31,11 @@ export async function saveAnimeMapping(mapping: AnimeMappingResult): Promise<voi
   const ttl = isAiring ? CACHE_TTLS.ANIME_MAPPING_AIRING : CACHE_TTLS.ANIME_MAPPING_FINISHED
   const opts = { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: ttl }
 
-  const keys: AnimeMappingCacheKey[] = [{ localMediaId: mapping.localMediaId }]
-  if (mapping.tvdbId) keys.push({ tvdbId: mapping.tvdbId })
-  if (mapping.anilistId) keys.push({ anilistId: mapping.anilistId })
-  if (mapping.malId) keys.push({ malId: mapping.malId })
+  const contentType = mapping.contentType ?? 'series'
+  const keys: AnimeMappingCacheKey[] = [{ localMediaId: mapping.localMediaId, contentType }]
+  if (mapping.tvdbId) keys.push({ tvdbId: mapping.tvdbId, contentType })
+  if (mapping.anilistId) keys.push({ anilistId: mapping.anilistId, contentType })
+  if (mapping.malId) keys.push({ malId: mapping.malId, contentType })
 
   await Promise.all(
     keys.map((k) => {

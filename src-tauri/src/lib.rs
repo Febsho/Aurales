@@ -84,6 +84,7 @@ pub fn run() {
             commands::prefetch_thumbnail_sprite,
             commands::get_thumbnail_debug_state,
             commands::mpv_get_property,
+            commands::get_player_snapshot,
             commands::resize_embedded_mpv,
             commands::setup_player_click_through,
             commands::stop_embedded_mpv,

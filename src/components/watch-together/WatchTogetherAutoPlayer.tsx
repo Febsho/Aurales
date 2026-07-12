@@ -76,6 +76,8 @@ export default function WatchTogetherAutoPlayer() {
       title: media.title,
       type: simklType,
       mediaType: simklType,
+      contentType: media.type === 'movie' ? 'movie' : 'series',
+      isAnime: Boolean(media.anilistId),
       imdbId: media.imdbId,
       tmdbId: media.tmdbId,
       season: episode?.seasonNumber,

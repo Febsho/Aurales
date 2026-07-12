@@ -31,6 +31,7 @@ import { taskQueue } from '../services/cache/backgroundTaskQueue'
 import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { streamPreloadManager } from '../services/streams/preloadManager'
+import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -158,7 +159,7 @@ function MediaRowSkeleton({ title, layout, headerLeftControls, headerRightContro
   )
 }
 
-function MediaRowError({ title, message, layout, headerLeftControls, headerRightControls }: { title: string; message: string; layout: 'poster' | 'landscape'; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
+function MediaRowError({ title, message, layout, headerLeftControls, headerRightControls, onRetry }: { title: string; message: string; layout: 'poster' | 'landscape'; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode; onRetry?: () => void }) {
   const isLandscape = layout === 'landscape'
   return (
     <div className="mb-8 select-none">
@@ -179,6 +180,7 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
         >
           <div className="flex flex-col items-center gap-1.5">
             <span className="text-xs font-semibold text-muted leading-normal">{message}</span>
+            {onRetry && <button type="button" onClick={onRetry} className="mt-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 transition-colors hover:bg-white/10">Retry</button>}
           </div>
         </div>
       </div>
@@ -188,15 +190,14 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = simklRowCacheKey(row)
-  const memCache = useHomeCatalogCache()
+  const memCache = useHomeCatalogCache.getState()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
-  const cancelledRef = useRef(false)
-
+  const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
-    cancelledRef.current = false
+    let cancelled = false
     const load = async () => {
       try {
         const fetcher = async () => {
@@ -215,23 +216,23 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.SIMKL_LIST,
           ttlSeconds: CACHE_TTLS.SIMKL_LIST,
-          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
         })
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setItems(results)
           memCache.set(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this Simkl list right now."))
           setLoading(false)
         }
       }
     }
     load()
-    return () => { cancelledRef.current = true }
-  }, [cacheKey, row.providerListId, row.sortBy])
+    return () => { cancelled = true }
+  }, [cacheKey, row.providerListId, row.sortBy, retryNonce])
 
   if (loading) {
     return (
@@ -252,6 +253,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
+        onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }}
       />
     )
   }
@@ -284,15 +286,14 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = providerRowCacheKey(row)
-  const memCache = useHomeCatalogCache()
+  const memCache = useHomeCatalogCache.getState()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
-  const cancelledRef = useRef(false)
-
+  const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
-    cancelledRef.current = false
+    let cancelled = false
     const load = async () => {
       try {
         const fetcher = async () => {
@@ -303,27 +304,27 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.PROVIDER_LIST,
           ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
-          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
         })
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setItems(results)
           memCache.set(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this list right now."))
           setLoading(false)
         }
       }
     }
     load()
-    return () => { cancelledRef.current = true }
-  }, [cacheKey, row.providerListId, row.sourceType, row.sortBy])
+    return () => { cancelled = true }
+  }, [cacheKey, row.providerListId, row.sourceType, row.sortBy, retryNonce])
 
   const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
   if (loading) return <MediaRowSkeleton title={getRowDisplayTitle(row)} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
-  if (error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }} />
   if (!items || items.length === 0) return <MediaRowError title={getRowDisplayTitle(row)} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
 
   return (
@@ -343,17 +344,16 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = addonRowCacheKey(row)
-  const memCache = useHomeCatalogCache()
+  const memCache = useHomeCatalogCache.getState()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
+  const [retryNonce, setRetryNonce] = useState(0)
   const addons = useAppStore((s) => s.addons)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
-  const cancelledRef = useRef(false)
-
   useEffect(() => {
-    cancelledRef.current = false
+    let cancelled = false
 
     if (isMockCatalog && row.catalogId) {
       setItems(getMockCatalog(row.catalogId))
@@ -396,23 +396,23 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
-          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
         })
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setItems(results)
           memCache.set(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this catalog right now."))
           setLoading(false)
         }
       }
     }
     load()
-    return () => { cancelledRef.current = true }
-  }, [cacheKey, isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons])
+    return () => { cancelled = true }
+  }, [cacheKey, isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons, retryNonce])
 
   const displayItems = isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items
 
@@ -435,6 +435,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
+        onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }}
       />
     )
   }
@@ -472,15 +473,14 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = discoverRowCacheKey(row)
-  const memCache = useHomeCatalogCache()
+  const memCache = useHomeCatalogCache.getState()
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
-  const cancelledRef = useRef(false)
-
+  const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
-    cancelledRef.current = false
+    let cancelled = false
 
     if (!row.discoverConfig) {
       setError('Shelf is unconfigured.')
@@ -498,23 +498,23 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.DISCOVER,
           ttlSeconds: CACHE_TTLS.DISCOVER,
-          onStaleRefreshed: (fresh) => { if (!cancelledRef.current) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
         })
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setItems(results)
           memCache.set(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load recommendations right now."))
           setLoading(false)
         }
       }
     }
     load()
-    return () => { cancelledRef.current = true }
-  }, [cacheKey, row.id, row.discoverConfig])
+    return () => { cancelled = true }
+  }, [cacheKey, row.id, row.discoverConfig, retryNonce])
 
   if (loading) {
     return (
@@ -535,6 +535,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
         layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
         headerLeftControls={headerLeftControls}
         headerRightControls={headerRightControls}
+        onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }}
       />
     )
   }
@@ -571,7 +572,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 }
 
 function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
-  const memCache = useHomeCatalogCache()
+  const memCache = useHomeCatalogCache.getState()
   const cacheKey = heroRowCacheKey(row)
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[]>(cached || [])
@@ -581,10 +582,8 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
   const manualItem = useAppStore((s) => s.fixedHeroManualItem)
   const recentlyWatched = useAppStore((s) => s.recentlyWatched)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
-  const cancelledRef = useRef(false)
-
   useEffect(() => {
-    cancelledRef.current = false
+    let cancelled = false
 
     const load = async () => {
       try {
@@ -624,7 +623,7 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
           onStaleRefreshed: (fresh) => {
-            if (!cancelledRef.current) {
+            if (!cancelled) {
               const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
               setItems(sorted)
               memCache.set(cacheKey, sorted)
@@ -632,7 +631,7 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
           },
         })
 
-        if (!cancelledRef.current) {
+        if (!cancelled) {
           const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
           setItems(sorted)
           memCache.set(cacheKey, sorted)
@@ -643,7 +642,7 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
     }
 
     load()
-    return () => { cancelledRef.current = true }
+    return () => { cancelled = true }
   }, [
     cacheKey,
     isMockCatalog,
@@ -835,24 +834,7 @@ const INITIAL_VISIBLE = 3;
 
 function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const [activated, setActivated] = useState(eager ?? false)
-
-  useEffect(() => {
-    if (activated) return
-    const el = sentinelRef.current
-    if (!el) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setActivated(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '400px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [activated])
+  const activated = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '400px' })
 
   if (!activated) {
     return (
@@ -983,6 +965,7 @@ export default function HomePage() {
   useEffect(() => {
     if (cachePreloaded) return
     let cancelled = false
+    const hydrationStartedAt = performance.now()
     const state = useHomeCatalogCache.getState()
     const keys = useAppStore.getState().homeRows
       .filter((row) => row.enabled)
@@ -998,7 +981,10 @@ export default function HomePage() {
         }
         if (Object.keys(seed).length > 0) state.setMany(seed)
       })
-      .finally(() => { if (!cancelled) setCachePreloaded(true) })
+      .finally(() => {
+        if (import.meta.env.DEV) console.debug(`[PERF] Home cache hydration ${Math.round(performance.now() - hydrationStartedAt)}ms`)
+        if (!cancelled) setCachePreloaded(true)
+      })
 
     return () => { cancelled = true }
   }, [cachePreloaded])
@@ -1095,6 +1081,8 @@ export default function HomePage() {
         </div>
       )}
 
+      {heroRow && homeHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
+
       {!cachePreloaded ? (
         <div className="pt-6">
           {activeRows.slice(0, INITIAL_VISIBLE).map((row) => (
@@ -1116,8 +1104,6 @@ export default function HomePage() {
         />
       ) : (
         <>
-          {heroRow && homeHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
-
           <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && homeHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>

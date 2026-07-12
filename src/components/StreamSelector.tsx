@@ -549,12 +549,15 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   if (autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)) return null
 
   if (playback) {
-    const simklMediaType: 'movie' | 'show' | 'anime' = anilistId || malId ? 'anime' : mediaType === 'series' ? 'show' : 'movie'
+    const isAnimePlayback = Boolean(anilistId || malId)
+    const simklMediaType: 'movie' | 'show' | 'anime' = isAnimePlayback ? 'anime' : mediaType === 'series' ? 'show' : 'movie'
     const playbackItem: PlaybackItem = {
       localId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''),
       title,
       type: simklMediaType,
       mediaType: simklMediaType,
+      contentType: mediaType,
+      isAnime: isAnimePlayback,
       // imdbId derived from mediaId if it looks like an IMDB id
       imdbId: mediaId.startsWith('tt') ? mediaId : undefined,
       tmdbId: tmdbId || (mediaId.startsWith('tmdb-') ? Number(mediaId.replace('tmdb-', '')) : undefined),

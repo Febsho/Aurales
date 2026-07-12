@@ -17,6 +17,7 @@ export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+  const homeHeroMode = useAppStore((s) => s.homeHeroMode)
   const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
@@ -262,7 +263,7 @@ export default function Layout() {
       {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
           Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
       {usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
-        <div className="cinematic-nav-brand pointer-events-none absolute left-8 top-4 z-[71] flex h-20 items-center gap-3 px-2 transition-opacity duration-200">
+        <div className={`cinematic-nav-brand pointer-events-none absolute left-8 ${homeHeroMode === 'fixed' && location.pathname === '/' ? 'top-1' : 'top-4'} z-[71] flex h-20 items-center gap-3 px-2 transition-opacity duration-200`}>
           <img src="/app-logo.png?v=3" alt="" className="h-10 w-10 object-contain" />
           <span className="text-xl font-black tracking-tight text-white" style={{ textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>Aurales</span>
         </div>

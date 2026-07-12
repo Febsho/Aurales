@@ -27,6 +27,7 @@ import {
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
+import { recordPlaybackSample } from '../services/viewingActivity'
 
 interface InAppPlayerProps {
   url: string
@@ -108,7 +109,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     scrobbleMdblist(
       action,
       playbackItem.tmdbId,
-      playbackItem.mediaType === 'movie' ? 'movie' : 'series',
+      playbackItem.contentType === 'movie' ? 'movie' : 'series',
       progressPct,
       playbackItem.season,
       playbackItem.episode,
@@ -117,7 +118,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   }
 
   const saveAniListScrobble = (progress: number) => {
-    if (!playbackItem || !scrobbleAnilist || playbackItem.mediaType !== 'anime') return
+    if (!playbackItem || !scrobbleAnilist || !playbackItem.isAnime) return
     saveAniListProgressMapped(playbackItem, progress).catch(() => {})
   }
 
@@ -216,7 +217,7 @@ IMPORTANT RULES:
 
     useAppStore.getState().setWatchProgress(key, {
       id: key,
-      mediaType: playbackItem.mediaType === 'show' ? 'series' : playbackItem.mediaType,
+      mediaType: playbackItem.contentType === 'series' ? (playbackItem.mediaType === 'anime' ? 'anime' : 'series') : 'movie',
       mediaId: playbackItem.localId,
       title: playbackItem.title,
       poster,
@@ -269,7 +270,7 @@ IMPORTANT RULES:
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
             const startProgressPct = Math.round(startProgress * 10000) / 100
-            const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+            const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, startProgressPct)
               : buildMovieScrobble(playbackItem.imdbId, startProgressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
@@ -478,7 +479,7 @@ IMPORTANT RULES:
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
             const progressPct = Math.round(progress * 10000) / 100
-            const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+            const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
               : buildMovieScrobble(playbackItem.imdbId, progressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
@@ -500,7 +501,7 @@ IMPORTANT RULES:
         }
         if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
           const progressPct = Math.round(progress * 10000) / 100
-          const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+          const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
             ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
             : buildMovieScrobble(playbackItem.imdbId, progressPct)
           traktScrobblePause(traktPayload).catch(() => {})
@@ -519,7 +520,7 @@ IMPORTANT RULES:
       saveLocalProgress(cur, dur, false)
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
           : buildMovieScrobble(playbackItem.imdbId, progressPct)
         traktScrobbleStop(traktPayload).catch(() => {})
@@ -545,7 +546,7 @@ IMPORTANT RULES:
       saveLocalProgress(cur, dur, false)
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
           : buildMovieScrobble(playbackItem.imdbId, progressPct)
         traktScrobbleStop(traktPayload).catch(() => {})
@@ -565,12 +566,13 @@ IMPORTANT RULES:
   const handleEnded = () => {
     if (playbackItem) {
       const dur = videoRef.current ? videoRef.current.duration || 0 : 0
+      recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: dur, durationSeconds: dur, playing: false, completed: true })
       saveLocalProgress(dur, dur, true)
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, 1).catch(() => {})
       }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, 100)
           : buildMovieScrobble(playbackItem.imdbId, 100)
         traktScrobbleStop(traktPayload).catch(() => {})
@@ -635,11 +637,12 @@ IMPORTANT RULES:
 
   const handleTimeUpdate = (time: number, dur: number) => {
     setCurrentTime(time)
+    if (playbackItem) recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: time, durationSeconds: dur, playing: !videoRef.current?.paused, completed: dur > 0 && time / dur >= 0.85 })
     if (Math.abs(time - lastSavedTimeRef.current) >= 2) {
       lastSavedTimeRef.current = time
       saveLocalProgress(time, dur, false)
     }
-    if (playbackItem && scrobbleAnilist && playbackItem.mediaType === 'anime' && dur > 0 && time - lastAniListPlaybackSaveRef.current >= 60) {
+    if (playbackItem && scrobbleAnilist && playbackItem.isAnime && dur > 0 && time - lastAniListPlaybackSaveRef.current >= 60) {
       lastAniListPlaybackSaveRef.current = time
       saveAniListProgressMapped(playbackItem, time / dur).catch(() => {})
     }

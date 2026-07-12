@@ -31,11 +31,20 @@ function preloadImage(url: string): Promise<string> {
 function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
+  // Keep the currently displayed slide stable.  Artwork providers resolve
+  // asynchronously and may return a different backdrop/logo than the catalog
+  // supplied; applying that result halfway through a slide looks like the hero
+  // rapidly changes to another title.
+  const [presentedItem, setPresentedItem] = useState<SearchResult>(() => items[0])
+  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => items[0]?.backdrop)
   const [logoError, setLogoError] = useState(false)
   const [scrollBlur, setScrollBlur] = useState(0)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
   const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
+  // Parents may derive a new array during an unrelated render.  Its identity
+  // should not restart the carousel unless the actual set of hero items changed.
+  const itemSetKey = useMemo(() => items.map((item) => String(item.id)).join('|'), [items])
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
@@ -71,7 +80,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
   useEffect(() => {
     setActiveIndex(0)
-  }, [items])
+  }, [itemSetKey])
 
   const [scrolledAway, setScrolledAway] = useState(false)
 
@@ -163,17 +172,29 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     const art = providerArt[String(raw.id)]
     return applySearchResultArt(art ? { ...raw, ...art } : raw)
   }), [items, providerArt])
-  const item = displayItems[activeIndex]
+  useEffect(() => {
+    const nextItem = displayItems[activeIndex]
+    if (nextItem) {
+      setPresentedItem(nextItem)
+      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || nextItem.backdrop)
+    }
+  // Deliberately do not depend on displayItems or upgradedBackdrops: artwork
+  // arriving while this slide is visible is saved for its next appearance,
+  // rather than swapped in over the current hero.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, itemSetKey])
+
+  const item = presentedItem
   const type = item?.type === 'series' ? 'series' : 'movie'
 
   // Report active backdrop to parent for blurred background
   useEffect(() => {
     if (!onActiveBackdropChange || isSmall) return
-    const activeItem = displayItems[activeIndex]
+    const activeItem = presentedItem
     if (!activeItem) { onActiveBackdropChange(undefined); return }
-    const backdrop = upgradedBackdrops[String(activeItem.id)] || activeItem.backdrop || activeItem.poster
+    const backdrop = presentedBackdrop || activeItem.backdrop || activeItem.poster
     onActiveBackdropChange(backdrop)
-  }, [activeIndex, upgradedBackdrops, providerArt, customArtKey, isSmall])
+  }, [presentedItem, presentedBackdrop, customArtKey, isSmall])
 
   // Fetch top 3 cast for the active hero item
   useEffect(() => {
@@ -261,14 +282,17 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const ratingLabel = item.rating ? `R` : ''
   const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
 
-  const heroHeight = isSmall ? '380px' : cinematic ? 'clamp(520px, 68vh, 820px)' : 'clamp(550px, 85vh, 1200px)'
+  // Fixed cinematic Home keeps a shelf anchored below the banner. Give the
+  // banner a little more vertical presence and reduce its top offset so neither
+  // gap feels oversized, without affecting dynamic heroes or other themes.
+  const heroHeight = isSmall ? '380px' : cinematic ? (fixed ? 'clamp(580px, 74vh, 900px)' : 'clamp(520px, 68vh, 820px)') : 'clamp(550px, 85vh, 1200px)'
 
   const maskGradient = 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
 
   return (
     <div
       ref={heroRef}
-      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? 'mt-[7.25rem]' : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? (fixed ? 'mt-[5.5rem]' : 'mt-[7.25rem]') : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
@@ -289,6 +313,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         {displayItems.map((itm, i) => {
           const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
           if (!isAdjacentSlide) return null
+          const slideItem = i === activeIndex ? presentedItem : itm
           return (
             <div
               key={`${itm.id ?? i}-${i}`}
@@ -302,9 +327,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               }}
             >
               <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
-                {(upgradedBackdrops[String(itm.id)] || itm.backdrop) ? (
+                {(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop)) ? (
                   <img
-                    src={upgradedBackdrops[String(itm.id)] || itm.backdrop}
+                    src={i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop)}
                     alt=""
                     className="absolute inset-0 w-full h-full object-cover"
                     style={{ objectPosition: 'center 20%' }}
@@ -313,10 +338,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     decoding="async"
                     fetchPriority={i === activeIndex ? 'high' : 'auto'}
                   />
-                ) : itm.poster ? (
+                ) : slideItem.poster ? (
                   <>
                     <img
-                      src={itm.poster}
+                      src={slideItem.poster}
                       alt=""
                       className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
                       draggable={false}
@@ -407,7 +432,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               <img
                 src={item.logo}
                 alt={item.title}
-                className={`${isSmall ? 'max-h-[65px]' : 'max-h-[110px] md:max-h-[140px]'} max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
+                className={`${isSmall ? 'h-14 max-w-[70%]' : 'h-[112px] md:h-[132px] max-w-[60%]'} w-auto object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
                 onError={() => setLogoError(true)}
                 draggable={false}
               />
@@ -470,7 +495,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               <>
                 <Button variant="white" size="lg" onClick={() => nav(true)}>Play</Button>
                 <Button variant="secondary" size="lg" onClick={() => nav(false)}>More Info</Button>
-                <WatchlistButton mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
+                <WatchlistButton mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', isAnime: item.isAnime, contentType: type === 'series' ? 'series' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} isAnime={item.isAnime} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
               </>
             ) : (
               <Button variant="white" size={isSmall ? 'md' : 'lg'} onClick={() => nav(false)}>

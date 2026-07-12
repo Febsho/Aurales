@@ -72,6 +72,7 @@ export async function resolveImdbId(
         tvdbId: ids.tvdbId != null ? Number(ids.tvdbId) : undefined,
         tmdbId: ids.tmdbId != null ? Number(ids.tmdbId) : undefined,
         imdbId: ids.imdbId,
+        contentType: mediaType,
       })
       if (resolved?.imdbId) return resolved.imdbId
     }
@@ -174,6 +175,15 @@ async function resolveTmdbIdForMovie(movie: MovieDetails): Promise<string | unde
     if (found.tmdbId) return String(found.tmdbId)
   }
 
+  if (movie.anilistId || movie.malId) {
+    const resolved = await resolveAnimeIds({
+      anilistId: movie.anilistId,
+      malId: movie.malId,
+      contentType: 'movie',
+    })
+    if (resolved?.tmdbId) return String(resolved.tmdbId)
+  }
+
   return undefined
 }
 
@@ -193,7 +203,7 @@ async function resolveTmdbIdForShow(show: ShowDetails): Promise<string | undefin
   const anilistId = show.anilistId != null ? Number(show.anilistId) : undefined
   const malId = show.malId != null ? Number(show.malId) : undefined
   if (anilistId || malId) {
-    const resolved = await resolveAnimeIds({ anilistId, malId })
+    const resolved = await resolveAnimeIds({ anilistId, malId, contentType: 'series' })
     if (resolved?.tmdbId) return String(resolved.tmdbId)
   }
 
@@ -206,7 +216,7 @@ async function resolveTvdbIdForShow(show: ShowDetails): Promise<string | undefin
   const anilistId = show.anilistId != null ? Number(show.anilistId) : undefined
   const malId = show.malId != null ? Number(show.malId) : undefined
   if (anilistId || malId) {
-    const resolved = await resolveAnimeIds({ anilistId, malId })
+    const resolved = await resolveAnimeIds({ anilistId, malId, contentType: 'series' })
     if (resolved?.tvdbId) return String(resolved.tvdbId)
   }
 
@@ -311,6 +321,7 @@ export async function enrichShowDetails(show: ShowDetails, isAnime?: boolean): P
           tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace('tvdb-', '')) : undefined,
           tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace('tmdb-', '')) : undefined,
           imdbId: show.imdbId,
+          contentType: 'series',
         })
         if (resolved) {
           console.log('[enrich] anime IDs resolved:', resolved)

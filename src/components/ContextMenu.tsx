@@ -59,10 +59,11 @@ export default function ContextMenu() {
       const rect = menuRef.current.getBoundingClientRect()
       const vw = window.innerWidth
       const vh = window.innerHeight
+      const visibleHeight = Math.min(menuRef.current.scrollHeight, vh - 16)
       let ax = x
       let ay = y
       if (x + rect.width > vw - 8) ax = vw - rect.width - 8
-      if (y + rect.height > vh - 8) ay = vh - rect.height - 8
+      if (y + visibleHeight > vh - 8) ay = vh - visibleHeight - 8
       if (ax < 8) ax = 8
       if (ay < 8) ay = 8
       setAdjusted({ x: ax, y: ay })
@@ -323,12 +324,13 @@ export default function ContextMenu() {
     <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={menuRef}
-        className="fixed min-w-[280px] max-w-[320px] rounded-2xl overflow-hidden border border-white/[0.08]"
+        className="fixed min-w-[280px] max-w-[320px] rounded-2xl border border-white/[0.08] overscroll-contain"
         style={{
           left: adjusted.x || x,
           top: adjusted.y || y,
           maxHeight: 'calc(100vh - 16px)',
           overflowY: 'auto',
+          scrollbarWidth: 'thin',
           background: 'rgba(10, 10, 12, 0.45)',
           backdropFilter: 'blur(40px) saturate(220%)',
           WebkitBackdropFilter: 'blur(40px) saturate(220%)',
@@ -736,9 +738,6 @@ async function checkSimklWatched(
       if (mapped?.simklId) {
         lookup.simklId = mapped.simklId
         lookup.malId = mapped.malId ?? lookup.malId
-        lookup.season = 1
-        lookup.episode = mapped.episode
-        lookup.appSeasonEpCounts = undefined
       }
     } else if (target?.kind === 'season') {
       lookup.season = target.seasonNumber
@@ -902,11 +901,14 @@ async function toggleSimklWatched(
   const item = target.item
   const tmdbId = item.tmdbId != null ? Number(String(item.tmdbId).replace('tmdb-', '')) : undefined
   const tvdbId = item.tvdbId != null ? Number(String(item.tvdbId).replace('tvdb-', '')) : undefined
+  const anime = isAnimeItem(item)
   const mediaRef = {
     localId: item.id,
     title: item.title,
     year: item.year,
-    type: isAnimeItem(item) ? 'anime' as const : 'show' as const,
+    type: anime ? 'anime' as const : item.type === 'movie' ? 'movie' as const : 'show' as const,
+    contentType: item.type === 'movie' ? 'movie' as const : 'series' as const,
+    isAnime: anime,
     imdbId: item.imdbId,
     tmdbId: Number.isFinite(tmdbId) ? tmdbId : undefined,
     tvdbId: Number.isFinite(tvdbId) ? tvdbId : undefined,
@@ -920,7 +922,7 @@ async function toggleSimklWatched(
     if (watched) await markMovieWatchedOnSimkl(mediaRef)
     else await removeWatchedFromSimkl(mediaRef, 'movie')
   } else if (target.kind === 'episode') {
-    const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl } = await import('../services/simkl/history')
+    const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl, markSimklEpisodePending, unmarkSimklEpisodePending } = await import('../services/simkl/history')
     const mapping = await mapAnimeEpisodeForTarget(item, target)
     const animeProviders = await mapAnimeProvidersForTarget(item, target)
     const providerEpisode = animeProviders?.simklId
@@ -933,17 +935,33 @@ async function toggleSimklWatched(
       : mapping?.simkl?.id
       ? { ...mediaRef, simklId: mapping.simkl.id }
       : mediaRef
-    if (watched) await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
-    else await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+    if (watched) {
+      await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+      markSimklEpisodePending(item.id, target.seasonNumber, target.episode.episodeNumber)
+      // Also retain the provider coordinate because some menu/status lookups
+      // carry the resolved SIMKL episode directly.
+      markSimklEpisodePending(item.id, providerEpisode.season, providerEpisode.episode)
+    } else {
+      await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+      unmarkSimklEpisodePending(item.id, target.seasonNumber, target.episode.episodeNumber)
+      unmarkSimklEpisodePending(item.id, providerEpisode.season, providerEpisode.episode)
+    }
   } else if (target.kind === 'season') {
-    const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl } = await import('../services/simkl/history')
+    const { markEpisodeWatchedOnSimkl, removeEpisodeWatchedOnSimkl, markSimklEpisodePending, unmarkSimklEpisodePending } = await import('../services/simkl/history')
     for (let ep = 1; ep <= target.episodeCount; ep++) {
       const pseudoTarget = { ...target, kind: 'episode' as const, episode: { ...({} as import('../types').EpisodeDetails), episodeNumber: ep, seasonNumber: target.seasonNumber, id: `${item.id}:${target.seasonNumber}:${ep}`, name: '' } }
       const mapped = await mapAnimeProvidersForTarget(item, pseudoTarget)
       const providerEpisode = mapped?.simklId ? { season: 1, episode: mapped.episode } : appEpisodeForTarget(target.seasonNumber, ep)
       const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
-      if (watched) await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
-      else await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+      if (watched) {
+        await markEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+        markSimklEpisodePending(item.id, target.seasonNumber, ep)
+        markSimklEpisodePending(item.id, providerEpisode.season, providerEpisode.episode)
+      } else {
+        await removeEpisodeWatchedOnSimkl(mappedRef, providerEpisode)
+        unmarkSimklEpisodePending(item.id, target.seasonNumber, ep)
+        unmarkSimklEpisodePending(item.id, providerEpisode.season, providerEpisode.episode)
+      }
     }
   } else {
     if (watched) {
