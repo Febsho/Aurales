@@ -43,7 +43,7 @@ Aurales synchronizes your watch history, watchlist, rating, and current progress
 | :--- | :---: | :---: | :---: | :---: |
 | **Simkl** | ✓ | ✓ | ✓ | ✓ |
 | **Trakt** | ✓ | ✓ | ✓ | ✓ |
-| **AniList** (Anime) | ✓ | ✓ | — | ✓ |
+| **AniList** (Anime) | ✓ | ✓ | ✓ | ✓ |
 | **MDBList** | ✓ | ✓ | ✓ | ✓ |
 | **PMDB** | ✓ | ✓ | ✓ | ✓ |
 
