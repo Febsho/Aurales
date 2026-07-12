@@ -33,6 +33,7 @@ import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { setDiscordBrowsingActivity } from '../services/discord'
+import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -1850,6 +1851,23 @@ export default function SeriesDetailPage() {
 
 
   useGlobalBackdrop(show?.backdrop || show?.poster)
+
+  useEffect(() => {
+    if (!show) return
+    const resume = liveResumePoint || resumeProgress
+    if (!resume?.season || !resume?.episode) return
+    const mediaId = show.imdbId || state.sourceAddonItemId || id || ''
+    if (!mediaId) return
+    streamPreloadManager.request({
+      mediaType: 'series',
+      mediaId,
+      imdbId: show.imdbId,
+      tmdbId: show.tmdbId,
+      seasonEpisode: { season: resume.season, episode: resume.episode },
+      sourceAddonId: state.sourceAddonId,
+      sourceAddonItemId: state.sourceAddonItemId,
+    }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
+  }, [show?.id, show?.imdbId, show?.tmdbId, liveResumePoint?.season, liveResumePoint?.episode, resumeProgress?.season, resumeProgress?.episode, id, state.sourceAddonId, state.sourceAddonItemId])
 
   if (isAnime && metadataStatus === 'resolving') {
     return (

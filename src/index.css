@@ -93,6 +93,57 @@ html.hero-mpv-active::before {
   display: none;
 }
 
+/* The WebView must be transparent over native mpv, but nowhere else. These
+   four panels form an opaque app backing around the live Hero rectangle. */
+html.hero-mpv-active #root {
+  position: relative;
+  z-index: 1;
+}
+.hero-mpv-shell-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.hero-mpv-shell-backdrop > div {
+  position: absolute;
+  overflow: hidden;
+  background: #000;
+}
+.hero-mpv-shell-backdrop > div > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #000;
+  background-image: var(--hero-bg);
+  background-position: center;
+  background-size: 115vw 115vh;
+  background-repeat: no-repeat;
+  filter: blur(40px) brightness(0.35);
+}
+.hero-mpv-shell-backdrop > .hero-mpv-corner {
+  width: 32px;
+  height: 32px;
+}
+.hero-mpv-corner-tl {
+  mask-image: radial-gradient(circle at 100% 100%, transparent 0 31px, #000 32px);
+  -webkit-mask-image: radial-gradient(circle at 100% 100%, transparent 0 31px, #000 32px);
+}
+.hero-mpv-corner-tr {
+  mask-image: radial-gradient(circle at 0 100%, transparent 0 31px, #000 32px);
+  -webkit-mask-image: radial-gradient(circle at 0 100%, transparent 0 31px, #000 32px);
+}
+.hero-mpv-corner-bl {
+  mask-image: radial-gradient(circle at 100% 0, transparent 0 31px, #000 32px);
+  -webkit-mask-image: radial-gradient(circle at 100% 0, transparent 0 31px, #000 32px);
+}
+.hero-mpv-corner-br {
+  mask-image: radial-gradient(circle at 0 0, transparent 0 31px, #000 32px);
+  -webkit-mask-image: radial-gradient(circle at 0 0, transparent 0 31px, #000 32px);
+}
+
 /* Custom title bar buttons */
 .title-bar-btn {
   display: inline-flex;
@@ -217,6 +268,12 @@ html[data-interface-theme="cinematic"] body {
     radial-gradient(ellipse at 12% 55%, rgba(49, 73, 44, .16), transparent 42%),
     #090704;
 }
+html[data-theme-background="oled"] body {
+  background: #000000 !important;
+}
+html[data-theme-background="oled"] .cinematic-tv-shell {
+  background: #000000 !important;
+}
 .cinematic-main {
   scroll-padding-top: 7rem;
 }
@@ -261,6 +318,138 @@ html[data-interface-theme="cinematic"] body {
   font-size: 1rem;
   line-height: 1.35rem;
 }
+
+/* Fixed Home hero: preserve the Cinematic banner while shelves move through
+   the viewport one at a time underneath it. */
+.fixed-hero-home .row-contain {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  width: 100%;
+  align-items: flex-end;
+  padding-bottom: clamp(.5rem, 1vh, 1rem);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.fixed-hero-home [data-home-shelves] {
+  position: sticky;
+  bottom: 0;
+  height: clamp(22rem, 38vh, 31rem);
+  overflow: hidden;
+  margin-top: 0 !important;
+}
+.fixed-hero-home [data-home-shelves] > div {
+  position: relative;
+  height: 100%;
+}
+.fixed-hero-home .cinematic-row-track {
+  padding-bottom: 1rem !important;
+}
+.fixed-hero-home .row-contain:has(.media-row) {
+  bottom: -1.25rem;
+}
+.fixed-hero-home .row-contain:has(.cinematic-media-row:not(.media-row)) {
+  padding-bottom: 2.5rem;
+}
+.fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type {
+  height: 252px !important;
+}
+.fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type > button {
+  width: 390px !important;
+}
+.fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type > button > div:first-child {
+  height: 219px !important;
+}
+.fixed-hero-home .row-contain.fixed-hero-row-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+@keyframes fixed-row-enter-up { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+/* Exit rows fade out fast (opacity gone by ~40%) so they don't clip through the
+   hero content/trailer while sliding away. */
+@keyframes fixed-row-exit-up { 0% { transform: translateY(0); opacity: 1; } 40% { opacity: 0; } 100% { transform: translateY(-100%); opacity: 0; } }
+@keyframes fixed-row-enter-down { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes fixed-row-exit-down { 0% { transform: translateY(0); opacity: 1; } 40% { opacity: 0; } 100% { transform: translateY(100%); opacity: 0; } }
+.fixed-hero-row-enter-up { animation: fixed-row-enter-up 520ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-row-exit-up { animation: fixed-row-exit-up 520ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-row-enter-down { animation: fixed-row-enter-down 520ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-row-exit-down { animation: fixed-row-exit-down 520ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-home .row-contain > * { width: 100%; }
+.fixed-hero-home .row-contain .media-row,
+.fixed-hero-home .row-contain .cinematic-media-row { margin-bottom: 0 !important; }
+html[data-interface-theme="default"] .fixed-hero-home [data-home-shelves] {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0.5vh;
+  height: 44vh;
+  z-index: 30;
+}
+/* The fixed shelf spans the whole viewport; shift it past a pinned sidebar so
+   the poster row doesn't slide under the sidebar (w-52 = 13rem). */
+html[data-nav="sidebar-pinned"][data-interface-theme="default"] .fixed-hero-home [data-home-shelves] {
+  inset-inline: 13rem 0;
+}
+html[data-interface-theme="default"] .fixed-hero-home .row-contain:has(.media-row) {
+  bottom: 0;
+  padding-bottom: 0;
+}
+html[data-interface-theme="default"] .fixed-hero-home .media-row > div:first-child {
+  padding-inline: 2vw;
+  margin-bottom: 1.35rem;
+}
+html[data-interface-theme="default"] .fixed-hero-home .media-row > div:last-of-type {
+  padding-left: 2vw !important;
+  padding-right: 2vw !important;
+}
+.fixed-hero-home .media-row > div:first-child h2,
+.fixed-hero-home .cw-fixed > div:first-child h2 {
+  font-size: 1.9rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.52);
+  letter-spacing: -0.01em;
+}
+/* Align the Continue Watching row (header + track) with the poster rows. */
+html[data-interface-theme="default"] .fixed-hero-home .cw-fixed > div:first-child {
+  padding-inline: 2vw;
+  margin-bottom: 1.35rem;
+}
+html[data-interface-theme="default"] .fixed-hero-home .cw-fixed > div:nth-of-type(2) {
+  padding-left: 2vw !important;
+  padding-right: 2vw !important;
+}
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content {
+  max-width: 58rem;
+}
+/* Windowed desktop layouts have substantially less vertical room than the
+   fullscreen TV view. Keep the shelf's active card inside its clipping slot
+   rather than letting it begin below the fold. */
+@media (min-width: 900px) and (max-height: 850px) {
+  .fixed-hero-home [data-home-shelves] {
+    height: 18rem;
+  }
+  .fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type {
+    height: 218px !important;
+  }
+  .fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type > button {
+    width: 330px !important;
+  }
+  .fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type > button > div:first-child {
+    height: 186px !important;
+  }
+}
+/* Readability: shadow the hero text so it stays legible over bright backdrops
+   (replaces the removed left blur panel — no panel, just per-glyph shadow). */
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content h1,
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content p {
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.9), 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fixed-hero-home .row-contain { scroll-snap-stop: normal; }
+}
+
 .cinematic-row-track > button:focus-visible > div:first-child,
 .cinematic-row-track > button:hover > div:first-child {
   border-color: rgba(255,255,255,.55);

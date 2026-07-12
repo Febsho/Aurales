@@ -18,6 +18,15 @@ interface HeroSectionProps {
   enableTrailers?: boolean
 }
 
+function preloadImage(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(url)
+    img.onerror = reject
+    img.src = url
+  })
+}
+
 function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
@@ -45,7 +54,12 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
   const [heroMpvVisible, setHeroMpvVisible] = useState(false)
 
   const goTo = useCallback(
-    (i: number) => setActiveIndex(((i % count) + count) % count),
+    (i: number) => {
+      setHeroMpvVisible(false)
+      setHeroTrailerPlaying(false)
+      setHeroTrailer(null)
+      setActiveIndex(((i % count) + count) % count)
+    },
     [count],
   )
 
@@ -101,7 +115,17 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
       getTmdbLandscapeBackdrop(t, tmdbId)
         .then((url) => {
           if (!cancelled && url) {
-            setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+            preloadImage(url)
+              .then(() => {
+                if (!cancelled) {
+                  setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+                }
+              })
+              .catch(() => {
+                if (!cancelled) {
+                  setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+                }
+              })
           }
         })
         .catch(() => {})
@@ -118,9 +142,16 @@ function HeroSection({ items, isSmall = false, onActiveBackdropChange, enableTra
         itm.type === 'series' ? 'series' : 'movie',
         { tmdbId: itm.tmdbId, tvdbId: itm.tvdbId, imdbId: itm.imdbId },
         itm.isAnime,
-      ).then((art) => {
+      ).then(async (art) => {
         if (!cancelled) {
-          setProviderArt((prev) => ({ ...prev, [key]: art }))
+          const preloads = []
+          if (art.backdrop) preloads.push(preloadImage(art.backdrop).catch(() => {}))
+          if (art.poster) preloads.push(preloadImage(art.poster).catch(() => {}))
+          await Promise.all(preloads)
+
+          if (!cancelled) {
+            setProviderArt((prev) => ({ ...prev, [key]: art }))
+          }
         }
       }).catch(() => undefined)
     })

@@ -1731,7 +1731,7 @@ fn clamp_interval(value: u32) -> u32 {
     value.clamp(2, 300)
 }
 
-fn find_ffmpeg() -> PathBuf {
+pub(crate) fn find_ffmpeg() -> PathBuf {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

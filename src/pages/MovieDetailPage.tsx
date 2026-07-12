@@ -27,6 +27,7 @@ import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { setDiscordBrowsingActivity } from '../services/discord'
+import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -689,6 +690,20 @@ export default function MovieDetailPage() {
     }).catch(() => {})
     return () => { setDiscordBrowsingActivity().catch(() => {}) }
   }, [movie?.title, movie?.poster, movieIsAnime, discordRichPresence])
+
+  useEffect(() => {
+    if (!movie) return
+    const mediaId = movie.imdbId || state.sourceAddonItemId || id || ''
+    if (!mediaId) return
+    streamPreloadManager.request({
+      mediaType: 'movie',
+      mediaId,
+      imdbId: movie.imdbId,
+      tmdbId: movie.tmdbId,
+      sourceAddonId: state.sourceAddonId,
+      sourceAddonItemId: state.sourceAddonItemId,
+    }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
+  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId])
 
   if (loading || !movie) {
     return (

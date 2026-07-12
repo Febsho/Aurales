@@ -19,7 +19,7 @@ export default function CinematicTopNav({ hidden = false }: { hidden?: boolean }
     next.focus()
   }
   return (
-    <header onKeyDown={handleKeyDown} className={`cinematic-top-nav group pointer-events-none absolute inset-x-0 top-8 z-[70] flex h-20 items-center justify-center px-8 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${hidden ? '-translate-y-[140%] opacity-0' : 'translate-y-0 opacity-100'}`}>
+    <header onKeyDown={handleKeyDown} className={`cinematic-top-nav group pointer-events-none absolute inset-x-0 top-1 z-[70] flex h-20 items-center justify-center px-8 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${hidden ? '-translate-y-[140%] opacity-0' : 'translate-y-0 opacity-100'}`}>
       <nav className="cinematic-nav-capsule pointer-events-auto flex items-center justify-center gap-2 rounded-[1.35rem] border border-white/10 px-4 py-3 shadow-2xl backdrop-blur-xl" aria-label="Primary navigation">
         <NavLink to="/search" aria-label="Search" title="Search" className="focus-ring flex h-9 w-9 items-center justify-center rounded-full text-white/70 transition hover:bg-white/10 hover:text-white">
           <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" strokeLinecap="round" /></svg>
