@@ -8,7 +8,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -47,6 +47,7 @@ import {
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
+import { recordPlaybackSample } from '../services/viewingActivity'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -205,7 +206,7 @@ async function resolvePmdbPlaybackEpisode(
   item: PlaybackItem,
   tmdbId: number,
 ): Promise<{ tmdbId: number; season?: number; episode?: number }> {
-  if (item.mediaType !== 'anime' || item.tvdbId == null || item.season == null || item.episode == null) {
+  if (!item.isAnime || item.contentType !== 'series' || item.tvdbId == null || item.season == null || item.episode == null) {
     return { tmdbId, season: item.season, episode: item.episode }
   }
 
@@ -724,6 +725,19 @@ function FullNativeMpvPlayer({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const trackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const delayedPlayerTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+  const schedulePlayerTimeout = useCallback((callback: () => void, delay: number) => {
+    const timer = setTimeout(() => {
+      delayedPlayerTimersRef.current.delete(timer)
+      callback()
+    }, delay)
+    delayedPlayerTimersRef.current.add(timer)
+  }, [])
+
+  useEffect(() => () => {
+    delayedPlayerTimersRef.current.forEach((timer) => clearTimeout(timer))
+    delayedPlayerTimersRef.current.clear()
+  }, [])
   const loadedSubtitleUrlsRef = useRef<Set<string>>(new Set())
   const autoSkippedSegmentsRef = useRef<Set<string>>(new Set())
   const subtitleSourcesRef = useRef<Map<string, SubtitleSource>>(new Map())
@@ -780,11 +794,14 @@ function FullNativeMpvPlayer({
   const [buffering, setBuffering] = useState(false)
   const eofClosedRef = useRef(false)
   const closeRef = useRef<(() => Promise<void>) | null>(null)
+  const closingRef = useRef(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   // Ref mirror avoids stale closures; windowedBoundsRef restores size on exit.
   const isFullscreenRef = useRef(false)
   useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
   const windowedBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
+  const fullscreenMonitorBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
+  const fullscreenTransitionRef = useRef(0)
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
   const [subTracks, setSubTracks] = useState<TrackOption[]>([])
@@ -854,7 +871,7 @@ function FullNativeMpvPlayer({
     const tmdbId = tmdbIdRef.current
     if (!tmdbId) return
     const item = currentItemRef.current
-    const isEpisodic = item?.mediaType === 'show' || item?.mediaType === 'anime'
+    const isEpisodic = item?.contentType === 'series'
     let cancelled = false
     fetchCurrentItemMeta(tmdbId, isEpisodic, item?.season, item?.episode)
       .then((info) => { if (!cancelled && info) setCurrentMeta(info) })
@@ -1087,7 +1104,7 @@ function FullNativeMpvPlayer({
     logEvent('PLAYBACK SYNC DEBUG', `Save watch progress local DB: ${Math.round(time)}s / ${Math.round(dur)}s (Completed: ${isCompleted})`)
     useAppStore.getState().setWatchProgress(key, {
       id: key,
-      mediaType: item.mediaType === 'show' ? 'series' : item.mediaType,
+      mediaType: item.contentType === 'series' ? (item.mediaType === 'anime' ? 'anime' : 'series') : 'movie',
       mediaId: item.localId,
       title: item.title,
       poster: currentPosterRef.current,
@@ -1120,7 +1137,7 @@ function FullNativeMpvPlayer({
     if (!item || !pmdbApiKey) return Promise.resolve()
     if (!tmdbId && !imdbId) return Promise.resolve()
 
-    const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
+    const isEpisodic = item.contentType === 'series'
     const mediaType = isEpisodic ? 'tv' : 'movie'
     const progress = dur > 0 ? pos / dur : 0
 
@@ -1168,7 +1185,7 @@ function FullNativeMpvPlayer({
     const item = currentItemRef.current
     const tmdbId = tmdbIdRef.current
     if (!item || !mdblistApiKey || dur <= 0) return Promise.resolve()
-    const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
+    const isEpisodic = item.contentType === 'series'
     const mediaType = isEpisodic ? 'series' : 'movie'
     const progressPct = Math.max(0, Math.min(100, (pos / dur) * 100))
 
@@ -1555,18 +1572,57 @@ function FullNativeMpvPlayer({
     await resizeEmbeddedPlayer(buildVideoViewport()).catch(() => {})
   }, [])
 
-  const exitFullscreenWindow = useCallback(async () => {
+  const repairFullscreenWindow = useCallback(async () => {
+    if (!isFullscreenRef.current) return
     const win = getCurrentWindow()
+    await win.setFullscreen(true).catch(() => {})
+
+    let bounds = fullscreenMonitorBoundsRef.current
+    if (!bounds) {
+      const monitor = await currentMonitor().catch(() => null)
+      if (monitor) {
+        bounds = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height }
+        fullscreenMonitorBoundsRef.current = bounds
+      }
+    }
+    if (bounds) {
+      await win.setPosition(new PhysicalPosition(bounds.x, bounds.y)).catch(() => {})
+      await win.setSize(new PhysicalSize(bounds.width, bounds.height)).catch(() => {})
+    }
+    await applyFullVideoViewport()
+    await invoke('setup_player_click_through').catch(() => {})
+  }, [applyFullVideoViewport])
+
+  const exitFullscreenWindow = useCallback(async () => {
+    const transition = ++fullscreenTransitionRef.current
+    const win = getCurrentWindow()
+    // Disable fullscreen repairs before asking Windows to leave fullscreen.
+    // Focus/move events emitted during the transition must not put it back.
+    isFullscreenRef.current = false
+    setIsFullscreen(false)
     await win.setFullscreen(false).catch(() => {})
     const b = windowedBoundsRef.current
     if (b) {
-      await win.setPosition(new PhysicalPosition(b.x, b.y)).catch(() => {})
-      await win.setSize(new PhysicalSize(b.width, b.height)).catch(() => {})
+      const restore = async () => {
+        if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
+        // Size first: on Windows a borderless window can clamp/recalculate its
+        // position when its outer size changes.
+        await win.setSize(new PhysicalSize(b.width, b.height)).catch(() => {})
+        await win.setPosition(new PhysicalPosition(b.x, b.y)).catch(() => {})
+      }
+      // Windows finishes the native fullscreen transition after the Tauri
+      // promise resolves. Re-assert the exact pre-fullscreen bounds as those
+      // delayed native messages settle, preventing cumulative rightward drift.
+      await restore()
+      await new Promise((resolve) => setTimeout(resolve, 90))
+      await restore()
+      await new Promise((resolve) => setTimeout(resolve, 180))
+      await restore()
     }
     windowedBoundsRef.current = null
-    isFullscreenRef.current = false
-    setIsFullscreen(false)
-  }, [])
+    fullscreenMonitorBoundsRef.current = null
+    await applyFullVideoViewport()
+  }, [applyFullVideoViewport])
 
   const toggleFullscreen = useCallback(async () => {
     const win = getCurrentWindow()
@@ -1575,6 +1631,7 @@ function FullNativeMpvPlayer({
     } else {
       // Flip state up front so the window-drag strip is gated off immediately —
       // otherwise it lingers over the top of the video until the next re-render.
+      ++fullscreenTransitionRef.current
       isFullscreenRef.current = true
       setIsFullscreen(true)
       try {
@@ -1586,6 +1643,7 @@ function FullNativeMpvPlayer({
         await win.setFullscreen(true)
         const mon = await currentMonitor().catch(() => null)
         if (mon) {
+          fullscreenMonitorBoundsRef.current = { x: mon.position.x, y: mon.position.y, width: mon.size.width, height: mon.size.height }
           await win.setPosition(new PhysicalPosition(mon.position.x, mon.position.y)).catch(() => {})
           await win.setSize(new PhysicalSize(mon.size.width, mon.size.height)).catch(() => {})
         }
@@ -1748,6 +1806,7 @@ function FullNativeMpvPlayer({
     logEvent('PLAYER DEBUG', `Player started session ${session.id} for media ${session.mediaId}`)
 
     let cancelled = false
+    const sessionTimers = new Set<ReturnType<typeof setTimeout>>()
     const start = async () => {
       try {
         logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with URL hash: ${playerUrlHash(url)}`)
@@ -1829,7 +1888,7 @@ function FullNativeMpvPlayer({
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
             const pct = Math.round(startProgress * 10000) / 100
-            const payload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+            const payload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, pct)
               : buildMovieScrobble(playbackItem.imdbId, pct)
             logEvent('PLAYBACK SYNC DEBUG', `Send Trakt start for session ${session.id} at ${pct}%`)
@@ -1837,7 +1896,7 @@ function FullNativeMpvPlayer({
           }
           if (scrobbleMdblistEnabled && mdblistApiKey) {
             const pct = Math.round(startProgress * 10000) / 100
-            const mediaType = playbackItem.mediaType === 'movie' ? 'movie' : 'series'
+            const mediaType = playbackItem.contentType === 'movie' ? 'movie' : 'series'
             scrobbleMdblist('start', tmdbIdRef.current, mediaType, pct, playbackItem.season, playbackItem.episode, playbackItem.imdbId).catch(() => {})
           }
 
@@ -1845,13 +1904,13 @@ function FullNativeMpvPlayer({
           const resolveAndFetchSkips = async () => {
             if (!tmdbIdRef.current && playbackItem.imdbId) {
               try {
-                const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+                const isEpisodic = playbackItem.contentType === 'series'
                 const preferredType = isEpisodic ? 'tv' : 'movie'
                 const mapping = await lookupTmdbId('imdb', playbackItem.imdbId, preferredType)
                 if (mapping) tmdbIdRef.current = mapping.tmdbId
               } catch (_) {}
             }
-            const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+            const isEpisodic = playbackItem.contentType === 'series'
             const mediaType = isEpisodic ? 'tv' : 'movie'
             const [pmdbSkips, introdbSkips] = await Promise.allSettled([
               tmdbIdRef.current
@@ -1871,7 +1930,11 @@ function FullNativeMpvPlayer({
         }
 
         ;[500, 1000, 2000, 3500].forEach((delay) => {
-          setTimeout(() => { if (!cancelled && session.status !== "stopped") invoke('setup_player_click_through').catch(() => {}) }, delay)
+          const timer = setTimeout(() => {
+            sessionTimers.delete(timer)
+            if (!cancelled && session.status !== "stopped") invoke('setup_player_click_through').catch(() => {})
+          }, delay)
+          sessionTimers.add(timer)
         })
 
         await loadAddonSubtitles()
@@ -1903,6 +1966,8 @@ function FullNativeMpvPlayer({
       if (pollRef.current) clearInterval(pollRef.current)
       if (trackPollRef.current) clearInterval(trackPollRef.current)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+      sessionTimers.forEach((timer) => clearTimeout(timer))
+      sessionTimers.clear()
       // Defer stop so a re-mount's launchEmbeddedPlayer (which internally
       // calls stop_embedded_mpv) can claim the player first.  If a new
       // session has already taken over by the time this fires, skip the
@@ -1987,9 +2052,19 @@ function FullNativeMpvPlayer({
 
   // ─ Resize ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    let disposed = false
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    let clickThroughTimer: ReturnType<typeof setTimeout> | undefined
     const onResize = () => {
-      applyFullVideoViewport()
-      setTimeout(() => invoke('setup_player_click_through').catch(() => {}), 300)
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (disposed) return
+        applyFullVideoViewport()
+        clearTimeout(clickThroughTimer)
+        clickThroughTimer = setTimeout(() => {
+          if (!disposed) invoke('setup_player_click_through').catch(() => {})
+        }, 300)
+      }, 50)
     }
     let unlistenMoved: (() => void) | undefined
     let unlistenResized: (() => void) | undefined
@@ -1997,56 +2072,68 @@ function FullNativeMpvPlayer({
     // Tauri's onResized fires on the fullscreen transition with the true new
     // size, which the DOM 'resize' event can miss or report stale.
     getCurrentWindow().onMoved(() => onResize())
-      .then((unlisten) => { unlistenMoved = unlisten })
+      .then((unlisten) => { if (disposed) unlisten(); else unlistenMoved = unlisten })
       .catch(() => {})
     getCurrentWindow().onResized(() => onResize())
-      .then((unlisten) => { unlistenResized = unlisten })
+      .then((unlisten) => { if (disposed) unlisten(); else unlistenResized = unlisten })
       .catch(() => {})
     return () => {
+      disposed = true
+      clearTimeout(resizeTimer)
+      clearTimeout(clickThroughTimer)
       window.removeEventListener('resize', onResize)
       unlistenMoved?.()
       unlistenResized?.()
     }
   }, [applyFullVideoViewport])
 
-  // Alt-tabbing away from a borderless fullscreen window can leave Windows
-  // knocking it out of its monitor bounds (title bar reappears, video jumps to
-  // the top). When focus returns, re-assert fullscreen + monitor bounds.
+  // Alt-tabbing a transparent borderless fullscreen window can make Windows
+  // temporarily restore a non-client strip at the top. Repair on BOTH blur and
+  // focus: waiting for focus to return leaves that strip visible the entire time
+  // another app is active. Cached monitor bounds remain valid while unfocused.
   useEffect(() => {
     let unlisten: (() => void) | undefined
-    getCurrentWindow().onFocusChanged(async ({ payload: focused }) => {
-      if (!focused || !isFullscreenRef.current) return
-      const win = getCurrentWindow()
-      await win.setFullscreen(true).catch(() => {})
-      const mon = await currentMonitor().catch(() => null)
-      if (mon) {
-        await win.setPosition(new PhysicalPosition(mon.position.x, mon.position.y)).catch(() => {})
-        await win.setSize(new PhysicalSize(mon.size.width, mon.size.height)).catch(() => {})
-      }
-      ;[0, 150, 400].forEach((d) => setTimeout(() => { applyFullVideoViewport() }, d))
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    const scheduleRepair = (delays: number[]) => {
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
+      delays.forEach((delay) => {
+        const timer = setTimeout(() => {
+          timers.delete(timer)
+          repairFullscreenWindow().catch(() => {})
+        }, delay)
+        timers.add(timer)
+      })
+    }
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!isFullscreenRef.current) return
+      scheduleRepair(focused ? [0, 150, 400] : [0, 50, 150, 400, 800])
     }).then((u) => { unlisten = u }).catch(() => {})
-    return () => { unlisten?.() }
-  }, [applyFullVideoViewport])
+    return () => {
+      unlisten?.()
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
+    }
+  }, [repairFullscreenWindow])
 
   useEffect(() => {
     const viewport = showUpNext ? buildUpNextPipViewport() : buildVideoViewport()
     resizeEmbeddedPlayer(viewport).catch(() => {})
-    ;[250, 750, 1500].forEach((delay) => {
-      setTimeout(() => resizeEmbeddedPlayer(viewport).catch(() => {}), delay)
-    })
+    const timers = [250, 750, 1500].map((delay) => setTimeout(() => resizeEmbeddedPlayer(viewport).catch(() => {}), delay))
+    return () => timers.forEach((timer) => clearTimeout(timer))
   }, [showUpNext])
 
   // ─ Discord Rich Presence ──────────────────────────────────────────────────
   useEffect(() => {
     if (!discordRichPresence) return
 
-    const isEpisodic = playbackItem && (playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime')
+    const isEpisodic = playbackItem?.contentType === 'series'
     const details = title || 'Watching something'
     const state = paused
       ? (isEpisodic ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0} · Paused` : 'Paused')
       : isEpisodic
         ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0}`
-        : playbackItem?.mediaType === 'movie' ? 'Watching' : undefined
+        : playbackItem?.contentType === 'movie' ? 'Watching' : undefined
 
     const posterUrl = poster && poster.startsWith('http') ? poster : undefined
     const nowSec = Math.floor(Date.now() / 1000)
@@ -2081,14 +2168,14 @@ function FullNativeMpvPlayer({
       if (dur <= 0) return
       const nowSec = Math.floor(Date.now() / 1000)
 
-      const isEpisodic = playbackItem && (playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime')
+      const isEpisodic = playbackItem?.contentType === 'series'
       const posterUrl = poster && poster.startsWith('http') ? poster : undefined
 
       setDiscordActivity({
         details: title || 'Watching something',
         state: isEpisodic
           ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0}`
-          : playbackItem?.mediaType === 'movie' ? 'Watching' : undefined,
+          : playbackItem?.contentType === 'movie' ? 'Watching' : undefined,
         largeImage: posterUrl || 'aurales_logo',
         largeText: title || 'Aurales',
         smallImage: 'playing',
@@ -2127,22 +2214,23 @@ function FullNativeMpvPlayer({
 
   // ─ Polling ───────────────────────────────────────────────────────────────
   useEffect(() => {
+    let cancelled = false
     let polling = false
     pollRef.current = setInterval(async () => {
-      if (polling) return
+      if (polling || cancelled) return
       polling = true
       try {
-        const [pos, dur, isPause, isBuffering, cacheBuffState, demuxerCacheDur, eofReached, idleActive, coreIdle] = await Promise.all([
-          getPlayerProperty('time-pos') as Promise<number | null>,
-          getPlayerProperty('duration') as Promise<number | null>,
-          getPlayerProperty('pause') as Promise<boolean | null>,
-          getPlayerProperty('buffering') as Promise<boolean | null>,
-          getPlayerProperty('cache-buffering-state') as Promise<number | null>,
-          getPlayerProperty('demuxer-cache-duration') as Promise<number | null>,
-          getPlayerProperty('eof-reached') as Promise<boolean | null>,
-          getPlayerProperty('idle-active') as Promise<boolean | null>,
-          getPlayerProperty('core-idle') as Promise<boolean | null>,
-        ])
+        const snapshot = await getPlayerSnapshot()
+        if (cancelled) return
+        const pos = snapshot.timePos
+        const dur = snapshot.duration
+        const isPause = snapshot.paused
+        const isBuffering = snapshot.buffering
+        const cacheBuffState = snapshot.cacheBufferingState
+        const demuxerCacheDur = snapshot.demuxerCacheDuration
+        const eofReached = snapshot.eofReached
+        const idleActive = snapshot.idleActive
+        const coreIdle = snapshot.coreIdle
 
         const nowMs = Date.now()
 
@@ -2256,6 +2344,8 @@ function FullNativeMpvPlayer({
         }
 
         if (pos != null && dur != null && dur > 0) {
+          const activityItem = currentItemRef.current
+          if (activityItem) recordPlaybackSample({ mediaKey: activityItem.localId, title: activityItem.title, mediaType: activityItem.mediaType === 'anime' ? 'anime' : activityItem.contentType === 'movie' ? 'movie' : 'series', poster: currentPosterRef.current, tmdbId: activityItem.tmdbId, season: activityItem.season, episode: activityItem.episode, positionSeconds: pos, durationSeconds: dur, playing: isPause === false, completed: pos / dur >= 0.85 })
           if (Math.abs(pos - lastSavedTimeRef.current) >= 15) {
             lastSavedTimeRef.current = pos
             saveLocalProgress(pos, dur, false)
@@ -2266,7 +2356,7 @@ function FullNativeMpvPlayer({
             logEvent('PLAYBACK SYNC DEBUG', `Save Simkl scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveSimklPlaybackProgress(item, pos / dur).catch(() => {})
           }
-          if (item && scrobbleAnilist && item.mediaType === 'anime' && pos - lastAniListPlaybackSaveRef.current >= 60) {
+          if (item && scrobbleAnilist && item.isAnime && pos - lastAniListPlaybackSaveRef.current >= 60) {
             lastAniListPlaybackSaveRef.current = pos
             logEvent('PLAYBACK SYNC DEBUG', `Save AniList scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveAniListProgressMapped(item, pos / dur).catch(() => {})
@@ -2356,19 +2446,24 @@ function FullNativeMpvPlayer({
       } catch (_) { /* transient IPC failures */ }
       finally { polling = false }
     }, 1000)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+    return () => {
+      cancelled = true
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
   }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
-    if (!playbackItem || (playbackItem.mediaType !== 'show' && playbackItem.mediaType !== 'anime')) return
+    if (!playbackItem || playbackItem.contentType !== 'series') return
     if (!playbackItem.season || !playbackItem.episode) return
+    let cancelled = false
 
     const doFetch = async () => {
       let tmdbId = tmdbIdRef.current
       if (!tmdbId && playbackItem.imdbId) {
         try {
           const mapping = await lookupTmdbId('imdb', playbackItem.imdbId)
+          if (cancelled) return
           if (mapping) { tmdbIdRef.current = mapping.tmdbId; tmdbId = mapping.tmdbId }
         } catch (_) {}
       }
@@ -2378,6 +2473,7 @@ function FullNativeMpvPlayer({
 
       if (tmdbId) {
         const info = await fetchNextEpisodeFromTmdb(tmdbId, nextSeason, nextEpisode)
+        if (cancelled) return
         if (info) { setNextEpInfo(info); return }
       }
 
@@ -2394,7 +2490,7 @@ function FullNativeMpvPlayer({
     }
     // Give the main start effect time to resolve TMDB ID
     const timer = setTimeout(doFetch, 2000)
-    return () => clearTimeout(timer)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [playbackItem])
 
   // ─ Up Next countdown ─────────────────────────────────────────────────────
@@ -2403,6 +2499,14 @@ function FullNativeMpvPlayer({
     const nextEp = nextEpInfoRef.current
     const item = currentItemRef.current
     if (!nextEp || !item?.imdbId) { setShowUpNext(false); return }
+    const sessionId = activeSessionRef.current?.id
+    const ownsSession = () => Boolean(
+      sessionId
+      && latestFullPlayerSessionId === sessionId
+      && activeSessionRef.current?.id === sessionId
+      && activeSessionRef.current.status !== 'stopped'
+    )
+    if (!ownsSession()) return
 
     setIsAutoSearching(true)
     const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
@@ -2412,12 +2516,14 @@ function FullNativeMpvPlayer({
     for (const addon of addons) {
       try {
         const streams = await getAddonStreams(addon.url, 'series', streamId)
+        if (!ownsSession()) return
         const valid = streams.find((s) => s.url)
         if (valid?.url) { foundUrl = valid.url; break }
       } catch (_) {}
     }
 
     setIsAutoSearching(false)
+    if (!ownsSession()) return
     if (!foundUrl) { setShowUpNext(false); return }
 
     // Stop current, save progress
@@ -2433,7 +2539,9 @@ function FullNativeMpvPlayer({
       promises.push(traktScrobbleStop(payload).catch(() => {}))
     }
     await Promise.allSettled(promises)
+    if (!ownsSession()) return
     await stopEmbeddedPlayer().catch(() => {})
+    if (!ownsSession()) return
 
     // Update current playback item refs
     const newItem: PlaybackItem = { ...item, season: nextEp.season, episode: nextEp.episode, title: `${title} · ${nextEp.title}` }
@@ -2524,7 +2632,7 @@ function FullNativeMpvPlayer({
       }
 
       // Re-setup click-through
-      ;[500, 1000, 2000].forEach((d) => setTimeout(() => invoke('setup_player_click_through').catch(() => {}), d))
+      ;[500, 1000, 2000].forEach((delay) => schedulePlayerTimeout(() => invoke('setup_player_click_through').catch(() => {}), delay))
 
       // Restart track polling
       let attempts = 0
@@ -2547,7 +2655,7 @@ function FullNativeMpvPlayer({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume])
+  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout])
 
   useEffect(() => {
     if (!showUpNext) { setUpNextCountdown(15); return }
@@ -2566,32 +2674,41 @@ function FullNativeMpvPlayer({
 
   // ─ Playback controls ──────────────────────────────────────────────────────
   const close = async () => {
+    if (closingRef.current) return
+    closingRef.current = true
     const item = currentItemRef.current
+    const { currentTime: pos, duration: dur } = progressRef.current
+    const progress = dur > 0 ? pos / dur : 0
     if (item) {
-      const { currentTime: pos, duration: dur } = progressRef.current
-      const progress = dur > 0 ? pos / dur : 0
       saveLocalProgress(pos, dur, false)
+    }
+
+    // Leaving the player is a UI action and should be immediate. Stop mpv and
+    // reveal the previous screen now; remote progress/scrobble writes continue
+    // independently and must never hold the Back button hostage.
+    if (isFullscreenRef.current) void exitFullscreenWindow().catch(() => {})
+    void stopEmbeddedPlayer().catch(() => {})
+    onClose()
+
+    if (item) {
       const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
         promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
-      if (scrobbleAnilist && item.mediaType === 'anime') {
+      if (scrobbleAnilist && item.isAnime) {
         promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+        const payload = item.contentType === 'series' && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
         promises.push(traktScrobbleStop(payload).catch(() => {}))
       }
       promises.push(savePMDBProgressHelper(pos, dur, true))
       promises.push(saveMdblistProgressHelper(pos, dur, true))
-      await Promise.allSettled(promises)
+      void Promise.allSettled(promises)
     }
-    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
-    await stopEmbeddedPlayer().catch(() => {})
-    onClose()
   }
   useEffect(() => { closeRef.current = close })
 
@@ -2605,12 +2722,12 @@ function FullNativeMpvPlayer({
       if (scrobbleSimkl) {
         promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
-      if (scrobbleAnilist && item.mediaType === 'anime') {
+      if (scrobbleAnilist && item.isAnime) {
         promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+        const payload = item.contentType === 'series' && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
         promises.push(traktScrobbleStop(payload).catch(() => {}))
@@ -2669,7 +2786,7 @@ function FullNativeMpvPlayer({
           // "Save Resume Position" setting gates it.
           if (scrobbleTrakt && traktSaveResumePosition && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+            const payload = item.contentType === 'series' && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobblePause(payload).catch(() => {})
@@ -2682,7 +2799,7 @@ function FullNativeMpvPlayer({
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+            const payload = item.contentType === 'series' && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobbleStart(payload).catch(() => {})

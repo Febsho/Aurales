@@ -94,6 +94,9 @@ export interface StremioLibraryEntry {
   year?: number
   watched: boolean
   lastWatched?: string
+  season?: number
+  episode?: number
+  watchedCount: number
 }
 
 interface StremioDatastoreItem {
@@ -132,6 +135,9 @@ export async function getStremioWatchHistory(authKey: string): Promise<StremioLi
       if (!rawId || !item.name) return null
       // Library ids are the meta id (imdb like "tt123", optionally ":season:episode")
       const baseId = rawId.split(':')[0]
+      const idParts = rawId.split(':')
+      const season = idParts.length >= 3 ? Number(idParts[idParts.length - 2]) : undefined
+      const episode = idParts.length >= 3 ? Number(idParts[idParts.length - 1]) : undefined
       const imdbId = /^tt\d+$/.test(baseId) ? baseId : undefined
       const state = item.state || {}
       const watched = Boolean((state.timeOffset && state.timeOffset > 0) || state.flaggedWatched || (state.timesWatched && state.timesWatched > 0))
@@ -144,6 +150,9 @@ export async function getStremioWatchHistory(authKey: string): Promise<StremioLi
         year: item.year,
         watched,
         lastWatched: state.lastWatched,
+        season: Number.isFinite(season) ? season : undefined,
+        episode: Number.isFinite(episode) ? episode : undefined,
+        watchedCount: Math.max(1, Number(state.timesWatched) || Number(state.flaggedWatched) || 1),
       }
     })
     .filter((entry): entry is StremioLibraryEntry => entry !== null && entry.watched)

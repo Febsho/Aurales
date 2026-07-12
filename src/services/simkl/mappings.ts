@@ -19,29 +19,41 @@
 import { resolveSimklMapping, searchSimklItem } from './client'
 import type { SimklMapping } from './types'
 
-const LS_PREFIX = 'simkl_map_'
+const LS_PREFIX = 'simkl_map_v2_'
+const LEGACY_PREFIX = 'simkl_map_'
+const MIGRATION_KEY = 'simkl_map_v2_migrated'
 
 export interface MediaRef {
   localId: string           // app's internal ID (e.g. "tt1234567" or "tmdb-12345")
   title: string
   year?: number
   type?: 'movie' | 'show' | 'anime'
+  /** App structure, kept separate from the provider's anime category. */
+  contentType?: 'movie' | 'series'
+  isAnime?: boolean
   imdbId?: string
   tmdbId?: number
   tvdbId?: number
   malId?: number
   anilistId?: number
   simklId?: number          // if already known
+  /** Alternate season/cour IDs belonging to the same local series. */
+  simklIds?: number[]
 }
 
 // ─── Main resolver ─────────────────────────────────────────────────────────────
 
-export async function resolveSimklId(item: MediaRef): Promise<SimklMapping | null> {
-  // 1. Check cache
-  const cached = getCachedSimklMapping(item.localId)
-  if (cached) return cached
+export interface SimklResolveOptions {
+  allowTitleFallback?: boolean
+  /** Permit only an exact normalized title and compatible year match. */
+  allowExactTitleFallback?: boolean
+}
 
-  // 2. Direct simklId provided
+export async function resolveSimklId(item: MediaRef, options: SimklResolveOptions = {}): Promise<SimklMapping | null> {
+  // A direct provider ID is authoritative. Anime episode mapping can point at
+  // a different SIMKL entry than a previously cached show/title mapping (for
+  // split cours, seasons, specials, and movies), so never let the local-ID
+  // cache override it.
   if (item.simklId) {
     const mapping: SimklMapping = {
       simklId: item.simklId,
@@ -57,7 +69,11 @@ export async function resolveSimklId(item: MediaRef): Promise<SimklMapping | nul
     return mapping
   }
 
-  // 3–5. External IDs
+  // Reuse a cached mapping only when no authoritative provider ID was supplied.
+  const cached = getCachedSimklMapping(item.localId)
+  if (cached) return cached
+
+  // External IDs
   const byExternal = await searchSimklByExternalIds(item)
   if (byExternal) {
     saveSimklMapping(item.localId, byExternal)
@@ -65,7 +81,8 @@ export async function resolveSimklId(item: MediaRef): Promise<SimklMapping | nul
   }
 
   // 6. Title + year fuzzy search
-  const byTitle = await searchSimklByTitleYear(item)
+  if (options.allowTitleFallback === false && !options.allowExactTitleFallback) return null
+  const byTitle = await searchSimklByTitleYear(item, { exactYear: options.allowExactTitleFallback === true })
   if (byTitle) {
     saveSimklMapping(item.localId, byTitle)
     return byTitle
@@ -87,16 +104,24 @@ export async function searchSimklByExternalIds(item: MediaRef): Promise<SimklMap
 
 // ─── Title + year fuzzy search ─────────────────────────────────────────────────
 
-export async function searchSimklByTitleYear(item: MediaRef): Promise<SimklMapping | null> {
+export async function searchSimklByTitleYear(item: MediaRef, options: { exactYear?: boolean } = {}): Promise<SimklMapping | null> {
   if (!item.title) return null
 
-  const type = item.type === 'show' ? 'show' : item.type === 'anime' ? 'anime' : 'movie'
-  const results = await searchSimklItem({ title: item.title, year: item.year, type })
+  // Simkl can classify anime films under either its anime or movie index.
+  const types = item.isAnime && item.contentType === 'movie'
+    ? (['anime', 'movie'] as const)
+    : ([item.type === 'show' ? 'show' : item.type === 'anime' ? 'anime' : 'movie'] as const)
+  const results = (await Promise.all(types.map((type) =>
+    searchSimklItem({ title: item.title, year: item.year, type }).catch(() => [])
+  ))).flat()
 
   for (const r of results) {
     const media = r.movie || r.show || r.anime
     if (!media) continue
-    if (titleMatches(media.title, item.title) && yearMatches(media.year, item.year)) {
+    const yearMatchesRequest = options.exactYear
+      ? exactYearMatches(media.year, item.year)
+      : yearMatches(media.year, item.year)
+    if (titleMatches(media.title, item.title) && yearMatchesRequest) {
       const rType = r.movie ? 'movie' : r.show ? 'show' : 'anime'
       return {
         simklId: media.ids.simkl || media.ids.simkl_id,
@@ -115,11 +140,24 @@ export async function searchSimklByTitleYear(item: MediaRef): Promise<SimklMappi
 
 // ─── Cache ─────────────────────────────────────────────────────────────────────
 
+function clearLegacyMappingsOnce(): void {
+  if (localStorage.getItem(MIGRATION_KEY) === 'true') return
+  const keys: string[] = []
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index)
+    if (key?.startsWith(LEGACY_PREFIX) && !key.startsWith(LS_PREFIX)) keys.push(key)
+  }
+  keys.forEach((key) => localStorage.removeItem(key))
+  localStorage.setItem(MIGRATION_KEY, 'true')
+}
+
 export function saveSimklMapping(localMediaId: string, mapping: SimklMapping): void {
+  clearLegacyMappingsOnce()
   localStorage.setItem(LS_PREFIX + localMediaId, JSON.stringify(mapping))
 }
 
 export function getCachedSimklMapping(localMediaId: string): SimklMapping | null {
+  clearLegacyMappingsOnce()
   try {
     const raw = localStorage.getItem(LS_PREFIX + localMediaId)
     if (!raw) return null
@@ -128,6 +166,7 @@ export function getCachedSimklMapping(localMediaId: string): SimklMapping | null
 }
 
 export function clearSimklMapping(localMediaId: string): void {
+  clearLegacyMappingsOnce()
   localStorage.removeItem(LS_PREFIX + localMediaId)
 }
 
@@ -141,4 +180,9 @@ function titleMatches(a: string, b: string): boolean {
 function yearMatches(a?: number, b?: number): boolean {
   if (!a || !b) return true // no year → accept
   return Math.abs(a - b) <= 1 // ±1 year tolerance
+}
+
+function exactYearMatches(a?: number, b?: number): boolean {
+  if (!a || !b) return true
+  return a === b
 }

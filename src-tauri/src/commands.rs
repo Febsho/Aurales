@@ -2410,6 +2410,40 @@ pub fn mpv_get_property(property: String) -> Result<serde_json::Value, String> {
     Ok(serde_json::Value::Null)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSnapshot {
+    pub time_pos: Option<f64>,
+    pub duration: Option<f64>,
+    pub paused: Option<bool>,
+    pub buffering: Option<bool>,
+    pub cache_buffering_state: Option<f64>,
+    pub demuxer_cache_duration: Option<f64>,
+    pub eof_reached: Option<bool>,
+    pub idle_active: Option<bool>,
+    pub core_idle: Option<bool>,
+}
+
+/// Returns the high-frequency playback state under one cache read and one IPC
+/// call. libmpv keeps PROPERTY_CACHE current through observed property events.
+#[tauri::command]
+pub fn get_player_snapshot() -> Result<PlayerSnapshot, String> {
+    let cache = get_property_cache().read().map_err(|e| e.to_string())?;
+    let number = |name: &str| cache.get(name).and_then(serde_json::Value::as_f64);
+    let boolean = |name: &str| cache.get(name).and_then(serde_json::Value::as_bool);
+    Ok(PlayerSnapshot {
+        time_pos: number("time-pos"),
+        duration: number("duration"),
+        paused: boolean("pause"),
+        buffering: boolean("buffering"),
+        cache_buffering_state: number("cache-buffering-state"),
+        demuxer_cache_duration: number("demuxer-cache-duration"),
+        eof_reached: boolean("eof-reached"),
+        idle_active: boolean("idle-active"),
+        core_idle: boolean("core-idle"),
+    })
+}
+
 /// Resize mpv's child HWND to fill (x, y, width, height) within the host window.
 ///
 /// mpv does NOT auto-resize when its parent window is resized (child windows

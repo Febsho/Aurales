@@ -13,6 +13,7 @@ export const CACHE_CATEGORIES = {
   TVDB_SEASON: 'tvdb_season',
   ANIME_MAPPING: 'anime_mapping',
   STREAM_PRELOAD: 'stream_preload',
+  LIBRARY_CALENDAR: 'library_calendar',
 } as const
 
 export const CACHE_TTLS = {
@@ -30,4 +31,5 @@ export const CACHE_TTLS = {
   TVDB_SEASON: 24 * 60 * 60,
   ANIME_MAPPING_FINISHED: 14 * 24 * 60 * 60,
   ANIME_MAPPING_AIRING: 12 * 60 * 60,
+  LIBRARY_CALENDAR: 15 * 60,
 } as const

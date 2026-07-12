@@ -342,6 +342,21 @@ export async function addToAniListPlanning(anilistId?: number | string, malId?: 
   entriesCache.clear()
 }
 
+export async function setAniListStatus(status: AniListStatus, anilistId?: number | string, malId?: number | string): Promise<void> {
+  if (!isAniListConnected()) return
+  const mediaId = await resolveAniListMediaId({ anilistId, malId })
+  if (!mediaId) throw new Error('Could not resolve AniList media ID')
+  await anilistRequest(`
+    mutation SetStatus($mediaId: Int, $status: MediaListStatus) {
+      SaveMediaListEntry(mediaId: $mediaId, status: $status) { id }
+    }
+  `, { mediaId, status })
+  entriesCache.clear()
+  progressCache.delete(mediaId)
+  trackedProgressCache = null
+  fullListCache = null
+}
+
 export async function removeFromAniListList(anilistId?: number | string, malId?: number | string): Promise<void> {
   if (!isAniListConnected()) return
   const mediaId = await resolveAniListMediaId({ anilistId, malId })
@@ -635,11 +650,16 @@ export async function saveAniListProgress(item: PlaybackItem, progressRatio: num
   if (!isAniListConnected()) return
   const mediaId = await resolveAniListMediaId(item)
   if (!mediaId) return
-  const episode = toNumber(item.episode)
+  const episode = item.contentType === 'movie' ? 1 : toNumber(item.episode)
   if (!episode) return
   const media = await getAniListMedia(mediaId)
   const totalEpisodes = media?.episodes ?? 0
-  const status: AniListStatus = totalEpisodes > 0 && (episode >= totalEpisodes || progressRatio >= 0.9) ? 'COMPLETED' : 'CURRENT'
+  // AniList treats a COMPLETED status as every episode watched, so playback of
+  // episode 1 must stay CURRENT even when that episode is nearly finished.
+  // A series is complete only after its final known episode is nearly finished.
+  const status: AniListStatus = item.contentType === 'movie'
+    ? (progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT')
+    : totalEpisodes > 0 && episode >= totalEpisodes && progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT'
   await anilistRequest(`
     mutation SaveProgress($mediaId: Int, $progress: Int, $status: MediaListStatus) {
       SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) { id }
@@ -656,7 +676,7 @@ export async function saveAniListProgressMapped(
 ): Promise<void> {
   if (!isAniListConnected()) return
 
-  if (item.tvdbId && item.localId && item.season != null && item.episode != null) {
+  if (item.contentType === 'series' && item.tvdbId && item.localId && item.season != null && item.episode != null) {
     try {
       const epInput: TvdbEpisodeMappingInput = {
         localMediaId: item.localId,
@@ -671,7 +691,9 @@ export async function saveAniListProgressMapped(
         if (mediaId && episode) {
           const media = await getAniListMedia(mediaId)
           const totalEpisodes = media?.episodes ?? 0
-          const status: AniListStatus = totalEpisodes > 0 && (episode >= totalEpisodes || progressRatio >= 0.9) ? 'COMPLETED' : 'CURRENT'
+          // See saveAniListProgress: never mark a whole series complete merely
+          // because the currently playing episode reached its end.
+          const status: AniListStatus = totalEpisodes > 0 && episode >= totalEpisodes && progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT'
           await anilistRequest(`
             mutation SaveProgress($mediaId: Int, $progress: Int, $status: MediaListStatus) {
               SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) { id }

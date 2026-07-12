@@ -12,6 +12,7 @@ export interface AnimeMappingInput {
   seasonNumber?: number
   episodeNumber?: number
   absoluteEpisodeNumber?: number
+  contentType?: 'movie' | 'series'
 }
 
 export interface TvdbEpisodeMappingInput {
@@ -83,6 +84,7 @@ export interface ProviderEpisodeMapping {
 
 export interface AnimeMappingResult {
   localMediaId: string
+  contentType?: 'movie' | 'series'
   tvdbId?: number
   tmdbId?: number
   anilistId?: number
@@ -124,6 +126,7 @@ export interface AnimeMappingCacheKey {
   anilistId?: number
   malId?: number
   localMediaId?: string
+  contentType?: 'movie' | 'series'
 }
 
 export interface AnimeMappingOverride {

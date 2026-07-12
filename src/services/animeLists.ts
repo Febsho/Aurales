@@ -31,7 +31,7 @@ let cachedData: AnimeMapping[] | null = null
 let cacheTimestamp = 0
 let activePromise: Promise<AnimeMapping[]> | null = null
 
-function extractTmdbId(val: unknown): number | undefined {
+function extractTmdbId(val: unknown, contentType?: 'movie' | 'series'): number | undefined {
   if (val === null || val === undefined) return undefined
   if (typeof val === 'number') return val
   if (typeof val === 'string') {
@@ -40,8 +40,12 @@ function extractTmdbId(val: unknown): number | undefined {
   }
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>
-    const possible = obj.tv ?? obj.movie ?? obj.id ?? obj.value
-    if (possible !== undefined) return extractTmdbId(possible)
+    const possible = contentType === 'movie'
+      ? obj.movie
+      : contentType === 'series'
+        ? obj.tv
+        : obj.tv ?? obj.movie ?? obj.id ?? obj.value
+    if (possible !== undefined) return extractTmdbId(possible, contentType)
   }
   return undefined
 }
@@ -52,6 +56,34 @@ function getTvdbSeason(entry: AnimeMapping): number | undefined {
 
 function getTvdbEpisodeOffset(entry: AnimeMapping): number {
   return entry.tvdb_epoffset ?? entry.episode_offset?.tvdb ?? 0
+}
+
+function inferMediaKind(entry: AnimeMapping): 'movie' | 'series' {
+  if (entry.themoviedb_id && typeof entry.themoviedb_id === 'object') {
+    if (entry.themoviedb_id.movie != null && entry.themoviedb_id.tv == null) return 'movie'
+    if (entry.themoviedb_id.tv != null) return 'series'
+  }
+  return /movie|film/i.test(entry.type || '') ? 'movie' : 'series'
+}
+
+function selectBestMapping(
+  entries: AnimeMapping[] | undefined,
+  known: { anilistId?: number | string; malId?: number | string; tvdbId?: number | string; tmdbId?: number | string; imdbId?: string; contentType?: 'movie' | 'series' },
+): AnimeMapping | undefined {
+  if (!entries?.length) return undefined
+  const numeric = (value: unknown) => value == null ? undefined : Number(String(value).replace(/^[a-z]+[-:]/i, ''))
+  const score = (entry: AnimeMapping) => {
+    let value = 0
+    if (known.contentType) value += inferMediaKind(entry) === known.contentType ? 40 : -100
+    if (numeric(known.anilistId) === entry.anilist_id) value += 100
+    if (numeric(known.malId) === entry.mal_id) value += 100
+    if (numeric(known.tvdbId) === entry.tvdb_id) value += 80
+    if (numeric(known.tmdbId) === extractTmdbId(entry.themoviedb_id, known.contentType)) value += 100
+    const imdbIds = Array.isArray(entry.imdb_id) ? entry.imdb_id : [entry.imdb_id]
+    if (known.imdbId && imdbIds.includes(known.imdbId)) value += 100
+    return value
+  }
+  return [...entries].sort((left, right) => score(right) - score(left))[0]
 }
 
 function buildIndexes(data: AnimeMapping[]): void {
@@ -77,8 +109,11 @@ function buildIndexes(data: AnimeMapping[]): void {
       if (arr) arr.push(entry)
       else byTvdb.set(entry.tvdb_id, [entry])
     }
-    const tmdb = extractTmdbId(entry.themoviedb_id)
-    if (tmdb != null) {
+    const tmdbIds = new Set([
+      extractTmdbId(entry.themoviedb_id, 'series'),
+      extractTmdbId(entry.themoviedb_id, 'movie'),
+    ].filter((value): value is number => value != null))
+    for (const tmdb of tmdbIds) {
       const arr = byTmdb.get(tmdb)
       if (arr) arr.push(entry)
       else byTmdb.set(tmdb, [entry])
@@ -217,6 +252,7 @@ export async function resolveAnimeIds(known: {
   tvdbId?: number | string
   tmdbId?: number | string
   imdbId?: string
+  contentType?: 'movie' | 'series'
 }): Promise<{
   anilistId?: number
   malId?: number
@@ -227,6 +263,7 @@ export async function resolveAnimeIds(known: {
   simklId?: number
   tvdbSeason?: number
   tvdbEpOffset?: number
+  mediaKind?: 'movie' | 'series'
 } | null> {
   // Ensure indexes are loaded
   await loadAnimeLists()
@@ -240,10 +277,10 @@ export async function resolveAnimeIds(known: {
   // 1. Instant local lookup via indexed maps (O(1))
   let match: AnimeMapping | undefined
 
-  if (malId != null && !isNaN(malId)) match = indexByMal.get(malId)?.[0]
-  if (!match && anilistId != null && !isNaN(anilistId)) match = indexByAnilist.get(anilistId)?.[0]
-  if (!match && tvdbId != null && !isNaN(tvdbId)) match = indexByTvdb.get(tvdbId)?.[0]
-  if (!match && tmdbId != null && !isNaN(tmdbId)) match = indexByTmdb.get(tmdbId)?.[0]
+  if (malId != null && !isNaN(malId)) match = selectBestMapping(indexByMal.get(malId), known)
+  if (!match && anilistId != null && !isNaN(anilistId)) match = selectBestMapping(indexByAnilist.get(anilistId), known)
+  if (!match && tvdbId != null && !isNaN(tvdbId)) match = selectBestMapping(indexByTvdb.get(tvdbId), known)
+  if (!match && tmdbId != null && !isNaN(tmdbId)) match = selectBestMapping(indexByTmdb.get(tmdbId), known)
   if (!match && imdbId != null) match = indexByImdb.get(imdbId)
 
   if (match) {
@@ -251,10 +288,11 @@ export async function resolveAnimeIds(known: {
       anilistId: match.anilist_id,
       malId: match.mal_id,
       tvdbId: match.tvdb_id,
-      tmdbId: extractTmdbId(match.themoviedb_id),
+      tmdbId: extractTmdbId(match.themoviedb_id, known.contentType),
       imdbId: Array.isArray(match.imdb_id) ? match.imdb_id[0] : match.imdb_id,
       tvdbSeason: getTvdbSeason(match),
       tvdbEpOffset: getTvdbEpisodeOffset(match),
+      mediaKind: inferMediaKind(match),
     }
 
     // 2. Supplement with IDS.moe for extra IDs (traktId, simklId) — non-blocking
@@ -275,6 +313,7 @@ export async function resolveAnimeIds(known: {
           imdbId: base.imdbId ?? idsMoe.imdbId,
           traktId: idsMoe.traktId,
           simklId: idsMoe.simklId,
+          mediaKind: base.mediaKind ?? (idsMoe.tmdbType === 'movie' ? 'movie' : idsMoe.tmdbType ? 'series' : known.contentType),
         }
       }
     } catch (_) { /* local data is sufficient */ }
@@ -307,6 +346,7 @@ export async function resolveAnimeIds(known: {
         imdbId: idsMoe.imdbId ?? imdbId,
         traktId: idsMoe.traktId,
         simklId: idsMoe.simklId,
+        mediaKind: idsMoe.tmdbType === 'movie' ? 'movie' : idsMoe.tmdbType ? 'series' : known.contentType,
       }
     }
   } catch (_) { /* no data available */ }
@@ -402,9 +442,28 @@ export async function mapTvdbEpisodeToAnimeProviders(
     }
   }
 
+  return mapTvdbEpisodeToAnimeProvidersLocal(tvdbId, season, episode)
+}
+
+export async function mapTvdbEpisodeToAnimeProvidersLocal(
+  tvdbId: number,
+  season: number,
+  episode: number,
+): Promise<{
+  anilistId?: number
+  malId?: number
+  simklId?: number
+  traktId?: number
+  tmdbId?: number
+  episode: number
+  season: number
+} | null> {
   await loadAnimeLists()
   const entries = indexByTvdb.get(tvdbId)
-  const entry = entries?.find((e) => getTvdbSeason(e) === season)
+  const entry = entries
+    ?.filter((candidate) => getTvdbSeason(candidate) === season)
+    .filter((candidate) => getTvdbEpisodeOffset(candidate) < episode)
+    .sort((left, right) => getTvdbEpisodeOffset(right) - getTvdbEpisodeOffset(left))[0]
   if (!entry) return null
   return {
     anilistId: entry.anilist_id,
@@ -412,7 +471,7 @@ export async function mapTvdbEpisodeToAnimeProviders(
     simklId: entry.simkl_id,
     traktId: entry.trakt_id,
     tmdbId: extractTmdbId(entry.themoviedb_id),
-    episode: getTvdbEpisodeOffset(entry) + episode,
+    episode: episode - getTvdbEpisodeOffset(entry),
     season: entry.season?.trakt ?? season,
   }
 }

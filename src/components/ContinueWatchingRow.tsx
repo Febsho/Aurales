@@ -912,10 +912,11 @@ const ContinueWatchingMenu = forwardRef<
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight
+    const visibleHeight = Math.min(el.scrollHeight, vh - 16)
     let ax = x
     let ay = y
     if (x + rect.width > vw - 8) ax = vw - rect.width - 8
-    if (y + rect.height > vh - 8) ay = vh - rect.height - 8
+    if (y + visibleHeight > vh - 8) ay = vh - visibleHeight - 8
     if (ax < 8) ax = 8
     if (ay < 8) ay = 8
     setAdjusted({ x: ax, y: ay })
@@ -926,12 +927,13 @@ const ContinueWatchingMenu = forwardRef<
       <div
         ref={menuRef}
         onClick={(e) => e.stopPropagation()}
-        className="fixed min-w-[240px] max-w-[280px] rounded-2xl overflow-hidden border border-white/[0.12]"
+        className="fixed min-w-[240px] max-w-[280px] rounded-2xl border border-white/[0.12] overscroll-contain"
         style={{
           left: adjusted.x,
           top: adjusted.y,
           maxHeight: 'calc(100vh - 16px)',
           overflowY: 'auto',
+          scrollbarWidth: 'thin',
           background: 'rgba(20, 20, 22, 0.75)',
           backdropFilter: 'blur(60px) saturate(200%)',
           WebkitBackdropFilter: 'blur(60px) saturate(200%)',

@@ -421,6 +421,43 @@ export async function addToSimklWatchlist(item: MediaRef, type?: SimklMediaType)
   await addToListBySimklId(mapping.simklId, type ?? mapping.type, 'plantowatch')
 }
 
+export async function setSimklWatchStatus(item: MediaRef, status: SimklWatchStatus, type?: SimklMediaType): Promise<void> {
+  if (isSimklMockMode()) {
+    mockWatchlistAdd(item.localId)
+    return
+  }
+  const mapping = await resolveSimklId(item)
+  if (mapping?.simklId) {
+    await addToListBySimklId(mapping.simklId, type ?? mapping.type, status)
+  } else {
+    await addToListByExternalIds(item, type ?? inferType(item.type), status)
+  }
+  const { cacheClearCategory } = await import('../cache/sqliteCache')
+  await cacheClearCategory('SIMKL_LISTS')
+}
+
+export async function getSimklWatchStatus(item: MediaRef): Promise<SimklWatchStatus | null> {
+  if (isSimklMockMode()) return isMockWatchlisted(item.localId) ? 'plantowatch' : null
+  const mapping = await resolveSimklId(item)
+  if (!mapping?.simklId) return null
+  const simklId = mapping.simklId
+  const data = await simklRequest<{ list?: SimklWatchStatus }>(`/sync/userlist?id=${simklId}`)
+  const validStatuses: SimklWatchStatus[] = ['plantowatch', 'watching', 'hold', 'completed', 'dropped', 'notinteresting']
+  if (data?.list && validStatuses.includes(data.list)) return data.list
+
+  // Some Simkl accounts/items return no value from /sync/userlist. Inspect the
+  // actual status collections as a reliable fallback.
+  const statuses: SimklWatchStatus[] = ['plantowatch', 'watching', 'hold', 'completed', 'dropped']
+  const mediaTypes = ['movies', 'shows', 'anime'] as const
+  const lists = await Promise.all(statuses.map(async (status) => (
+    await Promise.all(mediaTypes.map((mediaType) => getSimklTypedStatusList(mediaType, status).catch(() => [])))
+  ).flat()))
+  for (let index = 0; index < lists.length; index += 1) {
+    if (lists[index].some((entry) => simklListEntryMatches(item, simklId, entry))) return statuses[index]
+  }
+  return null
+}
+
 export async function removeFromSimklWatchlist(item: MediaRef): Promise<void> {
   if (isSimklMockMode()) {
     mockWatchlistRemove(item.localId)
@@ -437,6 +474,8 @@ export async function removeFromSimklWatchlist(item: MediaRef): Promise<void> {
       [mediaType]: [{ ids: { simkl: mapping.simklId }, to: 'plantowatch', deleted: 1 }],
     }),
   })
+  const { cacheClearCategory } = await import('../cache/sqliteCache')
+  await cacheClearCategory('SIMKL_LISTS')
 }
 
 export async function isInSimklWatchlist(item: MediaRef): Promise<boolean> {
@@ -479,6 +518,17 @@ function inferType(t?: string): SimklMediaType {
   if (t === 'show' || t === 'series') return 'show'
   if (t === 'anime') return 'anime'
   return 'movie'
+}
+
+function simklListEntryMatches(item: MediaRef, simklId: number, entry: SimklWatchlistItem): boolean {
+  if (entry.simklId && Number(entry.simklId) === Number(simklId)) return true
+  if (entry.simklId && item.simklIds?.some((id) => Number(id) === Number(entry.simklId))) return true
+  if (item.imdbId && entry.imdbId && item.imdbId.toLowerCase() === entry.imdbId.toLowerCase()) return true
+  if (item.tmdbId && entry.tmdbId && Number(item.tmdbId) === Number(entry.tmdbId)) return true
+  if (item.tvdbId && entry.tvdbId && Number(item.tvdbId) === Number(entry.tvdbId)) return true
+  if (item.malId && entry.malId && Number(item.malId) === Number(entry.malId)) return true
+  const normalize = (value: string) => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalize(item.title) === normalize(entry.title) && (!item.year || !entry.year || item.year === entry.year)
 }
 
 function toWatchlistItems(raw: any): SimklWatchlistItem[] {

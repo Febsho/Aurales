@@ -772,6 +772,7 @@ export default function SeriesDetailPage() {
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
             tmdbId: knownIds.tmdbId ? Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
             imdbId: knownIds.imdbId,
+            contentType: 'series',
           })
           if (resolved) {
             if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
@@ -797,6 +798,7 @@ export default function SeriesDetailPage() {
           const resolved = await resolveAnimeIds({
             tmdbId: knownIds.tmdbId ? Number(String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
             imdbId: knownIds.imdbId,
+            contentType: 'series',
           })
           if (resolved && (resolved.anilistId || resolved.malId)) {
             isAnimeLocal = true
@@ -1227,6 +1229,7 @@ export default function SeriesDetailPage() {
                 imdbId: appResult.imdbId,
                 tmdbId: tmdbId ? Number(tmdbId) : undefined,
                 tvdbId: appResult.tvdbId ? Number(String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
+                contentType: 'series',
               })
               if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
               if (resolved?.tmdbId) appResult = { ...appResult, tmdbId: appResult.tmdbId || resolved.tmdbId }

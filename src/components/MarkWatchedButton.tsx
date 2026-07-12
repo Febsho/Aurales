@@ -14,6 +14,8 @@ import {
   markEpisodeWatchedOnSimkl,
   removeWatchedFromSimkl,
   removeEpisodeWatchedOnSimkl,
+  markSimklEpisodePending,
+  unmarkSimklEpisodePending,
 } from '../services/simkl/history'
 import { markAniListEpisodeExact, removeFromAniListList, saveAniListProgress, unmarkAniListEpisodeExact } from '../services/anilist'
 import { scrobblePMDB, removePMDBWatched } from '../services/pmdb'
@@ -73,6 +75,14 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const anilistConnected = isAniListConnected()
   const tmdbId = mediaRef.tmdbId != null ? Number(mediaRef.tmdbId) : undefined
+  const trackingMediaRef: MediaRef = {
+    ...mediaRef,
+    contentType: mediaType,
+    isAnime,
+    type: isAnime ? 'anime' : mediaType === 'series' ? 'show' : 'movie',
+    anilistId: anilistId != null ? Number(anilistId) : mediaRef.anilistId,
+    malId: malId != null ? Number(malId) : mediaRef.malId,
+  }
 
   const connectedServices: Service[] = []
   if (traktConnected) connectedServices.push('trakt')
@@ -129,16 +139,18 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         }
       } else if (service === 'simkl') {
         if (mediaType === 'movie') {
-          await markMovieWatchedOnSimkl(mediaRef)
+          await markMovieWatchedOnSimkl(trackingMediaRef)
         } else if (episode) {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, episode) : null
-          const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
+          const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
           await markEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(episode, isAnime, appSeasonCounts))
+          markSimklEpisodePending(trackingMediaRef.localId, episode.season, episode.episode)
         } else if (episodes.length > 0) {
           await Promise.all(episodes.map(async (item) => {
             const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
-            const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
-            return markEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
+            const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
+            await markEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
+            markSimklEpisodePending(trackingMediaRef.localId, item.season, item.episode)
           }))
         }
       } else if (service === 'anilist') {
@@ -239,16 +251,18 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         }))
         else if (imdbId) await traktUnmarkShow(imdbId)
       } else if (service === 'simkl') {
-        if (mediaType === 'movie') await removeWatchedFromSimkl(mediaRef, 'movie')
+        if (mediaType === 'movie') await removeWatchedFromSimkl(trackingMediaRef, 'movie')
         else if (episode) {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, episode) : null
-          const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
+          const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
           await removeEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(episode, isAnime, appSeasonCounts))
+          unmarkSimklEpisodePending(trackingMediaRef.localId, episode.season, episode.episode)
         }
         else await Promise.all(episodes.map(async (item) => {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
-          const mappedRef = mapped?.simklId ? { ...mediaRef, simklId: mapped.simklId, malId: mapped.malId ?? mediaRef.malId } : mediaRef
-          return removeEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
+          const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
+          await removeEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
+          unmarkSimklEpisodePending(trackingMediaRef.localId, item.season, item.episode)
         }))
       } else if (service === 'anilist') {
         const resolved = episode

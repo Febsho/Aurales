@@ -346,8 +346,8 @@ function pickArray(data: unknown): unknown[] {
   if (!data || typeof data !== 'object') return []
   const d = data as Record<string, unknown>
   if (Array.isArray(d.items)) return d.items
-  if (Array.isArray(d.movies) || Array.isArray(d.shows) || Array.isArray(d.episodes)) {
-    return [...(d.movies as unknown[] || []), ...(d.shows as unknown[] || []), ...(d.episodes as unknown[] || [])]
+  if (Array.isArray(d.movies) || Array.isArray(d.shows) || Array.isArray(d.seasons) || Array.isArray(d.episodes)) {
+    return [...(d.movies as unknown[] || []), ...(d.shows as unknown[] || []), ...(d.seasons as unknown[] || []), ...(d.episodes as unknown[] || [])]
   }
   if (Array.isArray(d.results)) return d.results
   if (Array.isArray(d.lists)) return d.lists
@@ -562,55 +562,29 @@ export async function createMdblistList(name: string, isPrivate = false): Promis
   return data ? { id: String(data.id), name: String(data.name || name), slug: data.slug, private: Boolean(data.private) } : null
 }
 
-async function getMdblistListPage(path: string, offset: number): Promise<{ data: unknown; response: Response }> {
+async function getMdblistListPage(path: string, cursor?: string): Promise<unknown> {
   const qs = new URLSearchParams({
     limit: '200',
-    offset: String(offset),
-    append_to_response: 'genre',
+    append_to_response: 'genres,poster,description',
   })
-  const token = await getValidMdblistAccessToken()
-  const key = token ? '' : userApiKey()
-  if (!token && !key) throw new Error('MDBList account auth is required')
-  const url = new URL(`${BASE_URL}${path}`)
-  if (key) url.searchParams.set('apikey', key)
-  for (const [k, v] of qs) url.searchParams.set(k, v)
-  const response = await fetch(url.toString(), {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  })
-  if (!response.ok) throw new Error(`MDBList GET ${path} failed (${response.status})`)
-  const data = await response.json()
-  return { data, response }
-}
-
-function hasMoreItems(response: Response, payload: unknown): boolean {
-  const header = (response.headers.get('X-Has-More') || '').trim().toLowerCase()
-  if (header) return header === 'true'
-  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    const d = payload as Record<string, unknown>
-    for (const key of ['has_more', 'hasMore', 'next', 'next_page']) {
-      const value = d[key]
-      if (typeof value === 'boolean') return value
-      if (typeof value === 'number') return Boolean(value)
-      if (typeof value === 'string' && value.trim()) return !['0', 'false', 'none', 'null'].includes(value.trim().toLowerCase())
-    }
-  }
-  return false
+  if (cursor) qs.set('cursor', cursor)
+  return mdblistFetch<unknown>('GET', `${path}?${qs.toString()}`)
 }
 
 export async function getMdblistListItems(listId: string): Promise<SearchResult[]> {
   if (!hasMdblistUserApiKey() || !listId) return []
   const items: SearchResult[] = []
-  let offset = 0
-  const limit = 200
+  let cursor: string | undefined
   for (let page = 0; page < 20; page++) {
-    const { data, response } = await getMdblistListPage(`/lists/${encodeURIComponent(listId)}/items`, offset)
+    const data = await getMdblistListPage(`/lists/${encodeURIComponent(listId)}/items`, cursor)
     const batch = pickArray(data)
     for (const raw of batch) {
       const item = mdblistItemToSearchResult(raw)
       if (item) items.push(item)
     }
-    if (!hasMoreItems(response, data) || batch.length === 0) break
-    offset += limit
+    const next = nextCursor(data)
+    if (!next || batch.length === 0 || next === cursor) break
+    cursor = next
   }
   return dedupeSearchResults(items)
 }
@@ -618,17 +592,17 @@ export async function getMdblistListItems(listId: string): Promise<SearchResult[
 export async function getMdblistWatchlistItems(): Promise<SearchResult[]> {
   if (!hasMdblistUserApiKey()) return []
   const items: SearchResult[] = []
-  let offset = 0
-  const limit = 200
+  let cursor: string | undefined
   for (let page = 0; page < 20; page++) {
-    const { data, response } = await getMdblistListPage('/watchlist/items', offset)
+    const data = await getMdblistListPage('/watchlist/items', cursor)
     const batch = pickArray(data)
     for (const raw of batch) {
       const item = mdblistItemToSearchResult(raw)
       if (item) items.push(item)
     }
-    if (!hasMoreItems(response, data) || batch.length === 0) break
-    offset += limit
+    const next = nextCursor(data)
+    if (!next || batch.length === 0 || next === cursor) break
+    cursor = next
   }
   return dedupeSearchResults(items)
 }
@@ -777,10 +751,7 @@ export async function getMdblistWatched(): Promise<MdblistWatchedItem[]> {
     const qs = new URLSearchParams({ limit: '1000', append_to_response: 'poster' })
     if (cursor) qs.set('cursor', cursor)
     const data = await mdblistFetch<unknown>('GET', `/sync/watched?${qs}`)
-    for (const raw of pickArray(data)) {
-      const item = normalizeWatched(raw)
-      if (item) items.push(item)
-    }
+    for (const raw of pickArray(data)) items.push(...normalizeWatchedRows(raw))
     cursor = nextCursor(data)
     if (!cursor) break
   }
@@ -809,6 +780,26 @@ function normalizeWatched(raw: any): MdblistWatchedItem | null {
     season: toNumber(raw.season?.number ?? raw.season ?? raw.episode?.season ?? raw.episode?.season_number),
     episode: toNumber(raw.episode?.number ?? raw.episode?.episode ?? raw.episode),
   }
+}
+
+function normalizeWatchedRows(raw: any): MdblistWatchedItem[] {
+  const base = normalizeWatched(raw)
+  if (!base) return []
+  const seasons = Array.isArray(raw?.seasons)
+    ? raw.seasons
+    : raw?.season && typeof raw.season === 'object'
+      ? [raw.season]
+      : Array.isArray(raw?.show?.seasons) ? raw.show.seasons : []
+  const episodes = seasons.flatMap((season: any) => {
+    const seasonNumber = toNumber(season?.number ?? season?.season)
+    if (!seasonNumber || !Array.isArray(season?.episodes)) return []
+    return season.episodes.flatMap((episode: any) => {
+      const episodeNumber = toNumber(episode?.number ?? episode?.episode)
+      if (!episodeNumber) return []
+      return [{ ...base, season: seasonNumber, episode: episodeNumber, watched_at: episode.watched_at || season.watched_at || base.watched_at }]
+    })
+  })
+  return episodes.length ? episodes : [base]
 }
 
 function dedupeSearchResults(items: SearchResult[]): SearchResult[] {

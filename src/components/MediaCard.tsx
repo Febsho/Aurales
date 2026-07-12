@@ -8,6 +8,8 @@ import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
 import TrailerPreview from './TrailerPreview'
+import { cardArtworkUrl } from '../services/mediaPresentation'
+import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 
 const TMDB_GENRES: Record<number, string> = {
   28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',
@@ -15,16 +17,6 @@ const TMDB_GENRES: Record<number, string> = {
   9648:'Mystery',10749:'Romance',878:'Sci-Fi',10770:'TV Movie',53:'Thriller',
   10752:'War',37:'Western',10759:'Action & Adventure',10762:'Kids',10763:'News',
   10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics',
-}
-
-/** Preload an image URL into the browser cache before displaying it. */
-function preloadImage(url: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve(url)
-    img.onerror = reject
-    img.src = url
-  })
 }
 
 interface MediaCardProps {
@@ -47,29 +39,13 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   const closeTimerRef = useRef<number | null>(null)
   const hoverRequestRef = useRef(0)
   const collapseResetRef = useRef<number | null>(null)
-  const [isVisible, setIsVisible] = useState(false)
+  const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
   const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
   const [snapCollapse, setSnapCollapse] = useState(false)
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(false)
 
-  // IntersectionObserver: only mark visible once, with 200px preload margin
-  useEffect(() => {
-    const el = cardRef.current
-    if (!el) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setIsVisible(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '200px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
   const announceFocus = () => {
@@ -229,7 +205,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt) {
       if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
         getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
-          .then((backdrop) => { if (!cancelled && backdrop) return preloadImage(backdrop).then(() => { if (!cancelled) setResolvedBackdrop(backdrop) }) })
+          .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
           .catch(() => undefined)
       }
       return () => { cancelled = true }
@@ -288,13 +264,6 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
 
         if (cancelled) return
 
-        // Preload final images into the browser cache before updating state,
-        // so the <img> src swap is visually instant with no blank frame.
-        const preloads: Promise<void>[] = []
-        if (finalPoster) preloads.push(preloadImage(finalPoster).then(() => {}).catch(() => { finalPoster = undefined }))
-        if (finalBackdrop) preloads.push(preloadImage(finalBackdrop).then(() => {}).catch(() => { finalBackdrop = undefined }))
-        await Promise.all(preloads)
-
         if (!cancelled) {
           if (finalPoster) setResolvedPoster(finalPoster)
           if (finalBackdrop) setResolvedBackdrop(finalBackdrop)
@@ -308,8 +277,16 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
 
   const pickWorkingUrl = (...urls: Array<string | undefined>) =>
     urls.find((url) => url && !failedImageUrls.has(url))
-  const posterUrl = pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, displayItem.poster)
-  const backdropUrl = pickWorkingUrl(customArt.backdrop, resolvedCustomArt.backdrop, resolvedBackdrop, displayItem.backdrop)
+  const posterUrl = cardArtworkUrl(
+    pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, displayItem.poster),
+    'poster',
+    posterSize,
+  )
+  const backdropUrl = cardArtworkUrl(
+    pickWorkingUrl(customArt.backdrop, resolvedCustomArt.backdrop, resolvedBackdrop, displayItem.backdrop),
+    'landscape',
+    posterSize,
+  )
   const logoUrl = pickWorkingUrl(customArt.logo, resolvedCustomArt.logo, resolvedLogo, displayItem.logo)
   const landscapeBackdrop = backdropUrl
   const markImageFailed = (url?: string) => {

@@ -454,6 +454,7 @@ export default function MovieDetailPage() {
           const resolved = await resolveAnimeIds({
             anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+            contentType: 'movie',
           })
           if (resolved) {
             if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
