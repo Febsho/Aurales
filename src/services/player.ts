@@ -177,6 +177,10 @@ export async function updateTempSubtitle(path: string, content: string): Promise
   await invoke('update_temp_subtitle', { path, content })
 }
 
+export async function extractEmbeddedSubtitle(url: string, subIndex: number): Promise<string> {
+  return await invoke('extract_embedded_subtitle', { url, subIndex })
+}
+
 export async function openRouterChat(apiKey: string, requestBody: Record<string, unknown>): Promise<string> {
   return await invoke('openrouter_chat', { apiKey, requestBody })
 }

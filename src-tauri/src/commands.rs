@@ -1104,18 +1104,30 @@ fn find_ytdlp() -> Option<PathBuf> {
 // (1080p video + audio; yt-dlp handles YouTube's anti-bot measures and keeps
 // itself current). Returns the printed URLs: [video] or [video, audio].
 #[tauri::command]
-pub async fn ytdlp_resolve(video_id: String) -> Result<Vec<String>, String> {
+pub async fn ytdlp_resolve(video_id: String, max_height: Option<u32>) -> Result<Vec<String>, String> {
     if video_id.len() != 11
         || !video_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid YouTube video id.".to_string());
     }
     let ytdlp = find_ytdlp().ok_or_else(|| "yt-dlp binary not found.".to_string())?;
+    let max_height = max_height.unwrap_or(2160).clamp(360, 2160);
     tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let mut command = std::process::Command::new(&ytdlp);
+        let format = if max_height <= 1080 {
+            format!("bv*[height<={max_height}][vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/b[height<={max_height}][protocol^=http]")
+        } else {
+            format!("bv*[height<={max_height}][vcodec!^=av01][protocol^=http]+ba[protocol^=http]/b[height<={max_height}][protocol^=http]")
+        };
         command
             .arg("-f")
-            .arg("bv*[height<=1080][vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/b[height<=1080][protocol^=http]")
+            .arg(format)
+            // Resolution wins first, then bitrate. This keeps a strong 1080p
+            // AVC stream where that is the source maximum while allowing
+            // VP9/AV1 1440p and 4K streams instead of capping every Hero at
+            // YouTube's often heavily-compressed 1080p AVC rendition.
+            .arg("-S")
+            .arg("res:2160,fps,br")
             .arg("--no-playlist")
             .arg("--no-warnings")
             .arg("--quiet")
@@ -2940,6 +2952,68 @@ pub async fn update_temp_subtitle(path: String, content: String) -> Result<(), S
     })
     .await
     .map_err(|e| format!("Subtitle update task failed: {e}"))?
+}
+
+/// Extracts a single embedded subtitle stream from `url` to SRT text using
+/// ffmpeg. `sub_index` is the RELATIVE subtitle-stream index (0 = first subtitle
+/// track), mapped as `0:s:<sub_index>` — mapping by absolute stream index is
+/// unreliable across sources and can select a non-subtitle stream. Used to
+/// pre-translate embedded subtitles ahead of playback.
+#[tauri::command]
+pub async fn extract_embedded_subtitle(url: String, sub_index: u32) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let ffmpeg = crate::thumbnails::find_ffmpeg();
+        let mut command = std::process::Command::new(&ffmpeg);
+        command
+            .arg("-y")
+            .arg("-nostdin")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error");
+        if url.starts_with("http://") || url.starts_with("https://") {
+            command
+                .arg("-seekable")
+                .arg("1")
+                .arg("-rw_timeout")
+                .arg("30000000");
+        }
+        command
+            .arg("-i")
+            .arg(&url)
+            .arg("-map")
+            .arg(format!("0:s:{sub_index}"))
+            .arg("-c:s")
+            .arg("srt")
+            .arg("-f")
+            .arg("srt")
+            .arg("pipe:1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "ffmpeg subtitle extract failed: {}",
+                stderr.lines().last().unwrap_or("unknown error")
+            ));
+        }
+        let srt = String::from_utf8_lossy(&output.stdout).to_string();
+        if srt.trim().is_empty() {
+            return Err("No subtitle data extracted from the source track.".to_string());
+        }
+        Ok(srt)
+    })
+    .await
+    .map_err(|e| format!("Subtitle extract task failed: {e}"))?
 }
 
 // ─── Simkl OAuth commands ─────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ import {
 import { taskQueue } from '../services/cache/backgroundTaskQueue'
 import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { streamPreloadManager } from '../services/streams/preloadManager'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -569,12 +570,16 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   )
 }
 
-function HeroCatalogSection({ row, onBackdropChange }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void }) {
+function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
   const memCache = useHomeCatalogCache()
   const cacheKey = heroRowCacheKey(row)
   const cached = memCache.get(cacheKey)
   const [items, setItems] = useState<SearchResult[]>(cached || [])
   const addons = useAppStore((s) => s.addons)
+  const heroMode = useAppStore((s) => s.homeHeroMode)
+  const heroSource = useAppStore((s) => s.fixedHeroSource)
+  const manualItem = useAppStore((s) => s.fixedHeroManualItem)
+  const recentlyWatched = useAppStore((s) => s.recentlyWatched)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
   const cancelledRef = useRef(false)
 
@@ -654,8 +659,31 @@ function HeroCatalogSection({ row, onBackdropChange }: { row: HomeRowConfig; onB
     addons
   ])
 
+  if (heroMode === 'disabled') return null
   if (items.length === 0) return null
-  return <HeroSection items={items} onActiveBackdropChange={onBackdropChange} />
+  let heroItems = items
+  if (heroMode === 'fixed') {
+    heroItems = items.filter((item) => Boolean(item.backdrop))
+    if (heroSource === 'manual' && manualItem) heroItems = [manualItem]
+    else if (heroSource === 'continue-watching') heroItems = recentlyWatched.filter((item) => Boolean(item.backdrop))
+    else if (heroSource === 'recently-added') heroItems = [...heroItems].sort((a, b) => (b.releaseDate || String(b.year || '')).localeCompare(a.releaseDate || String(a.year || '')))
+    else if (heroSource === 'recommended') heroItems = heroItems.filter((item) => item.rating == null || item.rating >= 6.5).sort((a, b) => (b.rating || 0) - (a.rating || 0))
+    const selectionKey = `aurales_fixed_hero_selection:${heroSource}`
+    if (heroSource !== 'manual' && heroItems.length) {
+      try {
+        const cachedSelection = JSON.parse(localStorage.getItem(selectionKey) || 'null') as { item: SearchResult; expires: number } | null
+        if (cachedSelection && cachedSelection.expires > Date.now()) heroItems = [cachedSelection.item]
+        else {
+          const selected = heroItems[Math.floor(Math.random() * Math.min(heroItems.length, 8))]
+          localStorage.setItem(selectionKey, JSON.stringify({ item: selected, expires: Date.now() + 12 * 60 * 60 * 1000 }))
+          heroItems = [selected]
+        }
+      } catch { heroItems = heroItems.slice(0, 1) }
+    }
+    if (focusedItem) heroItems = [focusedItem]
+  }
+  if (heroItems.length === 0) return null
+  return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} />
 }
 
 // ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
@@ -805,7 +833,7 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
 
 const INITIAL_VISIBLE = 3;
 
-function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean }) {
+function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const [activated, setActivated] = useState(eager ?? false)
 
@@ -828,7 +856,7 @@ function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEd
 
   if (!activated) {
     return (
-      <div ref={sentinelRef} className="row-contain">
+      <div ref={sentinelRef} className={`row-contain ${motionClass}`} data-fixed-hero-row>
         <MediaRowSkeleton
           title={getRowDisplayTitle(row)}
           layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
@@ -841,7 +869,7 @@ function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEd
   if (!element) return null
 
   return (
-    <div className="row-contain">
+    <div className={`row-contain ${motionClass}`} data-fixed-hero-row>
       <ErrorBoundary key={row.id} label={row.title}>
         <SortableRowContainer
           row={row}
@@ -855,7 +883,7 @@ function LazyRow({ row, isEditing, onRemove, eager }: { row: HomeRowConfig; isEd
   )
 }
 
-function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void }) {
+function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex = 0, previousIndex = null, direction = 1 }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void; fixed?: boolean; activeIndex?: number; previousIndex?: number | null; direction?: 1 | -1 }) {
   return (
     <div className="space-y-4">
       {rows.map((row, idx) => (
@@ -865,6 +893,7 @@ function StaggeredRows({ rows, isEditing, onRemove }: { rows: HomeRowConfig[]; i
           isEditing={isEditing}
           onRemove={onRemove}
           eager={idx < INITIAL_VISIBLE}
+          motionClass={!fixed ? 'fixed-hero-row-active' : idx === activeIndex ? `fixed-hero-row-active ${previousIndex != null ? `fixed-hero-row-enter-${direction > 0 ? 'up' : 'down'}` : ''}` : idx === previousIndex ? `fixed-hero-row-active fixed-hero-row-exit-${direction > 0 ? 'up' : 'down'}` : ''}
         />
       ))}
     </div>
@@ -880,13 +909,66 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
 ];
 
 export default function HomePage() {
+  const homeRootRef = useRef<HTMLDivElement>(null)
   const { homeRows, reorderHomeRows, removeHomeRow, resetHomeRows } = useAppStore();
   const cinematic = useAppStore((state) => state.interfaceTheme === 'cinematic')
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
+  const homeHeroMode = useAppStore((s) => s.homeHeroMode)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
+  const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+
+  const [focusedHeroItem, setFocusedHeroItem] = useState<SearchResult | null>(null)
+  const [activeShelfIndex, setActiveShelfIndex] = useState(0)
+  const [previousShelfIndex, setPreviousShelfIndex] = useState<number | null>(null)
+  const [shelfDirection, setShelfDirection] = useState<1 | -1>(1)
+  const activeShelfRef = useRef(0)
+
+  useEffect(() => {
+    if (homeHeroMode !== 'fixed') { setFocusedHeroItem(null); return }
+    const handleFocus = (event: Event) => {
+      const item = (event as CustomEvent<SearchResult>).detail
+      setFocusedHeroItem(item)
+      if (item.backdrop) setHeroBackdrop(item.backdrop)
+    }
+    window.addEventListener('aurales:media-focus', handleFocus)
+    return () => window.removeEventListener('aurales:media-focus', handleFocus)
+  }, [homeHeroMode])
+
+  useEffect(() => {
+    if (homeHeroMode !== 'fixed' || isEditing) return
+    const scrollContainer = homeRootRef.current?.closest('main') as HTMLElement | null
+    if (!scrollContainer) return
+    let locked = false
+    let settleTimer = 0
+    const transitionTo = (index: number, direction: 1 | -1) => {
+      if (locked) return
+      locked = true
+      setPreviousShelfIndex(activeShelfRef.current)
+      setShelfDirection(direction)
+      activeShelfRef.current = index
+      setActiveShelfIndex(index)
+      settleTimer = window.setTimeout(() => { setPreviousShelfIndex(null); locked = false }, 520)
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      if (locked) { event.preventDefault(); return }
+      if (Math.abs(event.deltaY) < 10) return
+      event.preventDefault()
+      const rows = Array.from(homeRootRef.current?.querySelectorAll<HTMLElement>('[data-fixed-hero-row]') || [])
+      if (!rows.length) return
+      const next = Math.max(0, Math.min(activeShelfRef.current + (event.deltaY > 0 ? 1 : -1), rows.length - 1))
+      if (next === activeShelfRef.current) return
+      transitionTo(next, event.deltaY > 0 ? 1 : -1)
+    }
+    scrollContainer.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      scrollContainer.removeEventListener('wheel', onWheel)
+      window.clearTimeout(settleTimer)
+    }
+  }, [homeHeroMode, isEditing])
 
   // Batch-load every shelf's sqlite cache entry in a single IPC call and seed
   // the in-memory cache, so all rows paint instantly instead of each doing its
@@ -919,6 +1001,25 @@ export default function HomePage() {
       .finally(() => { if (!cancelled) setCachePreloaded(true) })
 
     return () => { cancelled = true }
+  }, [cachePreloaded])
+
+  // Startup stream prediction must not compete with Home's initial cache
+  // hydration or first paint. ContinueWatchingRow independently marks its
+  // enrichment complete; the manager starts only after both gates and idle.
+  useEffect(() => {
+    if (!cachePreloaded) return
+    let cancelled = false
+    let secondFrame = 0
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (!cancelled) streamPreloadManager.markHomeReady()
+      })
+    })
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(firstFrame)
+      window.cancelAnimationFrame(secondFrame)
+    }
   }, [cachePreloaded])
 
   useEffect(() => {
@@ -977,11 +1078,11 @@ export default function HomePage() {
   };
 
   const shelvesContent = (
-    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} />
+    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={homeHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
   );
 
   return (
-    <div className="pb-12 relative">
+    <div ref={homeRootRef} className={`pb-12 relative ${homeHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${homeHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
 
       {isEditing && (
         <div className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/10 py-4 px-6 flex items-center justify-center gap-4">
@@ -1015,9 +1116,9 @@ export default function HomePage() {
         />
       ) : (
         <>
-          {heroRow && <HeroCatalogSection row={heroRow} onBackdropChange={handleBackdropChange} />}
+          {heroRow && homeHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
 
-          <div className="relative z-10" style={{ marginTop: heroRow ? (cinematic ? '24px' : '-40px') : undefined }}>
+          <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && homeHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                 <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>

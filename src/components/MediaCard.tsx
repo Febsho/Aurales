@@ -17,6 +17,16 @@ const TMDB_GENRES: Record<number, string> = {
   10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics',
 }
 
+/** Preload an image URL into the browser cache before displaying it. */
+function preloadImage(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(url)
+    img.onerror = reject
+    img.src = url
+  })
+}
+
 interface MediaCardProps {
   item: SearchResult
   layout?: 'poster' | 'landscape'
@@ -62,10 +72,15 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   }, [])
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
+  const announceFocus = () => {
+    onFocusItem?.(displayItem)
+    window.dispatchEvent(new CustomEvent<SearchResult>('aurales:media-focus', { detail: displayItem }))
+  }
   const customArt = disableArtOverride ? {} : getSearchResultCustomArt(item)
   const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(new Set())
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
+  const [resolvedLogo, setResolvedLogo] = useState<string | undefined>(undefined)
   const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
   const providerWatched = useWatchedCacheStore((s) => {
@@ -127,7 +142,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       const isAnime = item.isAnime || 
                       /^(mal|anilist)[-:]/i.test(item.id) || 
                       genres.includes('anime') || 
-                      ((item.genreIds?.includes(16) || genres.includes('animation')) && item.originalLanguage === 'ja')
+                      ((item.genreIds?.includes(16) || genres.includes('animation')) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || ''))
       if (isAnime) {
         return useAppStore.getState().animeMetadataSource ?? 'tvdb'
       }
@@ -214,7 +229,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt) {
       if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
         getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
-          .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
+          .then((backdrop) => { if (!cancelled && backdrop) return preloadImage(backdrop).then(() => { if (!cancelled) setResolvedBackdrop(backdrop) }) })
           .catch(() => undefined)
       }
       return () => { cancelled = true }
@@ -244,24 +259,47 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
             setResolvedCustomArt(getSearchResultCustomArt({ ...displayItem, imdbId: resolvedImdbId }))
           }
         }
+
+        // Collect all art results first, then do a single batch state update
+        // to avoid intermediate renders that cause poster flickering.
+        let finalPoster: string | undefined
+        let finalBackdrop: string | undefined
+        let finalLogo: string | undefined
+        let finalGenre: string | undefined
+
         if (resolvedTmdbId && (needsPoster || needsBackdrop || needsGenre)) {
-          const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId)
-          if (!cancelled) {
-            if (meta.poster) setResolvedPoster(meta.poster)
-            if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
-            if (meta.genre) setResolvedGenre(meta.genre)
-          }
+          const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId, resolvedImdbId)
+          if (meta.poster) finalPoster = meta.poster
+          if (meta.backdrop) finalBackdrop = meta.backdrop
+          if (meta.genre) finalGenre = meta.genre
         }
+
         if (wantsProviderArt) {
           const providerArt = await resolveArtFromProviders(
             displayItem.type,
             { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId: resolvedImdbId },
             displayItem.isAnime,
           )
-          if (!cancelled) {
-            setResolvedPoster(providerArt.poster)
-            setResolvedBackdrop(providerArt.backdrop)
-          }
+          // Provider art takes priority over TMDB metadata art
+          if (providerArt.poster) finalPoster = providerArt.poster
+          if (providerArt.backdrop) finalBackdrop = providerArt.backdrop
+          if (providerArt.logo) finalLogo = providerArt.logo
+        }
+
+        if (cancelled) return
+
+        // Preload final images into the browser cache before updating state,
+        // so the <img> src swap is visually instant with no blank frame.
+        const preloads: Promise<void>[] = []
+        if (finalPoster) preloads.push(preloadImage(finalPoster).catch(() => { finalPoster = undefined }))
+        if (finalBackdrop) preloads.push(preloadImage(finalBackdrop).catch(() => { finalBackdrop = undefined }))
+        await Promise.all(preloads)
+
+        if (!cancelled) {
+          if (finalPoster) setResolvedPoster(finalPoster)
+          if (finalBackdrop) setResolvedBackdrop(finalBackdrop)
+          if (finalLogo) setResolvedLogo(finalLogo)
+          if (finalGenre) setResolvedGenre(finalGenre)
         }
       } catch (_) { /* ignore */ }
     })()
@@ -272,6 +310,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     urls.find((url) => url && !failedImageUrls.has(url))
   const posterUrl = pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, displayItem.poster)
   const backdropUrl = pickWorkingUrl(customArt.backdrop, resolvedCustomArt.backdrop, resolvedBackdrop, displayItem.backdrop)
+  const logoUrl = pickWorkingUrl(customArt.logo, resolvedCustomArt.logo, resolvedLogo, displayItem.logo)
   const landscapeBackdrop = backdropUrl
   const markImageFailed = (url?: string) => {
     if (!url) return
@@ -285,8 +324,22 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   const showContextMenu = useContextMenu((s) => s.show)
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    if (import.meta.env.DEV && e.shiftKey) {
+      window.dispatchEvent(new CustomEvent('aurales:art-debug', {
+        detail: {
+          item: displayItem,
+          displayed: { poster: posterUrl, backdrop: backdropUrl, logo: logoUrl },
+          layers: {
+            custom: customArt,
+            provider: { poster: resolvedPoster, backdrop: resolvedBackdrop, logo: resolvedLogo },
+            item: { poster: item.poster, backdrop: item.backdrop, logo: item.logo },
+          },
+        },
+      }))
+      return
+    }
     showContextMenu(e.clientX, e.clientY, { kind: 'media', item })
-  }, [item, showContextMenu])
+  }, [item, showContextMenu, displayItem, posterUrl, backdropUrl, logoUrl, customArt, resolvedPoster, resolvedBackdrop, resolvedLogo])
 
   const handleClick = () => {
     try {
@@ -404,20 +457,20 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        onFocus={() => { onFocusItem?.(displayItem); revealExpandedCard(); openHoverPreview() }}
+        onFocus={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onBlur={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
-        onMouseEnter={() => { onFocusItem?.(displayItem); revealExpandedCard(); openHoverPreview() }}
+        onMouseEnter={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onMouseLeave={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
         className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
       >
         <div className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border bg-surface-elevated transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
           {posterUrl && <img src={posterUrl} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
           {expanded && focusMedia && <img src={focusMedia} alt="" className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
-          {expanded && hoverPreviewOpen && hoverTrailer && <TrailerPreview trailer={hoverTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} className="absolute inset-0 z-[5]" />}
+          {expanded && hoverPreviewOpen && hoverTrailer && <TrailerPreview trailer={hoverTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} placeholderUrl={focusMedia} className="absolute inset-0 z-[5]" />}
           {!posterUrl && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
           <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
           {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
-            {displayItem.logo ? <img src={displayItem.logo} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
+            {logoUrl ? <img src={logoUrl} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
           </div>}
           {!isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
         </div>
@@ -449,8 +502,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        onFocus={() => onFocusItem?.(displayItem)}
-        onMouseEnter={() => onFocusItem?.(displayItem)}
+        onFocus={announceFocus}
+        onMouseEnter={announceFocus}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicWidth}`}
       >
         <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
@@ -500,8 +553,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
 
           {/* Media Info Overlay */}
           <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1">
-            {cinematicLandscapeExpanded && displayItem.logo ? (
-              <img src={displayItem.logo} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" />
+            {cinematicLandscapeExpanded && logoUrl ? (
+              <img src={logoUrl} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" />
             ) : (
               <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
                 {displayItem.title}
@@ -552,9 +605,9 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      onMouseEnter={() => { onFocusItem?.(displayItem); openHoverPreview() }}
+      onMouseEnter={() => { announceFocus(); openHoverPreview() }}
       onMouseLeave={closeHoverPreview}
-      onFocus={() => { onFocusItem?.(displayItem); openHoverPreview() }}
+      onFocus={() => { announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
       className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring ${snapCollapse ? 'transition-none' : 'transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]'} ${cardWidthClass} ${posterSlotHeightClass} ${cardLiftClass}`}
     >
@@ -567,6 +620,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
             preferVideoOnly={!posterTrailerSound}
             eager
             showShade={false}
+            placeholderUrl={posterUrl}
           />
         ) : posterUrl ? (
           <img

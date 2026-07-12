@@ -1,6 +1,8 @@
 import { lazy, Suspense, useState, useRef, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { tmdbProvider } from '../services/tmdb'
+import type { SearchResult } from '../types'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   DndContext,
@@ -857,6 +859,37 @@ const AUDIENCE_OPTIONS = [
   { mode: 'kid-safe', title: 'KID-SAFE', subtitle: 'Family-friendly only' },
 ] as const
 
+function ManualHeroPicker() {
+  const selected = useAppStore((s) => s.fixedHeroManualItem)
+  const setSelected = useAppStore((s) => s.setFixedHeroManualItem)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<SearchResult[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResults([]); return }
+    let cancelled = false
+    setLoading(true)
+    const timer = window.setTimeout(() => {
+      tmdbProvider.search(query.trim()).then((items) => {
+        if (!cancelled) setResults(items.filter((item) => Boolean(item.backdrop)).slice(0, 6))
+      }).catch(() => { if (!cancelled) setResults([]) }).finally(() => { if (!cancelled) setLoading(false) })
+    }, 300)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [query])
+
+  return <div className="w-80">
+    {selected && <div className="mb-2 flex items-center justify-between rounded-xl bg-white/[.05] px-3 py-2 text-xs"><span className="truncate">{selected.title}{selected.year ? ` (${selected.year})` : ''}</span><button onClick={() => setSelected(null)} className="ml-2 text-white/45 hover:text-white">Remove</button></div>}
+    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search movies and shows…" className="w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm outline-none focus:border-accent/50" />
+    {(loading || results.length > 0) && <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-white/[.08] bg-[#151515] p-1 shadow-2xl">
+      {loading ? <p className="px-3 py-2 text-xs text-white/40">Searching…</p> : results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => { setSelected(item); setQuery(''); setResults([]) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-white/[.08]">
+        {item.poster && <img src={item.poster} alt="" className="h-12 w-8 rounded object-cover" />}
+        <span className="min-w-0"><span className="block truncate text-sm font-semibold">{item.title}</span><span className="text-xs text-white/40">{item.year || 'Unknown year'} · {item.type === 'series' ? 'Show' : 'Movie'}</span></span>
+      </button>)}
+    </div>}
+  </div>
+}
+
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
@@ -1651,196 +1684,6 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
-              {/* Stremio */}
-              <SettingSection title="Stremio Account" description="Import your addon collection from Stremio.">
-                <div className="px-6 py-4">
-                  {stremioAuth ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
-                          <div>
-                            <span className="text-sm font-semibold text-white">Connected</span>
-                            <p className="text-xs text-white/40 mt-0.5">{stremioAuth.email}</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleStremioSync}
-                            disabled={stremioLoading}
-                            className="px-3.5 py-2 bg-accent/10 hover:bg-accent/20 text-accent rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {stremioLoading ? 'Syncing...' : 'Sync Addons'}
-                          </button>
-                          <button
-                            onClick={handleStremioDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {stremioError && <p className="text-xs text-white/40">{stremioError}</p>}
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
-                          <input
-                            type="email"
-                            value={stremioEmail}
-                            onChange={(e) => setStremioEmail(e.target.value)}
-                            placeholder="your@email.com"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
-                          <input
-                            type="password"
-                            value={stremioPassword}
-                            onChange={(e) => setStremioPassword(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()}
-                            placeholder="Your Stremio password"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleStremioLogin}
-                        disabled={stremioLoading}
-                        className="px-5 py-2.5 bg-accent hover:bg-accent/80 disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
-                      </button>
-                      <div className="pt-4 border-t border-white/[0.06]">
-                        <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={stremioAuthKey}
-                            onChange={(e) => setStremioAuthKey(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioAuthKeyImport()}
-                            placeholder="AuthKey from web.stremio.com"
-                            className="flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={handleStremioAuthKeyImport}
-                            disabled={stremioLoading}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-sm transition-colors cursor-pointer text-white font-semibold"
-                          >
-                            Import
-                          </button>
-                        </div>
-                        <p className="text-xs text-white/35 mt-1.5 leading-relaxed">
-                          Use this if your Stremio account uses social login or Stremio rejects the password with "Wrong passphrase".
-                        </p>
-                      </div>
-                      {stremioError && <p className="text-xs text-red-400">{stremioError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* Simkl */}
-              <SettingSection title="Simkl" description="Sync watchlist, watching, and watch history.">
-                <div className="px-6 py-4">
-                  {simklStatus.connected || store.simklConnected ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          {(simklStatus.account?.avatar || store.simklAccount?.avatar) ? (
-                            <img src={simklStatus.account?.avatar || store.simklAccount?.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-[#2ecc71]/20 flex items-center justify-center text-[#2ecc71] text-sm font-bold">
-                              {(simklStatus.account?.username ?? store.simklAccount?.username ?? 'S')[0].toUpperCase()}
-                            </div>
-                          )}
-                          <div>
-                            <p className="text-sm font-bold text-white">
-                              {simklStatus.account?.username ?? store.simklAccount?.username ?? 'Simkl User'}
-                            </p>
-                            <p className="text-xs text-white/40 mt-0.5">
-                              {simklLastSync ? `Last sync: ${new Date(simklLastSync).toLocaleString()}` : 'Never synced'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleSimklSync}
-                            disabled={simklLoading}
-                            className="px-3.5 py-2 bg-[#2ecc71]/10 hover:bg-[#2ecc71]/20 text-[#2ecc71] rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {simklLoading ? 'Syncing...' : 'Sync Now'}
-                          </button>
-                          <button
-                            onClick={handleSimklDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
-                          {simklError}
-                        </p>
-                      )}
-                    </div>
-                  ) : simklAuthStarted ? (
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
-                        <p className="text-xs text-white/40 leading-relaxed">
-                          Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="text"
-                          value={simklCode}
-                          onChange={(e) => setSimklCode(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()}
-                          placeholder="Simkl code"
-                          className="min-w-40 flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm font-mono tracking-wider text-white focus:outline-none focus:border-[#2ecc71]/50"
-                        />
-                        <button
-                          onClick={handleSimklCodeSubmit}
-                          disabled={simklLoading}
-                          className="px-4 py-2 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                        >
-                          Check Now
-                        </button>
-                      </div>
-                      {simklVerificationUrl && (
-                        <p className="text-xs text-white/40">
-                          Verification page: <span className="font-mono text-white/80">{simklVerificationUrl}</span>
-                        </p>
-                      )}
-                      <button onClick={cancelSimklAuth} className="text-xs text-white/40 hover:text-white transition-colors cursor-pointer">Cancel</button>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/40' : 'text-red-400'}`}>{simklError}</p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-sm text-white/40">
-                        Connect your Simkl account to sync your watchlist, watching, and watch history.
-                      </p>
-                      <button
-                        onClick={handleSimklConnect}
-                        disabled={simklLoading}
-                        className="px-5 py-2.5 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {simklLoading ? 'Opening Simkl...' : 'Connect Simkl'}
-                      </button>
-                      {simklError && <p className="text-xs text-red-400">{simklError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
               {/* Trakt */}
               <SettingSection title="Trakt" description="Device authorization for watch history and lists.">
                 <div className="px-6 py-4">
@@ -1957,82 +1800,280 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* MDBList */}
-              <SettingSection title="MDBList" description="Ratings, watchlist, lists, continue watching, watched history, and scrobbling.">
-                <div className="px-6 py-4 space-y-3">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <button
-                      onClick={handleMdblistOAuthConnect}
-                      disabled={mdblistConnChecking || mdblistOAuthPolling || !mdblistClientIdInput}
-                      className="px-4 py-2 bg-accent text-black hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {mdblistOAuthPolling ? 'Waiting for MDBList...' : getStoredMdblistTokens() ? 'Reconnect MDBList' : 'Connect MDBList'}
-                    </button>
-                    {getStoredMdblistTokens() && (
+              {/* Simkl */}
+              <SettingSection title="Simkl" description="Sync watchlist, watching, and watch history.">
+                <div className="px-6 py-4">
+                  {simklStatus.connected || store.simklConnected ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+                        <div className="flex items-center gap-3">
+                          {(simklStatus.account?.avatar || store.simklAccount?.avatar) ? (
+                            <img src={simklStatus.account?.avatar || store.simklAccount?.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-[#2ecc71]/20 flex items-center justify-center text-[#2ecc71] text-sm font-bold">
+                              {(simklStatus.account?.username ?? store.simklAccount?.username ?? 'S')[0].toUpperCase()}
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-sm font-bold text-white">
+                              {simklStatus.account?.username ?? store.simklAccount?.username ?? 'Simkl User'}
+                            </p>
+                            <p className="text-xs text-white/40 mt-0.5">
+                              {simklLastSync ? `Last sync: ${new Date(simklLastSync).toLocaleString()}` : 'Never synced'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSimklSync}
+                            disabled={simklLoading}
+                            className="px-3.5 py-2 bg-[#2ecc71]/10 hover:bg-[#2ecc71]/20 text-[#2ecc71] rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            {simklLoading ? 'Syncing...' : 'Sync Now'}
+                          </button>
+                          <button
+                            onClick={handleSimklDisconnect}
+                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            Disconnect
+                          </button>
+                        </div>
+                      </div>
+                      {simklError && (
+                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
+                          {simklError}
+                        </p>
+                      )}
+                    </div>
+                  ) : simklAuthStarted ? (
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
+                        <p className="text-xs text-white/40 leading-relaxed">
+                          Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={simklCode}
+                          onChange={(e) => setSimklCode(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()}
+                          placeholder="Simkl code"
+                          className="min-w-40 flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm font-mono tracking-wider text-white focus:outline-none focus:border-[#2ecc71]/50"
+                        />
+                        <button
+                          onClick={handleSimklCodeSubmit}
+                          disabled={simklLoading}
+                          className="px-4 py-2 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
+                        >
+                          Check Now
+                        </button>
+                      </div>
+                      {simklVerificationUrl && (
+                        <p className="text-xs text-white/40">
+                          Verification page: <span className="font-mono text-white/80">{simklVerificationUrl}</span>
+                        </p>
+                      )}
+                      <button onClick={cancelSimklAuth} className="text-xs text-white/40 hover:text-white transition-colors cursor-pointer">Cancel</button>
+                      {simklError && (
+                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/40' : 'text-red-400'}`}>{simklError}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-sm text-white/40">
+                        Connect your Simkl account to sync your watchlist, watching, and watch history.
+                      </p>
                       <button
-                        onClick={handleMdblistOAuthDisconnect}
-                        className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-sm font-semibold transition-colors"
+                        onClick={handleSimklConnect}
+                        disabled={simklLoading}
+                        className="px-5 py-2.5 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
                       >
-                        Disconnect OAuth
+                        {simklLoading ? 'Opening Simkl...' : 'Connect Simkl'}
+                      </button>
+                      {simklError && <p className="text-xs text-red-400">{simklError}</p>}
+                    </div>
+                  )}
+                </div>
+              </SettingSection>
+
+              {/* AniList */}
+              <SettingSection title="AniList" description="Track anime watch progress, manage lists, and sync history.">
+                <div className="px-6 py-4 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleAnilistConnect}
+                      disabled={anilistLoading}
+                      className="px-3.5 py-2 bg-accent text-black rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
+                    >
+                      {anilistLoading ? 'Connecting...' : store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList'}
+                    </button>
+                    <button
+                      onClick={syncAniListNow}
+                      disabled={anilistLoading || !store.anilistConnected}
+                      className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                    >
+                      {anilistLoading ? 'Syncing…' : 'Sync from AniList'}
+                    </button>
+                    {store.anilistConnected && (
+                      <button
+                        onClick={handleAnilistDisconnect}
+                        className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        Disconnect
                       </button>
                     )}
                   </div>
 
-
-                  <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
-                    <input
-                      type="password"
-                      value={store.mdblistApiKey}
-                      onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }}
-                      placeholder="Enter your MDBList API key"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-[11px] text-white/30 mt-1">
-                      Optional fallback. Empty key still uses Aurales' built-in MDBList key for ratings only. Account features use OAuth or your own key. API docs:{' '}
-                      <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={testMdblistConnection}
-                      disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking}
-                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {mdblistConnChecking ? (
-                        <>
-                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
-                          Testing...
-                        </>
+                  {store.anilistAccount && (
+                    <div className="flex items-center gap-3 bg-white/[0.03] rounded-xl p-3 border border-white/[0.06]">
+                      {store.anilistAccount.avatar ? (
+                        <img src={store.anilistAccount.avatar} alt="" className="w-8 h-8 rounded-full object-cover" />
                       ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          Test Connection
-                        </>
+                        <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-accent text-xs font-bold">
+                          {store.anilistAccount.name[0].toUpperCase()}
+                        </div>
                       )}
-                    </button>
+                      <div>
+                        <p className="text-xs text-white/40">Connected as</p>
+                        <p className="text-sm font-semibold text-white">{store.anilistAccount.name}</p>
+                      </div>
+                    </div>
+                  )}
 
-                    {mdblistConnStatus && !mdblistConnChecking && (
-                      mdblistConnStatus.connected ? (
-                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          Connected
-                          {mdblistConnStatus.user?.username && <span className="text-white/30 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1.5 text-sm text-red-400">
-                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
-                          </svg>
-                          <span>{mdblistConnStatus.error}</span>
-                        </span>
-                      )
-                    )}
+                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/40'}`}>{anilistMessage}</p>}
+
+                  {/* Manual Token Fallback */}
+                  <div className="pt-4 border-t border-white/[0.06]">
+                    <details className="group">
+                      <summary className="text-xs text-white/30 hover:text-white/50 cursor-pointer select-none font-semibold">
+                        Advanced: Manual Token Entry
+                      </summary>
+                      <div className="mt-3 space-y-3">
+                        <label className="text-xs text-white/40 block font-semibold uppercase tracking-wider">Manual Access Token</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            value={anilistTokenInput}
+                            onChange={(e) => setAnilistTokenInput(e.target.value)}
+                            placeholder="Paste manual AniList access token"
+                            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-accent/50"
+                          />
+                          <button
+                            onClick={connectAniListManual}
+                            disabled={anilistLoading || !anilistTokenInput}
+                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-xs font-semibold cursor-pointer text-white"
+                          >
+                            Save Manual Token
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-white/30 leading-relaxed">
+                          Alternatively, you can generate a token via AniList's developer portal/client authorization flow and paste it here directly.
+                        </p>
+                      </div>
+                    </details>
                   </div>
                 </div>
+              </SettingSection>
+
+              {/* Stremio */}
+              <SettingSection title="Stremio Account" description="Import your addon collection from Stremio.">
+                <div className="px-6 py-4">
+                  {stremioAuth ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+                        <div className="flex items-center gap-3">
+                          <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
+                          <div>
+                            <span className="text-sm font-semibold text-white">Connected</span>
+                            <p className="text-xs text-white/40 mt-0.5">{stremioAuth.email}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleStremioSync}
+                            disabled={stremioLoading}
+                            className="px-3.5 py-2 bg-accent/10 hover:bg-accent/20 text-accent rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            {stremioLoading ? 'Syncing...' : 'Sync Addons'}
+                          </button>
+                          <button
+                            onClick={handleStremioDisconnect}
+                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            Disconnect
+                          </button>
+                        </div>
+                      </div>
+                      {stremioError && <p className="text-xs text-white/40">{stremioError}</p>}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
+                          <input
+                            type="email"
+                            value={stremioEmail}
+                            onChange={(e) => setStremioEmail(e.target.value)}
+                            placeholder="your@email.com"
+                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
+                          <input
+                            type="password"
+                            value={stremioPassword}
+                            onChange={(e) => setStremioPassword(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()}
+                            placeholder="Your Stremio password"
+                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
+                          />
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleStremioLogin}
+                        disabled={stremioLoading}
+                        className="px-5 py-2.5 bg-accent hover:bg-accent/80 disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
+                      >
+                        {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
+                      </button>
+                      <div className="pt-4 border-t border-white/[0.06]">
+                        <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            value={stremioAuthKey}
+                            onChange={(e) => setStremioAuthKey(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleStremioAuthKeyImport()}
+                            placeholder="AuthKey from web.stremio.com"
+                            className="flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
+                          />
+                          <button
+                            onClick={handleStremioAuthKeyImport}
+                            disabled={stremioLoading}
+                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-sm transition-colors cursor-pointer text-white font-semibold"
+                          >
+                            Import
+                          </button>
+                        </div>
+                        <p className="text-xs text-white/35 mt-1.5 leading-relaxed">
+                          Use this if your Stremio account uses social login or Stremio rejects the password with "Wrong passphrase".
+                        </p>
+                      </div>
+                      {stremioError && <p className="text-xs text-red-400">{stremioError}</p>}
+                    </div>
+                  )}
+                </div>
+              </SettingSection>
+
+              {/* Discord Rich Presence */}
+              <SettingSection title="Discord Rich Presence" description="Show what you're watching on your Discord profile.">
+                <SettingRow label="Enable Discord Rich Presence" description="Requires Discord desktop app to be running.">
+                  <SettingToggle checked={store.discordRichPresence} onChange={(v) => store.setDiscordRichPresence(v)} />
+                </SettingRow>
               </SettingSection>
 
               {/* PublicMetaDB */}
@@ -2121,83 +2162,94 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* AniList */}
-              <SettingSection title="AniList" description="Track anime watch progress, manage lists, and sync history.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="flex items-center gap-2">
+              {/* MDBList */}
+              <SettingSection title="MDBList" description="Ratings, watchlist, lists, continue watching, watched history, and scrobbling.">
+                <div className="px-6 py-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     <button
-                      onClick={handleAnilistConnect}
-                      disabled={anilistLoading}
-                      className="px-3.5 py-2 bg-accent text-black rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
+                      onClick={handleMdblistOAuthConnect}
+                      disabled={mdblistConnChecking || mdblistOAuthPolling || !mdblistClientIdInput}
+                      className="px-4 py-2 bg-accent text-black hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
                     >
-                      {anilistLoading ? 'Connecting...' : store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList'}
+                      {mdblistOAuthPolling ? 'Waiting for MDBList...' : getStoredMdblistTokens() ? 'Reconnect MDBList' : 'Connect MDBList'}
                     </button>
-                    <button
-                      onClick={syncAniListNow}
-                      disabled={anilistLoading || !store.anilistConnected}
-                      className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 text-white rounded-xl text-xs font-semibold cursor-pointer"
-                    >
-                      {anilistLoading ? 'Syncing…' : 'Sync from AniList'}
-                    </button>
-                    {store.anilistConnected && (
+                    {getStoredMdblistTokens() && (
                       <button
-                        onClick={handleAnilistDisconnect}
-                        className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                        onClick={handleMdblistOAuthDisconnect}
+                        className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-sm font-semibold transition-colors"
                       >
-                        Disconnect
+                        Disconnect OAuth
                       </button>
                     )}
                   </div>
 
-                  {store.anilistAccount && (
-                    <div className="flex items-center gap-3 bg-white/[0.03] rounded-xl p-3 border border-white/[0.06]">
-                      {store.anilistAccount.avatar ? (
-                        <img src={store.anilistAccount.avatar} alt="" className="w-8 h-8 rounded-full object-cover" />
+                  <div>
+                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
+                    <input
+                      type="password"
+                      value={store.mdblistApiKey}
+                      onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }}
+                      placeholder="Enter your MDBList API key"
+                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
+                    />
+                    <p className="text-[11px] text-white/30 mt-1">
+                      Optional fallback. Empty key still uses Aurales' built-in MDBList key for ratings only. Account features use OAuth or your own key. API docs:{' '}
+                      <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={testMdblistConnection}
+                      disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking}
+                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
+                    >
+                      {mdblistConnChecking ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
+                          Testing...
+                        </>
                       ) : (
-                        <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-accent text-xs font-bold">
-                          {store.anilistAccount.name[0].toUpperCase()}
-                        </div>
+                        <>
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          Test Connection
+                        </>
                       )}
-                      <div>
-                        <p className="text-xs text-white/40">Connected as</p>
-                        <p className="text-sm font-semibold text-white">{store.anilistAccount.name}</p>
-                      </div>
-                    </div>
-                  )}
+                    </button>
 
-                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/40'}`}>{anilistMessage}</p>}
-
-                  {/* Manual Token Fallback */}
-                  <div className="pt-4 border-t border-white/[0.06]">
-                    <details className="group">
-                      <summary className="text-xs text-white/30 hover:text-white/50 cursor-pointer select-none font-semibold">
-                        Advanced: Manual Token Entry
-                      </summary>
-                      <div className="mt-3 space-y-3">
-                        <label className="text-xs text-white/40 block font-semibold uppercase tracking-wider">Manual Access Token</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={anilistTokenInput}
-                            onChange={(e) => setAnilistTokenInput(e.target.value)}
-                            placeholder="Paste manual AniList access token"
-                            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={connectAniListManual}
-                            disabled={anilistLoading || !anilistTokenInput}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-xs font-semibold cursor-pointer text-white"
-                          >
-                            Save Manual Token
-                          </button>
-                        </div>
-                        <p className="text-[11px] text-white/30 leading-relaxed">
-                          Alternatively, you can generate a token via AniList's developer portal/client authorization flow and paste it here directly.
-                        </p>
-                      </div>
-                    </details>
+                    {mdblistConnStatus && !mdblistConnChecking && (
+                      mdblistConnStatus.connected ? (
+                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          Connected
+                          {mdblistConnStatus.user?.username && <span className="text-white/30 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 text-sm text-red-400">
+                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
+                          </svg>
+                          <span>{mdblistConnStatus.error}</span>
+                        </span>
+                      )
+                    )}
                   </div>
                 </div>
+              </SettingSection>
+
+              {/* Fanart.tv */}
+              <SettingSection title="Fanart.tv" description="High-quality poster, backdrop, and logo artwork from the Fanart.tv community.">
+                <SettingRow label="API Key" description="Get a free personal key at fanart.tv/get-an-api-key">
+                  <input
+                    type="password"
+                    value={store.fanartApiKey}
+                    onChange={(e) => store.setFanartApiKey(e.target.value)}
+                    placeholder="Enter your Fanart.tv API key"
+                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
+                  />
+                </SettingRow>
               </SettingSection>
 
               {/* Metadata Providers */}
@@ -2218,26 +2270,6 @@ export default function SettingsPage() {
                     onChange={(e) => store.setTvdbApiKey(e.target.value)}
                     placeholder="Using built-in app key"
                     className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Discord Rich Presence */}
-              <SettingSection title="Discord Rich Presence" description="Show what you're watching on your Discord profile.">
-                <SettingRow label="Enable Discord Rich Presence" description="Requires Discord desktop app to be running.">
-                  <SettingToggle checked={store.discordRichPresence} onChange={(v) => store.setDiscordRichPresence(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Fanart.tv */}
-              <SettingSection title="Fanart.tv" description="High-quality poster, backdrop, and logo artwork from the Fanart.tv community.">
-                <SettingRow label="API Key" description="Get a free personal key at fanart.tv/get-an-api-key">
-                  <input
-                    type="password"
-                    value={store.fanartApiKey}
-                    onChange={(e) => store.setFanartApiKey(e.target.value)}
-                    placeholder="Enter your Fanart.tv API key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
                   />
                 </SettingRow>
               </SettingSection>
@@ -2379,6 +2411,16 @@ export default function SettingsPage() {
                     <option value="cinematic">Cinematic TV</option>
                   </select>
                 </SettingRow>
+                <SettingRow label="Background" description="Choose between the default theme's OLED black or the Cinematic TV background color.">
+                  <select
+                    value={store.themeBackground}
+                    onChange={(event) => store.setThemeBackground(event.target.value as 'theme' | 'oled')}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                  >
+                    <option value="theme">Theme default</option>
+                    <option value="oled">Pure Black (OLED)</option>
+                  </select>
+                </SettingRow>
                 <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
                   <select
                     value={store.navigationStyle}
@@ -2387,6 +2429,33 @@ export default function SettingsPage() {
                   >
                     <option value="sidebar">Sidebar</option>
                     <option value="topbar">Cinematic top bar</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="Poster size" description="Scale posters and cards across Home, Discover, and your library.">
+                  <div className="flex flex-wrap gap-2">
+                    {(['compact', 'default', 'large', 'huge'] as const).map((opt) => {
+                      const labelMap: Record<string, string> = { compact: 'Compact', default: 'Default', large: 'Large', huge: 'Huge' }
+                      const active = store.posterSize === opt
+                      return (
+                        <button
+                          key={opt}
+                          onClick={() => store.setPosterSize(opt)}
+                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          }`}
+                        >
+                          {labelMap[opt]}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="Home Hero" description="Choose how the featured area behaves on the home page in both interface themes.">
+                <SettingRow label="Hero mode" description="Dynamic Focus rotates the current hero; Fixed Featured Hero stays stable for the visit.">
+                  <select value={store.homeHeroMode} onChange={(event) => store.setHomeHeroMode(event.target.value as typeof store.homeHeroMode)} className="w-56 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold">
+                    <option value="dynamic">Dynamic Focus</option><option value="fixed">Fixed Featured Hero</option><option value="disabled">Disabled</option>
                   </select>
                 </SettingRow>
               </SettingSection>
@@ -2441,46 +2510,6 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              {/* Discovery Preferences */}
-              <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
-                <SettingRow label="Region">
-                  <select
-                    value={store.discoveryRegion}
-                    onChange={(e) => store.setDiscoveryRegion(e.target.value)}
-                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    {[
-                      { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' }, { code: 'CA', name: 'Canada' },
-                      { code: 'AU', name: 'Australia' }, { code: 'NZ', name: 'New Zealand' },
-                      { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' }, { code: 'ES', name: 'Spain' },
-                      { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' }, { code: 'BE', name: 'Belgium' },
-                      { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' }, { code: 'DK', name: 'Denmark' },
-                      { code: 'FI', name: 'Finland' }, { code: 'PT', name: 'Portugal' }, { code: 'PL', name: 'Poland' },
-                      { code: 'AT', name: 'Austria' }, { code: 'CH', name: 'Switzerland' },
-                      { code: 'JP', name: 'Japan' }, { code: 'KR', name: 'South Korea' }, { code: 'IN', name: 'India' },
-                      { code: 'BR', name: 'Brazil' }, { code: 'MX', name: 'Mexico' }, { code: 'AR', name: 'Argentina' },
-                      { code: 'ZA', name: 'South Africa' }, { code: 'TR', name: 'Turkey' }, { code: 'RU', name: 'Russia' },
-                      { code: 'PH', name: 'Philippines' }, { code: 'TH', name: 'Thailand' },
-                    ].map((region) => (
-                      <option key={region.code} value={region.code}>{region.name}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Minimum rating">
-                  <select
-                    value={store.discoveryMinRating}
-                    onChange={(e) => store.setDiscoveryMinRating(Number(e.target.value))}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    {[0, 5, 6, 7, 8].map((rating) => (
-                      <option key={rating} value={rating}>{rating === 0 ? 'Any' : `${rating}+ / 10`}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
-                  <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
-                </SettingRow>
-              </SettingSection>
 
               {/* Card overlays */}
               <SettingSection>
@@ -2580,29 +2609,6 @@ export default function SettingsPage() {
                             <span className="text-xs font-semibold">{prov.label}</span>
                           </div>
                           <input type="checkbox" checked={enabled} readOnly className="w-4 h-4 accent-accent pointer-events-none" />
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Poster Size */}
-              <SettingSection title="Poster Size" description="Scale posters and cards across Home, Discover, and your library.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-2">
-                    {(['compact', 'default', 'large', 'huge'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { compact: 'Compact', default: 'Default', large: 'Large', huge: 'Huge' }
-                      const active = store.posterSize === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setPosterSize(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {labelMap[opt]}
                         </button>
                       )
                     })}
@@ -2852,16 +2858,7 @@ export default function SettingsPage() {
                     <option value="local">Local Only</option>
                   </select>
                 </SettingRow>
-                <SettingRow label="Show Watched From" description="Which service displays watched checkmarks in episode lists.">
-                  <select
-                    value={store.animeShowWatchedFrom}
-                    onChange={(e) => store.setAnimeShowWatchedFrom(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="all">All Sources</option>
-                    <option value="provider">Current Provider Only</option>
-                  </select>
-                </SettingRow>
+
               </SettingSection>
 
               {/* ─── Per-Service Settings ─── */}
@@ -3595,6 +3592,68 @@ export default function SettingsPage() {
                 </details>
               </div>
 
+              {/* Auto-skip */}
+              <SettingSection>
+                <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
+                  <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
+                </SettingRow>
+                <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
+                  <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
+                </SettingRow>
+              </SettingSection>
+
+              {/* Seek step */}
+              <SettingSection title="Seek Step" description="How far the arrow keys and the skip buttons jump.">
+                <div className="px-6 py-4">
+                  <div className="flex flex-wrap gap-2">
+                    {[5, 10, 15, 30, 60].map((secs) => {
+                      const active = store.seekStepSeconds === secs
+                      return (
+                        <button
+                          key={secs}
+                          onClick={() => store.setSeekStepSeconds(secs)}
+                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          }`}
+                        >
+                          {secs}s
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* Next episode prompt */}
+              <SettingSection title="Next Episode Prompt" description="When the Up Next pill appears before an episode ends.">
+                <div className="px-6 py-4">
+                  <div className="flex flex-wrap gap-2">
+                    {(['auto', 'off', '30s', '45s', '1m', '1.5m', '2m'] as const).map((opt) => {
+                      const labelMap: Record<string, string> = { auto: 'Auto', off: 'Off', '30s': '30s', '45s': '45s', '1m': '1 min', '1.5m': '1.5 min', '2m': '2 min' }
+                      const active = store.nextEpisodePrompt === opt
+                      return (
+                        <button
+                          key={opt}
+                          onClick={() => store.setNextEpisodePrompt(opt)}
+                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          }`}
+                        >
+                          {labelMap[opt]}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* Audio Passthrough */}
+              <SettingSection>
+                <SettingRow label="Digital Audio Passthrough" description="Output compressed formats (Dolby Atmos, DTS) to an external receiver.">
+                  <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
+                </SettingRow>
+              </SettingSection>
+
               {/* Hardware Decoding */}
               <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
                 <SettingRow label="Hardware decoding" description="Leave on Auto-detect unless video stutters or shows visual glitches.">
@@ -3672,68 +3731,6 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* Audio Passthrough */}
-              <SettingSection>
-                <SettingRow label="Digital Audio Passthrough" description="Output compressed formats (Dolby Atmos, DTS) to an external receiver.">
-                  <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Auto-skip */}
-              <SettingSection>
-                <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
-                  <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
-                </SettingRow>
-                <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
-                  <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Seek step */}
-              <SettingSection title="Seek Step" description="How far the arrow keys and the skip buttons jump.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-2">
-                    {[5, 10, 15, 30, 60].map((secs) => {
-                      const active = store.seekStepSeconds === secs
-                      return (
-                        <button
-                          key={secs}
-                          onClick={() => store.setSeekStepSeconds(secs)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {secs}s
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Next episode prompt */}
-              <SettingSection title="Next Episode Prompt" description="When the Up Next pill appears before an episode ends.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-2">
-                    {(['auto', 'off', '30s', '45s', '1m', '1.5m', '2m'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { auto: 'Auto', off: 'Off', '30s': '30s', '45s': '45s', '1m': '1 min', '1.5m': '1.5 min', '2m': '2 min' }
-                      const active = store.nextEpisodePrompt === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setNextEpisodePrompt(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {labelMap[opt]}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
               <p className="text-xs text-white/25 leading-relaxed px-1">
                 Scrobble, resume, watched checkmarks, and sync provider settings are under Progress & Sync.
               </p>
@@ -3745,6 +3742,16 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'watch-together' && (
             <>
+              <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex gap-3.5 items-start mb-6">
+                <span className="text-amber-500 text-lg leading-none mt-0.5 select-none">⚠️</span>
+                <div>
+                  <h4 className="text-sm font-bold text-amber-200">Experimental Feature</h4>
+                  <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                    Watch Together is currently in experimental preview and may not function correctly. You may encounter synchronization issues, drift, or connection drops.
+                  </p>
+                </div>
+              </div>
+
               <SettingSection title="Server" description="WebSocket server for Watch Together rooms.">
                 <SettingRow label="Server URL" description="WebSocket URL of the Watch Together server.">
                   <input
@@ -3829,6 +3836,47 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'discovery' && (
             <div className="space-y-6">
+              {/* Discovery Preferences */}
+              <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
+                <SettingRow label="Region">
+                  <select
+                    value={store.discoveryRegion}
+                    onChange={(e) => store.setDiscoveryRegion(e.target.value)}
+                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    {[
+                      { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' }, { code: 'CA', name: 'Canada' },
+                      { code: 'AU', name: 'Australia' }, { code: 'NZ', name: 'New Zealand' },
+                      { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' }, { code: 'ES', name: 'Spain' },
+                      { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' }, { code: 'BE', name: 'Belgium' },
+                      { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' }, { code: 'DK', name: 'Denmark' },
+                      { code: 'FI', name: 'Finland' }, { code: 'PT', name: 'Portugal' }, { code: 'PL', name: 'Poland' },
+                      { code: 'AT', name: 'Austria' }, { code: 'CH', name: 'Switzerland' },
+                      { code: 'JP', name: 'Japan' }, { code: 'KR', name: 'South Korea' }, { code: 'IN', name: 'India' },
+                      { code: 'BR', name: 'Brazil' }, { code: 'MX', name: 'Mexico' }, { code: 'AR', name: 'Argentina' },
+                      { code: 'ZA', name: 'South Africa' }, { code: 'TR', name: 'Turkey' }, { code: 'RU', name: 'Russia' },
+                      { code: 'PH', name: 'Philippines' }, { code: 'TH', name: 'Thailand' },
+                    ].map((region) => (
+                      <option key={region.code} value={region.code}>{region.name}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow label="Minimum rating">
+                  <select
+                    value={store.discoveryMinRating}
+                    onChange={(e) => store.setDiscoveryMinRating(Number(e.target.value))}
+                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    {[0, 5, 6, 7, 8].map((rating) => (
+                      <option key={rating} value={rating}>{rating === 0 ? 'Any' : `${rating}+ / 10`}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
+                  <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
+                </SettingRow>
+              </SettingSection>
+
               {/* AUDIENCE PRESET MODES */}
               <SettingSection title="Audience" description="Configure default age suitability rules and content filters.">
                 <div className="px-6 py-5">

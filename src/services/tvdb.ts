@@ -9,6 +9,7 @@ let cachedToken: string | null = null
 let cachedTokenApiKey = ''
 
 const seriesDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
+const movieDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
 const SERIES_CACHE_TTL = 30 * 60 * 1000
 
 export interface TvdbCardMetadata {
@@ -65,6 +66,18 @@ async function getSeriesExtended(tvdbId: string): Promise<Record<string, unknown
   return series
 }
 
+async function getMovieExtended(tvdbId: string): Promise<Record<string, unknown>> {
+  const cleanId = tvdbId.replace('movie-', '')
+  const cached = movieDataCache.get(cleanId)
+  if (cached && Date.now() - cached.timestamp < SERIES_CACHE_TTL) {
+    return cached.data
+  }
+  const data = await tvdbFetch(`/movies/${cleanId}/extended`) as Record<string, unknown>
+  const movie = data.data as Record<string, unknown>
+  movieDataCache.set(cleanId, { data: movie, timestamp: Date.now() })
+  return movie
+}
+
 async function getSeasonEpisodes(seasonTvdbId: number): Promise<Record<string, unknown>[]> {
   const data = await tvdbFetch(`/seasons/${seasonTvdbId}/extended`) as Record<string, unknown>
   const season = data.data as Record<string, unknown>
@@ -94,8 +107,49 @@ export const tvdbProvider: MetadataProvider = {
     }))
   },
 
-  async getMovie(_id: string): Promise<MovieDetails> {
-    throw new Error('TVDB does not provide movie details')
+  async getMovie(id: string): Promise<MovieDetails> {
+    const tvdbId = id.replace('tvdb-', '')
+    const movie = await getMovieExtended(tvdbId)
+
+    const artworks = (movie.artworks as Record<string, unknown>[]) || []
+    const isLandscape = (art: Record<string, unknown>) => {
+      const width = Number(art.width || art.thumbnailWidth || 0)
+      const height = Number(art.height || art.thumbnailHeight || 0)
+      return width > 0 && height > 0 && width / height >= 1.35
+    }
+    const backdropArt = artworks.find((a) => (a.type === 3 || a.type === 'background') && isLandscape(a))
+      || artworks.find(isLandscape)
+    const logoArt = artworks.find((a) => {
+      const type = String(a.type || a.artworkType || '').toLowerCase()
+      return type === '5' || type === '6' || type.includes('logo') || type.includes('clearlogo')
+    })
+    const backdrop = backdropArt?.image as string | undefined
+    const logo = logoArt?.image as string | undefined
+
+    return {
+      id,
+      title: movie.name as string,
+      originalTitle: movie.name as string,
+      year: movie.year ? parseInt(movie.year as string) : undefined,
+      releaseDate: undefined,
+      overview: movie.overview as string,
+      tagline: undefined,
+      runtime: movie.runtime as number,
+      rating: undefined,
+      voteCount: undefined,
+      genres: ((movie.genres as Record<string, unknown>[]) || []).map((g) => g.name as string),
+      poster: movie.image as string | undefined,
+      backdrop,
+      logo,
+      certification: undefined,
+      cast: [],
+      crew: [],
+      recommendations: [],
+      trailers: [],
+      imdbId: undefined,
+      tmdbId: undefined,
+      provider: 'tvdb',
+    }
   },
 
   async getShow(id: string): Promise<ShowDetails> {
@@ -146,9 +200,19 @@ export const tvdbProvider: MetadataProvider = {
       }))
 
     const artworks = (series.artworks as Record<string, unknown>[]) || []
-    const backdrop = artworks.find((a) => a.type === 3)?.image as string
-      || artworks.find((a) => a.type === 'background')?.image as string
-      || artworks[0]?.image as string | undefined
+    const isLandscape = (art: Record<string, unknown>) => {
+      const width = Number(art.width || art.thumbnailWidth || 0)
+      const height = Number(art.height || art.thumbnailHeight || 0)
+      return width > 0 && height > 0 && width / height >= 1.35
+    }
+    const backdropArt = artworks.find((a) => (a.type === 3 || a.type === 'background') && isLandscape(a))
+      || artworks.find(isLandscape)
+    const logoArt = artworks.find((a) => {
+      const type = String(a.type || a.artworkType || '').toLowerCase()
+      return type === '5' || type === '6' || type.includes('logo') || type.includes('clearlogo')
+    })
+    const backdrop = backdropArt?.image as string | undefined
+    const logo = logoArt?.image as string | undefined
 
     let seriesTitle = series.name as string
     let seriesOverview = series.overview as string
@@ -171,6 +235,7 @@ export const tvdbProvider: MetadataProvider = {
       genres,
       poster: series.image as string | undefined,
       backdrop,
+      logo,
       certification: undefined,
       status: series.status?.toString(),
       numberOfSeasons: seasons.length,
@@ -288,4 +353,23 @@ export async function getTvdbCardMetadata(tvdbId: string | number): Promise<Tvdb
   } catch (_) {
     return null
   }
+}
+
+export async function getTvdbIdByRemoteId(remoteId: string): Promise<number | string | undefined> {
+  const result = await cachedFetch<string | number | null>(`tvdb_remote_id:${remoteId}`, async () => {
+    try {
+      const data = await tvdbFetch(`/search/remoteid/${remoteId}`) as Record<string, unknown>
+      const results = (data.data as Record<string, unknown>[]) || []
+      if (results.length === 0) return null
+      const match = results[0]
+      const idVal = match.tvdb_id || match.id
+      if (match.type === 'movie') {
+        return `movie-${idVal}`
+      }
+      return Number(idVal) || null
+    } catch (_) {
+      return null
+    }
+  }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
+  return result ?? undefined
 }

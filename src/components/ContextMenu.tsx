@@ -466,7 +466,7 @@ export default function ContextMenu() {
 function isAnimeItem(item: SearchResult): boolean {
   const genres = item.genres?.map((g) => g.toLowerCase()) || []
   const hasAnimeGenre = genres.includes('anime') || item.isAnime || item.provider === 'anilist' || item.provider === 'mal' || /^(mal|anilist)[-:]/i.test(item.id)
-  const isDiscoverAnime = (item.genreIds?.includes(16) || genres.includes('animation')) && item.originalLanguage === 'ja'
+  const isDiscoverAnime = (item.genreIds?.includes(16) || genres.includes('animation')) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || '')
   return Boolean(hasAnimeGenre || isDiscoverAnime)
 }
 

@@ -39,6 +39,14 @@ export async function resolveExternalIds(input: AddonMediaInput, kind: MediaKind
   if (kind !== 'movie' && !ids.tvdbId && ids.tmdbId) {
     ids.tvdbId = await getTvdbIdFromTmdb(ids.tmdbId).catch(() => undefined)
   }
+  if (!ids.tvdbId && ids.imdbId) {
+    const { getTvdbIdByRemoteId } = await import('../tvdb')
+    ids.tvdbId = await getTvdbIdByRemoteId(ids.imdbId).catch(() => undefined)
+  }
+  if (!ids.tvdbId && ids.tmdbId) {
+    const { getTvdbIdByRemoteId } = await import('../tvdb')
+    ids.tvdbId = await getTvdbIdByRemoteId(String(ids.tmdbId)).catch(() => undefined)
+  }
   if (!ids.imdbId && (ids.tmdbId || ids.tvdbId)) {
     ids.imdbId = await resolveImdbId({ tmdbId: ids.tmdbId, tvdbId: ids.tvdbId, anilistId: ids.anilistId, malId: ids.malId }, kind === 'movie' ? 'movie' : 'series').catch(() => null) || undefined
   }
