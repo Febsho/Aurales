@@ -2683,10 +2683,11 @@ function FullNativeMpvPlayer({
       saveLocalProgress(pos, dur, false)
     }
 
-    // Leaving the player is a UI action and should be immediate. Stop mpv and
-    // reveal the previous screen now; remote progress/scrobble writes continue
-    // independently and must never hold the Back button hostage.
-    if (isFullscreenRef.current) void exitFullscreenWindow().catch(() => {})
+    // Restore the native window before revealing the detail page. Rendering it
+    // while Windows is still leaving fullscreen leaves the whole app at the
+    // temporary fullscreen bounds/position.
+    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
+    // Stopping mpv and remote progress/scrobble writes remain non-blocking.
     void stopEmbeddedPlayer().catch(() => {})
     onClose()
 

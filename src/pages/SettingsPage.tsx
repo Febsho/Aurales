@@ -147,17 +147,18 @@ function SettingRow({ label, description, children }: { label: string; descripti
   )
 }
 
-function SettingToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function SettingToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
-    <div
+    <button
+      type="button"
       role="switch"
-      tabIndex={0}
+      aria-label={label}
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-[26px] w-[46px] flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 select-none ${checked ? 'bg-green-500' : 'bg-white/15'}`}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a1916] ${checked ? 'border-accent bg-accent' : 'border-white/10 bg-white/10 hover:bg-white/15'}`}
     >
-      <span className={`pointer-events-none inline-block h-[22px] w-[22px] mt-[2px] ml-[2px] transform rounded-full bg-white shadow ring-0 transition-transform duration-200 ${checked ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-    </div>
+      <span className={`pointer-events-none absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
+    </button>
   )
 }
 
@@ -537,36 +538,25 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
   const [clearing, setClearing] = useState(false)
   const [cleared, setCleared] = useState(false)
 
-  // Estimate localStorage image cache size
   useEffect(() => {
-    let bytes = 0
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (!key) continue
-      if (
-        key.startsWith('tmdb_backdrop_') ||
-        key.startsWith('tmdb_card_metadata_') ||
-        key.startsWith('tmdb_tvdb_id_') ||
-        key.startsWith('tvdb_card_metadata_') ||
-        key.startsWith('orynt_provider_list:') ||
-        key.includes('backdrop') ||
-        key.includes('poster')
-      ) {
-        bytes += (localStorage.getItem(key)?.length || 0) * 2
-      }
-    }
-    setCacheInUseMb(Math.max(0, Math.round(bytes / 1024 / 1024 * 10) / 10))
+    let cancelled = false
+    void import('../services/imageCache')
+      .then(({ imageCacheStats }) => imageCacheStats())
+      .then((stats) => {
+        if (!cancelled && stats) setCacheInUseMb(Math.round((stats.bytes / 1024 / 1024) * 10) / 10)
+      })
+    return () => { cancelled = true }
   }, [clearing])
 
   const handleClear = async () => {
     setClearing(true)
     setCleared(false)
     onClearBackdropCache()
-    setTimeout(() => {
-      setClearing(false)
-      setCleared(true)
-      setTimeout(() => setCleared(false), 2500)
-    }, 600)
+    const { clearImageCache } = await import('../services/imageCache')
+    await clearImageCache()
+    setClearing(false)
+    setCleared(true)
+    setTimeout(() => setCleared(false), 2500)
   }
 
   // Quality option config
@@ -2778,19 +2768,19 @@ export default function SettingsPage() {
               {/* Spoilers */}
               <SettingSection title="Spoilers" description="Blur episode artwork, titles, and descriptions for unwatched episodes.">
                 <SettingRow label="Blur spoilers" description="Hides episode details until you have watched them.">
-                  <SettingToggle checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
+                  <SettingToggle label="Blur spoilers" checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
                 </SettingRow>
                 <SettingRow label="Blur thumbnails">
-                  <SettingToggle checked={store.blurThumbnails} onChange={(v) => store.setBlurThumbnails(v)} />
+                  <SettingToggle label="Blur thumbnails" checked={store.blurThumbnails} onChange={(v) => store.setBlurThumbnails(v)} />
                 </SettingRow>
                 <SettingRow label="Blur titles">
-                  <SettingToggle checked={store.blurTitles} onChange={(v) => store.setBlurTitles(v)} />
+                  <SettingToggle label="Blur titles" checked={store.blurTitles} onChange={(v) => store.setBlurTitles(v)} />
                 </SettingRow>
                 <SettingRow label="Blur descriptions">
-                  <SettingToggle checked={store.blurDescriptions} onChange={(v) => store.setBlurDescriptions(v)} />
+                  <SettingToggle label="Blur descriptions" checked={store.blurDescriptions} onChange={(v) => store.setBlurDescriptions(v)} />
                 </SettingRow>
                 <SettingRow label="Keep next episode visible" description="Leave the episode you are up to clear, blur only those after it.">
-                  <SettingToggle checked={store.keepNextEpisodeVisible} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
+                  <SettingToggle label="Keep next episode visible" checked={store.keepNextEpisodeVisible} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
                 </SettingRow>
               </SettingSection>
 
@@ -3755,6 +3745,9 @@ export default function SettingsPage() {
               <SettingSection>
                 <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
                   <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
+                </SettingRow>
+                <SettingRow label="Faster source loading" description="Look for playback sources in the background when you open a movie or episode page, so they are ready sooner when you press Play.">
+                  <SettingToggle checked={store.preloadPlaybackSources} onChange={store.setPreloadPlaybackSources} />
                 </SettingRow>
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
                   <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />

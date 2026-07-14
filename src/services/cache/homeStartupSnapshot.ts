@@ -240,6 +240,22 @@ export function stableListFingerprint(items: Array<SearchResult | ContinueWatchi
   return items.map(normalizedIdentity).join('|')
 }
 
+/** Detects presentation changes as well as identity/order changes in catalogs. */
+export function catalogContentFingerprint(items: SearchResult[]): string {
+  return JSON.stringify(items.map((item) => ({
+    identity: normalizedIdentity(item),
+    title: item.title,
+    year: item.year,
+    poster: item.poster,
+    backdrop: item.backdrop,
+    logo: item.logo,
+    rating: item.rating,
+    releaseDate: item.releaseDate,
+    genres: item.genres,
+    genreIds: item.genreIds,
+  })))
+}
+
 export function mergeContinueWatchingPresentation(
   fresh: ContinueWatchingSnapshotItem[],
   cached: ContinueWatchingSnapshotItem[],

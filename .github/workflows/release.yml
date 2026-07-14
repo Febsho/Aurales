@@ -16,7 +16,9 @@ jobs:
           - platform: windows-latest
             args: ''
           - platform: ubuntu-22.04
-            args: ''
+            # Merge the Linux bundle configuration so the release includes the
+            # .deb package consumed by the Flatpak build and Linux users.
+            args: '--config src-tauri/tauri.linux.conf.json'
 
     runs-on: ${{ matrix.platform }}
 

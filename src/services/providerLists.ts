@@ -20,11 +20,13 @@ import {
 import { getTvdbIdFromTmdb, getTmdbCardMetadata, tmdbProvider } from './tmdb'
 import { getTvdbCardMetadata } from './tvdb'
 import { resolveAnimeIds } from './animeLists'
-import { cachedFetch } from './cache/sqliteCache'
-import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
+import { CACHE_CATEGORIES } from './cache/constants'
+import { providerCacheScope } from './cache/homeRowCacheKeys'
+import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
 
 function providerListCacheKey(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): string {
-  const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : ''
+  const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : providerCacheScope(row.sourceType)
   return `provider:${row.sourceType || 'unknown'}:${account}:${row.providerListId || ''}`
 }
 
@@ -43,11 +45,16 @@ export const MDBLIST_LIST_SOURCES = [
   { id: 'watchlist', label: 'MDBList - Watchlist', layout: 'poster' as const },
 ]
 
-export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
+export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, forceRefresh = false): Promise<SearchResult[]> {
   const key = providerListCacheKey(row)
+  if (forceRefresh) {
+    const fresh = await loadProviderListItems(row)
+    if (fresh.length) await cacheSet(key, fresh, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+    return fresh
+  }
   return cachedFetch<SearchResult[]>(key, () => loadProviderListItems(row), {
     category: CACHE_CATEGORIES.PROVIDER_LIST,
-    ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
+    ttlSeconds: null,
   })
 }
 
@@ -75,7 +82,21 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         if (aid) seenAnilistId.add(aid)
         return true
       })
-      return canonicalizeCatalogItemsWithTvdb(deduplicated, { preservePictures: false })
+      const key = providerListCacheKey(row)
+      void scheduleTask(metadataTaskQueue, {
+        id: `anilist-catalog-enrich:${key}`,
+        dedupKey: `anilist-catalog-enrich:${key}`,
+        priority: 'low',
+        group: 'metadata',
+        execute: async () => {
+          const enriched = await canonicalizeCatalogItemsWithTvdb(deduplicated, { preservePictures: false })
+          if (enriched.length) {
+            await cacheSet(key, enriched, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+          }
+          return enriched
+        },
+      }).catch(() => undefined)
+      return deduplicated
     }
 
     const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')

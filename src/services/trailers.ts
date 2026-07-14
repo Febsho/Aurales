@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { getTmdbApiKey } from './apiKeys'
-import { cachedFetch } from './cache/sqliteCache'
+import { cacheGet, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
@@ -56,6 +56,8 @@ const REJECT_YOUTUBE_TERMS = [
   'ending',
   'clip',
 ]
+
+const pendingTrailerLookups = new Map<string, Promise<TrailerSource | null>>()
 
 function mediaTypeForTmdb(type: TrailerLookupInput['type']): 'movie' | 'tv' {
   return type === 'movie' ? 'movie' : 'tv'
@@ -253,7 +255,9 @@ async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource 
 export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const tmdbId = input.tmdbId ? String(input.tmdbId).replace('tmdb-', '') : ''
   const cacheKey = [
-    'trailer_source_v6',
+    // v7 invalidates v6 entries, which could persist a transient failed/null
+    // lookup for seven days and disable both Hero and poster trailers.
+    'trailer_source_v7',
     mediaTypeForTmdb(input.type),
     tmdbId || 'no-tmdb',
     input.imdbId || 'no-imdb',
@@ -262,16 +266,32 @@ export async function getTrailerSource(input: TrailerLookupInput): Promise<Trail
     input.language || 'en',
   ].join(':')
 
-  return cachedFetch<TrailerSource | null>(cacheKey, async () => {
-    // Prefer an official YouTube trailer ID: HeroMpvTrailer resolves it through
-    // bundled yt-dlp and plays the 1080p streams in mpv without YouTube UI.
-    const tmdbTrailer = await fetchTmdbTrailer(input).catch(() => null)
-    if (tmdbTrailer) return tmdbTrailer
-    const youtubeTrailer = await fetchYoutubeFallback(input).catch(() => null)
-    if (youtubeTrailer) return youtubeTrailer
-    // Publisher-hosted Trailerio media remains the final direct-stream fallback.
-    return fetchTrailerio(input).catch(() => null)
-  }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+  const cached = await cacheGet<TrailerSource>(cacheKey)
+  if (cached?.data?.key) return cached.data
+
+  const pending = pendingTrailerLookups.get(cacheKey)
+  if (pending) return pending
+
+  // Trailer lookup is user-visible and must not wait behind catalog/artwork
+  // revalidation in the general cache queue. Resolve it immediately, dedupe
+  // concurrent Hero/poster requests, and persist only a successful source.
+  const request = (async (): Promise<TrailerSource | null> => {
+    try {
+      // Prefer an official YouTube trailer ID: HeroMpvTrailer resolves it through
+      // bundled yt-dlp and plays the 1080p streams in mpv without YouTube UI.
+      const tmdbTrailer = await fetchTmdbTrailer(input).catch(() => null)
+      const source = tmdbTrailer
+        || await fetchYoutubeFallback(input).catch(() => null)
+        || await fetchTrailerio(input).catch(() => null)
+      if (!source) return null
+      await cacheSet(cacheKey, source, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+      return source
+    } finally {
+      pendingTrailerLookups.delete(cacheKey)
+    }
+  })()
+  pendingTrailerLookups.set(cacheKey, request)
+  return request
 }
 
 export function preloadTrailerSource(input: TrailerLookupInput): void {

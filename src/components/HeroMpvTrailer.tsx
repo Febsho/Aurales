@@ -11,6 +11,7 @@ import {
   stopEmbeddedPlayerIfOwner,
 } from '../services/player'
 import { useAppStore } from '../stores/appStore'
+import TrailerPreview from './TrailerPreview'
 
 // Hero trailer via embedded mpv + yt-dlp: real 1080p, no YouTube UI. The mpv
 // child window renders behind the transparent webview, so while the video is
@@ -200,12 +201,13 @@ export default function HeroMpvTrailer({
     return () => window.clearTimeout(timeout)
   }, [mode, videoVisible, trailer.directUrl, maxHeight])
 
-  // Hero playback intentionally has no browser/iframe fallback: those paths
-  // expose a YouTube thumbnail or UI before playback. Keep the normal hero art
-  // and end the attempt when native yt-dlp/mpv playback is unavailable.
+  // Fall back to the browser player when native mpv cannot resolve or render.
+  // Working playback is preferable to silently ending the trailer attempt.
   useEffect(() => {
-    if (mode === 'fallback') onUnavailable?.()
-  }, [mode, onUnavailable])
+    if (mode !== 'fallback') return
+    onPlayingChange?.(true)
+    return () => onPlayingChange?.(false)
+  }, [mode, onPlayingChange])
 
   // The transparent-hole compositing only holds while the app window is
   // focused — unfocused, the hole exposes the desktop. End the trailer on
@@ -324,7 +326,20 @@ export default function HeroMpvTrailer({
       )}
       {/* HeroSection keeps its normal artwork visible until mpv renders the
           first frame, so there is no YouTube thumbnail flash in between. */}
-      <div ref={containerRef} className={`relative h-full w-full ${className}`} />
+      <div ref={containerRef} className={`relative h-full w-full ${className}`}>
+        {mode === 'fallback' && (
+          <TrailerPreview
+            trailer={trailer}
+            title="Hero trailer"
+            muted={muted}
+            eager
+            showShade={false}
+            onEnded={onEnded}
+            onUnavailable={onUnavailable}
+            className="absolute inset-0"
+          />
+        )}
+      </div>
     </>
   )
 }

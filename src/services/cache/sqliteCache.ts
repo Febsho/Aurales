@@ -21,7 +21,8 @@ export interface CacheResult<T> {
 
 export interface CacheOptions {
   category: string
-  ttlSeconds: number
+  /** null creates a durable entry that is replaced or explicitly cleared, never expired. */
+  ttlSeconds: number | null
   revalidate?: 'expired' | 'once-per-session'
   priority?: TaskPriority
   queue?: 'default' | 'startup'

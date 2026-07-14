@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (command === 'cache_entry_get') return rows.get(args?.key) || null
     if (command === 'cache_entry_set') {
       const now = Date.now()
-      rows.set(args!.key, { key: args!.key, value: args!.value, category: args!.category, created_at: sqlDate(now), expires_at: sqlDate(now + args!.ttlSeconds * 1000), updated_at: sqlDate(now) })
+      rows.set(args!.key, { key: args!.key, value: args!.value, category: args!.category, created_at: sqlDate(now), expires_at: args!.ttlSeconds == null ? null : sqlDate(now + args!.ttlSeconds * 1000), updated_at: sqlDate(now) })
       return null
     }
     if (command === 'cache_entry_clear_category') {
@@ -46,6 +46,17 @@ describe('sqlite catalog cache behavior', () => {
     expect(await cachedFetch(key, fetcher, { category: 'discover', ttlSeconds: 60 })).toEqual(['cached'])
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('stores permanent entries without an expiry and revalidates them once per session', async () => {
+    const key = `permanent-${Math.random()}`
+    const first = vi.fn(async () => ['cached'])
+    expect(await cachedFetch(key, first, { category: 'home_row', ttlSeconds: null })).toEqual(['cached'])
+    expect(rows.get(key)?.expires_at).toBeNull()
+    const refresh = vi.fn(async () => ['fresh'])
+    expect(await cachedFetch(key, refresh, { category: 'home_row', ttlSeconds: null, revalidate: 'once-per-session' })).toEqual(['cached'])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(refresh).toHaveBeenCalledTimes(1)
   })
 
   it('does not refetch a once-per-session cache miss after it succeeds', async () => {

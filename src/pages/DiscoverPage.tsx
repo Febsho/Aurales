@@ -22,9 +22,9 @@ import { loadRecommendationImpressions, recordRecommendationImpressions } from '
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import TrailerPreview from '../components/TrailerPreview'
 import { discoveryViewState } from '../services/discovery/viewState'
-import { cacheClearCategory } from '../services/cache/sqliteCache'
-import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { collectCandidateSources } from '../services/discovery/candidatePipeline'
+import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot'
+import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
   28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
@@ -115,7 +115,7 @@ function matchesDiscoverTab(entry: SearchResult, tab: DiscoverTab): boolean {
   return entry.type === 'series' && !isAnimeLike(entry)
 }
 const DISCOVERY_DAY = Math.floor(Date.now() / 86_400_000)
-const DISCOVERY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
+const FORCED_DISCOVERY_REFRESHES = new Set<string>()
 
 function makeConfig(
   contentType: 'movie' | 'series',
@@ -232,29 +232,31 @@ function makeConfig(
   return config
 }
 
-function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchResult[] = [], enabled = true) {
+function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchResult[] = [], enabled = true, refreshNonce = 0) {
   const setCachedRow = useDiscoverStore((s) => s.setCachedRow)
 
   // Read cache snapshot once — avoid putting cachedRows in deps to prevent feedback loops
   const items = useDiscoverStore((s) => s.cachedRows[rowId]?.items) ?? []
-  const cacheTimestamp = useDiscoverStore((s) => s.cachedRows[rowId]?.timestamp) ?? 0
-
   useEffect(() => {
     if (!enabled) return
-    if (cacheTimestamp > 0 && Date.now() - cacheTimestamp < DISCOVERY_REFRESH_INTERVAL_MS) return
 
     let cancelled = false
-    discoverTmdbWithCache(config, rowId, false, (fresh) => {
+    const forceKey = `${rowId}:${refreshNonce}`
+    const forceRefresh = refreshNonce > 0 && !FORCED_DISCOVERY_REFRESHES.has(forceKey)
+    if (forceRefresh) FORCED_DISCOVERY_REFRESHES.add(forceKey)
+    discoverTmdbWithCache(config, rowId, forceRefresh, (fresh) => {
       import('../services/metadata/metadataResolver').then(({ enrichSearchResultsWithAppMetadata }) => enrichSearchResultsWithAppMetadata(fresh)).then((enriched) => { if (!cancelled) setCachedRow(rowId, enriched.map(applySearchResultArt)) }).catch(() => undefined)
-    })
+      })
       .then(async (results) => {
+        if (results.length === 0 && items.length > 0) return
         const rawItems = results.length > 0 ? results : fallback
         const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
         const enriched = await enrichSearchResultsWithAppMetadata(rawItems)
         const finalItems = enriched.map(applySearchResultArt)
-        if (!cancelled) setCachedRow(rowId, finalItems)
+        if (!cancelled && (finalItems.length > 0 || items.length === 0)) setCachedRow(rowId, finalItems)
       })
       .catch(async () => {
+        if (items.length > 0) return
         const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
         const enriched = await enrichSearchResultsWithAppMetadata(fallback)
         const finalItems = enriched.map(applySearchResultArt)
@@ -262,7 +264,7 @@ function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchR
       })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowId, enabled])
+  }, [rowId, enabled, refreshNonce])
 
   return items
 }
@@ -280,6 +282,13 @@ function rotateItems(items: SearchResult[], offset: number): SearchResult[] {
   if (items.length === 0) return items
   const start = offset % items.length
   return [...items.slice(start), ...items.slice(0, start)]
+}
+
+function opaqueScope(value: string | null): string {
+  if (!value) return 'none'
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619)
+  return (hash >>> 0).toString(36)
 }
 
 function recommendationCandidate(item: SearchResult, source: RecommendationCandidate['source'], overrides: Partial<RecommendationCandidate> = {}): RecommendationCandidate {
@@ -308,6 +317,12 @@ export default function DiscoverPage() {
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
+  const accountScope = useMemo(() => [
+    traktConnected ? `trakt:${providerCacheScope('trakt')}` : '',
+    simklConnected ? `simkl:${providerCacheScope('simkl')}` : '',
+    anilistConnected ? `anilist:${providerCacheScope('anilist')}` : '',
+    stremioAuthKey ? `stremio:${opaqueScope(stremioAuthKey)}` : '',
+  ].filter(Boolean).join('|') || 'local', [traktConnected, simklConnected, anilistConnected, stremioAuthKey])
   const [mode, setMode] = useState<DiscoveryMode>(() => (localStorage.getItem('aurales_discovery_mode') as DiscoveryMode) || 'for-you')
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
@@ -324,7 +339,7 @@ export default function DiscoverPage() {
   // is identical on every visit within a day (a source of visit-to-visit reshuffling)
   const rankingNow = DISCOVERY_DAY * 86_400_000
   const [starterGenres,setStarterGenres]=useState<number[]>(()=>{try{return JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]')}catch{return[]}})
-  const [refreshing,setRefreshing]=useState(false)
+  const [refreshNonces,setRefreshNonces]=useState<Record<DiscoverTab,number>>({movies:0,series:0,anime:0})
   const [heroIndex,setHeroIndex]=useState(0)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
@@ -346,6 +361,7 @@ export default function DiscoverPage() {
   }), [fallback])
   const preferences = useMemo(() => ({ region, minRating, includeAdult }), [region, minRating, includeAdult])
   const preferenceKey = `${region}-${minRating}-${includeAdult}`
+  const refreshNonce = refreshNonces[tab]
   useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,preferenceKey])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const mood = useMemo(() => {
@@ -365,6 +381,8 @@ export default function DiscoverPage() {
     makeConfig(contentType, 'popularity.desc', preferences, animeOverrides),
     `discover-trending-${tab}-${preferenceKey}`,
     fallback,
+    true,
+    refreshNonce,
   )
   const topRated = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
@@ -373,6 +391,8 @@ export default function DiscoverPage() {
     }),
     `discover-toprated-${tab}-${preferenceKey}`,
     fallback,
+    true,
+    refreshNonce,
   )
   const moodItems = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
@@ -384,6 +404,8 @@ export default function DiscoverPage() {
     }),
     `discover-mood-${tab}-${mood.title}-${preferenceKey}`,
     fallbackVariants.mood,
+    true,
+    refreshNonce,
   )
   const hiddenGems = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
@@ -393,6 +415,8 @@ export default function DiscoverPage() {
     }),
     `discover-gems-${tab}-${preferenceKey}`,
     fallbackVariants.gems,
+    true,
+    refreshNonce,
   )
   const quickWatches = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
@@ -403,6 +427,8 @@ export default function DiscoverPage() {
     }),
     `discover-quick-${tab}-${preferenceKey}`,
     fallbackVariants.quick,
+    true,
+    refreshNonce,
   )
   // Anime movies — the anime tab's discover rows are series-only, so without these
   // rows anime films would never surface in the anime category
@@ -412,12 +438,14 @@ export default function DiscoverPage() {
     `discover-anime-movies-${preferenceKey}`,
     fallback,
     tab === 'anime',
+    refreshNonce,
   )
   const animeMoviesTop = useDiscoverRow(
     makeConfig('movie', 'vote_average.desc', preferences, { ...animeMovieOverrides, voteCountMin: 150, voteAverageMin: Math.max(7, minRating) }),
     `discover-anime-movies-top-${preferenceKey}`,
     fallback,
     tab === 'anime',
+    refreshNonce,
   )
   const forYou = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
@@ -431,6 +459,8 @@ export default function DiscoverPage() {
     }),
     `discover-for-you-${tab}-${tasteGenre || 'starter'}-${preferenceKey}`,
     fallbackVariants.taste,
+    true,
+    refreshNonce,
   )
 
   // Titles the user actually watched — local playback progress + connected watch
@@ -526,9 +556,9 @@ export default function DiscoverPage() {
     return ranked
   }, [filteredCandidates, tasteProfile, activity, feedback, mode, rankingNow, impressions, prefs])
 
-  // Once the day's data has settled, freeze the order so returning to Discover shows
-  // the same recommendations instead of reshuffling. Manual Refresh clears snapshots.
-  const snapshotKey = `${DISCOVERY_DAY}:${tab}:${mode}:${preferenceKey}:${prefsSignature(prefs)}`
+  // Keep the last complete ranking across restarts/day changes. A settled refresh
+  // replaces it only when the material catalog content actually changed.
+  const snapshotKey = `${tab}:${mode}:${preferenceKey}:${prefsSignature(prefs)}:${accountScope}`
   const rankedSnapshot = useDiscoverStore((s) => s.rankedSnapshots[snapshotKey])
   const setRankedSnapshot = useDiscoverStore((s) => s.setRankedSnapshot)
   const validRankedSnapshot = useMemo(
@@ -537,9 +567,11 @@ export default function DiscoverPage() {
   )
   const snapshotIsValid = Boolean(rankedSnapshot && validRankedSnapshot?.length === rankedSnapshot.length && rankedSnapshot.length > 0)
   const ranked = snapshotIsValid ? validRankedSnapshot! : liveRanked
+  const liveRankedFingerprint = catalogContentFingerprint(liveRanked.map((entry) => entry.item))
+  const snapshotFingerprint = catalogContentFingerprint((validRankedSnapshot || []).map((entry) => entry.item))
   useEffect(() => {
-    if (!snapshotIsValid && initialWaitComplete && liveRanked.length > 0) setRankedSnapshot(snapshotKey, liveRanked)
-  }, [snapshotIsValid, initialWaitComplete, liveRanked, snapshotKey, setRankedSnapshot])
+    if (initialWaitComplete && liveRanked.length > 0 && liveRankedFingerprint !== snapshotFingerprint) setRankedSnapshot(snapshotKey, liveRanked)
+  }, [initialWaitComplete, liveRanked, liveRankedFingerprint, snapshotFingerprint, snapshotKey, setRankedSnapshot])
   const personalizedSections = useMemo(() => generateDiscoverySections(ranked.slice(1), tasteProfile, mode), [ranked, tasteProfile, mode])
   const heroPool = useMemo(() => ranked.slice(0, 6), [ranked])
   const activeHeroIndex = heroPool.length ? heroIndex % heroPool.length : 0
@@ -596,7 +628,7 @@ export default function DiscoverPage() {
   const changeMode = (next: DiscoveryMode) => { localStorage.setItem('aurales_discovery_mode', next); setMode(next) }
   const toggleStarterGenre=(genreId:number)=>setStarterGenres((current)=>{const next=current.includes(genreId)?current.filter((id)=>id!==genreId):[...current,genreId].slice(-8);localStorage.setItem('aurales_discovery_starter_genres',JSON.stringify(next));return next})
   const submitFeedback = (item: SearchResult, kind: Parameters<typeof saveRecommendationFeedback>[1]) => setFeedback(saveRecommendationFeedback(item, kind))
-  const refreshDiscovery=async()=>{setRefreshing(true);await cacheClearCategory(CACHE_CATEGORIES.DISCOVER);useDiscoverStore.getState().clearCache();window.location.reload()}
+  const refreshDiscovery=()=>setRefreshNonces((current)=>({...current,[tab]:current[tab]+1}))
 
   const handleGenreClick = useCallback((genreId: number) => {
     if (selectedGenre === genreId) {
@@ -637,7 +669,7 @@ export default function DiscoverPage() {
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Discover</h1>
             <p className="text-sm text-white/35">Daily moods, quality picks, and recommendations shaped by what you open</p>
           </div>
-          <div className="flex items-center gap-2"><button onClick={refreshDiscovery} disabled={refreshing} className="focus-ring rounded-full border border-white/10 bg-white/[.04] px-3 py-1.5 text-xs font-bold text-white/55 disabled:opacity-50">{refreshing?'Refreshing…':'Refresh'}</button><span className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-white/45">Region {region} · {minRating > 0 ? `${minRating}+ rating` : 'all ratings'}</span></div>
+          <div className="flex items-center gap-2"><button onClick={refreshDiscovery} className="focus-ring rounded-full border border-white/10 bg-white/[.04] px-3 py-1.5 text-xs font-bold text-white/55">Refresh</button><span className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-white/45">Region {region} · {minRating > 0 ? `${minRating}+ rating` : 'all ratings'}</span></div>
         </div>
 
         <div className="flex items-center gap-2 mt-5">

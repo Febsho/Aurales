@@ -9,6 +9,9 @@ const continuePromise = new Promise<void>((resolve) => { resolveContinue = resol
 const fallback = typeof window !== 'undefined'
   ? window.setTimeout(() => markHeroImageSettled(), 750)
   : undefined
+const continueFallback = typeof window !== 'undefined'
+  ? window.setTimeout(() => markContinueWatchingSettled(), 1000)
+  : undefined
 
 export function markHeroImageSettled(): void {
   if (heroSettled) return
@@ -24,6 +27,7 @@ export function waitForHeroImageSettled(): Promise<void> {
 export function markContinueWatchingSettled(): void {
   if (continueSettled) return
   continueSettled = true
+  if (continueFallback != null && typeof window !== 'undefined') window.clearTimeout(continueFallback)
   resolveContinue()
 }
 

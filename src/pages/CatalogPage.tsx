@@ -11,6 +11,7 @@ import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 import WatchlistButton from '../components/WatchlistButton'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
+import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
 
 export default function CatalogPage() {
   const navigate = useNavigate()
@@ -77,6 +78,7 @@ export default function CatalogPage() {
           voteAverageMin: minRating,
           voteAverageMax: 10,
           voteCountMin: 50,
+          maxResults: undefined,
         }
       }
     }
@@ -183,6 +185,12 @@ export default function CatalogPage() {
       let page = restoredCache ? Math.max(1, restoredCache.page) : 1
       let loadingPage = false
       let canLoadMore = true
+      const maxResults = row.discoverConfig.maxResults && row.discoverConfig.maxResults > 0
+        ? row.discoverConfig.maxResults
+        : undefined
+      let loadedResultCount = maxResults
+        ? Math.min(restoredCache?.items.length || 0, maxResults)
+        : restoredCache?.items.length || 0
       let scrollFrame = 0
       const scrollRoot = document.querySelector('main') || document.documentElement
 
@@ -197,16 +205,47 @@ export default function CatalogPage() {
 
         try {
           const isFirst = page === 1
+          const requestedPage = page
           const results = isFirst
             ? await discoverTmdbWithCache(row.discoverConfig!, `catalog-${rowId}-p${page}`)
             : await discoverTmdb(row.discoverConfig!, page)
           if (cancelled) return
 
-          const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-          const enriched = await enrichSearchResultsWithAppMetadata(results)
-          if (cancelled) return
+          // TMDB already gives us everything required to render a useful card.
+          // Do not keep the whole catalog behind secondary metadata lookups.
+          const allowedResults = maxResults
+            ? results.slice(0, Math.max(0, maxResults - loadedResultCount))
+            : results
+          if (allowedResults.length > 0) {
+            loadedResultCount += allowedResults.length
+            setItems((current) => dedupeMediaItems([...current, ...allowedResults]).slice(0, maxResults))
+            if (initial) setLoading(false)
+            else setLoadingMore(false)
 
-          if (enriched.length === 0 || enriched.length < (isFirst ? DISCOVER_ROW_LIMIT : 20)) {
+            void scheduleTask(metadataTaskQueue, {
+              id: `catalog-discover-enrich:${rowId}:${requestedPage}`,
+              dedupKey: `catalog-discover-enrich:${rowId}:${requestedPage}`,
+              priority: 'low',
+              group: 'metadata',
+              execute: async () => {
+                const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
+                return enrichSearchResultsWithAppMetadata(allowedResults)
+              },
+            }).then((enriched) => {
+              if (cancelled || enriched.length === 0) return
+              const enrichedByIdentity = new Map(
+                enriched.map((item) => [mediaIdentity(item), item] as const),
+              )
+              setItems((current) => current.map((item) => (
+                enrichedByIdentity.get(mediaIdentity(item)) ?? item
+              )))
+            }).catch(() => undefined)
+          }
+
+          if (maxResults && loadedResultCount >= maxResults) {
+            canLoadMore = false
+            setHasMore(false)
+          } else if (results.length === 0 || results.length < (isFirst ? DISCOVER_ROW_LIMIT : 20)) {
             canLoadMore = false
             setHasMore(false)
           } else {
@@ -214,10 +253,6 @@ export default function CatalogPage() {
             page = isFirst ? DISCOVER_ROW_PAGES + 1 : page + 1
             pageRef.current = page
             setHasMore(true)
-          }
-
-          if (enriched.length > 0) {
-            setItems((current) => dedupeMediaItems([...current, ...enriched]))
           }
         } catch (_) {
           canLoadMore = false

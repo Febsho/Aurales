@@ -675,6 +675,11 @@ export async function saveAniListProgressMapped(
   progressRatio: number,
 ): Promise<void> {
   if (!isAniListConnected()) return
+  // AniList has no per-title resume position: writing `progress: episode`
+  // means that episode is watched. Playback updates must therefore wait for
+  // the same completion threshold used by the local player. Manual watched
+  // actions call saveAniListProgress directly and are intentionally unaffected.
+  if (!Number.isFinite(progressRatio) || progressRatio < 0.85) return
 
   if (item.contentType === 'series' && item.tvdbId && item.localId && item.season != null && item.episode != null) {
     try {

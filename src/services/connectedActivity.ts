@@ -7,6 +7,8 @@ import { resolveAnimeIds } from './animeLists'
 import { tmdbProvider, getTmdbRuntimeMetadata } from './tmdb'
 import { resolveArtFromProviders } from './artwork'
 import { getStremioAuth, getStremioWatchHistory } from './stremio'
+import { cacheGet, cacheGetMany, cacheSet } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 export type ConnectedHistorySource = 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'mdblist' | 'stremio'
 export type ConnectedHistoryMediaType = 'movie' | 'series' | 'anime'
@@ -40,6 +42,7 @@ export interface ConnectedHistoryResult {
 const memoryCache = new Map<string, { timestamp: number; result: ConnectedHistoryResult }>()
 const enrichedItemCache = new Map<string, ConnectedHistoryItem>()
 const RUNTIME_CACHE_KEY = 'aurales_connected_runtime_v2'
+const HISTORY_CACHE_VERSION = 1
 
 const latest = (...values: (string | undefined)[]) => values.filter(Boolean).sort().at(-1)
 const normalizedTitle = (value: string) => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -214,6 +217,30 @@ function runtimeCacheKey(item: ConnectedHistoryItem) {
   return `${item.id}:${item.watchedCount}:${episodes}`
 }
 
+function runtimeDiskCacheKey(item: ConnectedHistoryItem) {
+  return `connected_history:runtime:v3:${runtimeCacheKey(item)}`
+}
+
+function historyCacheKey(selected: ConnectedHistorySource[]) {
+  return `connected_history:snapshot:v${HISTORY_CACHE_VERSION}:${[...selected].sort().join('|')}`
+}
+
+export async function persistConnectedHistorySnapshot(selected: ConnectedHistorySource[], items: ConnectedHistoryItem[]) {
+  if (!selected.length) return
+  const key = [...selected].sort().join('|')
+  const previous = memoryCache.get(key)?.result
+  const result: ConnectedHistoryResult = {
+    items,
+    errors: previous?.errors || {},
+    sourceCounts: previous?.sourceCounts || {},
+  }
+  memoryCache.set(key, { timestamp: Date.now(), result })
+  await cacheSet(historyCacheKey(selected), result, {
+    category: CACHE_CATEGORIES.CONNECTED_HISTORY,
+    ttlSeconds: CACHE_TTLS.CONNECTED_HISTORY,
+  })
+}
+
 async function resolveRuntimeMetadata(item: ConnectedHistoryItem): Promise<RuntimeMetadata | undefined> {
   if (!item.tmdbId) return undefined
   if (item.mediaType === 'movie') {
@@ -222,6 +249,12 @@ async function resolveRuntimeMetadata(item: ConnectedHistoryItem): Promise<Runti
   }
 
   const show = await getTmdbRuntimeMetadata('tv', item.tmdbId)
+  if (show.episodeRunTime && show.episodeRunTime > 0) {
+    return {
+      minutes: Math.round(show.episodeRunTime * Math.max(1, item.watchedCount)),
+      genres: show.genres,
+    }
+  }
   const watchedEpisodes = item.watchedEpisodes || []
   const knownRuntimes: number[] = []
   let exactTotal = 0
@@ -259,6 +292,9 @@ export async function estimateConnectedHistoryRuntime(
   const results = new Array<ConnectedHistoryItem>(items.length)
   let completed = 0
 
+  const diskKeys = items.map(runtimeDiskCacheKey)
+  const diskCache = await cacheGetMany<RuntimeMetadata>(diskKeys)
+
   const applyMetadata = (index: number, metadata: RuntimeMetadata | undefined) => {
     const item = items[index]
     const result = { ...item, runtimeMinutes: metadata?.minutes, genres: metadata?.genres?.length ? metadata.genres : item.genres }
@@ -271,7 +307,7 @@ export async function estimateConnectedHistoryRuntime(
   const misses: number[] = []
   items.forEach((item, index) => {
     const key = runtimeCacheKey(item)
-    const cached = cache[key]
+    const cached = cache[key] || diskCache.get(runtimeDiskCacheKey(item))?.data
     if (cached) { fresh[key] = cached; applyMetadata(index, cached) } else misses.push(index)
   })
 
@@ -288,6 +324,11 @@ export async function estimateConnectedHistoryRuntime(
   await Promise.all(Array.from({ length: Math.min(8, misses.length) }, worker))
   // Persist only keys for current items — stale watchedCount variants get pruned.
   writeRuntimeCache(fresh)
+  await Promise.all(Object.entries(fresh).map(([key, metadata]) => cacheSet(
+    `connected_history:runtime:v3:${key}`,
+    metadata,
+    { category: CACHE_CATEGORIES.CONNECTED_HISTORY, ttlSeconds: CACHE_TTLS.CONNECTED_HISTORY },
+  )))
   return results
 }
 
@@ -310,6 +351,11 @@ export async function loadConnectedHistory(selected: ConnectedHistorySource[], f
   const key = [...selected].sort().join('|')
   const cached = memoryCache.get(key)
   if (!force && cached && Date.now() - cached.timestamp < 5 * 60_000) return cached.result
+  const persisted = await cacheGet<ConnectedHistoryResult>(historyCacheKey(selected))
+  if (!force && persisted) {
+    memoryCache.set(key, { timestamp: Date.now(), result: persisted.data })
+    return persisted.data
+  }
   const settled = await Promise.all(selected.map(async (source) => ({ source, items: await loaders[source]() })).map((request) => request.then((value) => ({ status: 'fulfilled' as const, value })).catch((reason) => ({ status: 'rejected' as const, reason }))))
   const errors: ConnectedHistoryResult['errors'] = {}
   const sourceCounts: ConnectedHistoryResult['sourceCounts'] = {}
@@ -319,8 +365,25 @@ export async function loadConnectedHistory(selected: ConnectedHistorySource[], f
     sourceCounts[source] = result.value.items.length
     return result.value.items
   })
-  const combined = dedupeConnectedHistory(raw).sort((left, right) => (right.watchedAt || '').localeCompare(left.watchedAt || '') || left.title.localeCompare(right.title))
+  const previousItems = persisted?.data.items || []
+  const combined = dedupeConnectedHistory(raw)
+    .map((item) => {
+      const previous = previousItems.find((candidate) => candidate.id === item.id)
+      if (!previous) return item
+      return {
+        ...item,
+        title: item.title || previous.title,
+        poster: item.poster || previous.poster,
+        runtimeMinutes: previous.runtimeMinutes,
+        genres: previous.genres?.length ? previous.genres : item.genres,
+      }
+    })
+    .sort((left, right) => (right.watchedAt || '').localeCompare(left.watchedAt || '') || left.title.localeCompare(right.title))
   const result = { items: combined, errors, sourceCounts }
   memoryCache.set(key, { timestamp: Date.now(), result })
+  await cacheSet(historyCacheKey(selected), result, {
+    category: CACHE_CATEGORIES.CONNECTED_HISTORY,
+    ttlSeconds: CACHE_TTLS.CONNECTED_HISTORY,
+  })
   return result
 }

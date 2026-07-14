@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeRowConfig, SearchResult } from '../../types'
 import {
   clearContinueWatchingSnapshotsForSource,
+  catalogContentFingerprint,
   getContinueWatchingAccountScope,
   mergeContinueWatchingPresentation,
   readContinueWatchingStartupSnapshot,
@@ -12,6 +13,7 @@ import {
   writeHeroStartupSnapshot,
   type ContinueWatchingSnapshotItem,
 } from './homeStartupSnapshot'
+import { providerRowCacheKey } from './homeRowCacheKeys'
 
 const values = new Map<string, string>()
 const storage = {
@@ -82,11 +84,24 @@ describe('Home startup snapshots', () => {
     expect(stableListFingerprint(original)).not.toBe(stableListFingerprint([...metadataChanged].reverse()))
   })
 
+  it('detects material catalog metadata changes', () => {
+    const original = [{ ...heroItem('one'), tmdbId: 7 }]
+    expect(catalogContentFingerprint(original)).not.toBe(catalogContentFingerprint([{ ...original[0], poster: 'new' }]))
+  })
+
   it('reuses cached presentation while keeping fresh progress', () => {
     const cached = { ...continueItem('old'), mediaId: 'tt123', imdbId: 'tt123', title: 'Real title', backdrop: 'cached-backdrop' }
     const fresh = { ...continueItem('new'), mediaId: 'tt123', imdbId: 'tt123', title: 'Untitled', poster: undefined, backdrop: undefined, progressPct: 42 }
     expect(mergeContinueWatchingPresentation([fresh], [cached])[0]).toMatchObject({
       title: 'Real title', backdrop: 'cached-backdrop', progressPct: 42,
     })
+  })
+
+  it('isolates private Home rows by connected account', () => {
+    const row: HomeRowConfig = { ...heroRow(), layout: 'poster', sourceType: 'trakt', providerListId: 'watchlist-movies' }
+    values.set('trakt_account', JSON.stringify({ username: 'alice' }))
+    const alice = providerRowCacheKey(row)
+    values.set('trakt_account', JSON.stringify({ username: 'bob' }))
+    expect(providerRowCacheKey(row)).not.toBe(alice)
   })
 })

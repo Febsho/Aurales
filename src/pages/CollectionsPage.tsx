@@ -10,6 +10,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
+import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import type { HomeRowConfig, DiscoverConfig, SearchResult } from '../types'
 import type { InstalledAddon } from '../services/addons'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
@@ -28,6 +29,7 @@ import {
   searchTmdbCompanies,
   searchTmdbKeywords,
   discoverTmdb,
+  discoverTmdbPreviewWithCache,
   discoverTmdbWithCache,
   type TmdbWatchProvider
 } from '../services/tmdb'
@@ -56,6 +58,10 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { homeRowCacheKey, providerCacheScope } from '../services/cache/homeRowCacheKeys'
+import { cachedImage } from '../services/imageCache'
 
 // ── Simkl list options (for add-widget overlay) ────────────────────────────────
 
@@ -91,24 +97,37 @@ const SIMKL_LIBRARY_CATALOGS = [
   { id: 'anime-completed',           label: 'Completed',                 type: 'poster' as const, group: 'watchlist', section: 'Anime' },
   { id: 'anime-on-hold',             label: 'On Hold',                   type: 'poster' as const, group: 'watchlist', section: 'Anime' },
   { id: 'anime-dropped',             label: 'Dropped',                   type: 'poster' as const, group: 'watchlist', section: 'Anime' },
-  { id: 'trending-movies',           label: 'Trending Movies',           type: 'poster' as const, group: 'trending' },
-  { id: 'trending-shows',            label: 'Trending Shows',            type: 'poster' as const, group: 'trending' },
-  { id: 'trending-anime',            label: 'Trending Anime',            type: 'poster' as const, group: 'trending' },
-  { id: 'anime-airing-soon',         label: 'Airing Soon (Anime)',       type: 'poster' as const, group: 'trending' },
-  { id: 'anime-airing-soon-earlier', label: 'Airing Soon (Earlier)',     type: 'poster' as const, group: 'trending' },
-  { id: 'dvd-releases',              label: 'DVD Releases',              type: 'poster' as const, group: 'trending' },
-  { id: 'hidden-gems-movies',        label: 'Movies',                    type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
-  { id: 'hidden-gems-shows',         label: 'Shows',                     type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
-  { id: 'hidden-gems-anime',         label: 'Anime',                     type: 'poster' as const, group: 'curated', section: 'Hidden Gems' },
-  { id: 'binge-worthy-shows',        label: 'Shows',                     type: 'poster' as const, group: 'curated', section: 'Binge-Worthy' },
-  { id: 'binge-worthy-anime',        label: 'Anime',                     type: 'poster' as const, group: 'curated', section: 'Binge-Worthy' },
-  { id: 'quick-watches',             label: 'Quick Watches (under 100 min)', type: 'poster' as const, group: 'curated', section: 'Mom picks' },
-  { id: 'box-office-hits',           label: 'Box Office Hits',           type: 'poster' as const, group: 'curated', section: 'Mom picks' },
 ]
 
 const ANILIST_WIDGET_LISTS = ANILIST_LIST_SOURCES.map((list) => ({ id: list.id, label: list.label.replace(/^AniList - /, ''), type: list.layout }))
 
 // ── Poster fetching ────────────────────────────────────────────────────────────
+
+interface LibraryShelfPosterSnapshot {
+  posters: string[]
+  count: number
+}
+
+const libraryShelfPosterMemory = new Map<string, LibraryShelfPosterSnapshot>()
+const libraryShelfPostersRefreshed = new Set<string>()
+
+function libraryShelfPosterCacheKey(row: HomeRowConfig): string {
+  const contentKey = homeRowCacheKey(row) || JSON.stringify({
+    id: row.id,
+    layout: row.layout,
+    sourceType: row.sourceType,
+    providerListId: row.providerListId,
+    addonId: row.addonId,
+    addonUrl: row.addonUrl,
+    catalogType: row.catalogType,
+    catalogId: row.catalogId,
+    catalogExtra: row.catalogExtra,
+    discoverConfig: row.discoverConfig,
+    sortBy: row.sortBy,
+    accountScope: providerCacheScope(row.sourceType),
+  })
+  return `library:shelf-posters:v1:${contentKey}`
+}
 
 async function fetchSimklPosters(listId: string): Promise<string[]> {
   const rawItems = isSimklDerivedCatalogId(listId)
@@ -134,72 +153,101 @@ async function fetchSimklPosters(listId: string): Promise<string[]> {
 }
 
 function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters: string[]; count: number; loading: boolean } {
-  const [posters, setPosters] = useState<string[]>([])
-  const [count, setCount] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const cacheKey = useMemo(() => libraryShelfPosterCacheKey(row), [row])
+  const initial = libraryShelfPosterMemory.get(cacheKey)
+  const [posters, setPosters] = useState<string[]>(() => initial?.posters || [])
+  const [count, setCount] = useState(() => initial?.count || 0)
+  const [loading, setLoading] = useState(() => !initial)
   const watchProgress = useAppStore((s) => s.watchProgress)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
 
     const load = async () => {
+      let existing = libraryShelfPosterMemory.get(cacheKey)
+
+      if (!existing) {
+        const cached = await cacheGet<LibraryShelfPosterSnapshot>(cacheKey)
+        if (cached?.data?.posters?.length) {
+          existing = cached.data
+          libraryShelfPosterMemory.set(cacheKey, existing)
+          if (!cancelled) {
+            setPosters(existing.posters)
+            setCount(existing.count)
+            setLoading(false)
+          }
+        }
+      } else if (!cancelled) {
+        setPosters(existing.posters)
+        setCount(existing.count)
+        setLoading(false)
+      }
+      let settledWithPosters = Boolean(existing?.posters.length)
+
+      // The local Continue Watching preview should follow live progress and is
+      // cheap to derive; remote shelves refresh only once during this session.
+      if (row.layout === 'continue') {
+        const items = Array.from(watchProgress.values()).filter((item) => !item.completed && item.progressSeconds > 5)
+        const snapshot = { posters: items.slice(0, 5).map((item) => item.poster || item.backdrop || '').filter(Boolean), count: items.length }
+        libraryShelfPosterMemory.set(cacheKey, snapshot)
+        if (!cancelled) { setPosters(snapshot.posters); setCount(snapshot.count); setLoading(false) }
+        return
+      }
+
+      // Home already owns a durable full-catalog snapshot for these exact row
+      // keys. Build the Library mosaic from that snapshot first instead of
+      // starting a second provider/addon request that can sit in a busy queue.
+      const homeKey = homeRowCacheKey(row)
+      if (homeKey) {
+        const memoryItems = useHomeCatalogCache.getState().get(homeKey)
+        const cachedItems = memoryItems?.length
+          ? memoryItems
+          : (await cacheGet<SearchResult[]>(homeKey))?.data
+        if (cachedItems?.length) {
+          const urls = cachedItems.slice(0, 5).map((item) => item.poster || item.backdrop || '').filter(Boolean)
+          if (urls.length) {
+            const snapshot = { posters: urls, count: cachedItems.length }
+            libraryShelfPosterMemory.set(cacheKey, snapshot)
+            libraryShelfPostersRefreshed.add(cacheKey)
+            void cacheSet(cacheKey, snapshot, { category: CACHE_CATEGORIES.HOME_ROW, ttlSeconds: null })
+            if (!cancelled) { setPosters(urls); setCount(cachedItems.length); setLoading(false) }
+            return
+          }
+        }
+      }
+
+      if (libraryShelfPostersRefreshed.has(cacheKey)) {
+        if (!cancelled) setLoading(false)
+        return
+      }
+
       try {
         let urls: string[] = []
         let total = 0
-
-        if (row.layout === 'continue') {
-          const items = Array.from(watchProgress.values())
-            .filter((i) => !i.completed && i.progressSeconds > 5)
-          total = items.length
-          urls = items.slice(0, 5).map((i) => i.poster || i.backdrop || '').filter(Boolean)
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
 
         const isMock = row.catalogId?.startsWith('mock-')
         if (isMock && row.catalogId) {
           const items = getMockCatalog(row.catalogId)
           total = items.length
           urls = items.slice(0, 5).map((i) => i.poster || '').filter(Boolean)
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
-
-        if (!row.catalogId && !row.addonId && !row.sourceType) {
+        } else if (!row.catalogId && !row.addonId && !row.sourceType) {
           const fallback = row.layout === 'landscape' ? MOCK_POPULAR_SHOWS : MOCK_TRENDING
           total = fallback.length
           urls = fallback.slice(0, 5).map((i) => i.poster || '').filter(Boolean)
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
-
-        if (row.sourceType === 'simkl' && row.providerListId) {
+        } else if (row.sourceType === 'simkl' && row.providerListId) {
           urls = await fetchSimklPosters(row.providerListId)
           total = urls.length // approximate
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
-
-        if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') && row.providerListId) {
+        } else if ((row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') && row.providerListId) {
           const items = await getProviderListItems(row)
           total = items.length
           urls = items.slice(0, 5).map((i) => i.poster || i.backdrop || '').filter(Boolean)
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
-
-        if (row.sourceType === 'discover' && row.discoverConfig) {
+        } else if (row.sourceType === 'discover' && row.discoverConfig) {
           try {
-            const results = await discoverTmdbWithCache(row.discoverConfig, row.id)
+            const results = await discoverTmdbPreviewWithCache(row.discoverConfig, row.id)
             total = results.length
             urls = results.slice(0, 5).map((i) => i.poster || '').filter(Boolean)
           } catch (_) { /* ignore */ }
-          if (!cancelled) { setPosters(urls); setCount(total) }
-          return
-        }
-
-        if (row.catalogType && row.catalogId) {
+        } else if (row.catalogType && row.catalogId) {
           const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
           const url = addon?.url || row.addonUrl
           if (url) {
@@ -209,17 +257,29 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
           }
         }
 
-        if (!cancelled) { setPosters(urls); setCount(total) }
+        // Never replace a useful preview with an empty provider/error result.
+        if (urls.length > 0) {
+          const snapshot = { posters: urls, count: total }
+          libraryShelfPosterMemory.set(cacheKey, snapshot)
+          settledWithPosters = true
+          await cacheSet(cacheKey, snapshot, { category: CACHE_CATEGORIES.HOME_ROW, ttlSeconds: null })
+          if (!cancelled) { setPosters(urls); setCount(total) }
+        }
       } catch (_) {
-        // empty mosaic is fine
+        // Keep the last successful preview.
       } finally {
+        // Mark the row only after the request has settled. Multiple responsive
+        // instances may mount together; marking it before the first result was
+        // ready caused the visible instance to stop at the fallback label.
+        if (settledWithPosters) libraryShelfPostersRefreshed.add(cacheKey)
+        else libraryShelfPostersRefreshed.delete(cacheKey)
         if (!cancelled) setLoading(false)
       }
     }
 
     load()
     return () => { cancelled = true }
-  }, [row.id, row.catalogId, row.addonId, row.sourceType, row.providerListId, addons, row.layout, watchProgress])
+  }, [cacheKey, row, addons, watchProgress])
 
   return { posters, count, loading }
 }
@@ -248,14 +308,14 @@ function PosterMosaic({ posters, loading }: { posters: string[]; loading: boolea
   if (posters.length === 1) {
     return (
       <div className="absolute inset-0">
-        <img src={posters[0]} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+        <img src={cachedImage(posters[0])} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
       </div>
     )
   }
   if (posters.length === 2) {
     return (
       <div className="absolute inset-0 grid grid-cols-2">
-        {posters.map((url, i) => <img key={i} src={url} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />)}
+        {posters.map((url, i) => <img key={i} src={cachedImage(url)} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />)}
       </div>
     )
   }
@@ -263,7 +323,7 @@ function PosterMosaic({ posters, loading }: { posters: string[]; loading: boolea
     <div className="absolute inset-0 grid grid-cols-2 grid-rows-2">
       {[0, 1, 2, 3].map((i) => (
         posters[i]
-          ? <img key={i} src={posters[i]} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+          ? <img key={i} src={cachedImage(posters[i])} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
           : <div key={i} className="bg-white/[0.04]" />
       ))}
     </div>
@@ -413,7 +473,7 @@ function SortableShelfCard({
       {/* Title + count (bottom) */}
       <div className="absolute bottom-0 left-0 right-0 p-3.5 z-10">
         <p className="text-sm font-bold text-white truncate leading-tight drop-shadow-lg">{row.title}</p>
-        <p className="text-[11px] text-white/50 mt-0.5 drop-shadow-md">{loading ? '...' : `${count} items`}</p>
+        <p className="text-[11px] text-white/50 mt-0.5 drop-shadow-md">{loading ? '...' : row.sourceType === 'discover' ? (row.discoverConfig?.maxResults ? `Up to ${row.discoverConfig.maxResults} titles` : 'All matching titles') : `${count} items`}</p>
       </div>
     </div>
   )
@@ -424,11 +484,13 @@ function SortableShelfCard({
 function HeroBannerSection({
   row,
   addons,
+  smartCollections,
   onUpdate,
   onAdd,
 }: {
   row: HomeRowConfig | undefined
   addons: InstalledAddon[]
+  smartCollections: HomeRowConfig[]
   onUpdate: (id: string, updates: Partial<HomeRowConfig>) => void
   onAdd: (row: Omit<HomeRowConfig, 'id' | 'order'>) => void
 }) {
@@ -490,7 +552,7 @@ function HeroBannerSection({
     ...(simklConnected ? SIMKL_LIBRARY_CATALOGS.map((list) => ({
       group: 'Simkl',
       label: list.section ? `${list.section} - ${list.label}` : list.label,
-      detail: list.group === 'trending' ? 'Trending catalog' : list.group === 'curated' ? 'Curated catalog' : 'Watchlist catalog',
+      detail: 'Watchlist catalog',
       value: `simkl:${list.id}`,
       row: {
         sourceType: 'simkl' as const,
@@ -500,7 +562,7 @@ function HeroBannerSection({
         catalogType: undefined,
         catalogId: undefined,
         catalogExtra: undefined,
-        showRank: list.group === 'trending' || list.group === 'curated',
+        showRank: false,
       },
     })) : []),
     ...(traktConnected ? TRAKT_LIST_SOURCES.map((list) => ({
@@ -569,7 +631,27 @@ function HeroBannerSection({
     })) : []),
   ]
 
-  const catalogOptions = [...addonOptions, ...serviceOptions]
+  const smartCollectionOptions: CatalogOption[] = smartCollections
+    .filter((collection) => collection.discoverConfig)
+    .map((collection) => ({
+      group: 'Smart Collections',
+      label: collection.title,
+      detail: 'Dynamic TMDB collection',
+      value: `smart:${collection.id}`,
+      row: {
+        sourceType: 'discover' as const,
+        discoverConfig: collection.discoverConfig,
+        catalogId: collection.id,
+        addonId: undefined,
+        addonUrl: undefined,
+        catalogType: undefined,
+        catalogExtra: undefined,
+        providerListId: undefined,
+        showRank: undefined,
+      },
+    }))
+
+  const catalogOptions = [...addonOptions, ...serviceOptions, ...smartCollectionOptions]
   const groupedOptions = catalogOptions.reduce<Record<string, CatalogOption[]>>((acc, option) => {
     if (!acc[option.group]) acc[option.group] = []
     acc[option.group].push(option)
@@ -577,7 +659,9 @@ function HeroBannerSection({
   }, {})
 
   const currentValue = row
-    ? row.sourceType && row.sourceType !== 'addon'
+    ? row.sourceType === 'discover'
+      ? `smart:${row.catalogId || ''}`
+      : row.sourceType && row.sourceType !== 'addon'
       ? `${row.sourceType}:${row.providerListId || ''}`
       : `addon:${row.addonId || 'com.example.mockaddon'}:${row.catalogType || 'movie'}:${row.catalogId || 'mock-movies'}`
     : 'addon:com.example.mockaddon:movie:mock-movies'
@@ -625,10 +709,10 @@ function HeroBannerSection({
         </div>
       </div>
 
-      <Modal open={pickerOpen} onClose={() => setPickerOpen(false)} title="Choose hero catalog" description="The hero source is independent from your Home shelves, so the same catalog can be used in both places." size="lg">
+      <Modal open={pickerOpen} onClose={() => setPickerOpen(false)} title="Choose hero catalog" description="The hero source is independent from your Home shelves, so the same catalog can be used in both places." size="lg" className="max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div className="space-y-4">
           <div className="relative"><svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg><input value={pickerQuery} onChange={(event) => setPickerQuery(event.target.value)} placeholder="Search catalogs and lists…" className="h-11 w-full rounded-xl border border-white/[0.09] bg-white/[0.045] pl-10 pr-4 text-sm text-white outline-none placeholder:text-white/25 focus:border-accent/30 focus:bg-white/[0.065]" autoFocus /></div>
-          <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>{pickerGroups.map((group) => <button key={group} type="button" onClick={() => setPickerGroup(group)} className={`flex-shrink-0 rounded-xl border px-3 py-2 text-[11px] font-bold transition-all cursor-pointer ${pickerGroup === group ? 'border-accent/25 bg-accent/12 text-accent' : 'border-white/[0.06] bg-white/[0.025] text-white/35 hover:bg-white/[0.055] hover:text-white/65'}`}>{group}</button>)}</div>
+          <div className="flex flex-wrap gap-2 pb-1">{pickerGroups.map((group) => <button key={group} type="button" onClick={() => setPickerGroup(group)} className={`rounded-xl border px-3 py-2 text-[11px] font-bold transition-all cursor-pointer ${pickerGroup === group ? 'border-accent/25 bg-accent/12 text-accent' : 'border-white/[0.06] bg-white/[0.025] text-white/35 hover:bg-white/[0.055] hover:text-white/65'}`}>{group}</button>)}</div>
           <div className="max-h-[min(520px,55vh)] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
             {filteredOptions.length === 0 ? <div className="grid min-h-44 place-items-center rounded-2xl border border-dashed border-white/[0.08] text-center"><div><p className="text-sm font-semibold text-white/45">No matching catalogs</p><p className="mt-1 text-xs text-white/25">Try another source or search term.</p></div></div> : <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{filteredOptions.map((option) => {
               const active = option.value === selectedOption?.value
@@ -1057,6 +1141,7 @@ function AddWidgetOverlay({
   const [runtimeMax, setRuntimeMax] = useState('')
   const [releaseDateFrom, setReleaseDateFrom] = useState('')
   const [releaseDateTo, setReleaseDateTo] = useState('')
+  const [maxResults, setMaxResults] = useState('')
   const [presetName, setPresetName] = useState('')
   const [showOnHome, setShowOnHome] = useState(false)
 
@@ -1109,6 +1194,7 @@ function AddWidgetOverlay({
         setRuntimeMax(config.runtimeMax !== undefined ? String(config.runtimeMax) : '')
         setReleaseDateFrom(config.releaseDateFrom || '')
         setReleaseDateTo(config.releaseDateTo || '')
+        setMaxResults(config.maxResults !== undefined ? String(config.maxResults) : '')
         setPresetName(config.presetName || '')
       } else {
         setMode('preset')
@@ -1150,6 +1236,7 @@ function AddWidgetOverlay({
       setRuntimeMax('')
       setReleaseDateFrom('')
       setReleaseDateTo('')
+      setMaxResults('')
       setPresetName('')
       setEditLayout('poster')
       setShowOnHome(newSmartCollectionDefaults().enabled)
@@ -1193,6 +1280,7 @@ function AddWidgetOverlay({
     setRuntimeMax(rules.runtimeMax !== undefined ? String(rules.runtimeMax) : '')
     setReleaseDateFrom(rules.releaseDateFrom || '')
     setReleaseDateTo(rules.releaseDateTo || '')
+    setMaxResults('')
     setPresetName(template.id)
   }
 
@@ -1469,6 +1557,7 @@ function AddWidgetOverlay({
         runtimeMax: runtimeMax ? parseInt(runtimeMax) : undefined,
         releaseDateFrom,
         releaseDateTo,
+        maxResults: maxResults ? parseInt(maxResults) : undefined,
         presetName,
       }
       const results = await discoverTmdb(config, 1)
@@ -1517,6 +1606,7 @@ function AddWidgetOverlay({
       runtimeMax: runtimeMax ? parseInt(runtimeMax) : undefined,
       releaseDateFrom,
       releaseDateTo,
+      maxResults: maxResults ? parseInt(maxResults) : undefined,
       presetName,
     }
 
@@ -1588,7 +1678,7 @@ function AddWidgetOverlay({
       providerListId: list.id,
       layout: 'poster',
       enabled: true,
-      showRank: list.group === 'trending' || list.group === 'curated',
+      showRank: false,
     })
   }
 
@@ -1616,8 +1706,6 @@ function AddWidgetOverlay({
 
   const visibleSimklCatalogs = {
     watchlist: filteredSimklLists.filter((list) => list.group === 'watchlist'),
-    trending: filteredSimklLists.filter((list) => list.group === 'trending'),
-    curated: filteredSimklLists.filter((list) => list.group === 'curated'),
   }
 
   // Toggle component for checkboxes
@@ -1686,7 +1774,7 @@ function AddWidgetOverlay({
     })
 
     SIMKL_LIBRARY_CATALOGS.forEach((list) => {
-      const row: ShelfDraft = { title: list.label, sourceType: 'simkl', providerListId: list.id, layout: 'poster', enabled: true, showRank: list.group === 'trending' || list.group === 'curated' }
+      const row: ShelfDraft = { title: list.label, sourceType: 'simkl', providerListId: list.id, layout: 'poster', enabled: true, showRank: false }
       items.push({ key: shelfDraftKey(row), source: 'simkl', group: list.section || list.group, title: list.label, subtitle: `Simkl • ${list.group}`, contentType: inferCatalogContentType(list.id, `${list.label} ${list.section || ''}`), row, added: isAlreadyAdded(`simkl:${list.id}`) })
     })
 
@@ -2313,53 +2401,6 @@ function AddWidgetOverlay({
                         </div>
                       )}
 
-                      {visibleSimklCatalogs.trending.length > 0 && (
-                        <div className="glass-panel-light rounded-2xl p-5">
-                          <div className="flex items-start gap-3 mb-4">
-                            <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-300 flex items-center justify-center flex-shrink-0">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 17l6-6 4 4 6-8" /><path d="M14 7h6v6" /></svg>
-                            </div>
-                            <div>
-                              <h3 className="text-sm font-bold text-white/85">Trending & Calendar</h3>
-                              <p className="text-[10px] text-white/35">Add trending catalogs or view upcoming releases</p>
-                            </div>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2">{visibleSimklCatalogs.trending.map(renderSimklCatalogButton)}</div>
-                          <p className="text-[9px] text-white/25 mt-3">Trending catalogs update automatically. Airing Soon shows TV and Anime episodes releasing in your timezone.</p>
-                        </div>
-                      )}
-
-                      {visibleSimklCatalogs.curated.length > 0 && (
-                        <div className="glass-panel-light rounded-2xl p-5">
-                          <div className="flex items-start gap-3 mb-4">
-                            <div className="w-8 h-8 rounded-xl bg-violet-500/15 text-violet-300 flex items-center justify-center flex-shrink-0">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 3l1.7 5.2H19l-4.3 3.1 1.6 5.2L12 13.3 7.7 16.5l1.6-5.2L5 8.2h5.3L12 3z" /></svg>
-                            </div>
-                            <div>
-                              <h3 className="text-sm font-bold text-white/85">Curated Picks</h3>
-                              <p className="text-[10px] text-white/35">Hidden Gems - highly rated titles that are flying under the radar</p>
-                            </div>
-                          </div>
-                          <div className="space-y-2.5">
-                            {['Hidden Gems', 'Binge-Worthy', 'Mom picks'].map((section) => {
-                              const items = visibleSimklCatalogs.curated.filter((list) => list.section === section)
-                              if (!items.length) return null
-                              const helper = section === 'Hidden Gems'
-                                ? 'highly rated, under the radar'
-                                : section === 'Binge-Worthy'
-                                  ? 'finished series, low drop-off'
-                                  : 'movies only'
-                              return (
-                                <div key={section}>
-                                  <p className="text-[10px] font-bold text-white/45 mb-1.5">{section} <span className="font-medium text-white/25">- {helper}</span></p>
-                                  <div className="grid grid-cols-3 gap-2">{items.map(renderSimklCatalogButton)}</div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                          <p className="text-[9px] text-white/25 mt-3">Computed from the trending pool - no extra API calls. Defaults to this week.</p>
-                        </div>
-                      )}
                     </div>
                   )}
 
@@ -2738,6 +2779,7 @@ function AddWidgetOverlay({
                   { key: 'exclude-keywords', label: 'Exclude keywords', value: excludeKeywords.length ? excludeKeywords.map((keyword) => keyword.name).join(', ') : 'Nothing specific', icon: '−' },
                   { key: 'runtime', label: 'Runtime', value: runtimeMin || runtimeMax ? `${runtimeMin || '0'}–${runtimeMax || 'any'} min` : 'Any length', icon: '◷' },
                   { key: 'visibility', label: 'Visibility', value: showOnHome ? 'Library and Home' : 'Library only', icon: '⌂' },
+                  { key: 'max-results', label: 'Maximum results', value: maxResults ? `${maxResults} titles` : 'Uncapped', icon: '#' },
                 ].map((item) => (
                   <button key={item.key} type="button" aria-expanded={quickEditor === item.key} onClick={() => setQuickEditor((current) => current === item.key ? null : item.key)} className={`group flex min-w-0 items-center gap-3 rounded-2xl border p-3.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${quickEditor === item.key ? 'border-accent/40 bg-accent/[0.10]' : 'border-white/[0.09] bg-white/[0.045] hover:-translate-y-0.5 hover:border-accent/35 hover:bg-accent/[0.08]'}`}>
                     <span className="flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-white/[0.08] text-base font-bold text-accent">{item.icon}</span><span className="min-w-0 flex-1"><span className="block text-sm font-bold text-white/80">{item.label}</span><span className="block truncate text-xs text-white/38">{item.value}</span></span><span className="text-xl text-white/30 transition-transform group-hover:translate-x-0.5 group-hover:text-accent">›</span>
@@ -2746,6 +2788,7 @@ function AddWidgetOverlay({
               </div>
               {quickEditor && (
                 <div className="mt-3 rounded-2xl border border-accent/25 bg-white/[0.045] p-4 sm:p-5">
+                  {quickEditor === 'max-results' && <label className="mb-4 block max-w-xs text-xs text-white/45">Maximum titles<input type="number" min="1" max="10000" value={maxResults} onChange={(e) => setMaxResults(e.target.value)} placeholder="Uncapped" className={`${styledInput} mt-1.5`} /><span className="mt-1.5 block text-[11px] text-white/30">Leave empty to load every matching title.</span></label>}
                   <div className="mb-4 flex items-center justify-between"><p className="text-sm font-bold text-white/80">Edit {quickEditor.replace(/-/g, ' ')}</p><button type="button" onClick={() => setQuickEditor(null)} className="grid h-8 w-8 place-items-center rounded-lg bg-white/[0.06] text-white/45 hover:bg-white/[0.10] hover:text-white">×</button></div>
                   {quickEditor === 'ordering' && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{[
                     ['popularity.desc', 'Popular'], ['vote_average.desc', 'Highest rated'],
@@ -2766,7 +2809,7 @@ function AddWidgetOverlay({
               )}
               </div>
 
-              <details open={advancedBuilderOpen} onToggle={(event) => setAdvancedBuilderOpen(event.currentTarget.open)} className="rounded-2xl border border-white/[0.07] bg-black/[0.12]">
+              {false && <details open={advancedBuilderOpen} onToggle={(event) => setAdvancedBuilderOpen(event.currentTarget.open)} className="rounded-2xl border border-white/[0.07] bg-black/[0.12]">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-bold text-white/70 marker:hidden"><span>Templates &amp; uncommon settings</span><span className="text-lg text-white/35">{advancedBuilderOpen ? '−' : '+'}</span></summary>
                 <div className="space-y-5 border-t border-white/[0.06] p-4 sm:p-5">
 
@@ -2799,7 +2842,7 @@ function AddWidgetOverlay({
                       <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center"><svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><circle cx="12" cy="12" r="3" /></svg></div>
                       <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Collection Setup</h3>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div>
                         <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Name</label>
                         <input value={catalogName} onChange={(e) => setCatalogName(e.target.value)} placeholder="e.g. Cyberpunk Essentials" className={styledInput} />
@@ -2841,6 +2884,11 @@ function AddWidgetOverlay({
                         <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Cache TTL (seconds)</label>
                         <input type="number" value={cacheTtl} onChange={(e) => setCacheTtl(Math.max(300, parseInt(e.target.value) || 300))} min="300" className={styledInput} />
                         <span className="text-[9px] text-white/20 mt-1 block">Min 300s (5 min)</span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Maximum results</label>
+                        <input type="number" min="1" max="10000" value={maxResults} onChange={(e) => setMaxResults(e.target.value)} placeholder="Uncapped" className={styledInput} />
+                        <span className="text-[9px] text-white/20 mt-1 block">Leave empty to load all matching results.</span>
                       </div>
                       <div className="flex items-start gap-3 pt-5">
                         <PillToggle checked={releasedOnly} onChange={setReleasedOnly} label="Released Only" />
@@ -3287,7 +3335,7 @@ function AddWidgetOverlay({
 
               {/* ── Preview Section (always visible) ── */}
                 </div>
-              </details>
+              </details>}
 
               <div className="bg-gradient-to-b from-accent/[0.04] to-white/[0.02] border border-accent/10 p-5 rounded-xl space-y-4">
                 <div className="flex justify-between items-center">
@@ -3545,7 +3593,7 @@ export default function CollectionsPage() {
               </div>
               <button type="button" onClick={() => setHeroExpanded((value) => !value)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-bold text-white/55 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer">{heroExpanded ? 'Done' : 'Configure'}</button>
             </div>
-            {heroExpanded && <div className="mt-4 border-t border-white/[0.06] pt-4"><HeroBannerSection row={heroRow} addons={addons} onUpdate={updateHomeRow} onAdd={addHomeRow} /></div>}
+            {heroExpanded && <div className="mt-4 border-t border-white/[0.06] pt-4"><HeroBannerSection row={heroRow} addons={addons} smartCollections={smartCollectionRows} onUpdate={updateHomeRow} onAdd={addHomeRow} /></div>}
           </div>
         )}
 
@@ -3746,7 +3794,7 @@ function CompactPosterStack({ posters, loading, fallback }: { posters: string[];
     <div className="shelf-poster-stack" aria-hidden="true">
       {[...items].reverse().map((url, reversedIndex) => {
         const index = items.length - reversedIndex - 1
-        return <img key={`${url}-${index}`} src={url} alt="" loading="lazy" decoding="async" className={`shelf-stack-card shelf-stack-card-${index}`} />
+        return <img key={`${url}-${index}`} src={cachedImage(url)} alt="" loading="lazy" decoding="async" className={`shelf-stack-card shelf-stack-card-${index}`} />
       })}
     </div>
   )

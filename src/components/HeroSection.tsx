@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Volume2, VolumeX } from 'lucide-react'
 import type { SearchResult } from '../types'
-import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { applyInitialArtworkPreference, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../services/trailers'
+import { cachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
 import HeroMpvTrailer from './HeroMpvTrailer'
@@ -31,6 +32,11 @@ function preloadImage(url: string): Promise<string> {
   })
 }
 
+function usableBackdrop(item?: SearchResult): string | undefined {
+  if (!item?.backdrop || item.backdrop === item.poster) return undefined
+  return item.backdrop
+}
+
 function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true, onActiveImageSettled }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
@@ -39,7 +45,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   // supplied; applying that result halfway through a slide looks like the hero
   // rapidly changes to another title.
   const [presentedItem, setPresentedItem] = useState<SearchResult>(() => items[0])
-  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => items[0]?.backdrop)
+  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => usableBackdrop(items[0]))
   const [logoError, setLogoError] = useState(false)
   const [scrollBlur, setScrollBlur] = useState(0)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
@@ -194,19 +200,28 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
   const displayItems = useMemo(() => items.map((raw) => {
     const art = providerArt[String(raw.id)]
-    return applySearchResultArt(art ? { ...raw, ...art } : raw)
+    const initial = applyInitialArtworkPreference(raw, raw.type, Boolean(raw.isAnime))
+    return applySearchResultArt(art ? { ...initial, ...art } : initial)
   }), [items, providerArt])
   useEffect(() => {
     const nextItem = displayItems[activeIndex]
     if (nextItem) {
       setPresentedItem(nextItem)
-      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || nextItem.backdrop)
+      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || usableBackdrop(nextItem))
     }
   // Deliberately do not depend on displayItems or upgradedBackdrops: artwork
   // arriving while this slide is visible is saved for its next appearance,
   // rather than swapped in over the current hero.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndex, itemSetKey])
+
+  // Catalogs occasionally label a poster as a backdrop. Once TMDB has supplied
+  // its verified landscape artwork, replace the active slide instead of waiting
+  // for the carousel to return to it.
+  useEffect(() => {
+    const upgraded = upgradedBackdrops[String(presentedItem.id)]
+    if (upgraded && upgraded !== presentedBackdrop) setPresentedBackdrop(upgraded)
+  }, [presentedItem.id, presentedBackdrop, upgradedBackdrops])
 
   const item = presentedItem
   const type = item?.type === 'series' ? 'series' : 'movie'
@@ -216,7 +231,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!onActiveBackdropChange || isSmall) return
     const activeItem = presentedItem
     if (!activeItem) { onActiveBackdropChange(undefined); return }
-    const backdrop = presentedBackdrop || activeItem.backdrop || activeItem.poster
+    const backdrop = presentedBackdrop || usableBackdrop(activeItem)
     onActiveBackdropChange(backdrop)
   }, [presentedItem, presentedBackdrop, customArtKey, isSmall])
 
@@ -234,7 +249,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   }, [item?.id, item?.tmdbId, type, startupEnrichmentReady])
 
   useEffect(() => {
-    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway || !startupEnrichmentReady) {
+    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway) {
       setHeroTrailer(null)
       setHeroTrailerPlaying(false)
       return
@@ -266,10 +281,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       window.clearTimeout(timer)
       setHeroTrailerPlaying(false)
     }
-  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway, startupEnrichmentReady])
+  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway])
 
   useEffect(() => {
-    if (!enableTrailers || !startupEnrichmentReady) return
+    if (!enableTrailers) return
     if (heroTrailerDelay <= 0) return
     if (!displayItems.length) return
     displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
@@ -283,13 +298,14 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         language: trailerLanguage,
       })
     })
-  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage, startupEnrichmentReady])
+  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage])
 
   if (!items.length || !item) return null
 
   const sharedState = {
     poster: item.poster,
     backdrop: item.backdrop,
+    logo: item.logo,
     title: item.title,
     year: item.year,
     rating: item.rating,
@@ -297,6 +313,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     imdbId: 'imdbId' in item ? item.imdbId : undefined,
     addonUrl: 'addonUrl' in item ? item.addonUrl : undefined,
     provider: 'provider' in item ? item.provider : undefined,
+    isAnime: item.isAnime,
   }
 
   const nav = (autoPlay = false) =>
@@ -351,9 +368,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               }}
             >
               <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
-                {(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop)) ? (
+                {(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem))) ? (
                   <img
-                    src={i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop)}
+                    src={cachedImage(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem)))}
                     alt=""
                     className="absolute inset-0 w-full h-full object-cover"
                     style={{ objectPosition: 'center 20%' }}
@@ -364,18 +381,6 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     onLoad={i === activeIndex ? onActiveImageSettled : undefined}
                     onError={i === activeIndex ? onActiveImageSettled : undefined}
                   />
-                ) : slideItem.poster ? (
-                  <>
-                    <img
-                      src={slideItem.poster}
-                      alt=""
-                    className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
-                    draggable={false}
-                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
-                    onError={i === activeIndex ? onActiveImageSettled : undefined}
-                    />
-                    <div className="absolute inset-0 bg-black/50" />
-                  </>
                 ) : (
                   <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
                 )}
@@ -458,7 +463,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (
               <img
-                src={item.logo}
+                src={cachedImage(item.logo)}
                 alt={item.title}
                 className={`${isSmall ? 'h-14 max-w-[70%]' : 'h-[112px] md:h-[132px] max-w-[60%]'} w-auto object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
                 onError={() => setLogoError(true)}
@@ -502,7 +507,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                 {cast.map((actor) => (
                   <div key={actor.name} className="w-8 h-8 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
                     {actor.photo ? (
-                      <img src={actor.photo} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
+                      <img src={cachedImage(actor.photo)} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-white/40">
                         {actor.name.charAt(0)}

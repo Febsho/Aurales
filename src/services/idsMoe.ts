@@ -4,6 +4,7 @@ import { CACHE_CATEGORIES } from './cache/constants'
 const API_BASE = 'https://api.ids.moe'
 const API_KEY = 'ids_HUUATSvhnnYAfCO0LatQIFAyOyApHB0i7UJJVrKdEVk'
 const CACHE_TTL = 14 * 24 * 60 * 60 // 14 days
+const REQUEST_TIMEOUT_MS = 4_000
 
 interface IdsMoeResult {
   title?: string
@@ -43,9 +44,12 @@ async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoe
   const cacheKey = `ids_moe:${platform}:${id}`
   try {
     return await cachedFetch<IdsMoeResult | null>(cacheKey, async () => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
       const res = await fetch(`${API_BASE}/ids/${id}?p=${platform}`, {
         headers: { 'Authorization': `Bearer ${API_KEY}` },
-      })
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout))
       if (!res.ok) return null
       return await res.json() as IdsMoeResult
     }, { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: CACHE_TTL })

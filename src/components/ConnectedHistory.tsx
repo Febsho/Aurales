@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { hasMdblistOAuth } from '../services/mdblist'
-import { enrichConnectedHistoryItems, estimateConnectedHistoryRuntime, loadConnectedHistory, type ConnectedHistoryItem, type ConnectedHistoryMediaType, type ConnectedHistorySource } from '../services/connectedActivity'
+import { enrichConnectedHistoryItems, estimateConnectedHistoryRuntime, loadConnectedHistory, persistConnectedHistorySnapshot, type ConnectedHistoryItem, type ConnectedHistoryMediaType, type ConnectedHistorySource } from '../services/connectedActivity'
 import { getStremioAuth } from '../services/stremio'
 
 const STORAGE_KEY = 'aurales_activity_history_sources'
@@ -107,7 +107,11 @@ export default function ConnectedHistory() {
     enrichConnectedHistoryItems(missing).then((enriched) => {
       if (cancelled) return
       const updates = new Map(enriched.map((item) => [item.id, item]))
-      setItems((current) => current.map((item) => { const update = updates.get(item.id); return update ? { ...item, ...update, runtimeMinutes: item.runtimeMinutes || update.runtimeMinutes, genres: item.genres?.length ? item.genres : update.genres } : item }))
+      setItems((current) => {
+        const next = current.map((item) => { const update = updates.get(item.id); return update ? { ...item, ...update, runtimeMinutes: item.runtimeMinutes || update.runtimeMinutes, genres: item.genres?.length ? item.genres : update.genres } : item })
+        void persistConnectedHistorySnapshot(selected, next)
+        return next
+      })
     }).finally(() => { if (!cancelled) setEnrichingPosters(false) })
     return () => { cancelled = true }
   }, [visibleKey])
@@ -124,6 +128,17 @@ export default function ConnectedHistory() {
         setItems((current) => current.map((entry) => { const update = updates.get(entry.id); return update ? { ...entry, runtimeMinutes: update.runtimeMinutes, genres: update.genres?.length ? update.genres : entry.genres } : entry }))
         updates.clear()
       }
+    }).then((enriched) => {
+      if (cancelled) return
+      const updates = new Map(enriched.map((item) => [item.id, item]))
+      setItems((current) => {
+        const next = current.map((item) => {
+          const update = updates.get(item.id)
+          return update ? { ...item, runtimeMinutes: update.runtimeMinutes, genres: update.genres?.length ? update.genres : item.genres } : item
+        })
+        void persistConnectedHistorySnapshot(selected, next)
+        return next
+      })
     }).catch(() => {})
     return () => { cancelled = true }
   }, [runtimeKey])
