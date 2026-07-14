@@ -373,7 +373,21 @@ async function isTraktWatchedWithData(item: WatchedLookupItem, data: TraktCacheD
 
   const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
   if (!matchedEntry) return false
-  if (item.season == null) return false
+
+  // Show-level completion: all available episodes are watched
+  if (item.season == null) {
+    const showId = matchedEntry.show?.ids?.imdb || matchedEntry.show?.ids?.trakt || matchedEntry.show?.ids?.tmdb
+    if (!showId) return false
+    try {
+      const progress = await getShowWatchedProgress(String(showId))
+      if (progress.length === 0) return false
+      return progress
+        .filter((season) => season.number > 0)
+        .every((season) => season.episodes.length > 0 && season.episodes.every((ep) => ep.completed))
+    } catch (_) {
+      return false
+    }
+  }
 
   // If seasons data is missing (Trakt API no longer returns it in bulk), fetch per-show progress
   let seasons = matchedEntry.seasons
@@ -567,7 +581,13 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
         }
         return entry.status === 'completed'
       }
-      if (item.season == null) return false
+      // Show-level completion: Simkl marks the show completed or all episodes watched
+      if (item.season == null) {
+        if (entry.status === 'completed') return true
+        const watched = entry.watchedEpisodesCount ?? entry.watchedEpisodes?.length ?? 0
+        const total = entry.totalEpisodesCount ?? 0
+        return total > 0 && watched >= total
+      }
       if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return false
       if (item.episode == null) {
         if (!item.seasonEpisodeCount) return false
@@ -665,12 +685,30 @@ async function isPmdbWatched(rawItem: WatchedLookupItem): Promise<boolean> {
       } catch (_) { /* fall through to standard check */ }
     }
 
+    // Show-level completion: if season is null, count all watched episodes vs TMDB total
+    if (item.type === 'series' && item.season == null && item.tmdbId != null) {
+      try {
+        const { getTmdbRuntimeMetadata } = await import('./tmdb')
+        const meta = await getTmdbRuntimeMetadata('tv', item.tmdbId)
+        const totalEpisodes = (meta.seasons ?? []).reduce((sum, s) => sum + s.episodeCount, 0)
+        if (totalEpisodes > 0) {
+          const watchedCount = new Set(
+            data.items
+              .filter((e) => e.media_type === 'tv' && sameNumber(e.tmdb_id, item.tmdbId) && e.episode != null)
+              .map((e) => `${e.season}x${e.episode}`)
+          ).size
+          return watchedCount >= totalEpisodes
+        }
+      } catch (_) { /* fall through */ }
+    }
+
     return data.items.some((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'tv') return false
       if (!sameNumber(item.tmdbId, entry.tmdb_id)) return false
       if (item.type === 'movie') return true
-      if (item.season == null) return false
+      // Show-level completion: count all watched episodes across all seasons vs TMDB total
+      if (item.season == null) return false // handled above
       if (item.episode == null) {
         if (!item.seasonEpisodeCount) return false
         if (item.isAnime && item.appSeasonEpCounts) {

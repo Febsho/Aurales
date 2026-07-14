@@ -323,8 +323,8 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
   }
 
   return items.map((r) => {
-    const type: SimklMediaType = r.movie ? 'movie' : r.show ? 'show' : 'anime'
-    const media = r.movie || r.show || r.anime
+    const type: SimklMediaType = r.movie ? 'movie' : (r.show || r.tv) ? 'show' : 'anime'
+    const media = r.movie || r.show || r.tv || r.anime
     if (!media) return null
     const ids = media.ids
     if (!ids) return null
@@ -341,13 +341,13 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
       status: (r.status || 'completed') as SimklWatchlistItem['status'],
       watchedAt: r.last_watched_at,
       watchedEpisodes: extractWatchedEpisodes(r),
+      watchedEpisodesCount: r.watched_episodes_count,
+      totalEpisodesCount: r.total_episodes_count,
     } satisfies SimklWatchlistItem
   }).filter(Boolean) as SimklWatchlistItem[]
 }
 
 function extractWatchedEpisodes(raw: any) {
-  const seasons = Array.isArray(raw?.seasons) ? raw.seasons : []
-  const episodes: { season: number; episode: number; watchedAt?: string }[] = []
   for (const season of seasons) {
     const seasonNumber = Number(season.number ?? season.season)
     if (!Number.isFinite(seasonNumber)) continue

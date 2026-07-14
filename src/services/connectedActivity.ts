@@ -4,7 +4,7 @@ import { getAniListFullList } from './anilist'
 import { getMdblistWatched } from './mdblist'
 import { getPMDBWatched } from './pmdb'
 import { resolveAnimeIds } from './animeLists'
-import { tmdbProvider } from './tmdb'
+import { tmdbProvider, getTmdbRuntimeMetadata } from './tmdb'
 import { resolveArtFromProviders } from './artwork'
 import { getStremioAuth, getStremioWatchHistory } from './stremio'
 
@@ -217,11 +217,11 @@ function runtimeCacheKey(item: ConnectedHistoryItem) {
 async function resolveRuntimeMetadata(item: ConnectedHistoryItem): Promise<RuntimeMetadata | undefined> {
   if (!item.tmdbId) return undefined
   if (item.mediaType === 'movie') {
-    const details = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
+    const details = await getTmdbRuntimeMetadata('movie', item.tmdbId)
     return { minutes: details.runtime && details.runtime > 0 ? details.runtime * Math.max(1, item.watchedCount) : undefined, genres: details.genres }
   }
 
-  const show = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
+  const show = await getTmdbRuntimeMetadata('tv', item.tmdbId)
   const watchedEpisodes = item.watchedEpisodes || []
   const knownRuntimes: number[] = []
   let exactTotal = 0
@@ -235,8 +235,9 @@ async function resolveRuntimeMetadata(item: ConnectedHistoryItem): Promise<Runti
     }
   }
 
+  if (!knownRuntimes.length && show.episodeRunTime) knownRuntimes.push(show.episodeRunTime)
   if (!knownRuntimes.length) {
-    for (const season of show.seasons.slice(0, 2)) {
+    for (const season of (show.seasons || []).slice(0, 2)) {
       const details = await tmdbProvider.getSeason(`tmdb-${item.tmdbId}`, season.seasonNumber).catch(() => null)
       const runtimes = details?.episodes.map((episode) => episode.runtime).filter((runtime): runtime is number => Boolean(runtime && runtime > 0)) || []
       knownRuntimes.push(...runtimes)
@@ -254,25 +255,39 @@ export async function estimateConnectedHistoryRuntime(
   onProgress?: (completed: number, total: number, item: ConnectedHistoryItem) => void,
 ) {
   const cache = readRuntimeCache()
+  const fresh: Record<string, RuntimeMetadata> = {}
   const results = new Array<ConnectedHistoryItem>(items.length)
-  let cursor = 0
   let completed = 0
+
+  const applyMetadata = (index: number, metadata: RuntimeMetadata | undefined) => {
+    const item = items[index]
+    const result = { ...item, runtimeMinutes: metadata?.minutes, genres: metadata?.genres?.length ? metadata.genres : item.genres }
+    results[index] = result
+    completed += 1
+    onProgress?.(completed, items.length, result)
+  }
+
+  // Fast pass: apply all cached items synchronously so revisits render instantly.
+  const misses: number[] = []
+  items.forEach((item, index) => {
+    const key = runtimeCacheKey(item)
+    const cached = cache[key]
+    if (cached) { fresh[key] = cached; applyMetadata(index, cached) } else misses.push(index)
+  })
+
+  let cursor = 0
   const worker = async () => {
-    while (cursor < items.length) {
-      const index = cursor++
+    while (cursor < misses.length) {
+      const index = misses[cursor++]
       const item = items[index]
-      const key = runtimeCacheKey(item)
-      let metadata: RuntimeMetadata | undefined = cache[key]
-      if (!metadata) metadata = await resolveRuntimeMetadata(item).catch(() => undefined)
-      if (metadata) cache[key] = metadata
-      const result = { ...item, runtimeMinutes: metadata?.minutes, genres: metadata?.genres?.length ? metadata.genres : item.genres }
-      results[index] = result
-      completed += 1
-      onProgress?.(completed, items.length, result)
+      const metadata = await resolveRuntimeMetadata(item).catch(() => undefined)
+      if (metadata) fresh[runtimeCacheKey(item)] = metadata
+      applyMetadata(index, metadata)
     }
   }
-  await Promise.all(Array.from({ length: Math.min(4, items.length) }, worker))
-  writeRuntimeCache(cache)
+  await Promise.all(Array.from({ length: Math.min(8, misses.length) }, worker))
+  // Persist only keys for current items — stale watchedCount variants get pruned.
+  writeRuntimeCache(fresh)
   return results
 }
 

@@ -531,6 +531,165 @@ function AnimeIdMappingsSection() {
   )
 }
 
+function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () => void }) {
+  const store = useAppStore()
+  const [cacheInUseMb, setCacheInUseMb] = useState<number | null>(null)
+  const [clearing, setClearing] = useState(false)
+  const [cleared, setCleared] = useState(false)
+
+  // Estimate localStorage image cache size
+  useEffect(() => {
+    let bytes = 0
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (!key) continue
+      if (
+        key.startsWith('tmdb_backdrop_') ||
+        key.startsWith('tmdb_card_metadata_') ||
+        key.startsWith('tmdb_tvdb_id_') ||
+        key.startsWith('tvdb_card_metadata_') ||
+        key.startsWith('orynt_provider_list:') ||
+        key.includes('backdrop') ||
+        key.includes('poster')
+      ) {
+        bytes += (localStorage.getItem(key)?.length || 0) * 2
+      }
+    }
+    setCacheInUseMb(Math.max(0, Math.round(bytes / 1024 / 1024 * 10) / 10))
+  }, [clearing])
+
+  const handleClear = async () => {
+    setClearing(true)
+    setCleared(false)
+    onClearBackdropCache()
+    setTimeout(() => {
+      setClearing(false)
+      setCleared(true)
+      setTimeout(() => setCleared(false), 2500)
+    }, 600)
+  }
+
+  // Quality option config
+  const qualityOptions: { value: 'data-saver' | 'balanced' | 'high'; label: string; desc: string }[] = [
+    { value: 'data-saver', label: 'Data Saver', desc: 'Smaller, lower-res images. Best for slow or metered connections.' },
+    { value: 'balanced', label: 'Balanced', desc: "Balanced picks the best size for this screen. Most people can't tell the difference from High. Data Saver reduces download sizes further." },
+    { value: 'high', label: 'High', desc: 'Full-resolution posters and backdrops. Uses more data and storage.' },
+  ]
+
+  // Cache size options
+  const sizeOptions: { value: number; label: string }[] = [
+    { value: 100, label: '100 MB' },
+    { value: 250, label: '250 MB' },
+    { value: 500, label: '500 MB' },
+    { value: 1000, label: '1 GB' },
+    { value: 2000, label: '2 GB' },
+  ]
+
+  // Keep duration options
+  const keepOptions: { value: number; label: string }[] = [
+    { value: 1, label: '1 Day' },
+    { value: 3, label: '3 Days' },
+    { value: 7, label: '1 Week' },
+    { value: 14, label: '2 Weeks' },
+    { value: 30, label: '1 Month' },
+  ]
+
+  const currentQuality = qualityOptions.find(o => o.value === store.imageQuality) ?? qualityOptions[1]
+
+  return (
+    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="px-6 pt-5 pb-1">
+        <h3 className="text-[15px] font-semibold text-white">Image Cache</h3>
+        <p className="text-[13px] text-white/40 mt-0.5">Control how posters and backdrops are stored on this device.</p>
+      </div>
+
+      <div className="divide-y divide-white/[0.04]">
+        {/* Image Quality */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-[14px] text-white font-medium">Image Quality</p>
+            <div className="relative">
+              <select
+                value={store.imageQuality}
+                onChange={(e) => store.setImageQuality(e.target.value as 'data-saver' | 'balanced' | 'high')}
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+              >
+                {qualityOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">{currentQuality.desc}</p>
+        </div>
+
+        {/* Disk Cache Size */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-[14px] text-white font-medium">Disk Cache Size</p>
+            <div className="relative">
+              <select
+                value={store.imageCacheSizeMb}
+                onChange={(e) => store.setImageCacheSizeMb(Number(e.target.value))}
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+              >
+                {sizeOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
+        </div>
+
+        {/* Keep Images For */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-[14px] text-white font-medium">Keep Images For</p>
+            <div className="relative">
+              <select
+                value={store.imageKeepDays}
+                onChange={(e) => store.setImageKeepDays(Number(e.target.value))}
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+              >
+                {keepOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
+        </div>
+
+        {/* Cache in Use + Clear */}
+        <div className="px-6 py-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[14px] text-white font-medium">Cache in Use</p>
+            <span className="text-[14px] text-white/50 font-semibold tabular-nums">
+              {cacheInUseMb == null ? '—' : `${cacheInUseMb} MB`}
+            </span>
+          </div>
+          <div className="border-t border-white/[0.04] pt-3">
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className="text-[14px] font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+              style={{ color: cleared ? 'rgb(134 239 172)' : 'rgb(239 68 68)' }}
+            >
+              {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : 'Clear Image Cache'}
+            </button>
+            <p className="text-[12px] text-white/35 mt-1.5 leading-relaxed">Images re-download as needed after clearing.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select
@@ -3921,16 +4080,16 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={handleCancel}
-                    className="px-5 py-2 rounded-full text-xs font-bold text-white/60 hover:text-white transition-all cursor-pointer"
+                    className="px-5 py-2 rounded-full text-xs font-semibold text-white/60 hover:text-white transition-all cursor-pointer"
                   >
-                    CANCEL
+                    Cancel
                   </button>
                   <button
                     type="button"
                     onClick={handleSave}
-                    className="px-6 py-2.5 rounded-full text-xs font-black bg-white text-black hover:bg-white/90 active:scale-[0.97] transition-all cursor-pointer shadow-lg shadow-black/30"
+                    className="px-6 py-2.5 rounded-full text-xs font-bold bg-white text-black hover:bg-white/90 active:scale-[0.97] transition-all cursor-pointer shadow-lg shadow-black/30"
                   >
-                    SAVE CHANGES
+                    Save Changes
                   </button>
                 </div>
               </div>
@@ -3984,16 +4143,7 @@ export default function SettingsPage() {
                 </div>
               )}
 
-              <SettingSection title="Image Cache" description="Clear cached backdrop and poster image URLs stored in localStorage.">
-                <SettingRow label="Clear Image Cache" description="Force fresh image links on next load.">
-                  <button
-                    onClick={handleClearBackdropCache}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
-                  >
-                    Clear Cache
-                  </button>
-                </SettingRow>
-              </SettingSection>
+              <ImageCacheSection onClearBackdropCache={handleClearBackdropCache} />
 
               {/* Anime ID Mappings (collapsible) */}
               <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">

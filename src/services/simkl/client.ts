@@ -185,9 +185,9 @@ export async function resolveSimklMapping(opts: {
       )
       if (!res || res.length === 0) return null
       const first = res[0]
-      const media = first.movie || first.show || first.anime
+      const media = first.movie || first.show || first.tv || first.anime
       if (!media) return null
-      const type = first.movie ? 'movie' : first.show ? 'show' : 'anime'
+      const type = first.movie ? 'movie' : (first.show || first.tv) ? 'show' : 'anime'
       return {
         simklId: media.ids.simkl || media.ids.simkl_id,
         imdbId: media.ids.imdb,

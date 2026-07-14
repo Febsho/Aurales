@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 
+// The embedded libmpv overlay player is Windows-only (HWND child window +
+// D3D11 + WASAPI). On Linux/macOS the in-app HTML5 player is used instead.
+export function nativePlayerSupported(): boolean {
+  return !!(window as any).__TAURI_INTERNALS__ && navigator.userAgent.includes('Windows')
+}
+
 export interface PlaybackRequest {
   url: string
   title?: string

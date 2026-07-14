@@ -14,6 +14,7 @@ export const CACHE_CATEGORIES = {
   ANIME_MAPPING: 'anime_mapping',
   STREAM_PRELOAD: 'stream_preload',
   LIBRARY_CALENDAR: 'library_calendar',
+  TMDB_RUNTIME: 'tmdb_runtime',
 } as const
 
 export const CACHE_TTLS = {
@@ -32,4 +33,5 @@ export const CACHE_TTLS = {
   ANIME_MAPPING_FINISHED: 14 * 24 * 60 * 60,
   ANIME_MAPPING_AIRING: 12 * 60 * 60,
   LIBRARY_CALENDAR: 15 * 60,
+  TMDB_RUNTIME: 30 * 24 * 60 * 60,
 } as const

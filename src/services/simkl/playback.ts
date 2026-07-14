@@ -120,10 +120,11 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
   }
 }
 
-async function refreshSimklPlaybackCache(): Promise<void> {
+export async function refreshSimklPlaybackCache(): Promise<SimklPlaybackProgressItem[]> {
   const fresh = (await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback')) ?? []
   const { cacheSet } = await import('../cache/sqliteCache')
   await cacheSet('simkl_playback', fresh, { category: 'SIMKL_LISTS', ttlSeconds: 120 })
+  return fresh
 }
 
 /** Remove a playback progress item from Simkl. */

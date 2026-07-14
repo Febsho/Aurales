@@ -2,12 +2,12 @@ import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffec
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
-import { getSimklPlaybackProgress, removeSimklPlaybackProgress } from '../services/simkl/playback'
+import { refreshSimklPlaybackCache, removeSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress, removePlaybackItem as removeTraktPlaybackItem } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress, deletePMDBResumePoint } from '../services/pmdb'
 import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth, scrobbleMdblist } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
-import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
+import { tmdbProvider } from '../services/tmdb'
 // Lazy: StreamSelector pulls in the full player stack; only load it on demand
 const StreamSelector = lazy(() => import('./StreamSelector'))
 import type { HomeRowConfig, SearchResult } from '../types'
@@ -15,8 +15,20 @@ import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/a
 import { formatTime } from '../services/player'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { streamPreloadManager } from '../services/streams/preloadManager'
+import {
+  getContinueWatchingAccountScope,
+  clearContinueWatchingStartupSnapshot,
+  mergeContinueWatchingPresentation,
+  readContinueWatchingStartupSnapshot,
+  stableListFingerprint,
+  writeContinueWatchingStartupSnapshot,
+  type ContinueWatchingSnapshotItem,
+  type ContinueWatchingSource,
+} from '../services/cache/homeStartupSnapshot'
+import { markContinueWatchingSettled, waitForHeroImageSettled } from '../services/cache/homeStartupCoordinator'
+import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
 
-type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
+type SourceType = ContinueWatchingSource
 
 const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
   { value: 'local', label: 'Local' },
@@ -46,25 +58,7 @@ interface ContinueWatchingRowProps {
   headerRightControls?: React.ReactNode
 }
 
-interface ContinueWatchingItem {
-  id: string
-  mediaId: string
-  mediaType: 'movie' | 'series'
-  title: string
-  subtitle?: string
-  poster?: string
-  backdrop?: string
-  season?: number
-  episode?: number
-  progressSeconds: number
-  durationSeconds: number
-  progressPct: number
-  imdbId?: string
-  tmdbId?: number
-  malId?: number
-  anilistId?: number
-  updatedAt: string
-}
+type ContinueWatchingItem = ContinueWatchingSnapshotItem
 
 function normalizeResumeMediaId(mediaId: string, season?: number, episode?: number): string {
   if (season == null || episode == null) return mediaId
@@ -76,15 +70,18 @@ function normalizeResumeMediaId(mediaId: string, season?: number, episode?: numb
 // so the row shows its last result instantly and revalidates in the background
 // instead of flashing a loading skeleton and refetching from scratch each time.
 const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
+const cwRevalidatedThisSession = new Set<string>()
 
 export default function ContinueWatchingRow({ row, headerLeftControls, headerRightControls }: ContinueWatchingRowProps) {
   const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
   const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
   const source = (row.sourceType || continueWatchingSource) as SourceType
-  const cwKey = `${source}:${continueWatchingLimit}`
+  const accountScope = getContinueWatchingAccountScope(source)
+  const startupSnapshot = readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+  const cwKey = `${source}:${accountScope || 'unscoped'}:${continueWatchingLimit}`
 
-  const [items, setItems] = useState<ContinueWatchingItem[]>(() => cwItemsCache.get(cwKey) ?? [])
-  const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey))
+  const [items, setItems] = useState<ContinueWatchingItem[]>(() => cwItemsCache.get(cwKey) ?? startupSnapshot ?? [])
+  const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey) && !startupSnapshot)
   const [error, setError] = useState<string | null>(null)
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
@@ -112,6 +109,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
   const [focusedItem, setFocusedItem] = useState<ContinueWatchingItem | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const clear = (event: Event) => {
+      const clearedSource = (event as CustomEvent<SourceType>).detail
+      for (const key of cwItemsCache.keys()) if (key.startsWith(`${clearedSource}:`)) cwItemsCache.delete(key)
+      for (const key of cwRevalidatedThisSession) if (key.startsWith(`${clearedSource}:`)) cwRevalidatedThisSession.delete(key)
+    }
+    window.addEventListener('aurales:cw-cache-clear', clear)
+    return () => window.removeEventListener('aurales:cw-cache-clear', clear)
+  }, [])
 
   useEffect(() => {
     if (!cwMenu) return
@@ -152,13 +159,27 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     // Show the cached result for this source immediately; only fall back to the
     // loading skeleton when we have nothing cached yet. Either way we revalidate
     // in the background below and update the cache when it resolves.
-    const cached = cwItemsCache.get(cwKey)
+    const cached = cwItemsCache.get(cwKey) || readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
     if (cached) { setItems(cached); setLoading(false) } else { setLoading(true) }
     setError(null)
 
+    if (source !== 'local' && cached && cwRevalidatedThisSession.has(cwKey)) {
+      markContinueWatchingSettled()
+      return () => { cancelled = true }
+    }
+
     const loadProgress = async () => {
       try {
+        await waitForHeroImageSettled()
+        if (cancelled) return
         let list: ContinueWatchingItem[] = []
+        const enrichItem = <T,>(id: string, execute: () => Promise<T>) => scheduleTask(metadataTaskQueue, {
+          id: `cw-enrich:${id}`,
+          dedupKey: `cw-enrich:${id}`,
+          priority: 'low',
+          group: 'metadata',
+          execute,
+        })
 
         if (source === 'local') {
           const localItems = Array.from(watchProgress.values())
@@ -185,7 +206,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             })
           list = localItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         } else if (source === 'simkl') {
-          const simklRaw = await getSimklPlaybackProgress()
+          const simklRaw = await refreshSimklPlaybackCache()
           const simklItems: ContinueWatchingItem[] = simklRaw
             .filter((i) => i.progress != null && i.progress > 0 && i.progress < 85)
             .map((i) => {
@@ -258,28 +279,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } satisfies ContinueWatchingItem
             })
           list = traktItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          list = mergeContinueWatchingPresentation(list, cached || [])
 
-          // Since Trakt doesn't return artwork URLs, fetch posters in the background for items missing posters
-          if (!cancelled && list.length > 0) {
-            const resolvedList = await Promise.all(
-              list.map(async (item) => {
-                if (item.poster && item.backdrop) return item
-                try {
-                  if (item.mediaType === 'movie' && item.tmdbId) {
-                    const meta = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
-                    return { ...item, poster: meta.poster, backdrop: meta.backdrop }
-                  } else if (item.mediaType === 'series' && item.tmdbId) {
-                    const meta = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
-                    return { ...item, poster: meta.poster, backdrop: meta.backdrop }
-                  }
-                } catch (_) {
-                  // Ignore TMDB fetch errors
-                }
-                return item
-              })
-            )
-            list = resolvedList
-          }
         } else if (source === 'pmdb') {
           const pmdbRaw = await getPMDBPlaybackProgress()
           const pmdbItems: ContinueWatchingItem[] = pmdbRaw
@@ -308,41 +309,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } satisfies ContinueWatchingItem
             })
           list = pmdbItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          list = mergeContinueWatchingPresentation(list, cached || [])
 
-          // Since PMDB doesn't return metadata, fetch title & posters from TMDB
-          if (!cancelled && list.length > 0) {
-            const resolvedList = await Promise.all(
-              list.map(async (item) => {
-                try {
-                  if (item.mediaType === 'movie' && item.tmdbId) {
-                    const meta = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
-                    return {
-                      ...item,
-                      mediaId: meta.imdbId || item.mediaId,
-                      imdbId: meta.imdbId,
-                      title: meta.title || 'Movie',
-                      poster: meta.poster,
-                      backdrop: meta.backdrop
-                    }
-                  } else if (item.mediaType === 'series' && item.tmdbId) {
-                    const meta = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
-                    return {
-                      ...item,
-                      mediaId: meta.imdbId || item.mediaId,
-                      imdbId: meta.imdbId,
-                      title: meta.title || 'Show',
-                      poster: meta.poster,
-                      backdrop: meta.backdrop
-                    }
-                  }
-                } catch (e) {
-                  console.error('Failed to enrich PMDB item from TMDB:', e)
-                }
-                return item
-              })
-            )
-            list = resolvedList
-          }
         } else if (source === 'mdblist') {
           const [playbackRaw, upNextRaw] = await Promise.all([
             getMdblistPlaybackProgress(),
@@ -399,55 +367,55 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             ...playbackItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
             ...upNextItems.filter((i) => !seenIds.has(i.mediaId)),
           ]
+          const presentedMerged = mergeContinueWatchingPresentation(merged, cached || [])
 
-          if (!cancelled && merged.length > 0) {
-            list = await Promise.all(
-              merged.map(async (item) => {
-                if (item.poster && item.backdrop) return item
-                const id = item.tmdbId
-                if (!id) return item
-                try {
-                  const meta = item.mediaType === 'movie'
-                    ? await tmdbProvider.getMovie(`tmdb-${id}`)
-                    : await tmdbProvider.getShow(`tmdb-${id}`)
-                  return {
-                    ...item,
-                    mediaId: meta.imdbId || item.mediaId,
-                    imdbId: meta.imdbId || item.imdbId,
-                    title: meta.title || item.title,
-                    poster: meta.poster || item.poster,
-                    backdrop: meta.backdrop || item.backdrop,
-                  }
-                } catch (_) { return item }
-              })
-            )
-          } else {
-            list = merged
-          }
+          list = presentedMerged
         } else if (source === 'anilist') {
           list = await getAniListContinueWatching()
         }
 
+        list = mergeContinueWatchingPresentation(list, cached || [])
+        markContinueWatchingSettled()
+
         if (!cancelled && list.length > 0) {
           list = await Promise.all(
-            list.map(async (item) => {
+            list.map((item) => enrichItem(`metadata:${item.id}`, async () => {
               if (!item.tmdbId) return item
               try {
-                if (item.mediaType === 'series' && item.season != null && item.episode != null) {
-                  const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
-                  const updated = { ...item }
-                  if (episode.still) updated.backdrop = episode.still
-                  if (episode.runtime && episode.runtime > 0) {
-                    const runtimeSec = episode.runtime * 60
-                    updated.durationSeconds = runtimeSec
-                    updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                if (item.mediaType === 'series') {
+                  let updated = { ...item }
+                  if (!item.poster || !item.imdbId || /^(Show \d+|Untitled)$/.test(item.title)) {
+                    const show = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
+                    updated = {
+                      ...updated,
+                      mediaId: show.imdbId || updated.mediaId,
+                      imdbId: show.imdbId || updated.imdbId,
+                      title: show.title || updated.title,
+                      poster: show.poster || updated.poster,
+                      backdrop: show.backdrop || updated.backdrop,
+                    }
+                  }
+                  if (item.season != null && item.episode != null) {
+                    const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
+                    if (episode.still) updated.backdrop = episode.still
+                    if (episode.runtime && episode.runtime > 0) {
+                      const runtimeSec = episode.runtime * 60
+                      updated.durationSeconds = runtimeSec
+                      updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                    }
                   }
                   return updated
                 }
 
                 if (item.mediaType === 'movie') {
                   const movie = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
-                  const updated = { ...item }
+                  const updated = {
+                    ...item,
+                    mediaId: movie.imdbId || item.mediaId,
+                    imdbId: movie.imdbId || item.imdbId,
+                    title: movie.title || item.title,
+                    poster: movie.poster || item.poster,
+                  }
                   if (movie.backdrop) updated.backdrop = movie.backdrop
                   if (movie.runtime && movie.runtime > 0) {
                     const runtimeSec = movie.runtime * 60
@@ -457,22 +425,18 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                   return updated
                 }
 
-                if (!item.backdrop) {
-                  const backdrop = await getTmdbLandscapeBackdrop('series', item.tmdbId)
-                  if (backdrop) return { ...item, backdrop }
-                }
               } catch (_) {
                 // Keep local/provider artwork if TMDB cannot enrich the row.
               }
               return item
-            })
+            }))
           )
 
           // Posters go through the same artwork pipeline as every other card
           // (custom art URLs, then the preferred art provider), instead of
           // whatever the sync provider (Simkl/Trakt/…) returned.
           list = await Promise.all(
-            list.map(async (item) => {
+            list.map((item) => enrichItem(`art:${item.id}`, async () => {
               try {
                 const custom = getSearchResultCustomArt({
                   id: item.mediaId,
@@ -493,14 +457,18 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } catch (_) {
                 return item
               }
-            })
+            }))
           )
         }
 
         if (!cancelled) {
-          const visible = list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit)
+          const candidate = list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit)
+          const visible = source !== 'local' && candidate.length === 0 && cached?.length ? cached : candidate
+          if (accountScope && visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
+          const previous = cwItemsCache.get(cwKey) || cached || []
+          const identityChanged = stableListFingerprint(visible) !== stableListFingerprint(previous)
           cwItemsCache.set(cwKey, visible)
-          setItems(visible)
+          if (source === 'local' || identityChanged) setItems(visible)
           streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
             mediaType: item.mediaType,
             mediaId: item.imdbId || item.mediaId,
@@ -515,15 +483,17 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           setError(err?.message || 'Failed to load Continue Watching.')
         }
       } finally {
+        if (source !== 'local') cwRevalidatedThisSession.add(cwKey)
         if (!cancelled) {
           setLoading(false)
+          markContinueWatchingSettled()
         }
       }
     }
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, watchProgress, continueWatchingLimit, streamSelectorData])
+  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData])
 
   // ── Source selector (always rendered in header) ─────────────────────────────
   const simklConnected = useAppStore((s) => s.simklConnected)
@@ -854,6 +824,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             setItems((prev) => {
               const next = prev.filter((i) => i.id !== removedItem.id)
               cwItemsCache.set(cwKey, next)
+              if (accountScope) {
+                if (next.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, next)
+                else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+              }
               return next
             })
             setCwMenu(null)
