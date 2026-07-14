@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * asset: http://asset.localhost data: blob:; media-src * blob: data:; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * asset: http://asset.localhost imgcache: http://imgcache.localhost data: blob:; media-src * blob: data:; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src * ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
       "assetProtocol": {
         "enable": true,
         "scope": ["$TEMP/**/*", "$APPDATA/**/*"]

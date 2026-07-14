@@ -603,6 +603,14 @@ IMPORTANT RULES:
     if (wt.currentRoom && !wtIgnoreNextEvent.current) wtSeek(targetTime)
   }
 
+  const seekFromTimelinePointer = (clientX: number, track: HTMLElement) => {
+    if (!Number.isFinite(duration) || duration <= 0) return
+    const bounds = track.getBoundingClientRect()
+    if (bounds.width <= 0) return
+    const progress = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width))
+    seekTo(String(progress * duration))
+  }
+
   const changeVolume = (value: string) => {
     const next = Number(value)
     setVolume(next)
@@ -747,14 +755,17 @@ IMPORTANT RULES:
       <div className={`absolute inset-x-0 bottom-0 p-7 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
         <div className="flex items-center gap-3 text-xs text-white/70 mb-4">
           <span className="tabular-nums">{formatTime(currentTime)}</span>
-          <div className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5">
-            <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
-            <div className="absolute inset-y-0 left-0 rounded-full bg-white/90" style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }} />
+          <div
+            className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5"
+            onPointerDown={(event) => seekFromTimelinePointer(event.clientX, event.currentTarget)}
+          >
+            <div className="pointer-events-none absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
+            <div className="pointer-events-none absolute inset-y-0 left-0 rounded-full bg-white/90" style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }} />
             <div
-              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+              className="pointer-events-none absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
               style={{ left: `calc(${duration > 0 ? (currentTime / duration) * 100 : 0}% - 6px)` }}
             />
-            <input type="range" min="0" max={duration || 0} step="0.1" value={currentTime} onChange={(event) => seekTo(event.target.value)} className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5" />
+            <input type="range" min="0" max={duration || 0} step="0.1" value={currentTime} onChange={(event) => seekTo(event.target.value)} className="absolute inset-0 z-10 w-full h-6 -top-2.5 opacity-0 cursor-pointer" />
           </div>
           <span className="tabular-nums">{duration ? formatTime(duration) : '--:--'}</span>
         </div>

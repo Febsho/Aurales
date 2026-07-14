@@ -685,19 +685,16 @@ async function isPmdbWatched(rawItem: WatchedLookupItem): Promise<boolean> {
       } catch (_) { /* fall through to standard check */ }
     }
 
-    // Show-level completion: if season is null, count all watched episodes vs TMDB total
+    // Show-level completion: all episodes released so far are watched.
     if (item.type === 'series' && item.season == null && item.tmdbId != null) {
       try {
-        const { getTmdbRuntimeMetadata } = await import('./tmdb')
-        const meta = await getTmdbRuntimeMetadata('tv', item.tmdbId)
-        const totalEpisodes = (meta.seasons ?? []).reduce((sum, s) => sum + s.episodeCount, 0)
-        if (totalEpisodes > 0) {
-          const watchedCount = new Set(
-            data.items
-              .filter((e) => e.media_type === 'tv' && sameNumber(e.tmdb_id, item.tmdbId) && e.episode != null)
-              .map((e) => `${e.season}x${e.episode}`)
-          ).size
-          return watchedCount >= totalEpisodes
+        const { getTmdbAiredEpisodes } = await import('./tmdb')
+        const airedEpisodes = await getTmdbAiredEpisodes(item.tmdbId)
+        if (airedEpisodes.length > 0) {
+          const watched = new Set(data.items
+            .filter((entry) => entry.media_type === 'tv' && sameNumber(entry.tmdb_id, item.tmdbId) && entry.season != null && entry.episode != null)
+            .map((entry) => `${entry.season}:${entry.episode}`))
+          return airedEpisodes.every((episode) => watched.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
         }
       } catch (_) { /* fall through */ }
     }

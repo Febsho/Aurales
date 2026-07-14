@@ -163,7 +163,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
             item={item}
             layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
-            disableTrailerPreview={disableTrailerPreview || fixedHome}
+            disableTrailerPreview={disableTrailerPreview}
             rank={showRank ? idx + 1 : undefined}
             onFocusItem={cinematic ? setFocusedItem : undefined}
             onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current && mediaIdentity(current) === mediaIdentity(unfocused) ? null : current) : undefined}

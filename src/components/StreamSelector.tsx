@@ -6,7 +6,7 @@ import { getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../servic
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import NativeMpvPlayer from './NativeMpvPlayer'
 
-// Lazy: keeps the heavy player stack out of page chunks — it only loads once
+// Lazy: keeps the heavy player stack out of page chunks â€” it only loads once
 // the user actually starts playback.
 const InAppPlayer = lazy(() => import('./InAppPlayer'))
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -19,10 +19,16 @@ import { stopEmbeddedPlayer, nativePlayerSupported } from '../services/player'
 import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
 import { loadReliabilityHistory, recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { cachedImage } from '../services/imageCache'
 
 interface AddonStream extends StreamResult {
   addonName: string
   addonId: string
+}
+
+function isDiagnosticStream(stream: AddonStream): boolean {
+  const text = [stream.name, stream.title, stream.description].filter(Boolean).join(' ')
+  return /scrape summary|removal reasons|status\s*:\s*success|successfully fetched streams/i.test(text)
 }
 
 interface StreamSelectorProps {
@@ -111,26 +117,6 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
   },
 ]
 
-const FILTER_STORAGE_KEY = 'orynt_stream_filters_v1'
-
-type StreamFilterState = Record<FilterGroupId, string[]>
-
-function defaultStreamFilters(): StreamFilterState {
-  return STREAM_FILTER_GROUPS.reduce((acc, group) => {
-    acc[group.id] = group.options.map((option) => option.id)
-    return acc
-  }, {} as StreamFilterState)
-}
-
-function loadStreamFilters(): StreamFilterState {
-  try {
-    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
-    return raw ? { ...defaultStreamFilters(), ...JSON.parse(raw) } : defaultStreamFilters()
-  } catch (_) {
-    return defaultStreamFilters()
-  }
-}
-
 export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, onResolvingChange }: StreamSelectorProps) {
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
@@ -147,19 +133,25 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const startSmartPlayRef = useRef<() => void>(() => {})
   const hadPlaybackRef = useRef(false)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
-  const [filtersOpen, setFiltersOpen] = useState(false)
-  const [streamFilters, setStreamFilters] = useState<StreamFilterState>(loadStreamFilters)
   const addons = useAppStore((s) => s.addons)
   const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
 
-  // Stream card display toggles — persisted in localStorage
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
-  const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') === 'true')
+  const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') !== 'false')
   const [showStreamTags, setShowStreamTags] = useState(() => localStorage.getItem('orynt_stream_show_tags') !== 'false')
 
-  const toggleStreamName = () => setShowStreamName((v) => { localStorage.setItem('orynt_stream_show_name', String(!v)); return !v })
-  const toggleStreamDesc = () => setShowStreamDesc((v) => { localStorage.setItem('orynt_stream_show_desc', String(!v)); return !v })
-  const toggleStreamTags = () => setShowStreamTags((v) => { localStorage.setItem('orynt_stream_show_tags', String(!v)); return !v })
+  const toggleStreamName = () => setShowStreamName((visible) => {
+    localStorage.setItem('orynt_stream_show_name', String(!visible))
+    return !visible
+  })
+  const toggleStreamDesc = () => setShowStreamDesc((visible) => {
+    localStorage.setItem('orynt_stream_show_desc', String(!visible))
+    return !visible
+  })
+  const toggleStreamTags = () => setShowStreamTags((visible) => {
+    localStorage.setItem('orynt_stream_show_tags', String(!visible))
+    return !visible
+  })
 
   useEffect(() => {
     if (!(window as any).__TAURI_INTERNALS__) {
@@ -297,7 +289,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (false && values.length === 0 && stream.url) {
       try {
         const parsed = new URL(stream.url || '')
-        values.push(`${parsed.hostname}${parsed.pathname.split('/').pop() ? ` · ${decodeURIComponent(parsed.pathname.split('/').pop() || '')}` : ''}`)
+        values.push(`${parsed.hostname}${parsed.pathname.split('/').pop() ? ` Â· ${decodeURIComponent(parsed.pathname.split('/').pop() || '')}` : ''}`)
       } catch (_) {
         // ignore invalid display URLs
       }
@@ -326,10 +318,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       stream.url?.includes('.m3u8') ? 'hls' : stream.url ? 'direct' : '',
       stream.infoHash ? 'torrent infohash' : '',
     ].filter(Boolean).join(' ')
-  }
-
-  const needsMpvForAudio = (stream: AddonStream): boolean => {
-    return /\b(ddp|dd\+|eac3|ac-?3|truehd|dts|dtshd|atmos|flac)\b/i.test(streamText(stream))
   }
 
   const getStreamSubtitles = (stream: AddonStream): SubtitleResult[] => {
@@ -378,7 +366,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (stream.url && stream.url.includes('.m3u8')) badges.push('HLS')
     if (stream.externalUrl) badges.push('External')
     if (stream.ytId) badges.push('YouTube')
-    if (needsMpvForAudio(stream)) badges.push('MPV Audio')
     if (stream.infoHash) badges.push('Torrent')
     if (typeof stream.fileIdx === 'number') badges.push(`File ${stream.fileIdx + 1}`)
     return badges
@@ -393,50 +380,30 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     ).slice(0, 8)
   }
 
-  const filteredStreams = useMemo(() => {
-    return streams.filter((stream) => {
-      const text = getFilterText(stream)
-      return STREAM_FILTER_GROUPS.every((group) => {
-        const selected = streamFilters[group.id] || []
-        if (selected.length === group.options.length) return true
-        const matched = group.options.filter((option) => option.token.test(text)).map((option) => option.id)
-        if (matched.length === 0) return true
-        return matched.some((id) => selected.includes(id))
-      })
-    })
-  }, [streams, streamFilters])
+  const filteredStreams = useMemo(
+    () => streams.filter((stream) => Boolean(getPlayableStreamUrl(stream)) && !isDiagnosticStream(stream)),
+    [streams],
+  )
 
   const providerOptions = useMemo(() => Array.from(new Map(
-    streams.map((stream) => [stream.addonId, stream.addonName] as const)
-  ).entries()), [streams])
+    filteredStreams.map((stream) => [stream.addonId, stream.addonName] as const)
+  ).entries()), [filteredStreams])
 
   const providerStreams = useMemo(() => selectedProvider === 'all'
-    ? streams
-    : streams.filter((stream) => stream.addonId === selectedProvider), [streams, selectedProvider])
+    ? filteredStreams
+    : filteredStreams.filter((stream) => stream.addonId === selectedProvider), [filteredStreams, selectedProvider])
 
   const visibleStreams = useMemo(() => selectedProvider === 'all'
     ? filteredStreams
     : filteredStreams.filter((stream) => stream.addonId === selectedProvider), [filteredStreams, selectedProvider])
 
-  const toggleFilter = (groupId: FilterGroupId, optionId: string) => {
-    setStreamFilters((current) => {
-      const selected = current[groupId] || []
-      const nextSelected = selected.includes(optionId)
-        ? selected.filter((id) => id !== optionId)
-        : [...selected, optionId]
-      const next = { ...current, [groupId]: nextSelected }
-      localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(next))
-      return next
-    })
-  }
+  useEffect(() => {
+    if (selectedProvider !== 'all' && !providerOptions.some(([id]) => id === selectedProvider)) {
+      setSelectedProvider('all')
+    }
+  }, [providerOptions, selectedProvider])
 
-  const resetFilters = () => {
-    const next = defaultStreamFilters()
-    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(next))
-    setStreamFilters(next)
-  }
-
-  // Memoize merged subtitles — must be before any early return (rules of hooks).
+  // Memoize merged subtitles â€” must be before any early return (rules of hooks).
   // Keeps the array reference stable so NativeMpvPlayer's loadAddonSubtitles
   // useCallback isn't recreated on every StreamSelector re-render.
   const mergedSubtitles = useMemo(
@@ -446,10 +413,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   )
 
   useEffect(() => {
-    if (!open || loading || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || streams.length === 0 || autoSmartStartedRef.current) return
+    if (!open || loading || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || filteredStreams.length === 0 || autoSmartStartedRef.current) return
     autoSmartStartedRef.current = true
     startSmartPlayRef.current()
-  }, [open, loading, playback, autoPlayFirstStream, streams.length])
+  }, [open, loading, playback, autoPlayFirstStream, filteredStreams.length])
 
   useEffect(() => {
     const resolving = open && autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)
@@ -519,7 +486,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (!smartActiveRef.current) return
     const next = smartQueueRef.current?.next()
     if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
-    setSmartStatus(`Stream failed — trying ${next.addonName}`)
+    setSmartStatus(`Stream failed â€” trying ${next.addonName}`)
     handlePlay(next, streams.indexOf(next))
   }
 
@@ -561,7 +528,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       // imdbId derived from mediaId if it looks like an IMDB id
       imdbId: mediaId.startsWith('tt') ? mediaId : undefined,
       tmdbId: tmdbId || (mediaId.startsWith('tmdb-') ? Number(mediaId.replace('tmdb-', '')) : undefined),
-      // tvdbId enables the TVDB→AniList/PMDB episode mapping during scrobbling
+      // tvdbId enables the TVDBâ†’AniList/PMDB episode mapping during scrobbling
       tvdbId: tvdbId != null
         ? Number(String(tvdbId).replace('tvdb-', ''))
         : mediaId.startsWith('tvdb-') ? Number(mediaId.replace('tvdb-', '').split(':')[0]) : undefined,
@@ -615,26 +582,37 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 overflow-hidden bg-black" onClick={onClose}>
-      {artwork?.backdrop && (
-        <img src={artwork.backdrop} alt="" className="absolute inset-0 w-full h-full object-cover opacity-45 blur-sm scale-105" />
+    <div className="fixed inset-0 z-[10000] overflow-hidden bg-[#070809] text-white" onClick={onClose}>
+      {(artwork?.backdrop || artwork?.poster) && (
+        <img
+          src={cachedImage(artwork.backdrop || artwork.poster)}
+          alt=""
+          className="absolute inset-0 h-full w-full scale-110 object-cover opacity-55 blur-lg"
+        />
       )}
-      <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/55 to-black/35" />
-      <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/30" />
+      <div className="absolute inset-0 bg-black/45" />
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,0.9)_0%,rgba(0,0,0,0.55)_45%,rgba(0,0,0,0.72)_100%),linear-gradient(0deg,rgba(0,0,0,0.78)_0%,transparent_45%,rgba(0,0,0,0.35)_100%)]" />
 
       <div
-        className="relative h-full w-full flex gap-8 p-8"
+        className="relative mx-auto flex h-full w-full max-w-[1320px] px-5 pb-5 pt-10 sm:px-7 sm:pb-7 lg:px-10"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <p className="text-sm uppercase tracking-[0.3em] text-white/45 mb-2">Select Stream</p>
-              <h2 className="text-4xl font-bold text-white">{displayTitle}</h2>
-              {mediaId && <p className="text-xs text-white/35 font-mono mt-1">{mediaId}</p>}
+          <div className="mb-3 flex items-center justify-between gap-5 overflow-hidden rounded-3xl border border-white/[0.08] bg-black/45 px-4 py-3 shadow-2xl backdrop-blur-2xl sm:px-5">
+            <div className="flex min-w-0 items-center gap-4">
+              {artwork?.poster ? (
+                <img src={cachedImage(artwork.poster)} alt="" className="hidden h-[72px] w-12 flex-shrink-0 rounded-xl object-cover shadow-xl ring-1 ring-white/10 sm:block" />
+              ) : (
+                <div className="hidden h-[72px] w-12 flex-shrink-0 rounded-xl bg-white/[0.05] sm:block" />
+              )}
+              <div className="min-w-0">
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.26em] text-accent">Select source</p>
+              <h2 className="truncate text-2xl font-black tracking-tight text-white sm:text-3xl">{displayTitle}</h2>
+                <p className="mt-1 text-xs text-white/35">{filteredStreams.length ? `${filteredStreams.length} playable sources` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={onClose} className="w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+            <div className="flex flex-shrink-0 items-center">
+              <button onClick={onClose} aria-label="Close source selector" className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.06] text-white/65 transition-colors hover:bg-white/[0.12] hover:text-white">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
@@ -642,56 +620,52 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             </div>
           </div>
 
-          <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
-            <span className="mr-1 flex-shrink-0 text-[11px] uppercase tracking-widest text-white/35">Provider</span>
-            <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${selectedProvider === 'all' ? 'bg-white text-black' : 'bg-white/10 text-white/65 hover:bg-white/15'}`}>All providers ({streams.length})</button>
-            {providerOptions.map(([id, name]) => (
-              <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${selectedProvider === id ? 'bg-white text-black' : 'bg-white/10 text-white/65 hover:bg-white/15'}`}>{name} ({streams.filter((stream) => stream.addonId === id).length})</button>
+          <div className="mb-3 flex min-h-12 flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-[#111315]/90 p-2 shadow-xl">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === 'all' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All ({filteredStreams.length})</button>
+              {providerOptions.map(([id, name]) => (
+                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} ({streams.filter((stream) => stream.addonId === id).length})</button>
+              ))}
+            </div>
+            <div className="hidden h-6 w-px bg-white/[0.08] lg:block" />
+            <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
+            {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
+              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/40 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
             ))}
-          </div>
-
-          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/10 p-3">
-            <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-black disabled:opacity-40">Smart Play</button>
-            {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Highest Quality'], ['smallest-file', 'Smallest File']] as const).map(([mode, label]) => (
-              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-full px-3 py-1.5 text-xs ${smartMode === mode ? 'bg-white text-black' : 'bg-white/10 text-white/65'}`}>{label}</button>
-            ))}
-            {smartStatus && <span className="ml-auto text-xs text-white/60">{smartStatus}</span>}
-          </div>
-
-          {/* Display toggles */}
-          <div className="flex items-center gap-2 mb-4 flex-wrap">
-            <span className="text-[11px] text-white/35 uppercase tracking-widest mr-1">Show</span>
+            <div className="hidden h-6 w-px bg-white/[0.08] xl:block" />
+            <span className="px-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white/25">Show</span>
             {([
-              { label: 'Name', active: showStreamName, toggle: toggleStreamName },
-              { label: 'Description', active: showStreamDesc, toggle: toggleStreamDesc },
-              { label: 'Tags', active: showStreamTags, toggle: toggleStreamTags },
-            ] as const).map(({ label, active, toggle }) => (
+              ['Title', showStreamName, toggleStreamName],
+              ['Description', showStreamDesc, toggleStreamDesc],
+              ['Tags', showStreamTags, toggleStreamTags],
+            ] as const).map(([label, visible, toggle]) => (
               <button
                 key={label}
+                type="button"
                 onClick={toggle}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
-                  active
-                    ? 'bg-white/15 border-white/25 text-white'
-                    : 'bg-transparent border-white/10 text-white/35 hover:border-white/20 hover:text-white/50'
+                aria-pressed={visible}
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-[11px] font-semibold transition-colors ${
+                  visible ? 'bg-white/[0.09] text-white/80' : 'text-white/30 hover:bg-white/[0.04] hover:text-white/55'
                 }`}
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-accent' : 'bg-white/20'}`} />
+                <span className={`h-1.5 w-1.5 rounded-full ${visible ? 'bg-accent' : 'bg-white/20'}`} />
                 {label}
               </button>
             ))}
+            {smartStatus && <span className="w-full px-2 pb-1 text-xs text-white/50">{smartStatus}</span>}
           </div>
 
-          <div className="flex-1 overflow-y-auto pr-2 space-y-4" style={{ scrollbarWidth: 'none' }}>
+          <div className="flex-1 space-y-2 overflow-y-auto pr-1" style={{ scrollbarWidth: 'none' }}>
           {loading && (
-            <div className="flex flex-col items-center justify-center py-12 gap-3">
+            <div className="col-span-full flex flex-col items-center justify-center gap-3 py-12">
               <div className="w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               <p className="text-sm text-muted">Fetching streams from addons...</p>
             </div>
           )}
 
-          {!loading && streams.length === 0 && (
-            <div className="text-center py-12">
-              <p className="text-sm text-muted mb-1">No streams found</p>
+          {!loading && filteredStreams.length === 0 && (
+            <div className="col-span-full py-12 text-center">
+              <p className="text-sm text-muted mb-1">No playable sources found</p>
               <p className="text-xs text-muted">
                 {addons.length === 0
                   ? 'Install stream addons in Settings first'
@@ -700,15 +674,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             </div>
           )}
 
-          {!loading && streams.length > 0 && visibleStreams.length === 0 && (
-            <div className="text-center py-12">
-              <p className="text-sm text-muted mb-1">No streams match these filters</p>
-              <button onClick={resetFilters} className="text-xs text-accent hover:underline">Reset filters</button>
-            </div>
-          )}
-
           {playError && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-300">
+            <div className="col-span-full rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
               {playError}
             </div>
           )}
@@ -721,35 +688,36 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             <button
               key={`${stream.addonId}-${i}`}
               onClick={() => { smartActiveRef.current = false; recordReliabilityEvent(stream, 'preferred'); handlePlay(stream, streams.indexOf(stream)) }}
-              className="w-full min-h-[90px] flex items-start gap-5 py-3.5 px-5 rounded-2xl bg-white/14 hover:bg-white/22 border border-white/10 backdrop-blur-xl shadow-2xl transition-all text-left group"
+              aria-label={`Play ${getStreamHeading(stream, i)}`}
+              className="group flex min-h-[82px] w-full items-start gap-4 rounded-2xl border border-white/[0.07] bg-[#151719]/90 px-4 py-3.5 text-left shadow-[0_10px_30px_rgba(0,0,0,0.22)] transition-all hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-[#1d2023] focus-visible:border-accent/50 focus-visible:outline-none"
             >
-              <div className={`flex-shrink-0 mt-0.5 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-                playable ? 'bg-white/15 group-hover:bg-accent/20' : 'bg-white/5'
+              <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border transition-colors ${
+                playable ? 'border-white/[0.08] bg-white/[0.07] group-hover:border-accent/30 group-hover:bg-accent group-hover:text-black' : 'border-white/[0.04] bg-white/[0.03]'
               }`}>
-                <svg className={`w-5 h-5 ${playable ? 'text-white' : 'text-muted'}`} fill="currentColor" viewBox="0 0 24 24">
+                <svg className={`h-4 w-4 ${playable ? 'text-current' : 'text-muted'}`} fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
                 {showStreamName && (
-                  <div className="text-2xl font-bold text-white truncate">
+                  <div className="truncate text-lg font-extrabold tracking-tight text-white">
                     {getStreamHeading(stream, i)}
                   </div>
                 )}
                 {showStreamDesc && description && (
-                  <p className="text-[15px] leading-snug text-white/82 whitespace-pre-line mt-1.5">
+                  <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-white/60">
                     {description}
                   </p>
                 )}
                 {showStreamTags && (
-                  <div className="flex items-center gap-2 text-xs text-white/70 flex-wrap mt-2">
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-white/60">
                     {filterBadges.map((badge) => (
-                      <span key={`filter-${badge}`} className="px-2.5 py-1 rounded-lg border-2 border-white/35 bg-white/10 text-[11px] font-black text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]">
+                      <span key={`filter-${badge}`} className="rounded-md border border-white/[0.12] bg-white/[0.06] px-2 py-0.5 text-[10px] font-bold text-white/80">
                         {badge}
                       </span>
                     ))}
                     {getStreamBadges(stream).map((badge) => (
-                      <span key={badge} className="px-2 py-1 bg-white/10 rounded-lg text-[11px]">{badge}</span>
+                      <span key={badge} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-white/50">{badge}</span>
                     ))}
                   </div>
                 )}
@@ -769,82 +737,18 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         </div>
 
         {artwork?.poster && (
-          <div className="hidden lg:flex w-72 flex-shrink-0 items-end">
-            <div>
-              <img src={artwork.poster} alt="" className="w-72 rounded-3xl shadow-2xl ring-1 ring-white/15" />
-              <h3 className="text-3xl font-bold text-white mt-5 leading-tight">{title}</h3>
+          <div className="hidden">
+            <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.035] p-3 shadow-2xl backdrop-blur-2xl">
+              <img src={cachedImage(artwork.poster)} alt="" className="aspect-[2/3] w-full rounded-2xl object-cover shadow-2xl" />
+              <div className="px-1 pb-1 pt-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30">{seasonEpisode ? `Season ${seasonEpisode.season} Â· Episode ${seasonEpisode.episode}` : 'Movie'}</p>
+                <h3 className="mt-1.5 text-xl font-black leading-tight text-white">{title}</h3>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {filtersOpen && (
-        <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-xl" onClick={() => setFiltersOpen(false)}>
-          <div
-            className="h-full w-full max-w-3xl mx-auto overflow-y-auto px-8 py-10"
-            style={{ scrollbarWidth: 'thin' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="sticky top-0 z-10 -mx-8 px-8 pb-6 bg-gradient-to-b from-black via-black/95 to-transparent">
-              <button
-                onClick={() => setFiltersOpen(false)}
-                className="w-16 h-16 rounded-full bg-white/15 hover:bg-white/25 border border-white/10 shadow-2xl flex items-center justify-center mb-8"
-              >
-                <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                  <path d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-              <h2 className="text-6xl font-black tracking-tight">Filters</h2>
-              <p className="text-xl text-white/45 mt-6 max-w-xl">Choose which stream tags are allowed in the results.</p>
-              <div className="mt-6 flex items-center gap-3">
-                <button onClick={resetFilters} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm font-semibold">
-                  Reset to Defaults
-                </button>
-                <span className="text-sm text-white/35">
-                  Showing {visibleStreams.length} of {providerStreams.length}
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-10 pb-16">
-              {STREAM_FILTER_GROUPS.map((group) => (
-                <section key={group.id}>
-                  <h3 className="text-3xl font-black mb-5">{group.title}</h3>
-                  <div className="rounded-[2rem] bg-white/[0.12] border border-white/10 overflow-hidden">
-                    {group.options.map((option, index) => {
-                      const enabled = (streamFilters[group.id] || []).includes(option.id)
-                      return (
-                        <button
-                          key={option.id}
-                          onClick={() => toggleFilter(group.id, option.id)}
-                          className="w-full min-h-[86px] px-7 flex items-center gap-5 text-left hover:bg-white/8 transition-colors"
-                        >
-                          <span className={`w-7 h-7 rounded-full flex items-center justify-center border-2 ${
-                            enabled ? 'bg-white text-black border-white' : 'border-white/35 text-transparent'
-                          }`}>
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
-                              <path d="M5 13l4 4L19 7" />
-                            </svg>
-                          </span>
-                          <span className="flex-1 text-2xl text-white/90">{option.label}</span>
-                          <span className={`px-3 py-1 rounded-lg border-2 text-xl font-black ${
-                            enabled ? 'border-white/45 text-white bg-white/10' : 'border-white/20 text-white/35'
-                          }`}>
-                            {option.badge || option.label}
-                          </span>
-                          {index < group.options.length - 1 && (
-                            <span className="absolute left-32 right-12 mt-[86px] h-px bg-white/10" />
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>,
     document.body
   )

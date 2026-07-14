@@ -141,6 +141,8 @@ export interface EpisodeDetails {
 
 export interface CastMember {
   id: string
+  /** Provider that owns this person's ID. Only TMDB IDs can open the TMDB person page. */
+  personProvider?: 'tmdb' | 'tvdb' | 'addon'
   name: string
   character: string
   profilePath?: string
@@ -148,6 +150,8 @@ export interface CastMember {
 
 export interface CrewMember {
   id: string
+  /** Provider that owns this person's ID. Only TMDB IDs can open the TMDB person page. */
+  personProvider?: 'tmdb' | 'tvdb' | 'addon'
   name: string
   job: string
   department: string
@@ -276,6 +280,8 @@ export interface DiscoverConfig {
   runtimeMax?: number
   releaseDateFrom?: string
   releaseDateTo?: string
+  /** Optional catalog cap. Omit for no result limit. */
+  maxResults?: number
   presetName?: string
 }
 

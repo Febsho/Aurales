@@ -2,9 +2,10 @@ import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult }
 import { invoke } from '@tauri-apps/api/core'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { appMediaToSearchResult, resolveMetadataBatch } from './metadata'
-import { cachedFetch } from './cache/sqliteCache'
-import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
+import { CACHE_CATEGORIES } from './cache/constants'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
+import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -155,6 +156,7 @@ async function fetchAddonCatalog(
   catalogId: string,
   extra?: Record<string, string>,
   addonId?: string,
+  persistentCacheKey?: string,
 ): Promise<SearchResult[]> {
   const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
 
@@ -166,22 +168,39 @@ async function fetchAddonCatalog(
     const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
     const managed = localStorage.getItem('orynt_app_managed_metadata') !== 'false'
     if (!managed) return previews
-    const resolved = await resolveMetadataBatch(raw.map((meta, index) => ({
-      addonId: addonId || addonUrl, addonUrl, addonType: String(meta.type || type), id: String(meta.id || ''),
-      title: previews[index].title, year: previews[index].year, imdbId: previews[index].imdbId,
-      tmdbId: Number(previews[index].tmdbId) || undefined, tvdbId: Number(previews[index].tvdbId) || undefined,
-      anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
-      rawAddonMeta: meta,
-    })))
-    const bySourceId = new Map(
-      resolved
-        .filter((item) => item.sourceMetadataProvider !== 'fallback_addon')
-        .map((item) => [item.sourceAddonItemId, item])
-    )
-    return previews.map((preview) => {
-      const item = bySourceId.get(preview.sourceAddonItemId)
-      return item ? appMediaToSearchResult(item, addonUrl) : preview
-    })
+
+    // Catalog membership and provider artwork are enough for first paint.
+    // Resolve expensive app/anime metadata after returning the list, then make
+    // the enriched version available from SQLite on the next read.
+    void scheduleTask(metadataTaskQueue, {
+      id: `addon-catalog-enrich:${persistentCacheKey || catalogId}`,
+      dedupKey: `addon-catalog-enrich:${persistentCacheKey || catalogId}`,
+      priority: 'low',
+      group: 'metadata',
+      execute: async () => {
+        const resolved = await resolveMetadataBatch(raw.map((meta, index) => ({
+          addonId: addonId || addonUrl, addonUrl, addonType: String(meta.type || type), id: String(meta.id || ''),
+          title: previews[index].title, year: previews[index].year, imdbId: previews[index].imdbId,
+          tmdbId: Number(previews[index].tmdbId) || undefined, tvdbId: Number(previews[index].tvdbId) || undefined,
+          anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
+          rawAddonMeta: meta,
+        })))
+        const bySourceId = new Map(
+          resolved
+            .filter((item) => item.sourceMetadataProvider !== 'fallback_addon')
+            .map((item) => [item.sourceAddonItemId, item])
+        )
+        const enriched = previews.map((preview) => {
+          const item = bySourceId.get(preview.sourceAddonItemId)
+          return item ? appMediaToSearchResult(item, addonUrl) : preview
+        })
+        if (persistentCacheKey && enriched.length) {
+          await cacheSet(persistentCacheKey, enriched, { category: CACHE_CATEGORIES.ADDON_CATALOG, ttlSeconds: null })
+        }
+        return enriched
+      },
+    }).catch(() => undefined)
+    return previews
   } catch (_) {
     return []
   }
@@ -193,11 +212,17 @@ export async function getAddonCatalog(
   catalogId: string,
   extra?: Record<string, string>,
   addonId?: string,
+  forceRefresh = false,
 ): Promise<SearchResult[]> {
   const key = catalogCacheKey({ scope: 'catalog', id: catalogId, mediaType: type, provider: addonId || addonUrl, source: addonUrl, filters: extra })
-  return cachedFetch(key, () => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId), {
+  if (forceRefresh) {
+    const fresh = await fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId, key)
+    if (fresh.length) await cacheSet(key, fresh, { category: CACHE_CATEGORIES.ADDON_CATALOG, ttlSeconds: null })
+    return fresh
+  }
+  return cachedFetch(key, () => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId, key), {
     category: CACHE_CATEGORIES.ADDON_CATALOG,
-    ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+    ttlSeconds: null,
     skipRefreshIf: (cached) => cached.length > 0 && typeof navigator !== 'undefined' && !navigator.onLine,
   })
 }

@@ -85,8 +85,11 @@ export default function Layout() {
     // Home must also reset: returning from a scrolled detail page would leave
     // the shared <main> offset in place and displace the fixed hero.
     if (location.pathname !== '/' && !location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
-    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-  }, [location.pathname])
+    const resetScroll = () => mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+    resetScroll()
+    const frame = requestAnimationFrame(resetScroll)
+    return () => cancelAnimationFrame(frame)
+  }, [location.pathname, location.key])
 
   const goBack = useCallback(() => {
     const historyIndex = typeof window.history.state?.idx === 'number'

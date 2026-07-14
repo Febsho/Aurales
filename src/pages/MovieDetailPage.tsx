@@ -13,10 +13,11 @@ import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import DetailHero from '../components/media/DetailHero'
 import DetailContentShell from '../components/media/DetailContentShell'
+import DetailLoadingState from '../components/media/DetailLoadingState'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
-import { applyMovieArt, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { applyInitialArtworkPreference, applyMovieArt, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { getSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
@@ -63,6 +64,7 @@ function formatRemainingTime(seconds: number): string {
 interface LocationState {
   poster?: string
   backdrop?: string
+  logo?: string
   title?: string
   year?: number
   rating?: number
@@ -72,6 +74,7 @@ interface LocationState {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   addonUrl?: string
   provider?: string
   sourceAddonId?: string
@@ -171,6 +174,7 @@ function parseRuntime(value: unknown): number | undefined {
 function artworkSettingsKey(): string {
   const settings = useAppStore.getState()
   return JSON.stringify({
+    artworkResolutionVersion: 2,
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
@@ -209,7 +213,9 @@ export default function MovieDetailPage() {
   const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
   const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const preloadPlaybackSources = useAppStore((s) => s.preloadPlaybackSources)
   const artSettingsSignature = useMemo(() => JSON.stringify({
+    artworkResolutionVersion: 2,
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
@@ -251,7 +257,7 @@ export default function MovieDetailPage() {
   } | null>(null)
 
   useEffect(() => {
-    if (!movie) return
+    if (!movie || !preloadPlaybackSources) return
 
     let active = true
 
@@ -413,7 +419,7 @@ export default function MovieDetailPage() {
         }
       }
 
-      if (loading) setLoading(true)
+      setLoading(true)
       let result: MovieDetails | null = null
 
       const parseId = (val: unknown, prefix: string): string | undefined => {
@@ -523,6 +529,7 @@ export default function MovieDetailPage() {
           rating: state.rating || result?.rating,
           poster: state.poster || result?.poster,
           backdrop: state.backdrop || result?.backdrop,
+          logo: state.logo || result?.logo,
           imdbId: knownIds.imdbId as string | undefined,
           tmdbId: knownIds.tmdbId,
           malId: knownIds.malId,
@@ -534,7 +541,6 @@ export default function MovieDetailPage() {
           trailers: result?.trailers || [],
         })
         setMovie(placeholder)
-        setLoading(false)
       }
 
       // Fetch REAL metadata from TMDB
@@ -588,15 +594,7 @@ export default function MovieDetailPage() {
 
       finalResult.id = targetId
 
-      let artApplied = finalResult
-
-      const providerArt = await resolveArtFromProviders('movie', {
-        tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
-      }, artApplied.isAnime)
-      if (providerArt.poster || providerArt.backdrop || providerArt.logo) {
-        artApplied = { ...artApplied, ...(providerArt.poster && { poster: providerArt.poster }), ...(providerArt.backdrop && { backdrop: providerArt.backdrop }), ...(providerArt.logo && { logo: providerArt.logo }) }
-      }
-      artApplied = applyMovieArt(artApplied)
+      const artApplied = applyMovieArt(applyInitialArtworkPreference(finalResult, 'movie', Boolean(finalResult.isAnime)))
 
       setMovie(artApplied)
       setLoading(false)
@@ -609,6 +607,23 @@ export default function MovieDetailPage() {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
         navigate(`/movie/${artApplied.id}`, { replace: true, state })
       }
+
+      // Artwork providers are optional enhancement requests. Do not delay the
+      // complete details page while waiting for them; update it when available.
+      void resolveArtFromProviders('movie', {
+        tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
+      }, artApplied.isAnime).then((providerArt) => {
+        if (!providerArt.poster && !providerArt.backdrop && !providerArt.logo) return
+        const enhanced = applyMovieArt({
+          ...artApplied,
+          ...(providerArt.poster && { poster: providerArt.poster }),
+          ...(providerArt.backdrop && { backdrop: providerArt.backdrop }),
+          ...(providerArt.logo && { logo: providerArt.logo }),
+        })
+        setMovie((current) => current?.id === artApplied.id ? enhanced : current)
+        if (movieCacheKey) void cacheSet(movieCacheKey, enhanced, cacheOpts)
+        if (enhanced.id) void cacheSet(`detail:movie:${artKey}:${enhanced.id}`, enhanced, cacheOpts)
+      }).catch(() => undefined)
     }
     load()
   }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
@@ -704,14 +719,22 @@ export default function MovieDetailPage() {
       sourceAddonId: state.sourceAddonId,
       sourceAddonItemId: state.sourceAddonItemId,
     }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
-  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId])
+  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+
+  const initialRouteArt = applyInitialArtworkPreference({
+    poster: state.poster,
+    backdrop: state.backdrop,
+    logo: state.logo,
+    provider: state.provider,
+  }, 'movie', Boolean(state.anilistId || state.malId || (id && /^(mal|anilist)[-:]/i.test(id))))
 
   if (loading || !movie) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-      </div>
-    )
+    return <DetailLoadingState
+      logo={movie?.logo || initialRouteArt.logo}
+      title={movie?.title || state.title}
+      backdrop={movie?.backdrop || initialRouteArt.backdrop}
+      poster={movie?.poster || initialRouteArt.poster}
+    />
   }
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''

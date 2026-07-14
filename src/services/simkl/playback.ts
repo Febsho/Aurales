@@ -28,6 +28,29 @@ import { mapEpisodeToProviders, isConfidenceSufficient } from '../anime-mapping'
 const THROTTLE_MS = 20_000
 let _lastScrobbleCall = 0
 
+function notifySimklPlaybackChanged(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('aurales:cw-cache-clear', { detail: 'simkl' }))
+}
+
+function refreshSimklPlaybackAfterWrite(): void {
+  void refreshSimklPlaybackCache()
+    .catch(() => undefined)
+    .finally(notifySimklPlaybackChanged)
+}
+
+/** Simkl has returned both a bare array and a wrapped playback list. */
+function normalizePlaybackResponse(value: unknown): SimklPlaybackProgressItem[] {
+  if (Array.isArray(value)) return value as SimklPlaybackProgressItem[]
+  if (value && typeof value === 'object') {
+    const payload = value as Record<string, unknown>
+    for (const key of ['playback', 'items', 'data']) {
+      if (Array.isArray(payload[key])) return payload[key] as SimklPlaybackProgressItem[]
+    }
+  }
+  return []
+}
+
 export interface PlaybackItem extends MediaRef {
   mediaType: 'movie' | 'show' | 'anime'
   contentType: 'movie' | 'series'
@@ -44,6 +67,9 @@ export interface PlaybackItem extends MediaRef {
  */
 export async function onSimklPlaybackStart(item: PlaybackItem, progress: number): Promise<void> {
   if (isSimklMockMode()) return
+  // A brand-new playback session has no resume progress to sync. Avoid
+  // creating a provider-side episode/movie state before any media was watched.
+  if (!Number.isFinite(progress) || progress <= 0) return
   if (!canScrobble()) return
 
   try {
@@ -65,7 +91,10 @@ export async function onSimklPlaybackPause(item: PlaybackItem, progress: number)
 
   try {
     const payload = await buildSimklPlaybackPayload(item, progress * 100)
-    if (payload) await simklScrobblePause(payload)
+    if (payload) {
+      await simklScrobblePause(payload)
+      refreshSimklPlaybackAfterWrite()
+    }
     else if (item.isAnime) console.warn(`[simkl] skipped unsafe anime pause mapping for ${item.localId}`)
   } catch (_) {
     // Swallow
@@ -87,6 +116,7 @@ export async function onSimklPlaybackStop(item: PlaybackItem, progress: number):
       await simklScrobbleStop(payload)
       const { invalidateSimklHistoryCaches } = await import('./history')
       await invalidateSimklHistoryCaches().catch(() => {})
+      refreshSimklPlaybackAfterWrite()
     } else if (item.isAnime) console.warn(`[simkl] skipped unsafe anime stop mapping for ${item.localId}`)
   } catch (_) {
     // Swallow
@@ -101,7 +131,7 @@ export async function getSimklPlaybackProgress(): Promise<SimklPlaybackProgressI
   const { cachedFetch } = await import('../cache/sqliteCache')
   return cachedFetch<SimklPlaybackProgressItem[]>(
     'simkl_playback',
-    async () => (await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback')) ?? [],
+    async () => normalizePlaybackResponse(await simklRequest<unknown>('/sync/playback')),
     { category: 'SIMKL_LISTS', ttlSeconds: 120 },
   )
 }
@@ -113,7 +143,7 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
     const payload = await buildSimklPlaybackPayload(item, progress * 100)
     if (payload) {
       await simklScrobbleStart(payload)
-      refreshSimklPlaybackCache().catch(() => {})
+      refreshSimklPlaybackAfterWrite()
     } else if (item.isAnime) console.warn(`[simkl] skipped unsafe anime progress mapping for ${item.localId}`)
   } catch (_) {
     // Swallow
@@ -121,7 +151,7 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
 }
 
 export async function refreshSimklPlaybackCache(): Promise<SimklPlaybackProgressItem[]> {
-  const fresh = (await simklRequest<SimklPlaybackProgressItem[]>('/sync/playback')) ?? []
+  const fresh = normalizePlaybackResponse(await simklRequest<unknown>('/sync/playback'))
   const { cacheSet } = await import('../cache/sqliteCache')
   await cacheSet('simkl_playback', fresh, { category: 'SIMKL_LISTS', ttlSeconds: 120 })
   return fresh

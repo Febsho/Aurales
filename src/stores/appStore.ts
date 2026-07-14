@@ -227,6 +227,7 @@ interface AppState {
   audioPassthrough: boolean
   autoSkipSegments: boolean
   autoPlayFirstStream: boolean
+  preloadPlaybackSources: boolean
   subtitleFontSize: number
   subtitleBgOpacity: string
   subtitleColor: string
@@ -348,6 +349,7 @@ interface AppState {
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
   setAutoPlayFirstStream: (val: boolean) => void
+  setPreloadPlaybackSources: (val: boolean) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
   setSubtitleColor: (color: string) => void
@@ -779,6 +781,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
   autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') === 'true',
+  preloadPlaybackSources: localStorage.getItem('aurales_preload_playback_sources') === 'true',
   subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
@@ -883,6 +886,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
   setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
+  setPreloadPlaybackSources: (val) => { localStorage.setItem('aurales_preload_playback_sources', String(val)); set({ preloadPlaybackSources: val }) },
   setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
   setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
   setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
@@ -1042,12 +1046,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_mpv_cache_secs', '60')
     localStorage.setItem('aurales_mpv_network_timeout', '15')
     localStorage.setItem('aurales_mpv_custom_args', '')
+    localStorage.setItem('aurales_preload_playback_sources', 'false')
     set({
       hwdecMode: 'auto',
       cacheBufferSize: 'default',
       mpvCacheSecs: 60,
       mpvNetworkTimeout: 15,
-      mpvCustomArgs: ''
+      mpvCustomArgs: '',
+      preloadPlaybackSources: false,
     })
   },
 
@@ -1056,8 +1062,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   imageCacheSizeMb: Number(localStorage.getItem('aurales_image_cache_size_mb') || '500'),
   imageKeepDays: Number(localStorage.getItem('aurales_image_keep_days') || '3'),
   setImageQuality: (q) => { localStorage.setItem('aurales_image_quality', q); set({ imageQuality: q }) },
-  setImageCacheSizeMb: (mb) => { localStorage.setItem('aurales_image_cache_size_mb', String(mb)); set({ imageCacheSizeMb: mb }) },
-  setImageKeepDays: (days) => { localStorage.setItem('aurales_image_keep_days', String(days)); set({ imageKeepDays: days }) },
+  setImageCacheSizeMb: (mb) => {
+    localStorage.setItem('aurales_image_cache_size_mb', String(mb))
+    set({ imageCacheSizeMb: mb })
+    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(mb, get().imageKeepDays))
+  },
+  setImageKeepDays: (days) => {
+    localStorage.setItem('aurales_image_keep_days', String(days))
+    set({ imageKeepDays: days })
+    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
+  },
 
   artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
   setArtProviders: (providers) => {

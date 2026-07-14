@@ -2,10 +2,11 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import type { SearchResult } from '../types'
 import type { RankedRecommendation } from '../services/discovery/types'
+import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot'
+import { retainDiscoverySnapshot } from '../services/cache/discoverySnapshot'
 
 export type DiscoverTab = 'movies' | 'series' | 'anime'
 
-const DISCOVERY_CACHE_TTL = 24 * 60 * 60 * 1000
 const DISCOVERY_CACHE_STORAGE_KEY = 'aurales-discovery-generated-v1'
 
 interface DiscoverStore {
@@ -44,17 +45,22 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   setGenreLoading: (genreLoading) => set({ genreLoading }),
   setActiveProvider: (activeProvider) => set({ activeProvider }),
   setCachedRow: (rowId, items) =>
-    set((state) => ({
-      cachedRows: {
-        ...state.cachedRows,
-        [rowId]: { items, timestamp: Date.now() },
-      },
-    })),
+    set((state) => {
+      const previous = state.cachedRows[rowId]
+      if (previous && catalogContentFingerprint(previous.items) === catalogContentFingerprint(items)) return state
+      return { cachedRows: { ...state.cachedRows, [rowId]: { items, timestamp: Date.now() } } }
+    }),
   setRankedSnapshot: (key, ranked) =>
-    set((state) => ({ rankedSnapshots: { ...state.rankedSnapshots, [key]: ranked } })),
+    set((state) => {
+      const previous = state.rankedSnapshots[key]
+      if (previous && catalogContentFingerprint(previous.map((entry) => entry.item)) === catalogContentFingerprint(ranked.map((entry) => entry.item))) return state
+      return { rankedSnapshots: { ...state.rankedSnapshots, [key]: ranked } }
+    }),
   clearCache: () => set({ cachedRows: {}, rankedSnapshots: {} }),
 }), {
   name: DISCOVERY_CACHE_STORAGE_KEY,
+  version: 2,
+  migrate: (persisted) => persisted as DiscoverStore,
   storage: createJSONStorage(() => localStorage),
   partialize: (state) => ({
     cachedRows: state.cachedRows,
@@ -62,18 +68,7 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   }),
   merge: (persisted, current) => {
     const saved = persisted as Partial<DiscoverStore> | undefined
-    const now = Date.now()
-    const currentDay = Math.floor(now / DISCOVERY_CACHE_TTL)
-    const cachedRows = Object.fromEntries(
-      Object.entries(saved?.cachedRows || {}).filter(([, row]) =>
-        row.timestamp > 0 && now - row.timestamp < DISCOVERY_CACHE_TTL
-      ),
-    )
-    const rankedSnapshots = Object.fromEntries(
-      Object.entries(saved?.rankedSnapshots || {}).filter(([key]) =>
-        key.startsWith(`${currentDay}:`)
-      ),
-    )
+    const { cachedRows, rankedSnapshots } = retainDiscoverySnapshot(saved)
     return { ...current, cachedRows, rankedSnapshots }
   },
 }))

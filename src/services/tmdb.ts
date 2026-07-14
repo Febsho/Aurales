@@ -1,6 +1,6 @@
 import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonDetails, EpisodeDetails, CastMember, Video, DiscoverConfig } from '../types'
 import { getTmdbApiKey } from './apiKeys'
-import { cachedFetch, cacheSet } from './cache/sqliteCache'
+import { cachedFetch, cacheGet, cacheSet } from './cache/sqliteCache'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
@@ -55,6 +55,11 @@ export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number
   return result ?? undefined
 }
 
+export interface TmdbAiredEpisode {
+  seasonNumber: number
+  episodeNumber: number
+}
+
 export interface TmdbRuntimeMetadata {
   runtime?: number
   genres: string[]
@@ -64,6 +69,33 @@ export interface TmdbRuntimeMetadata {
 
 // Slim details-only fetch for runtime/genre stats — avoids getMovie/getShow's
 // 5-6 endpoint fan-out when only runtime + genres are needed.
+/**
+ * TMDB's show-level episode count includes announced, unaired episodes. This
+ * returns only regular episodes that have aired, for "caught up" checks.
+ */
+export async function getTmdbAiredEpisodes(tmdbId: string | number): Promise<TmdbAiredEpisode[]> {
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
+  const today = new Date().toISOString().slice(0, 10)
+  return cachedFetch<TmdbAiredEpisode[]>(`tmdb_aired_episodes_v1:${id}:${today}`, async () => {
+    const details = await tmdbFetch(`/tv/${id}`) as Record<string, unknown>
+    const seasonNumbers = ((details.seasons as Record<string, unknown>[]) || [])
+      .map((season) => Number(season.season_number))
+      .filter((seasonNumber) => Number.isInteger(seasonNumber) && seasonNumber > 0)
+
+    const episodesBySeason = await Promise.all(seasonNumbers.map(async (seasonNumber) => {
+      const season = await tmdbFetch(`/tv/${id}/season/${seasonNumber}`) as Record<string, unknown>
+      return ((season.episodes as Record<string, unknown>[]) || [])
+        .filter((episode) => {
+          const episodeNumber = Number(episode.episode_number)
+          const airDate = typeof episode.air_date === 'string' ? episode.air_date : ''
+          return Number.isInteger(episodeNumber) && episodeNumber > 0 && airDate !== '' && airDate <= today
+        })
+        .map((episode) => ({ seasonNumber, episodeNumber: Number(episode.episode_number) }))
+    }))
+    return episodesBySeason.flat()
+  }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+}
+
 export async function getTmdbRuntimeMetadata(mediaType: 'movie' | 'tv', tmdbId: string | number): Promise<TmdbRuntimeMetadata> {
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   return cachedFetch<TmdbRuntimeMetadata>(`tmdb_runtime_v1:${mediaType}:${id}`, async () => {
@@ -261,6 +293,7 @@ export const tmdbProvider: MetadataProvider = {
 
     const cast = ((credits.cast as Record<string, unknown>[]) || []).slice(0, 20).map((c): CastMember => ({
       id: String(c.id),
+      personProvider: 'tmdb',
       name: c.name as string,
       character: c.character as string,
       profilePath: c.profile_path ? `${IMG_BASE}/w185${c.profile_path}` : undefined,
@@ -270,6 +303,7 @@ export const tmdbProvider: MetadataProvider = {
       .filter((c) => ['Director', 'Writer', 'Screenplay', 'Original Music Composer'].includes(c.job as string))
       .map((c) => ({
         id: String(c.id),
+        personProvider: 'tmdb' as const,
         name: c.name as string,
         job: c.job as string,
         department: c.department as string,
@@ -333,6 +367,7 @@ export const tmdbProvider: MetadataProvider = {
 
     const cast = ((credits.cast as Record<string, unknown>[]) || []).slice(0, 20).map((c): CastMember => ({
       id: String(c.id),
+      personProvider: 'tmdb',
       name: c.name as string,
       character: c.character as string,
       profilePath: c.profile_path ? `${IMG_BASE}/w185${c.profile_path}` : undefined,
@@ -784,20 +819,63 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
 export const DISCOVER_ROW_PAGES = 3
 export const DISCOVER_ROW_LIMIT = 50
 
+/**
+ * Lightweight data source for Library's smart-collection cards.  A card only
+ * needs a handful of posters, so requesting the full catalog preview (three
+ * TMDB pages) delays every card unnecessarily.  Keep this cache separate from
+ * the catalog cache so opening a collection can still obtain its 50-item
+ * initial result.
+ */
+const pendingDiscoverPreviewRequests = new Map<string, Promise<SearchResult[]>>()
+
+export async function discoverTmdbPreviewWithCache(config: DiscoverConfig, rowId: string): Promise<SearchResult[]> {
+  const cacheKey = catalogCacheKey({
+    scope: 'cards',
+    id: `discover-preview:${rowId}`,
+    mediaType: config.contentType,
+    region: config.releaseRegion,
+    provider: config.source,
+    filters: config,
+  })
+
+  const cached = await cacheGet<SearchResult[]>(cacheKey)
+  if (cached?.data.length) return cached.data
+
+  const pending = pendingDiscoverPreviewRequests.get(cacheKey)
+  if (pending) return pending
+
+  const request = discoverTmdb(config)
+    .then(async (items) => {
+      const preview = items.slice(0, Math.min(20, config.maxResults || 20))
+      if (preview.length) {
+        await cacheSet(cacheKey, preview, {
+          category: CACHE_CATEGORIES.DISCOVER,
+          ttlSeconds: null,
+        })
+      }
+      return preview
+    })
+    .finally(() => pendingDiscoverPreviewRequests.delete(cacheKey))
+
+  pendingDiscoverPreviewRequests.set(cacheKey, request)
+  return request
+}
+
 export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: string, forceRefresh = false, onStaleRefreshed?: (items: SearchResult[]) => void): Promise<SearchResult[]> {
   const cacheKey = catalogCacheKey({ scope: 'discover', id: rowId || 'row', mediaType: config.contentType, region: config.releaseRegion, provider: config.source, filters: config })
-  const ttlSeconds = config.cacheTtl || CACHE_TTLS.DISCOVER
-  const fetchRow = () => discoverTmdb(config, 1, DISCOVER_ROW_PAGES).then((items) => items.slice(0, DISCOVER_ROW_LIMIT))
+  const resultLimit = config.maxResults && config.maxResults > 0 ? Math.min(config.maxResults, DISCOVER_ROW_LIMIT) : DISCOVER_ROW_LIMIT
+  const fetchRow = () => discoverTmdb(config, 1, DISCOVER_ROW_PAGES).then((items) => items.slice(0, resultLimit))
 
   if (forceRefresh) {
     const fresh = await fetchRow()
-    await cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds })
+    if (fresh.length) await cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds: null })
     return fresh
   }
 
   return cachedFetch<SearchResult[]>(cacheKey, fetchRow, {
     category: CACHE_CATEGORIES.DISCOVER,
-    ttlSeconds,
+    ttlSeconds: null,
+    revalidate: 'once-per-session',
     onStaleRefreshed,
   })
 }

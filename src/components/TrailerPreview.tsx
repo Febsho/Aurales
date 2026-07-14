@@ -66,7 +66,12 @@ export default function TrailerPreview({
       setDirectStream({ videoUrl: trailer.directUrl, expiresAt: Date.now() + 60 * 60 * 1000 })
       return () => { cancelled = true }
     }
-    getDirectYoutubeStream(trailer.key)
+    // Do not leave the preview stuck on artwork if the native resolver hangs.
+    // The iframe is slower/less clean, but it is a reliable playback fallback.
+    Promise.race<DirectStream | null>([
+      getDirectYoutubeStream(trailer.key),
+      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6000)),
+    ])
       .then((stream) => {
         if (!cancelled) setDirectStream(stream)
       })

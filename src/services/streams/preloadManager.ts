@@ -173,9 +173,11 @@ class StreamPreloadManager {
   }
 
   private maybeScheduleStartup(): void {
+    if (!useAppStore.getState().preloadPlaybackSources) return
     if (!this.homeReady || !this.continueWatchingReady || this.startupScheduled || this.pendingContinue.length === 0) return
     this.startupScheduled = true
     const run = async () => {
+      if (!useAppStore.getState().preloadPlaybackSources) return
       if (!navigator.onLine) return
       devLog(`Idle startup preload: ${this.pendingContinue.length} Continue Watching targets`)
       for (const item of this.pendingContinue) {

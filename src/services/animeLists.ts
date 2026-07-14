@@ -15,6 +15,7 @@ interface AnimeMapping {
 }
 
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
+const ANIME_LIST_FETCH_TIMEOUT_MS = 8_000
 const DATA_URL =
   'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json'
 const PERSISTENT_CACHE = 'aurales-anime-lists-v1'
@@ -180,7 +181,9 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
     }
 
     try {
-      const response = await fetch(DATA_URL)
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), ANIME_LIST_FETCH_TIMEOUT_MS)
+      const response = await fetch(DATA_URL, { signal: controller.signal }).finally(() => clearTimeout(timeout))
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data: AnimeMapping[] = await response.json()
       cachedData = data

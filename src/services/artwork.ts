@@ -105,6 +105,50 @@ function getProviderKey(mediaType: 'movie' | 'series', isAnime: boolean, artType
   return `${prefix}${artType}` as keyof ArtProviderSettings
 }
 
+type InitialArtworkItem = {
+  poster?: string
+  backdrop?: string
+  logo?: string
+  provider?: string
+}
+
+function artworkProviderFromUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  const value = url.toLowerCase()
+  if (value.includes('image.tmdb.org')) return 'tmdb'
+  if (value.includes('thetvdb.com') || value.includes('artworks.thetvdb.com')) return 'tvdb'
+  if (value.includes('fanart.tv')) return 'fanart'
+  return undefined
+}
+
+/**
+ * Prevent metadata-provider artwork from flashing before the configured art
+ * provider resolves. Cached/provider art can then become the first image the
+ * user sees instead of replacing a visibly wrong source image afterward.
+ */
+export function applyInitialArtworkPreference<T extends InitialArtworkItem>(
+  item: T,
+  mediaType: 'movie' | 'series',
+  isAnime = false,
+): T {
+  const { artProviders } = useAppStore.getState()
+  const metadataProvider = String(item.provider || '').toLowerCase()
+  const knownMetadataProvider = ['tmdb', 'tvdb', 'anilist', 'mal', 'kitsu', 'fanart'].includes(metadataProvider)
+
+  const keep = (url: string | undefined, artType: 'Poster' | 'Backdrop' | 'Logo') => {
+    if (!url) return undefined
+    const selected = artProviders[getProviderKey(mediaType, isAnime, artType)]
+    const actual = artworkProviderFromUrl(url) || (knownMetadataProvider ? metadataProvider : undefined)
+    return actual && actual !== selected ? undefined : url
+  }
+
+  const poster = keep(item.poster, 'Poster')
+  const backdrop = keep(item.backdrop, 'Backdrop')
+  const logo = keep(item.logo, 'Logo')
+  if (poster === item.poster && backdrop === item.backdrop && logo === item.logo) return item
+  return { ...item, poster, backdrop, logo }
+}
+
 export async function resolveArtFromProviders(
   mediaType: 'movie' | 'series',
   ids: { tmdbId?: string | number; tvdbId?: string | number; imdbId?: string },
@@ -125,7 +169,18 @@ export async function resolveArtFromProviders(
 
   const fetches: Promise<void>[] = []
   let resolvedTvdbId = ids.tvdbId
+  let resolvedTmdbId = ids.tmdbId
   let tmdbEnglishLogo: string | undefined
+
+  // TVDB catalog entries commonly carry only their TVDB ID. Resolve its TMDB
+  // counterpart before artwork selection so a TMDB preference is honored for
+  // those entries instead of silently keeping TVDB's source artwork.
+  if (!resolvedTmdbId && resolvedTvdbId) {
+    const { tmdbFindByExternalId } = await import('./metadataEnrich')
+    const tvdbId = String(resolvedTvdbId).replace(/^tvdb[-:]/i, '')
+    const found = await tmdbFindByExternalId(tvdbId, 'tvdb_id').catch(() => null)
+    if (found?.tmdbId) resolvedTmdbId = String(found.tmdbId)
+  }
 
   // Catalog previews often carry TMDB/IMDb but omit TVDB. Resolve that missing
   // bridge before deciding that a configured TVDB/Fanart source is unavailable.
@@ -141,15 +196,12 @@ export async function resolveArtFromProviders(
   // exists — not just for series/TMDB-selected. Anime *movies* select the
   // anime providers (TVDB/Fanart), which have no movie record, so without this
   // they'd resolve no logo at all.
-  if (ids.tmdbId) {
+  if (resolvedTmdbId) {
     fetches.push(
-      import('./tmdb').then(({ getTmdbCardMetadata, getTmdbLandscapeBackdrop }) =>
-        Promise.all([
-          getTmdbCardMetadata(mediaType, ids.tmdbId!, ids.imdbId),
-          getTmdbLandscapeBackdrop(mediaType, ids.tmdbId!),
-        ]).then(([card, backdrop]) => {
+      import('./tmdb').then(({ getTmdbCardMetadata }) =>
+        getTmdbCardMetadata(mediaType, resolvedTmdbId!, ids.imdbId).then((card) => {
           tmdbEnglishLogo = card.englishLogo
-          results.tmdb = { poster: card.poster, backdrop: backdrop || card.backdrop, logo: card.logo }
+          results.tmdb = { poster: card.poster, backdrop: card.backdrop, logo: card.logo }
         })
       ).catch(() => undefined)
     )

@@ -1,6 +1,11 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { CastMember, CrewMember } from '../types'
+import { searchTmdbPeople } from '../services/tmdb'
+
+type PersonProvider = 'tmdb' | 'tvdb' | 'addon'
+type PersonTarget = { id?: string; personProvider?: PersonProvider; name: string }
+type OpenPerson = (person: PersonTarget) => void
 
 interface CastRowProps {
   cast: CastMember[]
@@ -11,6 +16,20 @@ export default function CastRow({ cast, crew }: CastRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showModal, setShowModal] = useState(false)
   const navigate = useNavigate()
+
+  const openPerson: OpenPerson = async ({ id, personProvider, name }) => {
+    if (personProvider === 'tmdb' && isTmdbPersonId(id)) {
+      navigate(`/person/${id}`)
+      return
+    }
+
+    // TVDB and addon people IDs are not valid TMDB IDs. Resolve anime cast by
+    // name so their profile cards remain usable instead of linking to a 404.
+    const matches = await searchTmdbPeople(name)
+    const normalizedName = name.trim().toLocaleLowerCase()
+    const match = matches.find((person) => person.name.trim().toLocaleLowerCase() === normalizedName) || matches[0]
+    if (match) navigate(`/person/${match.id}`)
+  }
 
   if (cast.length === 0) return null
 
@@ -41,13 +60,13 @@ export default function CastRow({ cast, crew }: CastRowProps) {
           style={{ scrollbarWidth: 'none' }}
         >
           {directors.slice(0, 2).map((d) => (
-            <PersonCard key={`dir-${d.id}`} id={d.id} name={d.name} subtitle={`Director`} label="Director" image={d.profilePath} onOpen={(id) => navigate(`/person/${id}`)} />
+            <PersonCard key={`dir-${d.id}`} id={d.id} personProvider={d.personProvider} name={d.name} subtitle={`Director`} label="Director" image={d.profilePath} onOpen={openPerson} />
           ))}
           {cast.slice(0, 20).map((member) => (
-            <PersonCard key={member.id} id={member.id} name={member.name} subtitle={member.character} image={member.profilePath} onOpen={(id) => navigate(`/person/${id}`)} />
+            <PersonCard key={member.id} id={member.id} personProvider={member.personProvider} name={member.name} subtitle={member.character} image={member.profilePath} onOpen={openPerson} />
           ))}
           {creators.slice(0, 2).map((c) => (
-            <PersonCard key={c.id} id={c.id} name={c.name} subtitle="Creator" image={c.profilePath} onOpen={(id) => navigate(`/person/${id}`)} />
+            <PersonCard key={c.id} id={c.id} personProvider={c.personProvider} name={c.name} subtitle="Creator" image={c.profilePath} onOpen={openPerson} />
           ))}
         </div>
       </div>
@@ -60,9 +79,9 @@ export default function CastRow({ cast, crew }: CastRowProps) {
           creators={creators}
           producers={producers}
           onClose={() => setShowModal(false)}
-          onOpenPerson={(id) => {
+          onOpenPerson={(person) => {
             setShowModal(false)
-            navigate(`/person/${id}`)
+            void openPerson(person)
           }}
         />
       )}
@@ -74,9 +93,9 @@ function isTmdbPersonId(id?: string): boolean {
   return Boolean(id && /^\d+$/.test(id))
 }
 
-function PersonCard({ id, name, subtitle, label, image, onOpen }: { id?: string; name: string; subtitle?: string; label?: string; image?: string; onOpen?: (id: string) => void }) {
+function PersonCard({ id, personProvider, name, subtitle, label, image, onOpen }: PersonTarget & { subtitle?: string; label?: string; image?: string; onOpen?: OpenPerson }) {
   const [imgError, setImgError] = useState(false)
-  const canOpen = isTmdbPersonId(id)
+  const canOpen = Boolean(name.trim())
   const content = (
     <>
       <div className="relative w-full aspect-[3/4] rounded-2xl overflow-hidden bg-white/[0.06] mb-3 ring-1 ring-white/[0.08] group-hover:ring-white/20 transition-all duration-300 shadow-xl">
@@ -103,7 +122,7 @@ function PersonCard({ id, name, subtitle, label, image, onOpen }: { id?: string;
   )
 
   return canOpen ? (
-    <button onClick={() => onOpen?.(id!)} className="cast-showcase-card flex-shrink-0 text-left group cursor-pointer focus-ring">
+    <button onClick={() => onOpen?.({ id, personProvider, name })} className="cast-showcase-card flex-shrink-0 text-left group cursor-pointer focus-ring">
       {content}
     </button>
   ) : (
@@ -120,7 +139,7 @@ interface CreditsModalProps {
   creators: CrewMember[]
   producers: CrewMember[]
   onClose: () => void
-  onOpenPerson: (id: string) => void
+  onOpenPerson: OpenPerson
 }
 
 function CreditsModal({ cast, directors, writers, creators, producers, onClose, onOpenPerson }: CreditsModalProps) {
@@ -150,19 +169,19 @@ function CreditsModal({ cast, directors, writers, creators, producers, onClose, 
         {/* Content */}
         <div className="overflow-y-auto p-6 space-y-8" style={{ maxHeight: 'calc(80vh - 60px)', scrollbarWidth: 'none' }}>
           {cast.length > 0 && (
-            <CreditsSection title="Cast" items={cast.map((c) => ({ id: c.id, name: c.name, role: c.character, image: c.profilePath }))} onOpenPerson={onOpenPerson} />
+            <CreditsSection title="Cast" items={cast.map((c) => ({ id: c.id, personProvider: c.personProvider, name: c.name, role: c.character, image: c.profilePath }))} onOpenPerson={onOpenPerson} />
           )}
           {directors.length > 0 && (
-            <CreditsSection title="Directors" items={directors.map((d) => ({ id: d.id, name: d.name, role: d.job, image: d.profilePath }))} onOpenPerson={onOpenPerson} />
+            <CreditsSection title="Directors" items={directors.map((d) => ({ id: d.id, personProvider: d.personProvider, name: d.name, role: d.job, image: d.profilePath }))} onOpenPerson={onOpenPerson} />
           )}
           {creators.length > 0 && (
-            <CreditsSection title="Creators" items={creators.map((c) => ({ id: c.id, name: c.name, role: c.job, image: c.profilePath }))} onOpenPerson={onOpenPerson} />
+            <CreditsSection title="Creators" items={creators.map((c) => ({ id: c.id, personProvider: c.personProvider, name: c.name, role: c.job, image: c.profilePath }))} onOpenPerson={onOpenPerson} />
           )}
           {writers.length > 0 && (
-            <CreditsSection title="Writers" items={writers.map((w) => ({ id: w.id, name: w.name, role: w.job, image: w.profilePath }))} onOpenPerson={onOpenPerson} />
+            <CreditsSection title="Writers" items={writers.map((w) => ({ id: w.id, personProvider: w.personProvider, name: w.name, role: w.job, image: w.profilePath }))} onOpenPerson={onOpenPerson} />
           )}
           {producers.length > 0 && (
-            <CreditsSection title="Producers" items={producers.map((p) => ({ id: p.id, name: p.name, role: p.job, image: p.profilePath }))} onOpenPerson={onOpenPerson} />
+            <CreditsSection title="Producers" items={producers.map((p) => ({ id: p.id, personProvider: p.personProvider, name: p.name, role: p.job, image: p.profilePath }))} onOpenPerson={onOpenPerson} />
           )}
         </div>
       </div>
@@ -170,7 +189,7 @@ function CreditsModal({ cast, directors, writers, creators, producers, onClose, 
   )
 }
 
-function CreditsSection({ title, items, onOpenPerson }: { title: string; items: { id?: string; name: string; role?: string; image?: string }[]; onOpenPerson: (id: string) => void }) {
+function CreditsSection({ title, items, onOpenPerson }: { title: string; items: (PersonTarget & { role?: string; image?: string })[]; onOpenPerson: OpenPerson }) {
   return (
     <div>
       <h3 className="text-sm font-bold uppercase tracking-wider text-white/40 mb-4">{title}</h3>
@@ -183,9 +202,9 @@ function CreditsSection({ title, items, onOpenPerson }: { title: string; items: 
   )
 }
 
-function CreditsPerson({ id, name, role, image, onOpenPerson }: { id?: string; name: string; role?: string; image?: string; onOpenPerson: (id: string) => void }) {
+function CreditsPerson({ id, personProvider, name, role, image, onOpenPerson }: PersonTarget & { role?: string; image?: string; onOpenPerson: OpenPerson }) {
   const [imgError, setImgError] = useState(false)
-  const canOpen = isTmdbPersonId(id)
+  const canOpen = Boolean(name.trim())
   const content = (
     <>
       <div className="w-11 h-11 rounded-full overflow-hidden bg-white/[0.06] flex-shrink-0">
@@ -205,7 +224,7 @@ function CreditsPerson({ id, name, role, image, onOpenPerson }: { id?: string; n
   )
 
   return canOpen ? (
-    <button onClick={() => onOpenPerson(id!)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/[0.04] transition-colors text-left cursor-pointer focus-ring">
+    <button onClick={() => onOpenPerson({ id, personProvider, name })} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/[0.04] transition-colors text-left cursor-pointer focus-ring">
       {content}
     </button>
   ) : (

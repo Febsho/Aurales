@@ -348,6 +348,8 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
 }
 
 function extractWatchedEpisodes(raw: any) {
+  const seasons = Array.isArray(raw?.seasons) ? raw.seasons : []
+  const episodes: { season: number; episode: number; watchedAt?: string }[] = []
   for (const season of seasons) {
     const seasonNumber = Number(season.number ?? season.season)
     if (!Number.isFinite(seasonNumber)) continue

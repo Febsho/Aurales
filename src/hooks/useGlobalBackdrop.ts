@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { cachedImage } from '../services/imageCache'
 
 function highQualityBackdropUrl(url: string): string {
   if (url.includes('image.tmdb.org/t/p/')) return url.replace(/\/t\/p\/(?:w\d+|h\d+|original)\//, '/t/p/original/')
@@ -10,7 +11,7 @@ export function useGlobalBackdrop(url?: string | null) {
     const root = document.documentElement
 
     if (url) {
-      root.style.setProperty('--hero-bg', `url(${highQualityBackdropUrl(url)})`)
+      root.style.setProperty('--hero-bg', `url(${cachedImage(highQualityBackdropUrl(url))})`)
       root.classList.add('hero-bg-active')
     } else {
       root.classList.remove('hero-bg-active')

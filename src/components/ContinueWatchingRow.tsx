@@ -83,6 +83,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const [items, setItems] = useState<ContinueWatchingItem[]>(() => cwItemsCache.get(cwKey) ?? startupSnapshot ?? [])
   const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey) && !startupSnapshot)
   const [error, setError] = useState<string | null>(null)
+  const [remoteRefreshRevision, setRemoteRefreshRevision] = useState(0)
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
     mediaType: 'movie' | 'series'
@@ -115,10 +116,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       const clearedSource = (event as CustomEvent<SourceType>).detail
       for (const key of cwItemsCache.keys()) if (key.startsWith(`${clearedSource}:`)) cwItemsCache.delete(key)
       for (const key of cwRevalidatedThisSession) if (key.startsWith(`${clearedSource}:`)) cwRevalidatedThisSession.delete(key)
+      if (clearedSource === source) setRemoteRefreshRevision((revision) => revision + 1)
     }
     window.addEventListener('aurales:cw-cache-clear', clear)
     return () => window.removeEventListener('aurales:cw-cache-clear', clear)
-  }, [])
+  }, [source])
 
   useEffect(() => {
     if (!cwMenu) return
@@ -493,7 +495,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData])
+  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision])
 
   // ── Source selector (always rendered in header) ─────────────────────────────
   const simklConnected = useAppStore((s) => s.simklConnected)

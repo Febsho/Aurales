@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod image_cache;
 mod libmpv_player;
 mod thumbnails;
 mod ytproxy;
@@ -25,6 +26,9 @@ pub fn run() {
             updater.build()
         })
         .plugin(tauri_plugin_process::init())
+        .register_asynchronous_uri_scheme_protocol("imgcache", |ctx, request, responder| {
+            image_cache::handle_request(ctx.app_handle().clone(), request, responder);
+        })
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -119,6 +123,9 @@ pub fn run() {
             commands::cache_entry_clear_category,
             commands::cache_entry_clear_expired,
             commands::cache_entry_stats,
+            image_cache::image_cache_configure,
+            image_cache::image_cache_stats,
+            image_cache::image_cache_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

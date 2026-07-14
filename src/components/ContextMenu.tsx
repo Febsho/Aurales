@@ -280,7 +280,7 @@ export default function ContextMenu() {
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
     navigate(path, {
       state: {
-        poster: item.poster, backdrop: item.backdrop, title: item.title,
+        poster: item.poster, backdrop: item.backdrop, logo: item.logo, title: item.title,
         year: item.year, rating: item.rating, overview: item.overview,
         imdbId: item.imdbId, tmdbId: item.tmdbId, tvdbId: item.tvdbId,
         malId: item.malId, anilistId: item.anilistId,

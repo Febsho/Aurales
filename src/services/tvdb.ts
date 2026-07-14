@@ -194,6 +194,7 @@ export const tvdbProvider: MetadataProvider = {
       .slice(0, 20)
       .map((c) => ({
         id: String(c.peopleId || c.id || ''),
+        personProvider: 'tvdb' as const,
         name: (c.personName || c.name) as string,
         character: (c.name || c.personName) as string,
         profilePath: (c.personImgURL || c.image) as string | undefined,
