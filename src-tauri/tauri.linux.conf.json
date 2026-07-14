@@ -4,6 +4,7 @@
     "targets": ["deb", "rpm", "appimage"],
     "externalBin": ["binaries/yt-dlp"],
     "resources": {
+      "binaries/*.dll": null,
       "resources/mpv-scripts/*": "mpv-scripts/",
       "resources/mpv-script-opts/*": "mpv-script-opts/"
     },
