@@ -140,6 +140,10 @@ async function fetchTmdbTrailer(input: TrailerLookupInput): Promise<TrailerSourc
   const url = new URL(`${TMDB_BASE_URL}/${mediaTypeForTmdb(input.type)}/${id}/videos`)
   url.searchParams.set('api_key', apiKey)
   url.searchParams.set('language', input.language ? `${input.language}-${input.language.toUpperCase()}` : 'en-US')
+  // Without this, titles whose trailers are tagged with another language (or
+  // untagged) return no results and we fall through to the YouTube scrape,
+  // which often surfaces foreign-subbed re-uploads.
+  url.searchParams.set('include_video_language', input.language ? `${input.language},en,null` : 'en,null')
 
   const response = await fetch(url.toString())
   if (!response.ok) throw new Error(`TMDB trailer lookup failed: ${response.status}`)
@@ -163,11 +167,15 @@ async function fetchTmdbTrailer(input: TrailerLookupInput): Promise<TrailerSourc
 
 function decodeHtml(value: string): string {
   return value
-    .replace(/\\u0026/g, '&')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
 }
+
+// CJK detection covers kana, CJK ideographs, and hangul — used to reject
+// foreign-language trailer uploads unless the title itself is CJK.
+const containsCjk = (value: string) => /[぀-ヿ㐀-䶿一-鿿가-힯]/.test(value)
 
 function extractYoutubeFallback(html: string, title: string): TrailerSource | null {
   const lowerTitle = title.toLowerCase()
@@ -181,6 +189,7 @@ function extractYoutubeFallback(html: string, title: string): TrailerSource | nu
     seen.add(key)
     if (!candidateTitle.includes('trailer')) continue
     if (!candidateTitle.includes(lowerTitle.split(':')[0])) continue
+    if (containsCjk(candidateTitle) && !containsCjk(title)) continue
     if (REJECT_YOUTUBE_TERMS.some((term) => candidateTitle.includes(term))) continue
     if (candidateTitle.includes('teaser') && matches.length > 1) continue
     return makeYoutubeSource(key, 'youtube', undefined, candidateTitle.includes('official'))
@@ -244,7 +253,7 @@ async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource 
 export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const tmdbId = input.tmdbId ? String(input.tmdbId).replace('tmdb-', '') : ''
   const cacheKey = [
-    'trailer_source_v5',
+    'trailer_source_v6',
     mediaTypeForTmdb(input.type),
     tmdbId || 'no-tmdb',
     input.imdbId || 'no-imdb',

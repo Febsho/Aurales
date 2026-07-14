@@ -33,8 +33,27 @@ describe('sqlite catalog cache behavior', () => {
     const now = Date.now()
     rows.set(key, { key, value: JSON.stringify(['cached']), category: 'discover', created_at: sqlDate(now), expires_at: sqlDate(now + 60_000), updated_at: sqlDate(now) })
     const fetcher = vi.fn(async () => ['network'])
+    expect(await cachedFetch(key, fetcher, { category: 'discover', ttlSeconds: 60, revalidate: 'once-per-session' })).toEqual(['cached'])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not refresh a fresh TTL-only entry', async () => {
+    const key = `ttl-${Math.random()}`
+    const now = Date.now()
+    rows.set(key, { key, value: JSON.stringify(['cached']), category: 'discover', created_at: sqlDate(now), expires_at: sqlDate(now + 60_000), updated_at: sqlDate(now) })
+    const fetcher = vi.fn(async () => ['network'])
     expect(await cachedFetch(key, fetcher, { category: 'discover', ttlSeconds: 60 })).toEqual(['cached'])
     await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('does not refetch a once-per-session cache miss after it succeeds', async () => {
+    const key = `session-miss-${Math.random()}`
+    const fetcher = vi.fn(async () => ['fresh'])
+    const options = { category: 'discover', ttlSeconds: 60, revalidate: 'once-per-session' as const }
+    expect(await cachedFetch(key, fetcher, options)).toEqual(['fresh'])
+    expect(await cachedFetch(key, fetcher, options)).toEqual(['fresh'])
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 

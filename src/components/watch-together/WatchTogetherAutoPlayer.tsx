@@ -4,6 +4,7 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
+import { nativePlayerSupported } from '../../services/player'
 import NativeMpvPlayer from '../NativeMpvPlayer'
 
 // Lazy: keeps the heavy player stack out of the startup bundle — it only loads
@@ -92,8 +93,7 @@ export default function WatchTogetherAutoPlayer() {
   const url = getPlayableStreamUrl(stream)
   if (!url) return null
 
-  const isTauri = !!(window as any).__TAURI_INTERNALS__
-  const PlayerComponent = isTauri ? NativeMpvPlayer : InAppPlayer
+  const PlayerComponent = nativePlayerSupported() ? NativeMpvPlayer : InAppPlayer
 
   const subtitle = episode
     ? `S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}`

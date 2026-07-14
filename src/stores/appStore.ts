@@ -3,6 +3,7 @@ import type { HomeRowConfig, WatchProgress, SearchResult, TraktAccount } from '.
 import type { InstalledAddon } from '../services/addons'
 import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
+import { clearContinueWatchingSnapshotsForSource, rotateProviderCredentialScope } from '../services/cache/homeStartupSnapshot'
 import { buildDefaultHomeRows } from '../data/defaultHomeRows'
 import { v4 as uuid } from 'uuid'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
@@ -380,6 +381,14 @@ interface AppState {
   setMpvCustomArgs: (args: string) => void
   setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
+
+  // Image cache settings
+  imageQuality: 'data-saver' | 'balanced' | 'high'
+  imageCacheSizeMb: number
+  imageKeepDays: number
+  setImageQuality: (q: 'data-saver' | 'balanced' | 'high') => void
+  setImageCacheSizeMb: (mb: number) => void
+  setImageKeepDays: (days: number) => void
 }
 
 function loadPersistedAddons(): InstalledAddon[] {
@@ -532,13 +541,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); invalidateCatalogData(); set({ tvdbApiKey: key }) },
   setTraktClientId: (key) => { localStorage.setItem('trakt_client_id', key); set({ traktClientId: key }) },
   setTraktClientSecret: (key) => { localStorage.setItem('trakt_client_secret', key); set({ traktClientSecret: key }) },
-  setTraktConnected: (connected) => { invalidateCatalogData(); set({ traktConnected: connected }) },
+  setTraktConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('trakt')
+    set({ traktConnected: connected })
+  },
   setTraktAccount: (account) => {
+    const previous = get().traktAccount
+    if (previous?.username && previous.username !== account?.username) clearContinueWatchingSnapshotsForSource('trakt')
     if (account) localStorage.setItem('trakt_account', JSON.stringify(account))
     else localStorage.removeItem('trakt_account')
     set({ traktAccount: account })
   },
-  setMdblistApiKey: (key) => { localStorage.setItem('mdblist_api_key', key); set({ mdblistApiKey: key }) },
+  setMdblistApiKey: (key) => {
+    const changed = get().mdblistApiKey !== key
+    localStorage.setItem('mdblist_api_key', key)
+    if (changed) rotateProviderCredentialScope('mdblist', Boolean(key || localStorage.getItem('mdblist_oauth_tokens')))
+    set({ mdblistApiKey: key })
+  },
 
   scrobbleSimkl: localStorage.getItem('scrobble_simkl') !== 'false',
   scrobbleTrakt: localStorage.getItem('scrobble_trakt') !== 'false',
@@ -558,8 +578,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as SimklAccount : null
     } catch (_) { return null }
   })(),
-  setSimklConnected: (connected) => { invalidateCatalogData(); set({ simklConnected: connected }) },
+  setSimklConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('simkl')
+    set({ simklConnected: connected })
+  },
   setSimklAccount: (account) => {
+    const previous = get().simklAccount
+    if (previous?.id && previous.id !== account?.id) clearContinueWatchingSnapshotsForSource('simkl')
     if (account) localStorage.setItem('simkl_account', JSON.stringify(account))
     else localStorage.removeItem('simkl_account')
     set({ simklAccount: account })
@@ -572,8 +598,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return raw ? JSON.parse(raw) as AniListAccount : null
     } catch (_) { return null }
   })(),
-  setAnilistConnected: (connected) => { invalidateCatalogData(); set({ anilistConnected: connected }) },
+  setAnilistConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('anilist')
+    set({ anilistConnected: connected })
+  },
   setAnilistAccount: (account) => {
+    const previous = get().anilistAccount
+    if (previous?.id && previous.id !== account?.id) clearContinueWatchingSnapshotsForSource('anilist')
     if (account) localStorage.setItem('anilist_account', JSON.stringify(account))
     else localStorage.removeItem('anilist_account')
     set({ anilistAccount: account })
@@ -780,7 +812,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })
   },
-  setPmdBApiKey: (key) => { localStorage.setItem('pmdb_api_key', key); set({ pmdbApiKey: key }) },
+  setPmdBApiKey: (key) => {
+    const changed = get().pmdbApiKey !== key
+    localStorage.setItem('pmdb_api_key', key)
+    if (changed) rotateProviderCredentialScope('pmdb', Boolean(key))
+    set({ pmdbApiKey: key })
+  },
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
   setMdblistSaveResumePosition: (val) => { localStorage.setItem('mdblist_save_resume', String(val)); set({ mdblistSaveResumePosition: val }) },
   setMdblistSyncFrequency: (freq) => { localStorage.setItem('mdblist_sync_freq', freq); set({ mdblistSyncFrequency: freq }) },
@@ -1013,6 +1050,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       mpvCustomArgs: ''
     })
   },
+
+  // Image cache settings
+  imageQuality: (localStorage.getItem('aurales_image_quality') || 'balanced') as 'data-saver' | 'balanced' | 'high',
+  imageCacheSizeMb: Number(localStorage.getItem('aurales_image_cache_size_mb') || '500'),
+  imageKeepDays: Number(localStorage.getItem('aurales_image_keep_days') || '3'),
+  setImageQuality: (q) => { localStorage.setItem('aurales_image_quality', q); set({ imageQuality: q }) },
+  setImageCacheSizeMb: (mb) => { localStorage.setItem('aurales_image_cache_size_mb', String(mb)); set({ imageCacheSizeMb: mb }) },
+  setImageKeepDays: (days) => { localStorage.setItem('aurales_image_keep_days', String(days)); set({ imageKeepDays: days }) },
 
   artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
   setArtProviders: (providers) => {

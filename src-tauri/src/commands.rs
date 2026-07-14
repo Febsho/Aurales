@@ -1030,74 +1030,85 @@ pub fn launch_mpv(
         }
     }
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("mpv.exe"));
-            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
-            candidates.push(dir.join("binaries").join("mpv.exe"));
-            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
-        }
-    }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("mpv-x86_64-pc-windows-msvc.exe"),
-    );
-
-    for candidate in candidates {
-        if candidate.exists() {
-            Command::new(&candidate)
-                .args(&args)
-                .spawn()
-                .map_err(|e| format!("Failed to launch mpv at {}: {}", candidate.display(), e))?;
-            return Ok(());
-        }
+    if let Some(mpv) = find_mpv() {
+        Command::new(&mpv)
+            .args(&args)
+            .spawn()
+            .map_err(|e| format!("Failed to launch mpv at {}: {}", mpv.display(), e))?;
+        return Ok(());
     }
 
-    Err("Failed to launch mpv: bundled mpv executable was not found next to Aurales. Reinstall with the NSIS setup exe or copy mpv.exe beside aurales-app.exe.".to_string())
+    Err("Failed to launch mpv: no mpv executable was found (bundled or on PATH). Reinstall Aurales or install mpv.".to_string())
 }
 
-fn mpv_candidates() -> Vec<PathBuf> {
+#[cfg(target_os = "windows")]
+const MPV_BINARY_NAMES: &[&str] = &["mpv.exe", "mpv-x86_64-pc-windows-msvc.exe"];
+#[cfg(target_os = "linux")]
+const MPV_BINARY_NAMES: &[&str] = &["mpv", "mpv-x86_64-unknown-linux-gnu"];
+#[cfg(target_os = "macos")]
+const MPV_BINARY_NAMES: &[&str] = &["mpv", "mpv-aarch64-apple-darwin", "mpv-x86_64-apple-darwin"];
+
+#[cfg(target_os = "windows")]
+const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp.exe", "yt-dlp-x86_64-pc-windows-msvc.exe"];
+#[cfg(target_os = "linux")]
+const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp", "yt-dlp-x86_64-unknown-linux-gnu"];
+#[cfg(target_os = "macos")]
+const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp", "yt-dlp-aarch64-apple-darwin", "yt-dlp-x86_64-apple-darwin"];
+
+fn binary_candidates(names: &[&str]) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("mpv.exe"));
-            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
-            candidates.push(dir.join("binaries").join("mpv.exe"));
-            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
+            for name in names {
+                candidates.push(dir.join(name));
+                candidates.push(dir.join("binaries").join(name));
+            }
         }
     }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("mpv-x86_64-pc-windows-msvc.exe"),
-    );
+    for name in names {
+        candidates.push(PathBuf::from("src-tauri").join("binaries").join(name));
+    }
     candidates
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn mpv_candidates() -> Vec<PathBuf> {
+    binary_candidates(MPV_BINARY_NAMES)
+}
+
 fn find_mpv() -> Option<PathBuf> {
-    mpv_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    if let Some(found) = mpv_candidates().into_iter().find(|candidate| candidate.exists()) {
+        return Some(found);
+    }
+    // Linux/macOS installs commonly rely on a system mpv rather than a bundled one.
+    #[cfg(not(target_os = "windows"))]
+    {
+        return find_in_path("mpv");
+    }
+    #[cfg(target_os = "windows")]
+    None
 }
 
 fn find_ytdlp() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("yt-dlp.exe"));
-            candidates.push(dir.join("yt-dlp-x86_64-pc-windows-msvc.exe"));
-            candidates.push(dir.join("binaries").join("yt-dlp.exe"));
-            candidates.push(dir.join("binaries").join("yt-dlp-x86_64-pc-windows-msvc.exe"));
-        }
+    if let Some(found) = binary_candidates(YTDLP_BINARY_NAMES)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+    {
+        return Some(found);
     }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("yt-dlp-x86_64-pc-windows-msvc.exe"),
-    );
-    candidates.into_iter().find(|candidate| candidate.exists())
+    #[cfg(not(target_os = "windows"))]
+    {
+        return find_in_path("yt-dlp");
+    }
+    #[cfg(target_os = "windows")]
+    None
 }
 
 // Resolves a YouTube video to direct stream URLs via the bundled yt-dlp

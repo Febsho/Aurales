@@ -1,0 +1,45 @@
+# Flatpak manifest for Aurales. CI copies the built .deb next to this file as
+# aurales.deb before running flatpak-builder (see .github/workflows/release.yml).
+# The GNOME runtime ships the WebKitGTK 4.1 the Tauri WebView needs.
+id: com.aurales.app
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: aurales
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  # Discord Rich Presence IPC socket (harmless if Discord is absent)
+  - --filesystem=xdg-run/discord-ipc-0
+modules:
+  - name: aurales
+    buildsystem: simple
+    build-commands:
+      - ar -x aurales.deb
+      - tar -xf data.tar.gz
+      - mkdir -p /app/bin && cp -a usr/bin/. /app/bin/
+      # The main binary name follows productName; create a stable launcher name.
+      - |
+        if [ ! -e /app/bin/aurales ]; then
+          for candidate in Aurales aurales-app; do
+            if [ -e "/app/bin/$candidate" ]; then ln -s "$candidate" /app/bin/aurales; break; fi
+          done
+        fi
+      - if [ -d usr/lib ]; then cp -a usr/lib /app/; fi
+      - |
+        desktop=$(ls usr/share/applications/*.desktop | head -n1)
+        install -Dm644 "$desktop" /app/share/applications/com.aurales.app.desktop
+        sed -i 's/^Icon=.*/Icon=com.aurales.app/' /app/share/applications/com.aurales.app.desktop
+      - |
+        for icon in usr/share/icons/hicolor/*/apps/*.png; do
+          [ -e "$icon" ] || continue
+          size=$(basename "$(dirname "$(dirname "$icon")")")
+          install -Dm644 "$icon" "/app/share/icons/hicolor/$size/apps/com.aurales.app.png"
+        done
+    sources:
+      - type: file
+        path: aurales.deb

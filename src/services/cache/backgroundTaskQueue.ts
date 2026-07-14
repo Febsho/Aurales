@@ -10,14 +10,20 @@ export interface BackgroundTask {
   priority: TaskPriority
   execute: () => Promise<void>
   dedupKey?: string
+  group?: 'metadata'
 }
 
 class BackgroundTaskQueue {
+  private maxConcurrent: number
+  private groupLimits: Partial<Record<NonNullable<BackgroundTask['group']>, number>>
   private queues = new Map<TaskPriority, BackgroundTask[]>(
     PRIORITY_ORDER.map((p) => [p, []])
   )
-  private running = new Map<string, { promise: Promise<void>; dedupKey?: string }>()
-  private maxConcurrent = 3
+  private running = new Map<string, { promise: Promise<void>; dedupKey?: string; group?: BackgroundTask['group'] }>()
+  constructor(maxConcurrent = 2, groupLimits: Partial<Record<NonNullable<BackgroundTask['group']>, number>> = {}) {
+    this.maxConcurrent = maxConcurrent
+    this.groupLimits = groupLimits
+  }
 
   enqueue(task: BackgroundTask): void {
     if (task.dedupKey) {
@@ -71,7 +77,16 @@ class BackgroundTaskQueue {
       const queue = this.queues.get(priority)!
       if (queue.length === 0) continue
 
-      const task = queue.shift()!
+      const runnableIndex = queue.findIndex((candidate) => {
+        if (!candidate.group) return true
+        const limit = this.groupLimits[candidate.group]
+        if (limit == null) return true
+        let runningInGroup = 0
+        for (const entry of this.running.values()) if (entry.group === candidate.group) runningInGroup += 1
+        return runningInGroup < limit
+      })
+      if (runnableIndex === -1) continue
+      const [task] = queue.splice(runnableIndex, 1)
       const t0 = performance.now()
       perfLog(`[PERF] task-start id=${task.id} priority=${task.priority}`)
 
@@ -88,11 +103,35 @@ class BackgroundTaskQueue {
           this.processNext()
         })
 
-      this.running.set(task.id, { promise, dedupKey: task.dedupKey })
+      this.running.set(task.id, { promise, dedupKey: task.dedupKey, group: task.group })
       this.processNext()
       return
     }
   }
 }
 
-export const taskQueue = new BackgroundTaskQueue()
+export const taskQueue = new BackgroundTaskQueue(3)
+export const startupTaskQueue = new BackgroundTaskQueue(2, { metadata: 1 })
+export const metadataTaskQueue = startupTaskQueue
+const scheduledPromises = new Map<string, Promise<unknown>>()
+
+export function scheduleTask<T>(
+  queue: BackgroundTaskQueue,
+  task: Omit<BackgroundTask, 'execute'> & { execute: () => Promise<T> },
+): Promise<T> {
+  const key = task.dedupKey
+  const existing = key ? scheduledPromises.get(key) as Promise<T> | undefined : undefined
+  if (existing) return existing
+  const promise = new Promise<T>((resolve, reject) => {
+    queue.enqueue({
+      ...task,
+      execute: async () => {
+        try { resolve(await task.execute()) } catch (error) { reject(error) }
+      },
+    })
+  })
+  if (!key) return promise
+  const tracked = promise.finally(() => scheduledPromises.delete(key))
+  scheduledPromises.set(key, tracked)
+  return tracked
+}

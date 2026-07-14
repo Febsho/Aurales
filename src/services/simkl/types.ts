@@ -75,6 +75,8 @@ export interface SimklWatchlistItem {
   watchedAt?: string
   watchedEpisodes?: SimklEpisode[]
   userRating?: number
+  watchedEpisodesCount?: number
+  totalEpisodesCount?: number
 }
 
 export interface SimklMapping {
@@ -120,6 +122,7 @@ export interface SimklShow {
 export interface SimklApiItem {
   movie?: SimklApiMediaItem
   show?: SimklApiMediaItem
+  tv?: SimklApiMediaItem
   anime?: SimklApiMediaItem
   last_watched_at?: string
   watched_episodes_count?: number

@@ -116,13 +116,13 @@ export async function searchSimklByTitleYear(item: MediaRef, options: { exactYea
   ))).flat()
 
   for (const r of results) {
-    const media = r.movie || r.show || r.anime
+    const media = r.movie || r.show || r.tv || r.anime
     if (!media) continue
     const yearMatchesRequest = options.exactYear
       ? exactYearMatches(media.year, item.year)
       : yearMatches(media.year, item.year)
     if (titleMatches(media.title, item.title) && yearMatchesRequest) {
-      const rType = r.movie ? 'movie' : r.show ? 'show' : 'anime'
+      const rType = r.movie ? 'movie' : (r.show || r.tv) ? 'show' : 'anime'
       return {
         simklId: media.ids.simkl || media.ids.simkl_id,
         imdbId: media.ids.imdb,

@@ -3392,7 +3392,7 @@ function AddWidgetOverlay({
                 type="button"
                 disabled={selectedShelves.length === 0}
                 onClick={() => { onBatchAdd?.(selectedShelves); setSelectedShelves([]); onClose() }}
-                className="rounded-xl bg-accent px-5 py-2.5 text-xs font-black text-black shadow-lg shadow-accent/15 transition-all hover:bg-accent/80 disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer"
+                className="rounded-xl bg-accent px-5 py-2.5 text-xs font-bold text-black shadow-lg shadow-accent/15 transition-all hover:bg-accent/80 disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer"
               >
                 Add {selectedShelves.length || ''} {selectedShelves.length === 1 ? 'Shelf' : 'Shelves'}
               </button>
@@ -3404,7 +3404,7 @@ function AddWidgetOverlay({
       <Modal open={confirmPickerExit} onClose={() => setConfirmPickerExit(false)} title="Discard selected shelves?" description="Your current catalog selections will be cleared before opening the Smart Collection builder." size="sm">
         <div className="flex justify-end gap-2.5">
           <button type="button" onClick={() => setConfirmPickerExit(false)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/55 hover:bg-white/[0.08] hover:text-white cursor-pointer">Keep Browsing</button>
-          <button type="button" onClick={() => { setSelectedShelves([]); setConfirmPickerExit(false); setPickerSource(null); setSearch(''); setMode('discover') }} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-black text-black hover:bg-accent/80 cursor-pointer">Discard and Continue</button>
+          <button type="button" onClick={() => { setSelectedShelves([]); setConfirmPickerExit(false); setPickerSource(null); setSearch(''); setMode('discover') }} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-black hover:bg-accent/80 cursor-pointer">Discard and Continue</button>
         </div>
       </Modal>
     </div>

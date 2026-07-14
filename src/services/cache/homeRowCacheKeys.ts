@@ -21,7 +21,17 @@ export function discoverRowCacheKey(row: HomeRowConfig): string {
 }
 
 export function heroRowCacheKey(row: HomeRowConfig): string {
-  return `home:hero:${row.sourceType || 'addon'}:${row.addonId || ''}:${row.catalogId || ''}:${row.providerListId || ''}`
+  return `home:hero:v2:${JSON.stringify({
+    sourceType: row.sourceType || 'addon',
+    addonId: row.addonId || '',
+    addonUrl: row.addonUrl || '',
+    catalogType: row.catalogType || '',
+    catalogId: row.catalogId || '',
+    catalogExtra: row.catalogExtra || {},
+    providerListId: row.providerListId || '',
+    discoverConfig: row.discoverConfig || null,
+    sortBy: row.sortBy || 'default',
+  })}`
 }
 
 const PROVIDER_SOURCES = ['trakt', 'pmdb', 'pmdb-picks', 'mdblist', 'anilist']

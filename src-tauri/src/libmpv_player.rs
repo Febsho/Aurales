@@ -330,25 +330,39 @@ impl Drop for LibMpvPlayer {
     }
 }
 
+#[cfg(target_os = "windows")]
+const LIBMPV_NAMES: &[&str] = &["libmpv-2.dll"];
+#[cfg(target_os = "linux")]
+const LIBMPV_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so"];
+#[cfg(target_os = "macos")]
+const LIBMPV_NAMES: &[&str] = &["libmpv.2.dylib", "libmpv.dylib"];
+
 pub(crate) fn libmpv_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("libmpv-2.dll"));
-            candidates.push(dir.join("binaries").join("libmpv-2.dll"));
-            candidates.push(dir.join("resources").join("libmpv-2.dll"));
+            for name in LIBMPV_NAMES {
+                candidates.push(dir.join(name));
+                candidates.push(dir.join("binaries").join(name));
+                candidates.push(dir.join("resources").join(name));
+            }
         }
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join("libmpv-2.dll"),
-    );
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("libmpv-2.dll"),
-    );
+    for name in LIBMPV_NAMES {
+        candidates.push(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(name),
+        );
+        candidates.push(PathBuf::from("src-tauri").join("binaries").join(name));
+    }
+    // Distro-installed libmpv lives on the loader path, not beside the app.
+    #[cfg(target_os = "linux")]
+    for name in LIBMPV_NAMES {
+        for dir in ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"] {
+            candidates.push(PathBuf::from(dir).join(name));
+        }
+    }
     candidates
 }
 

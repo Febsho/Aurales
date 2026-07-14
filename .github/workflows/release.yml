@@ -15,11 +15,20 @@ jobs:
         include:
           - platform: windows-latest
             args: ''
+          - platform: ubuntu-22.04
+            args: ''
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -38,7 +47,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Prepare bundled mpv and yt-dlp
+      - name: Prepare bundled yt-dlp (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p src-tauri/binaries
+          # Linux relies on system mpv (deb/rpm dependency, PATH fallback in the app);
+          # only yt-dlp is bundled as a sidecar.
+          curl -fsSL -o src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu \
+            https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+          chmod +x src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu
+          ls -la src-tauri/binaries
+
+      - name: Prepare bundled mpv and yt-dlp (Windows)
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
@@ -73,6 +94,7 @@ jobs:
           Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize
 
       - name: Build and release
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,3 +114,29 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      - name: Build Flatpak bundle
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
+          cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
+          flatpak-builder --user --force-clean --repo=flatpak-repo flatpak-build packaging/flatpak/com.aurales.app.yml
+          version="${GITHUB_REF_NAME#v}"
+          flatpak build-bundle flatpak-repo "Aurales_${version}_amd64.flatpak" com.aurales.app
+          ls -la *.flatpak
+
+      - name: Upload Flatpak to release
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+        run: |
+          file=$(ls Aurales_*_amd64.flatpak | head -n1)
+          curl -sf -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$file" \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${file}"

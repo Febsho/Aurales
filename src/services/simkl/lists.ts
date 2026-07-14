@@ -552,8 +552,8 @@ function toWatchlistItems(raw: any): SimklWatchlistItem[] {
   }
 
   return items.map((r) => {
-    const type: SimklMediaType = r.movie ? 'movie' : r.show ? 'show' : 'anime'
-    const media = r.movie || r.show || r.anime
+    const type: SimklMediaType = r.movie ? 'movie' : (r.show || r.tv) ? 'show' : 'anime'
+    const media = r.movie || r.show || r.tv || r.anime
     if (!media) return null
     const ids = media.ids
     if (!ids) return null
@@ -598,6 +598,8 @@ function toWatchlistItems(raw: any): SimklWatchlistItem[] {
       status: (r.status || 'plantowatch') as SimklWatchStatus,
       addedAt: undefined,
       watchedAt: r.last_watched_at,
+      watchedEpisodesCount: r.watched_episodes_count,
+      totalEpisodesCount: r.total_episodes_count,
     } satisfies SimklWatchlistItem
   }).filter(Boolean) as SimklWatchlistItem[]
 }

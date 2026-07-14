@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { scheduleTask, startupTaskQueue, taskQueue, type TaskPriority } from './backgroundTaskQueue'
 
 // [PERF] logs are dev-only — they add noise and cost in production builds
 const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
@@ -21,6 +22,9 @@ export interface CacheResult<T> {
 export interface CacheOptions {
   category: string
   ttlSeconds: number
+  revalidate?: 'expired' | 'once-per-session'
+  priority?: TaskPriority
+  queue?: 'default' | 'startup'
 }
 
 function isExpired(entry: RawCacheEntry): boolean {
@@ -39,7 +43,7 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
     const entry = await invoke<RawCacheEntry | null>('cache_entry_get', { key })
     if (!entry) return null
     const data = JSON.parse(entry.value) as T
-    const result = { data, stale: isExpired(entry) || STARTUP_REFRESH_CATEGORIES.has(entry.category), age: ageMs(entry) }
+    const result = { data, stale: isExpired(entry), age: ageMs(entry) }
     sessionCache.set(key, result)
     sessionCategories.set(key, entry.category)
     return result
@@ -148,10 +152,6 @@ export function cacheRuntimeStats() {
   }
 }
 
-const STARTUP_REFRESH_CATEGORIES = new Set([
-  'addon_catalog', 'provider_list', 'discover', 'tmdb_card', 'tvdb_card', 'artwork', 'home_row', 'detail_page',
-])
-
 export async function cachedFetch<T>(
   key: string,
   fetcher: () => Promise<T>,
@@ -161,8 +161,9 @@ export async function cachedFetch<T>(
   },
 ): Promise<T> {
   const cached = await cacheGet<T>(key)
+  const needsSessionRefresh = options.revalidate === 'once-per-session' && !refreshedThisSession.has(key)
 
-  if (cached && !cached.stale) {
+  if (cached && !cached.stale && !needsSessionRefresh) {
     perfLog(`[PERF] cache-hit category=${options.category} age=${cached.age}ms`)
     return cached.data
   }
@@ -172,7 +173,11 @@ export async function cachedFetch<T>(
 
     if (!pendingRefreshes.has(key) && !refreshedThisSession.has(key) && !(options.skipRefreshIf?.(cached.data))) {
       refreshedThisSession.add(key)
-      const refresh = (async () => {
+      const refresh = scheduleTask(options.queue === 'startup' ? startupTaskQueue : taskQueue, {
+        id: `cache-refresh:${key}`,
+        dedupKey: `cache:${key}`,
+        priority: options.priority || 'normal',
+        execute: async () => {
         const t0 = performance.now()
         try {
           const fresh = await fetcher()
@@ -188,7 +193,8 @@ export async function cachedFetch<T>(
           refreshErrors.set(key, { message: e instanceof Error ? e.message : String(e), at: Date.now() })
           perfLog(`[PERF] stale-kept-on-error category=${options.category}`, e)
         }
-      })().finally(() => pendingRefreshes.delete(key))
+        },
+      }).finally(() => pendingRefreshes.delete(key))
       pendingRefreshes.set(key, refresh)
     }
 
@@ -197,7 +203,12 @@ export async function cachedFetch<T>(
 
   const existingRequest = pendingRefreshes.get(key) as Promise<T> | undefined
   if (existingRequest) return existingRequest
-  const request = (async () => {
+  if (options.revalidate === 'once-per-session') refreshedThisSession.add(key)
+  const request = scheduleTask(options.queue === 'startup' ? startupTaskQueue : taskQueue, {
+    id: `cache-miss:${key}`,
+    dedupKey: `cache:${key}`,
+    priority: options.priority || 'normal',
+    execute: async () => {
     const t0 = performance.now()
     try {
       const fresh = await fetcher()
@@ -212,7 +223,8 @@ export async function cachedFetch<T>(
     } finally {
       pendingRefreshes.delete(key)
     }
-  })()
+    },
+  })
   pendingRefreshes.set(key, request)
   return request
 }

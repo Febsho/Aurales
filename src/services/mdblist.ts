@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getSelfhstIconUrl } from './serviceIcons'
 import type { SearchResult } from '../types'
+import { rotateProviderCredentialScope } from './cache/homeStartupSnapshot'
 
 export interface MdblistRating {
   source: string
@@ -147,7 +148,7 @@ export function getStoredMdblistTokens(): MdblistOAuthTokens | null {
   }
 }
 
-function storeMdblistTokens(data: any): MdblistOAuthTokens {
+function storeMdblistTokens(data: any, replaceAccount = false): MdblistOAuthTokens {
   const createdAt = Math.floor(Date.now() / 1000)
   const tokens: MdblistOAuthTokens = {
     accessToken: String(data.access_token || ''),
@@ -158,12 +159,14 @@ function storeMdblistTokens(data: any): MdblistOAuthTokens {
     createdAt,
   }
   if (!tokens.accessToken) throw new Error('MDBList did not return an access token')
+  if (replaceAccount || !localStorage.getItem(MDBLIST_TOKEN_KEY)) rotateProviderCredentialScope('mdblist', true)
   localStorage.setItem(MDBLIST_TOKEN_KEY, JSON.stringify(tokens))
   return tokens
 }
 
 export function clearMdblistOAuth(): void {
   localStorage.removeItem(MDBLIST_TOKEN_KEY)
+  rotateProviderCredentialScope('mdblist', Boolean(userApiKey()))
 }
 
 async function postMdblistOAuthForm(path: string, params: Record<string, string>): Promise<any> {
@@ -262,7 +265,7 @@ export async function exchangeMdblistPKCEToken(code: string, session: MdblistPKC
     client_id: clientId,
     code_verifier: session.codeVerifier,
   })
-  return storeMdblistTokens(data)
+  return storeMdblistTokens(data, true)
 }
 
 export async function waitForMdblistCallback(): Promise<string> {

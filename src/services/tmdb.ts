@@ -7,6 +7,27 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
 
+// Image Quality setting (Settings → Image Cache). Read lazily from
+// localStorage so tmdb.ts needs no store subscription; URLs already baked
+// into sqlite-cached metadata keep their old size until they expire.
+function imageQuality(): 'data-saver' | 'balanced' | 'high' {
+  try {
+    const value = localStorage.getItem('aurales_image_quality')
+    return value === 'data-saver' || value === 'high' ? value : 'balanced'
+  } catch (_) {
+    return 'balanced'
+  }
+}
+
+function posterSize(): string {
+  const quality = imageQuality()
+  return quality === 'data-saver' ? 'w342' : quality === 'high' ? 'original' : 'w780'
+}
+
+function backdropSize(): string {
+  return imageQuality() === 'data-saver' ? 'w1280' : 'original'
+}
+
 async function tmdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
   const apiKey = getTmdbApiKey()
   const url = new URL(`${BASE_URL}${path}`)
@@ -34,6 +55,33 @@ export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number
   return result ?? undefined
 }
 
+export interface TmdbRuntimeMetadata {
+  runtime?: number
+  genres: string[]
+  episodeRunTime?: number
+  seasons?: { seasonNumber: number; episodeCount: number }[]
+}
+
+// Slim details-only fetch for runtime/genre stats — avoids getMovie/getShow's
+// 5-6 endpoint fan-out when only runtime + genres are needed.
+export async function getTmdbRuntimeMetadata(mediaType: 'movie' | 'tv', tmdbId: string | number): Promise<TmdbRuntimeMetadata> {
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
+  return cachedFetch<TmdbRuntimeMetadata>(`tmdb_runtime_v1:${mediaType}:${id}`, async () => {
+    const details = await tmdbFetch(`/${mediaType}/${id}`) as Record<string, unknown>
+    const genres = ((details.genres as Record<string, unknown>[]) || []).map((g) => g.name as string)
+    if (mediaType === 'movie') {
+      const runtime = Number(details.runtime)
+      return { runtime: Number.isFinite(runtime) && runtime > 0 ? runtime : undefined, genres }
+    }
+    const runTimes = ((details.episode_run_time as number[]) || []).filter((minutes) => Number.isFinite(minutes) && minutes > 0)
+    const episodeRunTime = runTimes.length ? runTimes.reduce((sum, minutes) => sum + minutes, 0) / runTimes.length : undefined
+    const seasons = ((details.seasons as Record<string, unknown>[]) || [])
+      .filter((s) => (s.season_number as number) > 0)
+      .map((s) => ({ seasonNumber: s.season_number as number, episodeCount: (s.episode_count as number) || 0 }))
+    return { genres, episodeRunTime, seasons }
+  }, { category: CACHE_CATEGORIES.TMDB_RUNTIME, ttlSeconds: CACHE_TTLS.TMDB_RUNTIME })
+}
+
 function sortedBackdrops(images: Record<string, unknown>): Record<string, unknown>[] {
   return ((images.backdrops as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
@@ -49,15 +97,15 @@ function sortedBackdrops(images: Record<string, unknown>): Record<string, unknow
 // Vote sorting is only a fallback when the title has no primary path.
 // just whatever order TMDB returned — often a bad close-up — so fall back to
 function pickBestBackdrop(images: Record<string, unknown>, primaryPath?: string): string | undefined {
-  if (primaryPath) return `${IMG_BASE}/original${primaryPath}`
+  if (primaryPath) return `${IMG_BASE}/${backdropSize()}${primaryPath}`
   const top = sortedBackdrops(images)[0]
-  return top ? `${IMG_BASE}/original${top.file_path}` : undefined
+  return top ? `${IMG_BASE}/${backdropSize()}${top.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
   // Match TMDB's title page: its curated poster_path is the primary artwork.
   // Community vote sorting is only a fallback when no primary is assigned.
-  if (defaultPosterPath) return `${IMG_BASE}/w780${defaultPosterPath}`
+  if (defaultPosterPath) return `${IMG_BASE}/${posterSize()}${defaultPosterPath}`
   const posters = ((images.posters as Record<string, unknown>[]) || [])
     .filter((image) => typeof image.file_path === 'string')
     .sort((a, b) => {
@@ -67,7 +115,7 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
       return Number(b.vote_average || 0) - Number(a.vote_average || 0)
     })
   const selected = posters[0]
-  if (selected) return `${IMG_BASE}/w780${selected.file_path}`
+  if (selected) return `${IMG_BASE}/${posterSize()}${selected.file_path}`
   return undefined
 }
 
@@ -162,7 +210,7 @@ function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'
     type,
     year: ((item.release_date || item.first_air_date) as string)?.slice(0, 4) ? parseInt(((item.release_date || item.first_air_date) as string).slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/${backdropSize()}${item.backdrop_path}` : undefined,
     overview: item.overview as string,
     rating: item.vote_average as number,
     voteCount: item.vote_count as number | undefined,
@@ -259,7 +307,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/${backdropSize()}${details.backdrop_path}` : undefined),
       logo: primaryLogo ? `${IMG_BASE}/w300${primaryLogo.file_path as string}` : undefined,
       certification: undefined,
       cast,
@@ -330,7 +378,7 @@ export const tmdbProvider: MetadataProvider = {
       voteCount: details.vote_count as number,
       genres,
       poster: pickBestPoster(images, details.poster_path as string),
-      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/original${details.backdrop_path}` : undefined),
+      backdrop: bestBackdrop || (details.backdrop_path ? `${IMG_BASE}/${backdropSize()}${details.backdrop_path}` : undefined),
       logo: primaryLogo ? `${IMG_BASE}/w300${primaryLogo.file_path as string}` : undefined,
       certification: undefined,
       status: details.status as string,
@@ -492,7 +540,7 @@ function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | '
     type: mediaType === 'movie' ? 'movie' : 'series',
     year: date ? Number(date.slice(0, 4)) : undefined,
     poster: item.poster_path ? `${IMG_BASE}/w342${item.poster_path}` : undefined,
-    backdrop: item.backdrop_path ? `${IMG_BASE}/original${item.backdrop_path}` : undefined,
+    backdrop: item.backdrop_path ? `${IMG_BASE}/${backdropSize()}${item.backdrop_path}` : undefined,
     overview: item.overview as string | undefined,
     rating: item.vote_average as number | undefined,
     provider: 'tmdb',

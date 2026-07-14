@@ -10,6 +10,8 @@ import RatingsStrip from './RatingsStrip'
 import HeroMpvTrailer from './HeroMpvTrailer'
 import { Button } from './ui'
 import WatchlistButton from './WatchlistButton'
+import { waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
+import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
 
 interface HeroSectionProps {
   items: SearchResult[]
@@ -17,6 +19,7 @@ interface HeroSectionProps {
   fixed?: boolean
   onActiveBackdropChange?: (url: string | undefined) => void
   enableTrailers?: boolean
+  onActiveImageSettled?: () => void
 }
 
 function preloadImage(url: string): Promise<string> {
@@ -28,7 +31,7 @@ function preloadImage(url: string): Promise<string> {
   })
 }
 
-function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true }: HeroSectionProps) {
+function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true, onActiveImageSettled }: HeroSectionProps) {
   const navigate = useNavigate()
   const [activeIndex, setActiveIndex] = useState(0)
   // Keep the currently displayed slide stable.  Artwork providers resolve
@@ -62,6 +65,13 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   // True while the embedded mpv trailer renders frames — the slide's backdrop
   // must stop painting so the video shows through the transparent webview.
   const [heroMpvVisible, setHeroMpvVisible] = useState(false)
+  const [startupEnrichmentReady, setStartupEnrichmentReady] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    waitForContinueWatchingSettled().then(() => { if (!cancelled) setStartupEnrichmentReady(true) })
+    return () => { cancelled = true }
+  }, [])
 
   const goTo = useCallback(
     (i: number) => {
@@ -114,6 +124,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [providerArt, setProviderArt] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
 
   useEffect(() => {
+    if (!startupEnrichmentReady) return
     let cancelled = false
     const toFetch = items.filter((itm) => {
       const tmdbId = itm.tmdbId || (String(itm.id).startsWith('tmdb-') ? String(itm.id).replace('tmdb-', '') : undefined)
@@ -122,7 +133,13 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     toFetch.forEach((itm) => {
       const tmdbId = itm.tmdbId || String(itm.id).replace('tmdb-', '')
       const t = itm.type === 'series' ? 'series' : 'movie'
-      getTmdbLandscapeBackdrop(t, tmdbId)
+      scheduleTask(metadataTaskQueue, {
+        id: `hero-backdrop:${itm.id}`,
+        dedupKey: `hero-backdrop:${itm.id}`,
+        priority: 'low',
+        group: 'metadata',
+        execute: () => getTmdbLandscapeBackdrop(t, tmdbId),
+      })
         .then((url) => {
           if (!cancelled && url) {
             preloadImage(url)
@@ -141,18 +158,25 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         .catch(() => {})
     })
     return () => { cancelled = true }
-  }, [items])
+  }, [items, startupEnrichmentReady])
 
   useEffect(() => {
+    if (!startupEnrichmentReady) return
     let cancelled = false
     setProviderArt({})
     items.forEach((itm) => {
       const key = String(itm.id)
-      resolveArtFromProviders(
-        itm.type === 'series' ? 'series' : 'movie',
-        { tmdbId: itm.tmdbId, tvdbId: itm.tvdbId, imdbId: itm.imdbId },
-        itm.isAnime,
-      ).then(async (art) => {
+      scheduleTask(metadataTaskQueue, {
+        id: `hero-art:${key}`,
+        dedupKey: `hero-art:${key}`,
+        priority: 'idle',
+        group: 'metadata',
+        execute: () => resolveArtFromProviders(
+          itm.type === 'series' ? 'series' : 'movie',
+          { tmdbId: itm.tmdbId, tvdbId: itm.tvdbId, imdbId: itm.imdbId },
+          itm.isAnime,
+        ),
+      }).then(async (art) => {
         if (!cancelled) {
           const preloads = []
           if (art.backdrop) preloads.push(preloadImage(art.backdrop).catch(() => {}))
@@ -166,7 +190,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       }).catch(() => undefined)
     })
     return () => { cancelled = true }
-  }, [items, artProviderKey, fanartApiKey])
+  }, [items, artProviderKey, fanartApiKey, startupEnrichmentReady])
 
   const displayItems = useMemo(() => items.map((raw) => {
     const art = providerArt[String(raw.id)]
@@ -198,7 +222,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
   // Fetch top 3 cast for the active hero item
   useEffect(() => {
-    if (!item) return
+    if (!item || !startupEnrichmentReady) return
     const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
     if (!tmdbId) { setCast([]); return }
 
@@ -207,10 +231,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       .then((c) => { if (!cancelled) setCast(c) })
       .catch(() => { if (!cancelled) setCast([]) })
     return () => { cancelled = true }
-  }, [item?.id, item?.tmdbId, type])
+  }, [item?.id, item?.tmdbId, type, startupEnrichmentReady])
 
   useEffect(() => {
-    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway) {
+    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway || !startupEnrichmentReady) {
       setHeroTrailer(null)
       setHeroTrailerPlaying(false)
       return
@@ -242,10 +266,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       window.clearTimeout(timer)
       setHeroTrailerPlaying(false)
     }
-  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway])
+  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway, startupEnrichmentReady])
 
   useEffect(() => {
-    if (!enableTrailers) return
+    if (!enableTrailers || !startupEnrichmentReady) return
     if (heroTrailerDelay <= 0) return
     if (!displayItems.length) return
     displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
@@ -259,7 +283,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         language: trailerLanguage,
       })
     })
-  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage])
+  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage, startupEnrichmentReady])
 
   if (!items.length || !item) return null
 
@@ -311,7 +335,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     return (
       <>
         {displayItems.map((itm, i) => {
-          const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
+          const isAdjacentSlide = i === activeIndex || (startupEnrichmentReady && (i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count))
           if (!isAdjacentSlide) return null
           const slideItem = i === activeIndex ? presentedItem : itm
           return (
@@ -337,14 +361,18 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     loading={i === activeIndex ? 'eager' : 'lazy'}
                     decoding="async"
                     fetchPriority={i === activeIndex ? 'high' : 'auto'}
+                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
+                    onError={i === activeIndex ? onActiveImageSettled : undefined}
                   />
                 ) : slideItem.poster ? (
                   <>
                     <img
                       src={slideItem.poster}
                       alt=""
-                      className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
-                      draggable={false}
+                    className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
+                    draggable={false}
+                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
+                    onError={i === activeIndex ? onActiveImageSettled : undefined}
                     />
                     <div className="absolute inset-0 bg-black/50" />
                   </>

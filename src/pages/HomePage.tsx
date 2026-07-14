@@ -32,6 +32,8 @@ import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
+import { readHeroStartupSnapshot, stableListFingerprint, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
+import { markContinueWatchingSettled, markHeroImageSettled, waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -200,6 +202,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     let cancelled = false
     const load = async () => {
       try {
+        await waitForContinueWatchingSettled()
         const fetcher = async () => {
           const listId = row.providerListId || 'watchlist'
           const rawResults = isSimklDerivedCatalogId(listId)
@@ -216,7 +219,14 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.SIMKL_LIST,
           ttlSeconds: CACHE_TTLS.SIMKL_LIST,
-          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          queue: 'startup',
+          onStaleRefreshed: (fresh) => {
+            if (!cancelled) {
+              const changed = stableListFingerprint(fresh) !== stableListFingerprint(memCache.get(cacheKey) || [])
+              memCache.set(cacheKey, fresh)
+              if (changed) setItems(fresh)
+            }
+          },
         })
         if (!cancelled) {
           setItems(results)
@@ -296,6 +306,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
     let cancelled = false
     const load = async () => {
       try {
+        await waitForContinueWatchingSettled()
         const fetcher = async () => {
           const results = await getProviderListItems(row)
           if (row.sortBy === 'alphabetical') results.sort((a, b) => a.title.localeCompare(b.title))
@@ -304,7 +315,14 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.PROVIDER_LIST,
           ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
-          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          queue: 'startup',
+          onStaleRefreshed: (fresh) => {
+            if (!cancelled) {
+              const changed = stableListFingerprint(fresh) !== stableListFingerprint(memCache.get(cacheKey) || [])
+              memCache.set(cacheKey, fresh)
+              if (changed) setItems(fresh)
+            }
+          },
         })
         if (!cancelled) {
           setItems(results)
@@ -377,6 +395,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
     const load = async () => {
       try {
+        await waitForContinueWatchingSettled()
         const fetcher = async () => {
           const firstPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
           if (firstPage.length < 20 || row.catalogExtra?.skip) return firstPage
@@ -396,7 +415,14 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
-          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          queue: 'startup',
+          onStaleRefreshed: (fresh) => {
+            if (!cancelled) {
+              const changed = stableListFingerprint(fresh) !== stableListFingerprint(memCache.get(cacheKey) || [])
+              memCache.set(cacheKey, fresh)
+              if (changed) setItems(fresh)
+            }
+          },
         })
         if (!cancelled) {
           setItems(results)
@@ -490,6 +516,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 
     const load = async () => {
       try {
+        await waitForContinueWatchingSettled()
         const fetcher = async () => {
           const results = await discoverTmdbWithCache(row.discoverConfig!, row.id)
           const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
@@ -498,7 +525,14 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.DISCOVER,
           ttlSeconds: CACHE_TTLS.DISCOVER,
-          onStaleRefreshed: (fresh) => { if (!cancelled) { setItems(fresh); memCache.set(cacheKey, fresh) } },
+          queue: 'startup',
+          onStaleRefreshed: (fresh) => {
+            if (!cancelled) {
+              const changed = stableListFingerprint(fresh) !== stableListFingerprint(memCache.get(cacheKey) || [])
+              memCache.set(cacheKey, fresh)
+              if (changed) setItems(fresh)
+            }
+          },
         })
         if (!cancelled) {
           setItems(results)
@@ -574,7 +608,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
   const memCache = useHomeCatalogCache.getState()
   const cacheKey = heroRowCacheKey(row)
-  const cached = memCache.get(cacheKey)
+  const cached = memCache.get(cacheKey) || readHeroStartupSnapshot(row)
   const [items, setItems] = useState<SearchResult[]>(cached || [])
   const addons = useAppStore((s) => s.addons)
   const heroMode = useAppStore((s) => s.homeHeroMode)
@@ -588,7 +622,9 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
     const load = async () => {
       try {
         if (isMockCatalog && row.catalogId) {
-          setItems(getMockCatalog(row.catalogId))
+          const mockItems = getMockCatalog(row.catalogId)
+          setItems(mockItems)
+          writeHeroStartupSnapshot(row, mockItems)
           return
         }
 
@@ -619,22 +655,30 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
           return []
         }
 
+        await waitForContinueWatchingSettled()
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+          queue: 'startup',
+          revalidate: 'once-per-session',
+          priority: 'high',
           onStaleRefreshed: (fresh) => {
             if (!cancelled) {
               const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
-              setItems(sorted)
+              writeHeroStartupSnapshot(row, sorted)
+              const changed = stableListFingerprint(sorted) !== stableListFingerprint(memCache.get(cacheKey) || cached || [])
               memCache.set(cacheKey, sorted)
+              if (changed) setItems(sorted)
             }
           },
         })
 
         if (!cancelled) {
           const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
-          setItems(sorted)
+          const changed = stableListFingerprint(sorted) !== stableListFingerprint(memCache.get(cacheKey) || cached || [])
           memCache.set(cacheKey, sorted)
+          writeHeroStartupSnapshot(row, sorted)
+          if (changed) setItems(sorted)
         }
       } catch (e) {
         console.error('[HeroCatalogSection] Failed to load catalog items:', e)
@@ -682,7 +726,7 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
     if (focusedItem) heroItems = [focusedItem]
   }
   if (heroItems.length === 0) return null
-  return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} />
+  return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} />
 }
 
 // ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
@@ -902,6 +946,10 @@ export default function HomePage() {
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
 
+  useEffect(() => {
+    if (!homeRows.some((row) => row.enabled && row.layout === 'continue')) markContinueWatchingSettled()
+  }, [homeRows])
+
   const [focusedHeroItem, setFocusedHeroItem] = useState<SearchResult | null>(null)
   const [activeShelfIndex, setActiveShelfIndex] = useState(0)
   const [previousShelfIndex, setPreviousShelfIndex] = useState<number | null>(null)
@@ -1083,17 +1131,7 @@ export default function HomePage() {
 
       {heroRow && homeHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
 
-      {!cachePreloaded ? (
-        <div className="pt-6">
-          {activeRows.slice(0, INITIAL_VISIBLE).map((row) => (
-          <MediaRowSkeleton
-            key={row.id}
-            title={getRowDisplayTitle(row)}
-              layout={row.layout === 'landscape' ? 'landscape' : 'poster'}
-            />
-          ))}
-        </div>
-      ) : activeRows.length === 0 && !heroRow ? (
+      {activeRows.length === 0 && !heroRow ? (
         <EmptyState
           className="min-h-[70vh]"
           icon={<svg fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" strokeLinecap="round" /></svg>}
