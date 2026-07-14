@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useCallback, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
+<<<<<<< Updated upstream
 import { applySearchResultArt } from '../services/artwork'
+=======
+import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../services/trailers'
+import { cachedImage } from '../services/imageCache'
+import { useAppStore } from '../stores/appStore'
+>>>>>>> Stashed changes
 import RatingsStrip from './RatingsStrip'
 import { Button } from './ui'
 
@@ -61,6 +69,7 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
       className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={isSmall ? { height: '380px' } : { height: 'clamp(550px, calc(100vh - 270px), 1200px)' }}
     >
+<<<<<<< Updated upstream
       {/* Backdrop slides — only render adjacent slides for performance */}
       {displayItems.map((itm, i) => {
         const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
@@ -70,6 +79,112 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
             key={`${itm.id ?? i}-${i}`}
             className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
             style={{ opacity: i === activeIndex ? 1 : 0, pointerEvents: 'none' }}
+=======
+      {!isSmall ? (
+        <div
+          className={`absolute inset-0 pointer-events-none ${cinematic ? 'cinematic-hero-artwork' : ''}`}
+          style={{ maskImage: maskGradient, WebkitMaskImage: maskGradient }}
+        >
+          {renderBackdrops()}
+        </div>
+      ) : renderBackdrops()}
+      {renderOverlay()}
+    </div>
+  )
+
+  function renderBackdrops() {
+    return (
+      <>
+        {displayItems.map((itm, i) => {
+          const isAdjacentSlide = i === activeIndex || (startupEnrichmentReady && (i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count))
+          if (!isAdjacentSlide) return null
+          const slideItem = i === activeIndex ? presentedItem : itm
+          return (
+            <div
+              key={`${itm.id ?? i}-${i}`}
+              className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
+              style={{
+                opacity: i === activeIndex ? 1 : 0,
+                pointerEvents: 'none',
+                filter: !cinematic && scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
+                transform: !cinematic && scrollBlur > 0 ? 'scale(1.05)' : undefined,
+                transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
+              }}
+            >
+              <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
+                {(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop)) ? (
+                  <img
+                    src={cachedImage(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || slideItem.backdrop))}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ objectPosition: 'center 20%' }}
+                    draggable={false}
+                    loading={i === activeIndex ? 'eager' : 'lazy'}
+                    decoding="async"
+                    fetchPriority={i === activeIndex ? 'high' : 'auto'}
+                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
+                    onError={i === activeIndex ? onActiveImageSettled : undefined}
+                  />
+                ) : slideItem.poster ? (
+                  <>
+                    <img
+                      src={cachedImage(slideItem.poster)}
+                      alt=""
+                    className={`absolute inset-0 w-full h-full object-cover ${cinematic ? '' : 'blur-3xl scale-125'}`}
+                    draggable={false}
+                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
+                    onError={i === activeIndex ? onActiveImageSettled : undefined}
+                    />
+                    <div className="absolute inset-0 bg-black/50" />
+                  </>
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+                )}
+              </div>
+              {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (
+                <HeroMpvTrailer
+                  trailer={heroTrailer}
+                  muted={heroTrailerMuted}
+                  className="pointer-events-none absolute inset-0"
+                  onPlayingChange={setHeroMpvVisible}
+                  onEnded={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
+                  onUnavailable={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
+                />
+              )}
+            </div>
+          )
+        })}
+
+        {/* Cinematic gradients */}
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
+      </>
+    )
+  }
+
+  function renderOverlay() {
+    return (
+      <>
+        {/* Prev / Next */}
+        {enableTrailers && heroTrailerPlaying && heroTrailer && !isSmall && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setHeroTrailerMuted((value) => !value)
+            }}
+            className="absolute right-6 top-6 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white/75 shadow-xl backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white"
+            aria-label={heroTrailerMuted ? 'Unmute hero trailer' : 'Mute hero trailer'}
+            title={heroTrailerMuted ? 'Unmute trailer' : 'Mute trailer'}
+>>>>>>> Stashed changes
           >
             {itm.backdrop ? (
               <img

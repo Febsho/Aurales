@@ -675,6 +675,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+<<<<<<< Updated upstream
+=======
+  // Image cache settings
+  imageQuality: (localStorage.getItem('aurales_image_quality') || 'balanced') as 'data-saver' | 'balanced' | 'high',
+  imageCacheSizeMb: Number(localStorage.getItem('aurales_image_cache_size_mb') || '500'),
+  imageKeepDays: Number(localStorage.getItem('aurales_image_keep_days') || '3'),
+  setImageQuality: (q) => { localStorage.setItem('aurales_image_quality', q); set({ imageQuality: q }) },
+  setImageCacheSizeMb: (mb) => {
+    localStorage.setItem('aurales_image_cache_size_mb', String(mb))
+    set({ imageCacheSizeMb: mb })
+    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(mb, get().imageKeepDays))
+  },
+  setImageKeepDays: (days) => {
+    localStorage.setItem('aurales_image_keep_days', String(days))
+    set({ imageKeepDays: days })
+    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
+  },
+
+  artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
+  setArtProviders: (providers) => {
+    const normalized = normalizeArtProviderSettings(providers)
+    localStorage.setItem('aurales_art_providers', JSON.stringify(normalized))
+    invalidateCatalogData()
+    set({ artProviders: normalized })
+  },
+  customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
+    posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
+  } as CustomArtUrls,
+  setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
+>>>>>>> Stashed changes
   movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
   seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
   animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',

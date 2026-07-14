@@ -141,6 +141,30 @@ function SettingToggle({ checked, onChange }: { checked: boolean; onChange: (v: 
   )
 }
 
+function PillGroup<T extends string | number>({ options, value, onChange }: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((option) => {
+        const active = option.value === value
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
+              active
+                ? 'bg-white text-black border-white shadow-md shadow-black/20'
+                : 'bg-white/[0.04] text-white/55 border-white/[0.07] hover:bg-white/[0.08] hover:text-white'
+            }`}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function DangerButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
@@ -467,6 +491,282 @@ function AnimeIdMappingsSection() {
   )
 }
 
+<<<<<<< Updated upstream
+=======
+function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () => void }) {
+  const store = useAppStore()
+  const [cacheInUseMb, setCacheInUseMb] = useState<number | null>(null)
+  const [clearing, setClearing] = useState(false)
+  const [cleared, setCleared] = useState(false)
+
+  // Real on-disk usage from the Rust image cache (see src-tauri/src/image_cache.rs)
+  useEffect(() => {
+    let cancelled = false
+    import('../services/imageCache')
+      .then(({ imageCacheStats }) => imageCacheStats())
+      .then((stats) => {
+        if (!cancelled && stats) setCacheInUseMb(Math.round((stats.bytes / 1024 / 1024) * 10) / 10)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [clearing])
+
+  const handleClear = async () => {
+    setClearing(true)
+    setCleared(false)
+    onClearBackdropCache()
+    try {
+      const { clearImageCache } = await import('../services/imageCache')
+      await clearImageCache()
+    } catch (_) { /* browser mode has no disk cache */ }
+    setClearing(false)
+    setCleared(true)
+    setTimeout(() => setCleared(false), 2500)
+  }
+
+  // Quality option config
+  const qualityOptions: { value: 'data-saver' | 'balanced' | 'high'; label: string; desc: string }[] = [
+    { value: 'data-saver', label: 'Data Saver', desc: 'Smaller, lower-res images. Best for slow or metered connections.' },
+    { value: 'balanced', label: 'Balanced', desc: "Balanced picks the best size for this screen. Most people can't tell the difference from High. Data Saver reduces download sizes further." },
+    { value: 'high', label: 'High', desc: 'Full-resolution posters and backdrops. Uses more data and storage.' },
+  ]
+
+  // Cache size options
+  const sizeOptions: { value: number; label: string }[] = [
+    { value: 100, label: '100 MB' },
+    { value: 250, label: '250 MB' },
+    { value: 500, label: '500 MB' },
+    { value: 1000, label: '1 GB' },
+    { value: 2000, label: '2 GB' },
+  ]
+
+  // Keep duration options
+  const keepOptions: { value: number; label: string }[] = [
+    { value: 1, label: '1 Day' },
+    { value: 3, label: '3 Days' },
+    { value: 7, label: '1 Week' },
+    { value: 14, label: '2 Weeks' },
+    { value: 30, label: '1 Month' },
+  ]
+
+  const currentQuality = qualityOptions.find(o => o.value === store.imageQuality) ?? qualityOptions[1]
+  const usagePercent = cacheInUseMb == null ? 0 : Math.min(100, Math.round((cacheInUseMb / store.imageCacheSizeMb) * 100))
+
+  return (
+    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+      {/* Header with live usage badge */}
+      <div className="px-6 pt-5 pb-1 flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-[15px] font-semibold text-white">Image Cache</h3>
+          <p className="text-[13px] text-white/40 mt-0.5">Control how posters and backdrops are stored on this device.</p>
+        </div>
+        <span className="flex-shrink-0 mt-0.5 px-2.5 py-1 rounded-full bg-white/[0.06] border border-white/[0.08] text-[11px] font-semibold text-white/60 tabular-nums">
+          {cacheInUseMb == null ? '…' : `${cacheInUseMb} MB in use`}
+        </span>
+      </div>
+
+      <div className="divide-y divide-white/[0.04]">
+        {/* Image Quality */}
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[14px] text-white font-medium">Image Quality</p>
+            <PillGroup
+              options={qualityOptions.map(({ value, label }) => ({ value, label }))}
+              value={store.imageQuality}
+              onChange={(v) => store.setImageQuality(v)}
+            />
+          </div>
+          <p className="mt-2.5 text-[12px] text-white/35 leading-relaxed">{currentQuality.desc}</p>
+        </div>
+
+        {/* Disk Cache Size */}
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[14px] text-white font-medium">Disk Cache Size</p>
+            <PillGroup options={sizeOptions} value={store.imageCacheSizeMb} onChange={(v) => store.setImageCacheSizeMb(v)} />
+          </div>
+          <p className="mt-2.5 text-[12px] text-white/35 leading-relaxed">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
+        </div>
+
+        {/* Keep Images For */}
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[14px] text-white font-medium">Keep Images For</p>
+            <PillGroup options={keepOptions} value={store.imageKeepDays} onChange={(v) => store.setImageKeepDays(v)} />
+          </div>
+          <p className="mt-2.5 text-[12px] text-white/35 leading-relaxed">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
+        </div>
+
+        {/* Usage meter + Clear */}
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between gap-4 mb-2">
+            <p className="text-[14px] text-white font-medium">Storage Used</p>
+            <span className="text-[13px] text-white/50 font-semibold tabular-nums">
+              {cacheInUseMb == null ? '—' : `${cacheInUseMb} MB of ${store.imageCacheSizeMb >= 1000 ? `${store.imageCacheSizeMb / 1000} GB` : `${store.imageCacheSizeMb} MB`}`}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${usagePercent > 90 ? 'bg-red-400' : 'bg-accent'}`}
+              style={{ width: `${Math.max(usagePercent, cacheInUseMb ? 2 : 0)}%` }}
+            />
+          </div>
+          <div className="mt-3.5 flex items-center justify-between gap-4">
+            <p className="text-[12px] text-white/35 leading-relaxed">Images re-download as needed after clearing.</p>
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className={`flex-shrink-0 px-4 py-2 rounded-xl text-[13px] font-semibold transition-colors disabled:opacity-50 cursor-pointer ${
+                cleared ? 'bg-green-500/10 text-green-300' : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+              }`}
+            >
+              {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : 'Clear Image Cache'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select
+      value={value === 'default' ? 'tmdb' : value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+    >
+      <option value="tmdb">TMDb</option>
+      <option value="tvdb">TVDb</option>
+      <option value="fanart">Fanart.tv</option>
+    </select>
+  )
+}
+
+function ArtworkSettingsSection() {
+  const artProviders = useAppStore((s) => s.artProviders)
+  const setArtProviders = useAppStore((s) => s.setArtProviders)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const setCustomArtUrls = useAppStore((s) => s.setCustomArtUrls)
+  const btttrPosterUrl = 'https://btttr.cc/poster/auto/{imdb_id}/auto.png'
+
+  const updateProvider = (key: string, value: string) => {
+    setArtProviders({ ...artProviders, [key]: value })
+  }
+
+  const updateCustomUrl = (key: string, value: string) => {
+    setCustomArtUrls({ ...customArtUrls, [key]: value })
+  }
+
+  const sections = [
+    { title: 'Movies', color: 'text-amber-400/80', prefix: 'movie' },
+    { title: 'Series', color: 'text-blue-400/80', prefix: 'series' },
+    { title: 'Anime', color: 'text-pink-400/80', prefix: 'anime' },
+  ] as const
+
+  return (
+    <>
+      {sections.map(({ title, color, prefix }) => (
+        <div key={prefix}>
+          <h3 className={`text-sm font-bold ${color} ${prefix !== 'movie' ? 'mt-8' : ''} mb-3`}>{title}</h3>
+          <SettingSection>
+            <SettingRow label="Poster provider" description={`Source for ${title.toLowerCase()} poster artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Poster`]}
+                onChange={(v) => updateProvider(`${prefix}Poster`, v)}
+              />
+            </SettingRow>
+            <SettingRow label="Background provider" description={`Source for ${title.toLowerCase()} backdrop/background artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Backdrop`]}
+                onChange={(v) => updateProvider(`${prefix}Backdrop`, v)}
+              />
+            </SettingRow>
+            <SettingRow label="Logo provider" description={`Source for ${title.toLowerCase()} title logo artwork.`}>
+              <ArtProviderSelect
+                value={(artProviders as any)[`${prefix}Logo`]}
+                onChange={(v) => updateProvider(`${prefix}Logo`, v)}
+              />
+            </SettingRow>
+          </SettingSection>
+        </div>
+      ))}
+
+      <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Custom Art URL Overrides</h3>
+      <SettingSection description="Custom URL patterns replace the default artwork everywhere. Use placeholders: {imdb_id}, {tmdb_id}, {tvdb_id}, {mal_id}, {anilist_id}, {type}, {season}, {episode}">
+        <SettingRow label="Poster URL pattern" description="e.g. https://example.com/poster/{imdb_id}.jpg">
+          <div className="flex items-center gap-2">
+            <select
+              value={customArtUrls.posterUrl === btttrPosterUrl ? btttrPosterUrl : customArtUrls.posterUrl ? 'custom' : ''}
+              onChange={(e) => {
+                if (e.target.value === 'custom') updateCustomUrl('posterUrl', 'https://example.com/poster/{imdb_id}.jpg')
+                else updateCustomUrl('posterUrl', e.target.value)
+              }}
+              className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+            >
+              <option value="">None</option>
+              <option value={btttrPosterUrl}>btttr.cc</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input
+              type="text"
+              value={customArtUrls.posterUrl}
+              onChange={(e) => updateCustomUrl('posterUrl', e.target.value)}
+              placeholder="Leave empty to use provider"
+              className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+            />
+          </div>
+        </SettingRow>
+        <SettingRow label="Background URL pattern" description="e.g. https://example.com/backdrop/{tmdb_id}.jpg">
+          <input
+            type="text"
+            value={customArtUrls.backdropUrl}
+            onChange={(e) => updateCustomUrl('backdropUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+        <SettingRow label="Logo URL pattern" description="e.g. https://example.com/logo/{tmdb_id}.png">
+          <input
+            type="text"
+            value={customArtUrls.logoUrl}
+            onChange={(e) => updateCustomUrl('logoUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+        <SettingRow label="Episode thumbnail URL pattern" description="e.g. https://example.com/ep/{tmdb_id}/S{season}E{episode}.jpg">
+          <input
+            type="text"
+            value={customArtUrls.episodeThumbnailUrl}
+            onChange={(e) => updateCustomUrl('episodeThumbnailUrl', e.target.value)}
+            placeholder="Leave empty to use provider"
+            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+          />
+        </SettingRow>
+      </SettingSection>
+
+      <div className="mt-4 px-1">
+        <p className="text-xs text-white/30">Custom URL patterns take priority over all providers. If a pattern is set and resolves successfully (all placeholders filled, valid URL), it replaces the default art everywhere — home, discover, detail pages, and cards.</p>
+        <div className="mt-3 bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+          <p className="text-xs font-semibold text-white/50 mb-2">Available placeholders</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-white/40">
+            <span><code className="text-accent/70">{'{imdb_id}'}</code> — IMDb ID (tt1234567)</span>
+            <span><code className="text-accent/70">{'{tmdb_id}'}</code> — TMDb numeric ID</span>
+            <span><code className="text-accent/70">{'{tvdb_id}'}</code> — TVDb numeric ID</span>
+            <span><code className="text-accent/70">{'{mal_id}'}</code> — MyAnimeList ID</span>
+            <span><code className="text-accent/70">{'{anilist_id}'}</code> — AniList ID</span>
+            <span><code className="text-accent/70">{'{type}'}</code> — movie or series</span>
+            <span><code className="text-accent/70">{'{season}'}</code> — Season number</span>
+            <span><code className="text-accent/70">{'{episode}'}</code> — Episode number</span>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+>>>>>>> Stashed changes
 function SearchSettingsSection() {
   const movieSearchEngine = useAppStore((s) => s.movieSearchEngine)
   const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine)
@@ -556,9 +856,38 @@ function SearchSettingsSection() {
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
+<<<<<<< Updated upstream
   const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'subtitles' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
   const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
   const [filterSearch, setFilterSearch] = useState('')
+=======
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery'>('accounts')
+  
+  const prefs = useDiscoverPrefsStore((s) => s.prefs)
+  const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
+  const [localPrefs, setLocalPrefs] = useState<DiscoverPrefs>(prefs)
+
+  useEffect(() => {
+    setLocalPrefs(prefs)
+  }, [prefs])
+
+  const handlePrefsChange = (patch: Partial<DiscoverPrefs>) => {
+    setLocalPrefs((prev) => ({ ...prev, ...patch }))
+  }
+
+  const handleReset = () => {
+    setLocalPrefs(DEFAULT_DISCOVER_PREFS)
+  }
+
+  const handleCancel = () => {
+    setLocalPrefs(prefs)
+  }
+
+  const handleSave = () => {
+    setPrefs(localPrefs)
+  }
+  const prefsDirty = JSON.stringify(localPrefs) !== JSON.stringify(prefs)
+>>>>>>> Stashed changes
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
@@ -3233,6 +3562,121 @@ export default function SettingsPage() {
           )}
 
           {/* ═══════════════════════════════════════════════
+<<<<<<< Updated upstream
+=======
+              DISCOVERY TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'discovery' && (
+            <div className="space-y-6">
+              {/* Discovery Preferences */}
+              <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
+                <SettingRow label="Region">
+                  <select
+                    value={store.discoveryRegion}
+                    onChange={(e) => store.setDiscoveryRegion(e.target.value)}
+                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    {[
+                      { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' }, { code: 'CA', name: 'Canada' },
+                      { code: 'AU', name: 'Australia' }, { code: 'NZ', name: 'New Zealand' },
+                      { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' }, { code: 'ES', name: 'Spain' },
+                      { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' }, { code: 'BE', name: 'Belgium' },
+                      { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' }, { code: 'DK', name: 'Denmark' },
+                      { code: 'FI', name: 'Finland' }, { code: 'PT', name: 'Portugal' }, { code: 'PL', name: 'Poland' },
+                      { code: 'AT', name: 'Austria' }, { code: 'CH', name: 'Switzerland' },
+                      { code: 'JP', name: 'Japan' }, { code: 'KR', name: 'South Korea' }, { code: 'IN', name: 'India' },
+                      { code: 'BR', name: 'Brazil' }, { code: 'MX', name: 'Mexico' }, { code: 'AR', name: 'Argentina' },
+                      { code: 'ZA', name: 'South Africa' }, { code: 'TR', name: 'Turkey' }, { code: 'RU', name: 'Russia' },
+                      { code: 'PH', name: 'Philippines' }, { code: 'TH', name: 'Thailand' },
+                    ].map((region) => (
+                      <option key={region.code} value={region.code}>{region.name}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow label="Minimum rating" description="Hide titles rated below this on discovery rails.">
+                  <PillGroup
+                    options={[0, 5, 6, 7, 8].map((rating) => ({ value: rating, label: rating === 0 ? 'Any' : `${rating}+` }))}
+                    value={store.discoveryMinRating}
+                    onChange={(v) => store.setDiscoveryMinRating(v)}
+                  />
+                </SettingRow>
+                <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
+                  <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
+                </SettingRow>
+              </SettingSection>
+
+              {/* AUDIENCE PRESET MODES */}
+              <SettingSection title="Audience" description="Configure default age suitability rules and content filters.">
+                <div className="px-6 py-5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {AUDIENCE_OPTIONS.map(({ mode: m, title, subtitle }) => {
+                      const active = localPrefs.audienceMode === m
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => handlePrefsChange({ audienceMode: m })}
+                          className={`relative flex flex-col items-start p-4 rounded-xl text-left transition-all border cursor-pointer ${
+                            active
+                              ? 'bg-accent/[0.12] border-accent/60 shadow-lg shadow-accent/5'
+                              : 'bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06] hover:border-white/10'
+                          }`}
+                        >
+                          {active && (
+                            <span className="absolute top-3 right-3 grid h-5 w-5 place-items-center rounded-full bg-accent text-black">
+                              <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                            </span>
+                          )}
+                          <span className={`text-sm font-bold ${active ? 'text-white' : 'text-white/85'}`}>{title}</span>
+                          <span className={`text-xs mt-1 leading-relaxed ${active ? 'text-white/60' : 'text-white/35'}`}>{subtitle}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* ADVANCED WEIGHTS & FILTERS */}
+              <SettingSection title="Advanced Weights & Filters" description="Fine-tune scoring weights, languages, year ranges, keywords, and sorting.">
+                <div className="px-6 py-6">
+                  <DiscoverPrefsPanel
+                    localPrefs={localPrefs}
+                    onChange={handlePrefsChange}
+                    onReset={handleReset}
+                  />
+                </div>
+              </SettingSection>
+              
+              {/* FLOATING SAVE BAR — appears only with unsaved changes */}
+              {prefsDirty && (
+                <div className="sticky bottom-4 z-20 flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-black/80 backdrop-blur-xl px-5 py-3 shadow-2xl shadow-black/60">
+                  <span className="flex items-center gap-2 text-xs font-medium text-white/60">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+                    Unsaved changes
+                  </span>
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleCancel}
+                      className="px-4 py-2 rounded-full text-xs font-semibold text-white/60 hover:text-white hover:bg-white/[0.06] transition-all cursor-pointer"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSave}
+                      className="px-5 py-2 rounded-full text-xs font-bold bg-white text-black hover:bg-white/90 active:scale-[0.97] transition-all cursor-pointer shadow-lg shadow-black/30"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ═══════════════════════════════════════════════
+>>>>>>> Stashed changes
               ADVANCED TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'advanced' && (

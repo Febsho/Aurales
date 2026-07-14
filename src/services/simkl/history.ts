@@ -221,7 +221,11 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
 }
 
 function extractWatchedEpisodes(raw: any) {
+<<<<<<< Updated upstream
   const seasons = Array.isArray(raw?.seasons) ? raw.seasons : []
+=======
+  const seasons = Array.isArray(raw.seasons) ? raw.seasons : []
+>>>>>>> Stashed changes
   const episodes: { season: number; episode: number; watchedAt?: string }[] = []
   for (const season of seasons) {
     const seasonNumber = Number(season.number ?? season.season)

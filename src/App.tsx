@@ -58,6 +58,11 @@ export default function App() {
   }, [discordRichPresence])
 
   useEffect(() => {
+    const { imageCacheSizeMb, imageKeepDays } = useAppStore.getState()
+    void import('./services/imageCache').then(({ configureImageCache }) => configureImageCache(imageCacheSizeMb, imageKeepDays))
+  }, [])
+
+  useEffect(() => {
     document.documentElement.setAttribute('data-theme-accent', accentColor)
   }, [accentColor])
 

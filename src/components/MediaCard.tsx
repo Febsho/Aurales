@@ -3,6 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applySearchResultArt } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
+<<<<<<< Updated upstream
+=======
+import { getTrailerSource, type TrailerSource } from '../services/trailers'
+import { cachedImage } from '../services/imageCache'
+>>>>>>> Stashed changes
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
@@ -191,6 +196,134 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
     })
   }
 
+<<<<<<< Updated upstream
+=======
+  const revealExpandedCard = useCallback(() => {
+    const card = cardRef.current
+    if (!card || !cinematicMode || !cinematicExpand) return
+    window.setTimeout(() => {
+      const row = card.closest<HTMLElement>('.cinematic-row-track')
+      if (!row) return
+      const cardRect = card.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const inset = 24
+      if (cardRect.right > rowRect.right - inset) {
+        row.scrollBy({ left: cardRect.right - rowRect.right + inset, behavior: 'smooth' })
+      } else if (cardRect.left < rowRect.left + inset) {
+        row.scrollBy({ left: cardRect.left - rowRect.left - inset, behavior: 'smooth' })
+      }
+    }, 380)
+  }, [cinematicMode, cinematicExpand])
+
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!query) return
+    const sync = () => setReducedMotion(query.matches)
+    sync()
+    query.addEventListener?.('change', sync)
+    return () => query.removeEventListener?.('change', sync)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+      if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
+      hoverRequestRef.current += 1
+    }
+  }, [])
+
+  const closeHoverPreview = useCallback(() => {
+    if (hoverTimerRef.current) {
+      window.clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+    hoverRequestRef.current += 1
+    if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
+    setSnapCollapse(true)
+    setSuppressPosterHover(true)
+    setHoverTrailer(null)
+    setHoverPreviewOpen(false)
+    collapseResetRef.current = window.requestAnimationFrame(() => {
+      setSnapCollapse(false)
+      collapseResetRef.current = null
+    })
+  }, [])
+
+  const openHoverPreview = useCallback(() => {
+    setSuppressPosterHover(false)
+    if (cinematicMode && !cinematicExpand) return
+    if (disableTrailerPreview || (layout !== 'poster' && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
+    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+
+    hoverTimerRef.current = window.setTimeout(() => {
+      const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
+      const requestId = hoverRequestRef.current + 1
+      hoverRequestRef.current = requestId
+
+      getTrailerSource({
+        type: displayItem.type,
+        tmdbId,
+        title: displayItem.title,
+        year: displayItem.year,
+        language: trailerLanguage,
+      }).then((trailer) => {
+        if (hoverRequestRef.current !== requestId || !trailer) return
+        setHoverTrailer(trailer)
+        setHoverPreviewOpen(true)
+      }).catch(() => undefined)
+    }, posterTrailerHoverDelayMs)
+  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+
+  if (cinematicMode) {
+    const cinematicGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+      || resolvedGenre
+    const focusMedia = landscapeBackdrop || posterUrl
+    const expanded = cinematicFocused && cinematicExpand
+    return (
+      <button
+        ref={cardRef}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onFocus={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onBlur={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        onMouseEnter={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onMouseLeave={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
+      >
+        <div className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border bg-surface-elevated transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
+          {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
+          {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
+          {expanded && hoverPreviewOpen && hoverTrailer && <TrailerPreview trailer={hoverTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} placeholderUrl={focusMedia} className="absolute inset-0 z-[5]" />}
+          {!posterUrl && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
+          <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
+          {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
+            {logoUrl ? <img src={cachedImage(logoUrl)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
+          </div>}
+          {!isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
+        </div>
+        <div className={`absolute left-0 top-full grid w-full transition-[grid-template-rows,opacity] duration-300 ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+          <div className="overflow-hidden">
+            <div className="px-2 pt-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
+                {cinematicGenre && <span>{cinematicGenre}</span>}
+                {cinematicGenre && displayItem.year && <span className="text-white/30">•</span>}
+                {displayItem.year && <span>{displayItem.year}</span>}
+                {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
+                {getDisplayProvider(displayItem) && <><span className="text-white/30">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+              </div>
+              {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
+            </div>
+          </div>
+        </div>
+      </button>
+    )
+  }
+
+>>>>>>> Stashed changes
   if (layout === 'landscape') {
     return (
       <button
@@ -246,9 +379,19 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
 
           {/* Media Info Overlay */}
           <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1">
+<<<<<<< Updated upstream
             <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
               {displayItem.title}
             </h3>
+=======
+            {cinematicLandscapeExpanded && logoUrl ? (
+              <img src={cachedImage(logoUrl)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" />
+            ) : (
+              <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+                {displayItem.title}
+              </h3>
+            )}
+>>>>>>> Stashed changes
             <div className="flex items-center gap-2">
               {displayItem.year && (
                 <span className="text-xs text-gray-300 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
