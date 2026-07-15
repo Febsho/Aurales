@@ -333,7 +333,7 @@ impl Drop for LibMpvPlayer {
 #[cfg(target_os = "windows")]
 const LIBMPV_NAMES: &[&str] = &["libmpv-2.dll"];
 #[cfg(target_os = "linux")]
-const LIBMPV_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so"];
+const LIBMPV_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so.1", "libmpv.so"];
 #[cfg(target_os = "macos")]
 const LIBMPV_NAMES: &[&str] = &["libmpv.2.dylib", "libmpv.dylib"];
 
@@ -776,4 +776,194 @@ pub(crate) fn destroy_video_child(video_hwnd: isize) {
             let _ = DestroyWindow(HWND(video_hwnd as *mut _));
         }
     }
+}
+
+// Linux uses the same layout as the Windows native player: a native mpv
+// surface sits below the transparent WebKitGTK view while React renders the
+// controls above it. X11 child windows make that possible without duplicating
+// the player UI. Wayland does not expose embeddable window IDs, so the app is
+// started through X11/XWayland when DISPLAY is available.
+#[cfg(target_os = "linux")]
+mod linux_x11 {
+    use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
+    use std::ptr;
+    use std::sync::{Mutex, OnceLock};
+
+    type Display = c_void;
+    type Window = c_ulong;
+
+    #[link(name = "X11")]
+    extern "C" {
+        fn XInitThreads() -> c_int;
+        fn XOpenDisplay(name: *const c_char) -> *mut Display;
+        fn XCloseDisplay(display: *mut Display) -> c_int;
+        fn XCreateSimpleWindow(
+            display: *mut Display,
+            parent: Window,
+            x: c_int,
+            y: c_int,
+            width: c_uint,
+            height: c_uint,
+            border_width: c_uint,
+            border: c_ulong,
+            background: c_ulong,
+        ) -> Window;
+        fn XMapWindow(display: *mut Display, window: Window) -> c_int;
+        fn XLowerWindow(display: *mut Display, window: Window) -> c_int;
+        fn XMoveResizeWindow(
+            display: *mut Display,
+            window: Window,
+            x: c_int,
+            y: c_int,
+            width: c_uint,
+            height: c_uint,
+        ) -> c_int;
+        fn XDestroyWindow(display: *mut Display, window: Window) -> c_int;
+        fn XFlush(display: *mut Display) -> c_int;
+    }
+
+    fn display_slot() -> &'static Mutex<usize> {
+        static DISPLAY: OnceLock<Mutex<usize>> = OnceLock::new();
+        DISPLAY.get_or_init(|| Mutex::new(0))
+    }
+
+    pub(crate) fn initialize() {
+        // Must run before GTK initializes Xlib. This lets resize/stop commands
+        // safely use the dedicated display connection from Tauri command
+        // threads.
+        unsafe {
+            XInitThreads();
+        }
+    }
+
+    pub(crate) fn create(
+        parent: isize,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<isize, String> {
+        if parent == 0 {
+            return Err("Cannot create mpv video surface: X11 parent window is missing".into());
+        }
+
+        let mut slot = display_slot().lock().map_err(|e| e.to_string())?;
+        if *slot != 0 {
+            unsafe {
+                XCloseDisplay(*slot as *mut Display);
+            }
+            *slot = 0;
+        }
+
+        let display = unsafe { XOpenDisplay(ptr::null()) };
+        if display.is_null() {
+            return Err(
+                "Embedded mpv requires X11/XWayland, but no X11 display is available.".into(),
+            );
+        }
+
+        let window = unsafe {
+            XCreateSimpleWindow(
+                display,
+                parent as Window,
+                x,
+                y,
+                width.max(1) as c_uint,
+                height.max(1) as c_uint,
+                0,
+                0,
+                0,
+            )
+        };
+        if window == 0 {
+            unsafe {
+                XCloseDisplay(display);
+            }
+            return Err("Failed to create the Linux mpv X11 surface.".into());
+        }
+
+        unsafe {
+            XMapWindow(display, window);
+            // Keep WebKitGTK above the video surface so the existing React
+            // controls remain fully interactive and visually identical.
+            XLowerWindow(display, window);
+            XFlush(display);
+        }
+        *slot = display as usize;
+        Ok(window as isize)
+    }
+
+    pub(crate) fn resize(window: isize, x: i32, y: i32, width: i32, height: i32) {
+        if window == 0 {
+            return;
+        }
+        let Ok(slot) = display_slot().lock() else {
+            return;
+        };
+        if *slot == 0 {
+            return;
+        }
+        unsafe {
+            XMoveResizeWindow(
+                *slot as *mut Display,
+                window as Window,
+                x,
+                y,
+                width.max(1) as c_uint,
+                height.max(1) as c_uint,
+            );
+            XLowerWindow(*slot as *mut Display, window as Window);
+            XFlush(*slot as *mut Display);
+        }
+    }
+
+    pub(crate) fn destroy(window: isize) {
+        let Ok(mut slot) = display_slot().lock() else {
+            return;
+        };
+        if *slot == 0 {
+            return;
+        }
+        unsafe {
+            if window != 0 {
+                XDestroyWindow(*slot as *mut Display, window as Window);
+                XFlush(*slot as *mut Display);
+            }
+            XCloseDisplay(*slot as *mut Display);
+        }
+        *slot = 0;
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn initialize_linux_x11() {
+    linux_x11::initialize();
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn create_video_child(
+    parent_window: isize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<isize, String> {
+    linux_x11::create(parent_window, x, y, width, height)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn resize_video_child(
+    _parent_window: isize,
+    video_window: isize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    linux_x11::resize(video_window, x, y, width, height);
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn destroy_video_child(video_window: isize) {
+    linux_x11::destroy(video_window);
 }

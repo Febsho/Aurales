@@ -10,6 +10,17 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        // X11/XWayland provides an embeddable native surface for libmpv. Keep
+        // native Wayland only on systems without DISPLAY, where this embedded
+        // surface backend is unavailable.
+        if std::env::var_os("DISPLAY").is_some() {
+            std::env::set_var("GDK_BACKEND", "x11");
+            libmpv_player::initialize_linux_x11();
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin({

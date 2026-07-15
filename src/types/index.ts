@@ -23,6 +23,8 @@ export interface SearchResult {
   addonUrl?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  /** Full addon metadata when a catalog already supplied episode structure. */
+  addonMeta?: Record<string, unknown>
   metadataFallback?: boolean
   genreIds?: number[]
   genres?: string[]

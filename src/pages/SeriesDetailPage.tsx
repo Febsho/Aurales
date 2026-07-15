@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
-import { tmdbProvider } from '../services/tmdb'
+import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 import { tvdbProvider } from '../services/tvdb'
 import { getAddonMeta, getMetaAddons } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
@@ -13,7 +13,7 @@ import StreamSelector from '../components/StreamSelector'
 import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import DetailHero from '../components/media/DetailHero'
-import { cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
+import { cacheGet, cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import DetailContentShell from '../components/media/DetailContentShell'
 import DetailLoadingState from '../components/media/DetailLoadingState'
@@ -86,6 +86,7 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  addonMeta?: Record<string, unknown>
   autoPlay?: boolean
 }
 
@@ -96,6 +97,42 @@ interface SeriesDetailCacheEntry {
   metadataStatus: 'resolved' | 'fallback' | 'error'
 }
 const seriesDetailMemCache = new Map<string, { entry: SeriesDetailCacheEntry; timestamp: number }>()
+const providerShowPending = new Map<string, Promise<ShowDetails>>()
+
+function preservePresentedArtwork(next: ShowDetails, current?: ShowDetails | null): ShowDetails {
+  if (!current) return next
+  return {
+    ...next,
+    poster: current.poster || next.poster,
+    backdrop: current.backdrop || next.backdrop,
+    logo: current.logo || next.logo,
+  }
+}
+
+async function cachedProviderShow(provider: 'tmdb' | 'tvdb', id: string): Promise<ShowDetails> {
+  const cleanProviderId = id.replace(/^(tmdb|tvdb)[-:]/i, '')
+  const key = `detail:series-provider:v1:${provider}:${cleanProviderId}`
+  const cached = await cacheGet<ShowDetails>(key)
+  if (cached?.data) return cached.data
+
+  const existing = providerShowPending.get(key)
+  if (existing) return existing
+
+  const request = (provider === 'tmdb'
+    ? tmdbProvider.getShow(`tmdb-${cleanProviderId}`)
+    : tvdbProvider.getShow(`tvdb-${cleanProviderId}`))
+    .then((show) => {
+      void cacheSet(key, show, {
+        category: CACHE_CATEGORIES.DETAIL_PAGE,
+        ttlSeconds: CACHE_TTLS.TVDB_SEASON,
+      })
+      return show
+    })
+    .finally(() => providerShowPending.delete(key))
+
+  providerShowPending.set(key, request)
+  return request
+}
 
 function animeStructureSettingsKey(): string {
   const settings = useAppStore.getState()
@@ -112,7 +149,7 @@ function animeStructureSettingsKey(): string {
 function artworkSettingsKey(): string {
   const settings = useAppStore.getState()
   return JSON.stringify({
-    artworkResolutionVersion: 2,
+    managed: settings.appManagedMetadata,
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
@@ -179,7 +216,7 @@ function writeSeriesDetailCache(id: string | undefined, state: LocationState, en
       cleanShowMal != null ? `mal:${cleanShowMal}` : undefined,
     ].filter((key): key is string => !!key).map((key) => `${settingsKey}:${key}`),
   ])
-  const opts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+  const opts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.TVDB_SEASON }
   for (const key of keys) {
     seriesDetailMemCache.set(`detail:series:${key}`, { entry, timestamp: Date.now() })
     void cacheSet(`detail:series:${key}`, entry, opts)
@@ -300,11 +337,7 @@ function getMetaId(meta: Record<string, unknown>, ...keys: string[]): string | n
   return undefined
 }
 
-function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number, isAnime?: boolean): SeasonDetails {
-  if (isAnime) {
-    console.warn("Blocked Stremio addon episode metadata for anime display");
-    return { seasonNumber: seasonNum, name: `Season ${seasonNum}`, episodes: [] }
-  }
+function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number): SeasonDetails {
   const videos = Array.isArray(meta.videos) ? meta.videos as Record<string, unknown>[] : []
   const seasonEps = videos
     .filter(v => Number(v.season) === seasonNum)
@@ -404,6 +437,8 @@ export default function SeriesDetailPage() {
   const navigate = useNavigate()
   const state = (location.state || {}) as LocationState
   const [show, setShow] = useState<ShowDetails | null>(null)
+  const showRef = useRef<ShowDetails | null>(null)
+  showRef.current = show
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_POPULAR_SHOWS)
   const [addonMeta, setAddonMeta] = useState<Record<string, unknown> | null>(null)
@@ -722,7 +757,6 @@ export default function SeriesDetailPage() {
   const animeTitleLanguage = useAppStore((s) => s.animeTitleLanguage)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const artSettingsSignature = useMemo(() => JSON.stringify({
-    artworkResolutionVersion: 2,
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
@@ -752,20 +786,10 @@ export default function SeriesDetailPage() {
     let cancelled = false
 
     async function load() {
-      const cached = await readSeriesDetailCache(id, state)
-      if (cached && cached.show.seasons.length > 0) {
-        setAddonMeta(null)
-        setSeasonCache({})
-        setMalRating(null)
-        fetchedSeasonRef.current = null
-        setShow(cached.show)
-        setSelectedSeason(cached.selectedSeason)
-        tvdbMappedEpisodesRef.current = cached.episodeMap
-        setMetadataStatus(cached.metadataStatus)
-        setLoading(false)
-        return
-      }
-
+      // Mount the actual detail shell from navigation data before any SQLite,
+      // ID-resolution, addon, TVDB, or season-mapping work. Those requests can
+      // take several seconds for anime; they should fill the page progressively
+      // instead of holding artwork and structure behind a loading screen.
       setLoading(true)
       setMetadataStatus('resolving')
       setAddonMeta(null)
@@ -774,6 +798,139 @@ export default function SeriesDetailPage() {
       setMalRating(null)
       fetchedSeasonRef.current = null
       tvdbMappedEpisodesRef.current = {}
+      const appManagedMetadata = useAppStore.getState().appManagedMetadata
+
+      const immediateShow: ShowDetails | null = state.title ? applyShowArt(applyInitialArtworkPreference({
+        id: id || 'unknown',
+        title: state.title,
+        year: state.year,
+        overview: state.overview,
+        rating: state.rating,
+        poster: state.poster,
+        backdrop: state.backdrop,
+        logo: state.logo,
+        imdbId: cleanId(state.imdbId),
+        tmdbId: cleanId(state.tmdbId),
+        tvdbId: cleanId(state.tvdbId),
+        malId: cleanId(state.malId),
+        anilistId: cleanId(state.anilistId),
+        isAnime: routeIsAnime,
+        genres: [],
+        seasons: [],
+        cast: [],
+        crew: [],
+        recommendations: [],
+        trailers: [],
+      }, 'series', routeIsAnime)) : null
+      showRef.current = immediateShow
+      setShow(immediateShow)
+
+      const cached = await readSeriesDetailCache(id, state)
+      if (cached) {
+        showRef.current = cached.show
+        setShow(cached.show)
+        setSelectedSeason(cached.selectedSeason)
+        tvdbMappedEpisodesRef.current = cached.episodeMap
+        setMetadataStatus(cached.metadataStatus)
+        setLoading(false)
+        if (cached.show.seasons.length > 0) return
+      }
+
+      // Artwork resolution is independent of episode structure. Start it as
+      // soon as route IDs are available so TMDB backdrops/logos can replace the
+      // navigation snapshot while anime mapping continues in the background.
+      const routeTmdbId = cleanId(state.tmdbId)?.replace(/^(?:tmdb[-:]|app_tmdb_tv_)/i, '')
+        || cleanId(cached?.show.tmdbId)?.replace(/^(?:tmdb[-:]|app_tmdb_tv_)/i, '')
+        || (id?.match(/^(?:tmdb[-:]|app_tmdb_tv_)(.+)$/i)?.[1])
+      const routeTvdbId = cleanId(state.tvdbId)?.replace(/^(?:tvdb[-:]|app_tvdb_)/i, '')
+        || cleanId(cached?.show.tvdbId)?.replace(/^(?:tvdb[-:]|app_tvdb_)/i, '')
+        || (id?.match(/^(?:tvdb[-:]|app_tvdb_)(.+)$/i)?.[1])
+      const routeImdbId = cleanId(state.imdbId)
+        || cleanId(cached?.show.imdbId)
+        || (id?.startsWith('tt') ? id : undefined)
+
+      // Match the movie-detail startup path: request the known primary record
+      // immediately. Anime ID classification and TVDB mapping can refine this
+      // shell later, but must not sit in front of TMDB artwork/metadata.
+      if (appManagedMetadata && routeTmdbId) {
+        // Detail heroes require a genuine landscape image. This independent
+        // request avoids a black hero when the configured artwork provider has
+        // no backdrop, while never stretching the poster as a substitute.
+        void getTmdbLandscapeBackdrop('series', routeTmdbId).then((backdrop) => {
+          if (cancelled || !backdrop) return
+          setShow((current) => current ? applyShowArt({ ...current, backdrop }) : current)
+        }).catch(() => undefined)
+
+        void cachedProviderShow('tmdb', routeTmdbId).then((tmdbShow) => {
+          if (cancelled) return
+          setShow((current) => {
+            const currentSeasons = current?.seasons || []
+            const seasons = routeIsAnime
+              ? currentSeasons
+              : processSeasons(tmdbShow.seasons, false)
+            return applyShowArt(preservePresentedArtwork({
+              ...tmdbShow,
+              id: id || current?.id || tmdbShow.id,
+              isAnime: routeIsAnime || tmdbShow.isAnime,
+              seasons,
+            }, current || immediateShow))
+          })
+          if (!routeIsAnime) {
+            const tmdbSeasons = processSeasons(tmdbShow.seasons, false)
+            const firstSeason = resumeProgress?.season != null && tmdbSeasons.some((season) => season.seasonNumber === resumeProgress.season)
+              ? resumeProgress.season
+              : tmdbSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? tmdbSeasons[0]?.seasonNumber ?? null
+            setSelectedSeason(firstSeason)
+          }
+          setMetadataStatus('resolved')
+          setLoading(false)
+        }).catch(() => undefined)
+      }
+
+      // Anime routes commonly already carry TVDB from the catalog. Fetch its
+      // season summary at the same time as TMDB art instead of waiting for the
+      // ID resolver to finish first.
+      if (appManagedMetadata && routeIsAnime && routeTvdbId) {
+        void cachedProviderShow('tvdb', routeTvdbId).then((tvdbShow) => {
+          if (cancelled) return
+          const tvdbSeasons = processSeasons(tvdbShow.seasons, true)
+          setShow((current) => applyShowArt({
+            ...tvdbShow,
+            ...(current || immediateShow || {}),
+            id: id || current?.id || tvdbShow.id,
+            tvdbId: routeTvdbId,
+            tmdbId: current?.tmdbId || routeTmdbId || tvdbShow.tmdbId,
+            isAnime: true,
+            seasons: tvdbSeasons,
+            poster: current?.poster || tvdbShow.poster,
+            backdrop: current?.backdrop || tvdbShow.backdrop,
+            logo: current?.logo || tvdbShow.logo,
+          }))
+          const firstSeason = resumeProgress?.season != null && tvdbSeasons.some((season) => season.seasonNumber === resumeProgress.season)
+            ? resumeProgress.season
+            : tvdbSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? tvdbSeasons[0]?.seasonNumber ?? null
+          setSelectedSeason(firstSeason)
+          setMetadataStatus('resolved')
+          setLoading(false)
+        }).catch(() => undefined)
+      }
+
+      if (appManagedMetadata && (routeTmdbId || routeTvdbId || routeImdbId)) {
+        void resolveArtFromProviders('series', {
+          tmdbId: routeTmdbId,
+          tvdbId: routeTvdbId,
+          imdbId: routeImdbId,
+        }, routeIsAnime).then((providerArt) => {
+          if (cancelled || (!providerArt.poster && !providerArt.backdrop && !providerArt.logo)) return
+          setShow((current) => current ? applyShowArt({
+            ...current,
+            ...(providerArt.poster && { poster: providerArt.poster }),
+            ...(providerArt.backdrop && { backdrop: providerArt.backdrop }),
+            ...(providerArt.logo && { logo: providerArt.logo }),
+          }) : current)
+        }).catch(() => undefined)
+      }
+
       let result: ShowDetails | null = null
       let appResult: ShowDetails | null = null
       // This source-specific pass may make additional provider requests. Keep it
@@ -811,9 +968,8 @@ export default function SeriesDetailPage() {
         malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
         anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
-
       // Early resolve anime IDs via IDS.moe (fast, cached) to get all cross-service IDs
-      if ((knownIds.anilistId || knownIds.malId) && !knownIds.tvdbId) {
+      if (appManagedMetadata && (knownIds.anilistId || knownIds.malId) && !knownIds.tvdbId) {
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
@@ -838,7 +994,7 @@ export default function SeriesDetailPage() {
       let isAnimeLocal = routeIsAnime
 
       // Detect anime from non-anime IDs using IDS.moe (fast) then anime-lists fallback
-      if (!isAnimeLocal && (knownIds.tmdbId || knownIds.imdbId)) {
+      if (appManagedMetadata && !isAnimeLocal && (knownIds.tmdbId || knownIds.imdbId)) {
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
@@ -857,7 +1013,7 @@ export default function SeriesDetailPage() {
         } catch (_) { /* ignore */ }
       }
 
-      if (!isAnimeLocal && knownIds.tvdbId) {
+      if (appManagedMetadata && !isAnimeLocal && knownIds.tvdbId) {
         try {
           const { lookupByTvdbId } = await import('../services/animeLists')
           const matches = await lookupByTvdbId(Number(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')))
@@ -877,7 +1033,7 @@ export default function SeriesDetailPage() {
         } catch (_) { /* ignore */ }
       }
 
-      if (state.sourceAddonId && state.sourceAddonItemId) {
+      if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
         const normalized = await resolveAppMetadata({
           addonId: state.sourceAddonId, addonUrl: state.addonUrl, addonType: 'series', id: state.sourceAddonItemId,
           title: state.title, year: state.year, imdbId: knownIds.imdbId, tmdbId: Number(knownIds.tmdbId) || undefined,
@@ -894,14 +1050,20 @@ export default function SeriesDetailPage() {
         }
       }
 
-      // If addon item, get IDs from addon meta first
-      if (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId)) {
+      // Use full metadata carried by the catalog when available. Otherwise
+      // request the addon's exact source ID, which can differ from the route.
+      let loadedAddonMeta: Record<string, unknown> | null = appManagedMetadata ? null : (state.addonMeta || null)
+      const shouldRequestAddonMeta = !appManagedMetadata
+        || (useAppStore.getState().useAddonMetadataFallback && !result)
+      if (shouldRequestAddonMeta && (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId))) {
+        const addonItemId = state.sourceAddonItemId || id || ''
         const tryAddonMeta = async (addonUrl: string) => {
           try {
-            const meta = await getAddonMeta(addonUrl, 'series', id || '')
+            const meta = await getAddonMeta(addonUrl, 'series', addonItemId)
             if (meta) {
+              loadedAddonMeta = meta
               setAddonMeta(meta)
-              const parsed = addonMetaToShow(meta, id || '')
+              const parsed = addonMetaToShow(meta, addonItemId)
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
               if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || String(parsed.tmdbId)
               if (parsed.tvdbId) knownIds.tvdbId = knownIds.tvdbId || String(parsed.tvdbId)
@@ -913,8 +1075,11 @@ export default function SeriesDetailPage() {
           return null
         }
 
-        let addonResult: ShowDetails | null = null
-        if (state.addonUrl) {
+        let addonResult: ShowDetails | null = loadedAddonMeta
+          ? addonMetaToShow(loadedAddonMeta, addonItemId)
+          : null
+        if (loadedAddonMeta) setAddonMeta(loadedAddonMeta)
+        if (!addonResult && state.addonUrl) {
           addonResult = await tryAddonMeta(state.addonUrl)
         }
         if (!addonResult) {
@@ -928,13 +1093,54 @@ export default function SeriesDetailPage() {
         // Keep addon result only as fallback — prefer app metadata below
         // For anime, skip addon metadata for display (addons often have wrong season structure)
         const isLikelyAnime = !!(knownIds.anilistId || knownIds.malId)
-        const skipAddonDisplay = isLikelyAnime && useAppStore.getState().ignoreAddonMetadataForAnime
+        const skipAddonDisplay = appManagedMetadata && isLikelyAnime && useAppStore.getState().ignoreAddonMetadataForAnime
         if (skipAddonDisplay) {
           console.log('[SeriesDetailPage] Skipping addon metadata for anime display — addon only provides IDs')
           // Keep addon IDs but don't use addon for display
-        } else if (addonResult && !result && useAppStore.getState().useAddonMetadataFallback) {
+        } else if (addonResult && !result && (!appManagedMetadata || useAppStore.getState().useAddonMetadataFallback)) {
           result = addonResult
         }
+      }
+
+      // When Aurales-managed metadata is disabled, the addon's meta response
+      // is authoritative. Publish it now and avoid the TMDB/TVDB/anime lookup
+      // waterfall entirely.
+      if (!appManagedMetadata && result) {
+        const addonIsAnime = Boolean(routeIsAnime || result.isAnime || knownIds.anilistId || knownIds.malId)
+        const directShow = applyShowArt(applyInitialArtworkPreference({
+          ...result,
+          id: id || result.id,
+          isAnime: addonIsAnime,
+          seasons: processSeasons(result.seasons || [], addonIsAnime),
+        }, 'series', addonIsAnime))
+        const resumedSeason = resumeProgress?.season
+        const firstSeason = directShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
+          ?? directShow.seasons[0]?.seasonNumber
+          ?? null
+        const selected = resumedSeason != null && directShow.seasons.some((season) => season.seasonNumber === resumedSeason)
+          ? resumedSeason
+          : firstSeason
+        const seasonDetails: Record<number, SeasonDetails> = {}
+        const episodeMap: Record<number, SeasonDetails['episodes']> = {}
+        if (loadedAddonMeta && Array.isArray(loadedAddonMeta.videos)) {
+          for (const season of directShow.seasons) {
+            const details = addonVideosToSeason(loadedAddonMeta, season.seasonNumber)
+            seasonDetails[season.seasonNumber] = details
+            episodeMap[season.seasonNumber] = details.episodes
+          }
+        }
+        setSeasonCache(seasonDetails)
+        setShow(directShow)
+        setSelectedSeason(selected)
+        setMetadataStatus('resolved')
+        setLoading(false)
+        writeSeriesDetailCache(id, state, {
+          show: directShow,
+          selectedSeason: selected,
+          episodeMap,
+          metadataStatus: 'resolved',
+        })
+        return
       }
 
       // Show quick placeholder from route state while fetching real metadata
@@ -1001,17 +1207,41 @@ export default function SeriesDetailPage() {
         // independent TMDB fan-out now so it runs alongside TVDB season mapping
         // instead of adding its full duration afterward.
         if (tmdbId) {
-          animeTmdbMetadata = tmdbProvider.getShow(`tmdb-${tmdbId}`).catch(() => null)
+          animeTmdbMetadata = cachedProviderShow('tmdb', tmdbId).catch(() => null)
         }
 
         // TVDB is source of truth for anime season/episode structure
         if (tvdbId) {
           try {
-            const tvdbData = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+            const tvdbData = await cachedProviderShow('tvdb', tvdbId)
             console.log('[SeriesDetailPage] TVDB anime data:', {
               title: tvdbData.title,
               seasons: tvdbData.seasons.map(s => ({ num: s.seasonNumber, eps: s.episodeCount })),
             })
+
+            // Make provider artwork available to the branded loader as soon as
+            // TVDB responds. Publish its season summary immediately so the
+            // detail page is usable while full episode mapping continues.
+            if (!cancelled) {
+              const shellSeasons = processSeasons(tvdbData.seasons, true)
+              const shell = applyShowArt({
+                ...tvdbData,
+                id: id || tvdbData.id,
+                tmdbId: tmdbId || tvdbData.tmdbId,
+                tvdbId,
+                malId: knownIds.malId,
+                anilistId: knownIds.anilistId,
+                isAnime: true,
+                seasons: shellSeasons,
+              })
+              setShow((current) => applyShowArt(preservePresentedArtwork(shell, current)))
+              const shellSeason = resumeProgress?.season != null && shellSeasons.some((season) => season.seasonNumber === resumeProgress.season)
+                ? resumeProgress.season
+                : shellSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? shellSeasons[0]?.seasonNumber ?? null
+              setSelectedSeason(shellSeason)
+              setMetadataStatus('resolved')
+              setLoading(false)
+            }
 
             if (tvdbData.seasons.length > 0) {
               const { mapTvdbSeasons } = await import('../services/metadata/tvdbSeasonMapper')
@@ -1244,7 +1474,7 @@ export default function SeriesDetailPage() {
         // Resolve TVDB ID if needed
         if (!tvdbId && tmdbId) {
           try {
-            const data = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            const data = await cachedProviderShow('tmdb', tmdbId)
             if (data.tvdbId) tvdbId = String(data.tvdbId).replace(/^[a-z_]+[-:]/i, '')
           } catch (_) { /* continue */ }
         }
@@ -1253,7 +1483,7 @@ export default function SeriesDetailPage() {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
             if (found.tmdbId) {
-              const data = await tmdbProvider.getShow(`tmdb-${found.tmdbId}`)
+              const data = await cachedProviderShow('tmdb', String(found.tmdbId))
               if (data.tvdbId) tvdbId = String(data.tvdbId).replace(/^[a-z_]+[-:]/i, '')
             }
           } catch (_) { /* continue */ }
@@ -1263,31 +1493,52 @@ export default function SeriesDetailPage() {
         if (primarySource === 'tvdb') {
           if (tvdbId) {
             try {
-              appResult = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+              appResult = await cachedProviderShow('tvdb', tvdbId)
             } catch (_) { /* continue */ }
           }
           if (!appResult && useFallback && tmdbId) {
             try {
-              appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+              appResult = await cachedProviderShow('tmdb', tmdbId)
             } catch (_) { /* continue */ }
           }
         } else {
           if (tmdbId) {
             try {
-              appResult = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+              appResult = await cachedProviderShow('tmdb', tmdbId)
             } catch (_) { /* continue */ }
           }
           if (!appResult && useFallback && tvdbId) {
             try {
-              appResult = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+              appResult = await cachedProviderShow('tvdb', tvdbId)
             } catch (_) { /* continue */ }
           }
+        }
+
+        // The selected provider already contains a complete show shell and
+        // season summary. Render it before optional cross-provider enrichment
+        // and late anime remapping, which may require several more requests.
+        if (appResult && !cancelled) {
+          const shellSeasons = processSeasons(appResult.seasons, false)
+          const shell = applyShowArt({
+            ...appResult,
+            id: id || appResult.id,
+            tmdbId: appResult.tmdbId || tmdbId,
+            tvdbId: appResult.tvdbId || tvdbId,
+            seasons: shellSeasons,
+          })
+          setShow((current) => applyShowArt(preservePresentedArtwork(shell, current)))
+          const shellSeason = resumeProgress?.season != null && shellSeasons.some((season) => season.seasonNumber === resumeProgress.season)
+            ? resumeProgress.season
+            : shellSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? shellSeasons[0]?.seasonNumber ?? null
+          setSelectedSeason(shellSeason)
+          setMetadataStatus('resolved')
+          setLoading(false)
         }
 
         // Enrich TVDB series with TMDB artwork and supplementary metadata (logos, cast, trailers, etc.)
         if (appResult && appResult.provider === 'tvdb' && tmdbId) {
           try {
-            const tmdbData = await tmdbProvider.getShow(`tmdb-${tmdbId}`)
+            const tmdbData = await cachedProviderShow('tmdb', tmdbId)
             appResult = {
               ...appResult,
               tmdbId: appResult.tmdbId || tmdbId,
@@ -1334,7 +1585,7 @@ export default function SeriesDetailPage() {
             }
             if (tvdbId) {
               try {
-                const tvdbData = await tvdbProvider.getShow(`tvdb-${tvdbId}`)
+                const tvdbData = await cachedProviderShow('tvdb', tvdbId)
                 if (tvdbData.seasons.length > 0) {
                   const { mapTvdbSeasons } = await import('../services/metadata/tvdbSeasonMapper')
                   const animeSettings = useAppStore.getState()
@@ -1454,7 +1705,7 @@ export default function SeriesDetailPage() {
         // If no TMDB data, try TVDB directly
         if (!appResult && knownIds.tvdbId) {
           try {
-             appResult = await tvdbProvider.getShow(`tvdb-${String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')}`)
+             appResult = await cachedProviderShow('tvdb', String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, ''))
             appResult = { ...appResult, id: id || appResult.id, malId: knownIds.malId, anilistId: knownIds.anilistId }
           } catch (_) { /* continue */ }
         }
@@ -1495,7 +1746,10 @@ export default function SeriesDetailPage() {
         } catch (_) { /* continue */ }
       }
 
-      const finalArt = applyShowArt(applyInitialArtworkPreference(artApplied, 'series', Boolean(artApplied.isAnime)))
+      const finalArt = applyShowArt(preservePresentedArtwork(
+        applyInitialArtworkPreference(artApplied, 'series', Boolean(artApplied.isAnime)),
+        showRef.current,
+      ))
 
       if (isAnimeLocal) {
         console.log("[AnimeDetail] setting seasons", {
@@ -1565,6 +1819,15 @@ export default function SeriesDetailPage() {
         })
       }).catch(() => undefined)
 
+      if (finalArt.tmdbId && !finalArt.backdrop) {
+        void getTmdbLandscapeBackdrop('series', finalArt.tmdbId).then((backdrop) => {
+          if (!backdrop) return
+          setShow((current) => current?.id === finalArt.id
+            ? applyShowArt({ ...current, backdrop })
+            : current)
+        }).catch(() => undefined)
+      }
+
       // Respect the configured anime metadata source without holding the page
       // hostage to its network requests. The TVDB-mapped seasons stay intact.
       if (selectedAnimeMetadata) {
@@ -1579,9 +1842,9 @@ export default function SeriesDetailPage() {
               originalTitle: selected.originalTitle || current.originalTitle,
               year: selected.year || current.year,
               overview: selected.overview || current.overview,
-              poster: selected.poster || current.poster,
-              backdrop: selected.backdrop || current.backdrop,
-              logo: selected.logo || current.logo,
+              poster: current.poster || selected.poster,
+              backdrop: current.backdrop || selected.backdrop,
+              logo: current.logo || selected.logo,
               genres: selected.genres.length ? selected.genres : current.genres,
               rating: selected.rating ?? current.rating,
               imdbId: selected.imdbId || current.imdbId,
@@ -1745,6 +2008,10 @@ export default function SeriesDetailPage() {
 
     // Anime: TVDB first (correct per-season episode mapping — TMDB lumps all eps into season 1)
     // Regular: TMDB first (better English titles/images)
+    if (!useAppStore.getState().appManagedMetadata && addonMeta && Array.isArray(addonMeta.videos)) {
+      return applyArt(addonVideosToSeason(addonMeta, seasonNum))
+    }
+
     if (isAnimeShow) {
       const tvdbResult = await tryTvdb()
       if (tvdbResult) return tvdbResult
@@ -1763,7 +2030,7 @@ export default function SeriesDetailPage() {
     }
 
     if (addonMeta && Array.isArray(addonMeta.videos) && !isAnimeShow) {
-      return applyArt(addonVideosToSeason(addonMeta, seasonNum, isAnimeShow))
+      return applyArt(addonVideosToSeason(addonMeta, seasonNum))
     }
 
     const seasonInfo = show.seasons.find(s => s.seasonNumber === seasonNum)
@@ -2057,12 +2324,14 @@ export default function SeriesDetailPage() {
     provider: state.provider,
   }, 'series', routeIsAnime)
 
-  if (loading || !show || metadataStatus === 'resolving') {
+  const playButtonReady = Boolean(liveResumePoint || resumeProgress || seasonData?.episodes[0])
+
+  if (loading || !show || metadataStatus === 'resolving' || !playButtonReady) {
     return <DetailLoadingState
-      logo={show?.logo || initialRouteArt.logo}
-      title={show?.title || state.title}
-      backdrop={show?.backdrop || initialRouteArt.backdrop}
-      poster={show?.poster || initialRouteArt.poster}
+      logo={initialRouteArt.logo}
+      title={state.title}
+      backdrop={initialRouteArt.backdrop}
+      poster={initialRouteArt.poster}
     />
   }
 

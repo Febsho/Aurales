@@ -38,7 +38,7 @@ describe('background task scheduling', () => {
     expect(execute).toHaveBeenCalledTimes(1)
   })
 
-  it('runs only one metadata group task at a time', async () => {
+  it('allows metadata tasks to use normal queue concurrency', async () => {
     const first = deferred()
     const started: string[] = []
     const a = scheduleTask(metadataTaskQueue, {
@@ -50,7 +50,7 @@ describe('background task scheduling', () => {
       execute: async () => { started.push('b') },
     })
     await Promise.resolve()
-    expect(started).toEqual(['a'])
+    expect(started).toEqual(['a', 'b'])
     first.resolve()
     await a
     await vi.waitFor(() => expect(started).toEqual(['a', 'b']))

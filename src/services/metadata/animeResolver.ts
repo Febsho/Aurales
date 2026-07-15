@@ -6,6 +6,7 @@ import { mapTvdbSeasons } from './tvdbSeasonMapper'
 import { validateAnimeTvdbStructure, scoreAnimeStructure, debugAnimeMapping } from './animeStructureValidator'
 import { resolveSeasonTitles } from './animeTitleResolver'
 import type { AddonMediaInput, AnimeTitleLanguage, AnimeTitlePreference, AppMediaItem, AppSeason, ResolvedExternalIds } from './types'
+import { anilistRequest } from '../anilist'
 
 interface AnimeSourceMetadata {
   titles?: { english?: string; romaji?: string; native?: string }
@@ -24,9 +25,7 @@ const cleanOverview = (value: unknown): string | undefined => typeof value === '
 async function fetchSelectedAnimeMetadata(source: string, ids: ResolvedExternalIds): Promise<AnimeSourceMetadata | null> {
   if (source === 'anilist' && (ids.anilistId || ids.malId)) {
     const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { title { english romaji native } description bannerImage coverImage { extraLarge large } genres averageScore seasonYear } }`
-    const response = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ query, variables: { id: ids.anilistId, malId: ids.malId } }) }).catch(() => null)
-    if (!response?.ok) return null
-    const media = ((await response.json()) as any)?.data?.Media
+    const media = (await anilistRequest<{ Media?: any }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null))?.Media
     if (!media) return null
     return { titles: media.title, overview: cleanOverview(media.description), poster: media.coverImage?.extraLarge || media.coverImage?.large, backdrop: media.bannerImage, genres: media.genres, rating: media.averageScore ? Number(media.averageScore) / 10 : undefined, year: media.seasonYear }
   }
@@ -65,25 +64,15 @@ function applyAnimeSourceMetadata(item: AppMediaItem, metadata: AnimeSourceMetad
 async function getAniListTitles(ids: ResolvedExternalIds): Promise<{ english?: string; romaji?: string; native?: string } | null> {
   if (!ids.anilistId && !ids.malId) return null
   const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { title { english romaji native } relations { edges { relationType node { id type format title { english romaji native } } } } } }`
-  const response = await fetch('https://graphql.anilist.co', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ query, variables: { id: ids.anilistId, malId: ids.malId } }),
-  }).catch(() => null)
-  if (!response?.ok) return null
-  const payload = await response.json() as { data?: { Media?: { title?: { english?: string; romaji?: string; native?: string }; relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } } }
-  return payload.data?.Media?.title || null
+  const payload = await anilistRequest<{ Media?: { title?: { english?: string; romaji?: string; native?: string }; relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null)
+  return payload?.Media?.title || null
 }
 
 async function getAniListRelations(ids: ResolvedExternalIds): Promise<{ hasSequels: boolean; relatedCount: number }> {
   if (!ids.anilistId && !ids.malId) return { hasSequels: false, relatedCount: 0 }
   const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { relations { edges { relationType node { id type format } } } } }`
-  const response = await fetch('https://graphql.anilist.co', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ query, variables: { id: ids.anilistId, malId: ids.malId } }),
-  }).catch(() => null)
-  if (!response?.ok) return { hasSequels: false, relatedCount: 0 }
-  const payload = await response.json() as { data?: { Media?: { relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } } }
-  const edges = payload.data?.Media?.relations?.edges || []
+  const payload = await anilistRequest<{ Media?: { relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null)
+  const edges = payload?.Media?.relations?.edges || []
   const animeRelations = edges.filter((e) => e.node.type === 'ANIME' && (e.node.format === 'TV' || e.node.format === 'TV_SHORT'))
   const hasSequels = animeRelations.some((e) => e.relationType === 'SEQUEL' || e.relationType === 'PREQUEL')
   return { hasSequels, relatedCount: animeRelations.length }
@@ -175,11 +164,14 @@ export async function resolveAnimeMetadata(
   // and ID pipeline. TVDB's anime season structure only applies to shows.
   if ((input.addonType || '').toLowerCase() === 'movie') {
     if (!ids.tmdbId) return null
-    const movie = await tmdbProvider.getMovie(`tmdb-${ids.tmdbId}`).catch(() => null)
+    const [movie, selectedSource, fallbackTitles] = await Promise.all([
+      tmdbProvider.getMovie(`tmdb-${ids.tmdbId}`).catch(() => null),
+      fetchSelectedAnimeMetadata(source, ids).catch(() => null),
+      source === 'anilist' ? Promise.resolve(null) : getAniListTitles(ids),
+    ])
     if (!movie) return null
     const normalized = normalizeMovie(movie, { ...input, ...ids })
-    const selectedSource = await fetchSelectedAnimeMetadata(source, ids).catch(() => null)
-    const anilistTitles = selectedSource?.titles || await getAniListTitles(ids)
+    const anilistTitles = selectedSource?.titles || fallbackTitles
     const selected = selectAnimeTitle({
       english: anilistTitles?.english || movie.title,
       romaji: anilistTitles?.romaji || input.title,
@@ -198,22 +190,38 @@ export async function resolveAnimeMetadata(
   let details: any = null
   let usedSource: 'tvdb' | 'tmdb' = 'tvdb'
 
+  // Provider details, source metadata, and title data are independent. Start
+  // them together; the old waterfall made anime details wait for each service
+  // in turn and fetched TMDB a second time for artwork at the end.
+  const tmdbDetailsRequest = ids.tmdbId
+    ? tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
+    : Promise.resolve(null)
+  const tvdbDetailsRequest = ids.tvdbId
+    ? tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
+    : Promise.resolve(null)
+  const selectedSourceRequest = fetchSelectedAnimeMetadata(source, ids).catch(() => null)
+  const fallbackTitlesRequest = source === 'anilist'
+    ? Promise.resolve(null)
+    : getAniListTitles(ids)
+  const [tmdbDetails, tvdbDetails, selectedSource, fallbackTitles] = await Promise.all([
+    tmdbDetailsRequest,
+    tvdbDetailsRequest,
+    selectedSourceRequest,
+    fallbackTitlesRequest,
+  ])
+
   if (source === 'tmdb') {
-    if (ids.tmdbId) {
-      details = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
-      if (details) usedSource = 'tmdb'
-    }
-    if (!details && fallback && ids.tvdbId) {
-      details = await tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
+    details = tmdbDetails
+    if (details) usedSource = 'tmdb'
+    else if (fallback) {
+      details = tvdbDetails
       if (details) usedSource = 'tvdb'
     }
-  } else { // default to 'tvdb' (or anilist/mal/kitsu which fall back to tvdb)
-    if (ids.tvdbId) {
-      details = await tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
-      if (details) usedSource = 'tvdb'
-    }
-    if (!details && fallback && ids.tmdbId) {
-      details = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
+  } else { // default to TVDB (including AniList/MAL/Kitsu metadata sources)
+    details = tvdbDetails
+    if (details) usedSource = 'tvdb'
+    else if (fallback) {
+      details = tmdbDetails
       if (details) usedSource = 'tmdb'
     }
   }
@@ -222,8 +230,7 @@ export async function resolveAnimeMetadata(
 
   const normalized = normalizeShow(details, { ...input, ...ids }, 'anime')
 
-  const selectedSource = await fetchSelectedAnimeMetadata(source, ids).catch(() => null)
-  const anilistTitles = selectedSource?.titles || await getAniListTitles(ids)
+  const anilistTitles = selectedSource?.titles || fallbackTitles
   const selected = selectAnimeTitle(
     {
       english: anilistTitles?.english || details.title,
@@ -239,14 +246,15 @@ export async function resolveAnimeMetadata(
   applyAnimeSourceMetadata(normalized, selectedSource, source)
 
   if (options.preferTvdbSeasons && ids.tvdbId) {
-    let mappedSeasons = await mapTvdbSeasons(ids.tvdbId, normalized.seasons || [], {
-      hideUnairedSeasons: options.hideUnairedSeasons,
-      hideUnairedEpisodes: options.hideUnairedEpisodes,
-      includeSpecials: options.includeSpecials,
-    })
-
-    // Check AniList relations for expected multi-season
-    const relations = await getAniListRelations(ids)
+    const [initialMappedSeasons, relations] = await Promise.all([
+      mapTvdbSeasons(ids.tvdbId, normalized.seasons || [], {
+        hideUnairedSeasons: options.hideUnairedSeasons,
+        hideUnairedEpisodes: options.hideUnairedEpisodes,
+        includeSpecials: options.includeSpecials,
+      }),
+      getAniListRelations(ids),
+    ])
+    let mappedSeasons = initialMappedSeasons
     const validation = validateAnimeTvdbStructure(mappedSeasons, relations.hasSequels)
 
     debugAnimeMapping({
@@ -290,14 +298,11 @@ export async function resolveAnimeMetadata(
     normalized.seasons = mappedSeasons
   }
 
-  if (ids.tmdbId) {
-    const tmdb = await tmdbProvider.getShow(`tmdb-${ids.tmdbId}`).catch(() => null)
-    if (tmdb) {
-      normalized.poster = normalized.poster || tmdb.poster
-      normalized.backdrop = normalized.backdrop || tmdb.backdrop
-      normalized.logo = tmdb.logo || normalized.logo
-      normalized.overview = normalized.overview || tmdb.overview
-    }
+  if (tmdbDetails) {
+      normalized.poster = normalized.poster || tmdbDetails.poster
+      normalized.backdrop = normalized.backdrop || tmdbDetails.backdrop
+      normalized.logo = tmdbDetails.logo || normalized.logo
+      normalized.overview = normalized.overview || tmdbDetails.overview
   }
 
   return normalized

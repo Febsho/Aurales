@@ -17,11 +17,11 @@ describe('cachedImage', () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
   })
 
-  it('passes the raw remote URL to Tauri exactly once', () => {
+  it('uses the remote URL directly while the disk proxy is disabled', () => {
     const source = 'https://image.tmdb.org/t/p/w500/a%20poster.jpg?lang=en&v=1'
-    cachedImage(source)
+    expect(cachedImage(source)).toBe(source)
 
-    expect(convertFileSrc).toHaveBeenCalledWith(source, 'imgcache')
+    expect(convertFileSrc).not.toHaveBeenCalled()
   })
 
   it('does not route data URLs through the cache', () => {

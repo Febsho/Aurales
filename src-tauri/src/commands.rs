@@ -1225,9 +1225,12 @@ pub fn launch_embedded_mpv(
     #[cfg(target_os = "windows")]
     let hwnd = main_window_hwnd(&app)?;
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    let hwnd = main_window_xid(&app)?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let hwnd: isize = {
-        return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
+        return Err("Embedded mpv playback is only implemented on Windows and Linux.".to_string());
     };
 
     launch_mpv_with_window(
@@ -1509,6 +1512,28 @@ fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     Ok(hwnd.0 as isize)
 }
 
+#[cfg(target_os = "linux")]
+fn main_window_xid(app: &tauri::AppHandle) -> Result<isize, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if std::env::var_os("DISPLAY").is_none() {
+        return Err(
+            "Embedded mpv requires X11/XWayland; no X11 display is available.".to_string(),
+        );
+    }
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+    let handle = main
+        .window_handle()
+        .map_err(|e| format!("Failed to get the Linux window handle: {e}"))?;
+    match handle.as_raw() {
+        RawWindowHandle::Xlib(handle) => Ok(handle.window as isize),
+        RawWindowHandle::Xcb(handle) => Ok(handle.window.get() as isize),
+        _ => Err("Embedded mpv requires the X11/XWayland window backend.".to_string()),
+    }
+}
+
 fn apply_custom_libmpv_args(
     player: &LibMpvPlayer,
     custom: Option<String>,
@@ -1524,6 +1549,7 @@ fn apply_custom_libmpv_args(
         let arg = &parts[index];
         index += 1;
 
+        #[cfg(target_os = "windows")]
         if arg == "--ao" || arg == "-ao" {
             if index < parts.len() {
                 index += 1;
@@ -1531,6 +1557,7 @@ fn apply_custom_libmpv_args(
             player_debug_log("[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi");
             continue;
         }
+        #[cfg(target_os = "windows")]
         if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
             player_debug_log(format!(
                 "[PLAYER CONFIG] ignored custom audio output arg: {}",
@@ -1591,7 +1618,13 @@ fn cleanup_player_windows(host_hwnd: isize, video_hwnd: isize) {
         libmpv_player::destroy_video_child(video_hwnd);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = host_hwnd;
+        libmpv_player::destroy_video_child(video_hwnd);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (host_hwnd, video_hwnd);
 }
 
@@ -1612,7 +1645,7 @@ fn launch_mpv_with_window(
     width: Option<i32>,
     height: Option<i32>,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (
             hwnd,
@@ -1631,10 +1664,10 @@ fn launch_mpv_with_window(
             width,
             height,
         );
-        return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
+        return Err("Embedded mpv playback is only implemented on Windows and Linux.".to_string());
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         if let Ok(mut cache) = get_property_cache().write() {
             cache.clear();
@@ -1646,10 +1679,7 @@ fn launch_mpv_with_window(
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "Failed to launch embedded mpv: libmpv-2.dll was not found. Expected one of: {}",
-                candidates
-            )
+            format!("Failed to launch embedded mpv: libmpv was not found. Expected one of: {}", candidates)
         })?;
 
         let session_id = format!(
@@ -1713,8 +1743,13 @@ fn launch_mpv_with_window(
             set_option("input-builtin-bindings", "no".to_string())?;
             set_option("hwdec", hwdec.to_string())?;
             set_option("vo", "gpu-next".to_string())?;
-            set_option("gpu-api", "d3d11".to_string())?;
-            set_option("d3d11-flip", "no".to_string())?;
+            #[cfg(target_os = "windows")]
+            {
+                set_option("gpu-api", "d3d11".to_string())?;
+                set_option("d3d11-flip", "no".to_string())?;
+            }
+            #[cfg(target_os = "linux")]
+            set_option("gpu-context", "x11egl".to_string())?;
             set_option("vd-lavc-dr", "yes".to_string())?;
             set_option("terminal", "no".to_string())?;
             set_option(
@@ -1725,7 +1760,10 @@ fn launch_mpv_with_window(
                     .to_string(),
             )?;
             set_option("msg-level", "all=info".to_string())?;
+            #[cfg(target_os = "windows")]
             set_option("ao", "wasapi".to_string())?;
+            #[cfg(target_os = "linux")]
+            set_option("ao", "pipewire,pulse,alsa".to_string())?;
             set_option("term-osd-bar", "no".to_string())?;
             set_option("term-status-msg", "".to_string())?;
             set_option("keep-open", "no".to_string())?;
@@ -2493,7 +2531,28 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        let (host_window, video_window) = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(state) => (state.host_hwnd, state.video_hwnd),
+                None => return Ok(()),
+            }
+        };
+        if video_window != 0 && width > 0 && height > 0 {
+            libmpv_player::resize_video_child(
+                host_window,
+                video_window,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (x, y, width, height);
 
     Ok(())

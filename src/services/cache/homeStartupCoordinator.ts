@@ -1,36 +1,14 @@
-let heroSettled = false
-let continueSettled = false
-let resolveHero!: () => void
-let resolveContinue!: () => void
-
-const heroPromise = new Promise<void>((resolve) => { resolveHero = resolve })
-const continuePromise = new Promise<void>((resolve) => { resolveContinue = resolve })
-
-const fallback = typeof window !== 'undefined'
-  ? window.setTimeout(() => markHeroImageSettled(), 750)
-  : undefined
-const continueFallback = typeof window !== 'undefined'
-  ? window.setTimeout(() => markContinueWatchingSettled(), 1000)
-  : undefined
-
-export function markHeroImageSettled(): void {
-  if (heroSettled) return
-  heroSettled = true
-  if (fallback != null && typeof window !== 'undefined') window.clearTimeout(fallback)
-  resolveHero()
-}
+// Startup coordination used to make unrelated Home work wait for artwork or
+// Continue Watching. Keep these functions for existing callers, but never
+// gate metadata or catalog loading on another part of the page.
+export function markHeroImageSettled(): void {}
 
 export function waitForHeroImageSettled(): Promise<void> {
-  return heroPromise
+  return Promise.resolve()
 }
 
-export function markContinueWatchingSettled(): void {
-  if (continueSettled) return
-  continueSettled = true
-  if (continueFallback != null && typeof window !== 'undefined') window.clearTimeout(continueFallback)
-  resolveContinue()
-}
+export function markContinueWatchingSettled(): void {}
 
 export function waitForContinueWatchingSettled(): Promise<void> {
-  return continuePromise
+  return Promise.resolve()
 }

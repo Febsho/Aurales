@@ -112,7 +112,10 @@ class BackgroundTaskQueue {
 
 export const taskQueue = new BackgroundTaskQueue(3)
 export const startupTaskQueue = new BackgroundTaskQueue(2, { metadata: 1 })
-export const metadataTaskQueue = startupTaskQueue
+// Restore the pre-startup-optimization behavior: metadata work can make the
+// same three concurrent requests as normal work instead of serializing every
+// anime/show lookup behind one global task.
+export const metadataTaskQueue = new BackgroundTaskQueue(3)
 const scheduledPromises = new Map<string, Promise<unknown>>()
 
 export function scheduleTask<T>(

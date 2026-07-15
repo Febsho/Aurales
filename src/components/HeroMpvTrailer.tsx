@@ -11,7 +11,6 @@ import {
   stopEmbeddedPlayerIfOwner,
 } from '../services/player'
 import { useAppStore } from '../stores/appStore'
-import TrailerPreview from './TrailerPreview'
 
 // Hero trailer via embedded mpv + yt-dlp: real 1080p, no YouTube UI. The mpv
 // child window renders behind the transparent webview, so while the video is
@@ -201,13 +200,14 @@ export default function HeroMpvTrailer({
     return () => window.clearTimeout(timeout)
   }, [mode, videoVisible, trailer.directUrl, maxHeight])
 
-  // Fall back to the browser player when native mpv cannot resolve or render.
-  // Working playback is preferable to silently ending the trailer attempt.
+  // Native resolution already tried the same YouTube source. End the Hero
+  // trailer attempt instead of hiding its artwork behind another pending
+  // browser fallback (which can remain black for blocked/restricted videos).
   useEffect(() => {
     if (mode !== 'fallback') return
-    onPlayingChange?.(true)
-    return () => onPlayingChange?.(false)
-  }, [mode, onPlayingChange])
+    onPlayingChange?.(false)
+    onUnavailable?.()
+  }, [mode, onPlayingChange, onUnavailable])
 
   // The transparent-hole compositing only holds while the app window is
   // focused — unfocused, the hole exposes the desktop. End the trailer on
@@ -325,21 +325,8 @@ export default function HeroMpvTrailer({
         document.body,
       )}
       {/* HeroSection keeps its normal artwork visible until mpv renders the
-          first frame, so there is no YouTube thumbnail flash in between. */}
-      <div ref={containerRef} className={`relative h-full w-full ${className}`}>
-        {mode === 'fallback' && (
-          <TrailerPreview
-            trailer={trailer}
-            title="Hero trailer"
-            muted={muted}
-            eager
-            showShade={false}
-            onEnded={onEnded}
-            onUnavailable={onUnavailable}
-            className="absolute inset-0"
-          />
-        )}
-      </div>
+          first frame, so there is no thumbnail or error-frame flash. */}
+      <div ref={containerRef} className={`relative h-full w-full ${className}`} />
     </>
   )
 }

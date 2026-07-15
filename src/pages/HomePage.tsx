@@ -17,8 +17,8 @@ import type { SearchResult, HomeRowConfig } from '../types'
 import type { SimklWatchlistItem } from '../services/simkl/types'
 import { discoverTmdbWithCache } from '../services/tmdb'
 import { canonicalizeCatalogItemsWithTvdb, getProviderListItems } from '../services/providerLists'
-import { cachedFetch, cacheClearExpired, cacheGetMany } from '../services/cache/sqliteCache'
-import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { cachedFetch, cacheClearExpired, cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import {
   simklRowCacheKey,
   providerRowCacheKey,
@@ -33,7 +33,7 @@ import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 import { catalogContentFingerprint, readHeroStartupSnapshot, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
-import { markContinueWatchingSettled, markHeroImageSettled, waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
+import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -202,7 +202,6 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     let cancelled = false
     const load = async () => {
       try {
-        await waitForContinueWatchingSettled()
         const fetcher = async () => {
           const listId = row.providerListId || 'watchlist'
           const rawResults = isSimklDerivedCatalogId(listId)
@@ -307,9 +306,8 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
     let cancelled = false
     const load = async () => {
       try {
-        await waitForContinueWatchingSettled()
         const fetcher = async () => {
-          const results = await getProviderListItems(row, true)
+          const results = await getProviderListItems(row)
           if (row.sortBy === 'alphabetical') results.sort((a, b) => a.title.localeCompare(b.title))
           return results
         }
@@ -397,40 +395,26 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
     const load = async () => {
       try {
-        await waitForContinueWatchingSettled()
         const fetcher = async () => {
-          const firstPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId, true)
-          if (firstPage.length < 20 || row.catalogExtra?.skip) return firstPage
-
-          const secondPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, {
-            ...(row.catalogExtra || {}),
-            skip: '20',
-          }, row.addonId, true)
-
-          const seen = new Set<string>()
-          return [...firstPage, ...secondPage].filter((item) => {
-            if (seen.has(item.id)) return false
-            seen.add(item.id)
-            return true
-          })
+          const firstPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+          // One addon page already fills a Home shelf. Fetching page 2 for every
+          // visible row doubles startup traffic and can overwhelm self-hosted
+          // addons; the full Catalog page retains on-demand pagination.
+          return firstPage
         }
-        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
-          category: CACHE_CATEGORIES.ADDON_CATALOG,
-          ttlSeconds: null,
-          queue: 'startup',
-          revalidate: 'once-per-session',
-          onStaleRefreshed: (fresh) => {
-            if (!cancelled) {
-              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCache.get(cacheKey) || [])
-              memCache.set(cacheKey, fresh)
-              if (changed) setItems(fresh)
-            }
-          },
-        })
+        // getAddonCatalog already owns the durable catalog cache. A second
+        // cachedFetch here made first paint depend on two SQLite reads and two
+        // writes; a stalled outer write left successful addon responses behind
+        // skeletons. Publish the first page directly and persist the row only as
+        // write-behind startup data.
+        const results = await fetcher()
         if (!cancelled) {
           setItems(results)
           memCache.set(cacheKey, results)
           setLoading(false)
+          if (results.length > 0) {
+            void cacheSet(cacheKey, results, { category: CACHE_CATEGORIES.ADDON_CATALOG, ttlSeconds: CACHE_TTLS.ADDON_CATALOG })
+          }
         }
       } catch (err: any) {
         if (!cancelled) {
@@ -519,9 +503,8 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 
     const load = async () => {
       try {
-        await waitForContinueWatchingSettled()
         const fetcher = async () => {
-          const results = await discoverTmdbWithCache(row.discoverConfig!, row.id, true)
+          const results = await discoverTmdbWithCache(row.discoverConfig!, row.id)
           const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
           return enrichSearchResultsWithAppMetadata(results)
         }
@@ -640,10 +623,10 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
               : (listId === 'history' ? await getSimklWatchedMovies() : await getSimklWatchStatusList(listId)).map(simklItemToSearchResult)
             return canonicalizeCatalogItemsWithTvdb(rawResults)
           } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
-            return getProviderListItems(row, true)
+            return getProviderListItems(row)
           } else if (row.sourceType === 'discover') {
             if (row.discoverConfig) {
-              const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id, true)
+              const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id)
               const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
               return enrichSearchResultsWithAppMetadata(rawDiscover)
             }
@@ -652,14 +635,13 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
             const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
             const url = addon?.url || row.addonUrl
             if (url && row.catalogType && row.catalogId) {
-              return getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId, true)
+              return getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
             }
             return []
           }
           return []
         }
 
-        await waitForContinueWatchingSettled()
         const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
           category: CACHE_CATEGORIES.ADDON_CATALOG,
           ttlSeconds: null,
@@ -670,19 +652,17 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
             if (!cancelled) {
               const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
               writeHeroStartupSnapshot(row, sorted)
-              const changed = catalogContentFingerprint(sorted) !== catalogContentFingerprint(memCache.get(cacheKey) || cached || [])
               memCache.set(cacheKey, sorted)
-              if (changed) setItems(sorted)
+              setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
             }
           },
         })
 
         if (!cancelled) {
           const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
-          const changed = catalogContentFingerprint(sorted) !== catalogContentFingerprint(memCache.get(cacheKey) || cached || [])
           memCache.set(cacheKey, sorted)
           writeHeroStartupSnapshot(row, sorted)
-          if (changed) setItems(sorted)
+          setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
         }
       } catch (e) {
         console.error('[HeroCatalogSection] Failed to load catalog items:', e)
@@ -708,18 +688,17 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
 
   if (heroMode === 'disabled') return null
   if (items.length === 0) return null
-  let heroItems = items
+  let heroItems = items.filter((item) => Boolean(item.backdrop && item.backdrop !== item.poster))
   if (heroMode === 'fixed') {
-    heroItems = items.filter((item) => Boolean(item.backdrop))
-    if (heroSource === 'manual' && manualItem) heroItems = [manualItem]
-    else if (heroSource === 'continue-watching') heroItems = recentlyWatched.filter((item) => Boolean(item.backdrop))
+    if (heroSource === 'manual' && manualItem?.backdrop && manualItem.backdrop !== manualItem.poster) heroItems = [manualItem]
+    else if (heroSource === 'continue-watching') heroItems = recentlyWatched.filter((item) => Boolean(item.backdrop && item.backdrop !== item.poster))
     else if (heroSource === 'recently-added') heroItems = [...heroItems].sort((a, b) => (b.releaseDate || String(b.year || '')).localeCompare(a.releaseDate || String(a.year || '')))
     else if (heroSource === 'recommended') heroItems = heroItems.filter((item) => item.rating == null || item.rating >= 6.5).sort((a, b) => (b.rating || 0) - (a.rating || 0))
     const selectionKey = `aurales_fixed_hero_selection:${heroSource}`
     if (heroSource !== 'manual' && heroItems.length) {
       try {
         const cachedSelection = JSON.parse(localStorage.getItem(selectionKey) || 'null') as { item: SearchResult; expires: number } | null
-        if (cachedSelection && cachedSelection.expires > Date.now()) heroItems = [cachedSelection.item]
+        if (cachedSelection && cachedSelection.expires > Date.now() && cachedSelection.item.backdrop && cachedSelection.item.backdrop !== cachedSelection.item.poster) heroItems = [cachedSelection.item]
         else {
           const selected = heroItems[Math.floor(Math.random() * Math.min(heroItems.length, 8))]
           localStorage.setItem(selectionKey, JSON.stringify({ item: selected, expires: Date.now() + 12 * 60 * 60 * 1000 }))
@@ -727,7 +706,7 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
         }
       } catch { heroItems = heroItems.slice(0, 1) }
     }
-    if (focusedItem) heroItems = [focusedItem]
+    if (focusedItem?.backdrop && focusedItem.backdrop !== focusedItem.poster) heroItems = [focusedItem]
   }
   if (heroItems.length === 0) return null
   return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} />
@@ -1018,6 +997,12 @@ export default function HomePage() {
     if (cachePreloaded) return
     let cancelled = false
     const hydrationStartedAt = performance.now()
+    // Cache hydration is an optimization, not a prerequisite for Home. A
+    // delayed SQLite IPC must never leave every shelf behind permanent
+    // skeletons; mount the row loaders after a short bounded wait.
+    const hydrationFallback = window.setTimeout(() => {
+      if (!cancelled) setCachePreloaded(true)
+    }, 1200)
     const state = useHomeCatalogCache.getState()
     const keys = useAppStore.getState().homeRows
       .filter((row) => row.enabled)
@@ -1034,11 +1019,15 @@ export default function HomePage() {
         if (Object.keys(seed).length > 0) state.setMany(seed)
       })
       .finally(() => {
+        window.clearTimeout(hydrationFallback)
         if (import.meta.env.DEV) console.debug(`[PERF] Home cache hydration ${Math.round(performance.now() - hydrationStartedAt)}ms`)
         if (!cancelled) setCachePreloaded(true)
       })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      window.clearTimeout(hydrationFallback)
+    }
   }, [cachePreloaded])
 
   // Startup stream prediction must not compete with Home's initial cache

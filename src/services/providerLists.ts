@@ -24,10 +24,12 @@ import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES } from './cache/constants'
 import { providerCacheScope } from './cache/homeRowCacheKeys'
 import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
+import { dedupeMediaItems } from './mediaPresentation'
 
 function providerListCacheKey(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): string {
   const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : providerCacheScope(row.sourceType)
-  return `provider:${row.sourceType || 'unknown'}:${account}:${row.providerListId || ''}`
+  const version = row.sourceType === 'anilist' ? 'v3:' : ''
+  return `provider:${row.sourceType || 'unknown'}:${version}${account}:${row.providerListId || ''}`
 }
 
 export const TRAKT_LIST_SOURCES = [
@@ -82,6 +84,7 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         if (aid) seenAnilistId.add(aid)
         return true
       })
+      const canonicalDeduplicated = dedupeMediaItems(deduplicated)
       const key = providerListCacheKey(row)
       void scheduleTask(metadataTaskQueue, {
         id: `anilist-catalog-enrich:${key}`,
@@ -89,19 +92,36 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         priority: 'low',
         group: 'metadata',
         execute: async () => {
-          const enriched = await canonicalizeCatalogItemsWithTvdb(deduplicated, { preservePictures: false })
+          const enriched = await canonicalizeCatalogItemsWithTvdb(canonicalDeduplicated, { preservePictures: false })
           if (enriched.length) {
             await cacheSet(key, enriched, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
           }
           return enriched
         },
       }).catch(() => undefined)
-      return deduplicated
+      return canonicalDeduplicated
     }
 
-    const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
-    const enriched = await enrichSearchResultsWithAppMetadata(items)
-    return canonicalizeCatalogItemsWithTvdb(enriched)
+    // A shelf needs its provider's list to become usable, not every item's
+    // cross-provider match. Those lookups can fan out into several metadata
+    // services and previously kept the entire row in skeletons.
+    const key = providerListCacheKey(row)
+    void scheduleTask(metadataTaskQueue, {
+      id: `provider-catalog-enrich:${key}`,
+      dedupKey: `provider-catalog-enrich:${key}`,
+      priority: 'low',
+      group: 'metadata',
+      execute: async () => {
+        const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
+        const enriched = await enrichSearchResultsWithAppMetadata(items)
+        const canonical = await canonicalizeCatalogItemsWithTvdb(enriched)
+        if (canonical.length) {
+          await cacheSet(key, canonical, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+        }
+        return canonical
+      },
+    }).catch(() => undefined)
+    return items
   }
   return []
 }

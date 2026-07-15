@@ -32,9 +32,51 @@ function preloadImage(url: string): Promise<string> {
   })
 }
 
-function usableBackdrop(item?: SearchResult): string | undefined {
+function usableBackdrop(item?: SearchResult, highResolution = false): string | undefined {
   if (!item?.backdrop || item.backdrop === item.poster) return undefined
-  return item.backdrop
+  const artwork = item.backdrop
+  if (!highResolution) return artwork
+  try {
+    const url = new URL(artwork)
+    if (url.hostname === 'image.tmdb.org') {
+      url.pathname = url.pathname.replace(/\/t\/p\/(?:w\d+|original)\//, '/t/p/original/')
+      return url.toString()
+    }
+  } catch { /* preserve provider URL */ }
+  return artwork
+}
+
+function isUsableLoadedBackdrop(image: HTMLImageElement, allowPortrait = false): boolean {
+  if (image.naturalWidth < 320 || image.naturalHeight < 160) return false
+  if (!allowPortrait && image.naturalWidth / image.naturalHeight < 1.2) return false
+
+  // Some artwork hosts return a successful, decodable black/transparent
+  // placeholder instead of an HTTP error. Detect only effectively empty
+  // images; genuinely dark artwork still has visible luminance variation.
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = 16
+    canvas.height = 9
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return true
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    let opaque = 0
+    let minLuma = 255
+    let maxLuma = 0
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      if (pixels[offset + 3] < 16) continue
+      opaque += 1
+      const luma = pixels[offset] * 0.2126 + pixels[offset + 1] * 0.7152 + pixels[offset + 2] * 0.0722
+      minLuma = Math.min(minLuma, luma)
+      maxLuma = Math.max(maxLuma, luma)
+    }
+    return opaque >= 36 && !(maxLuma < 8 && maxLuma - minLuma < 3)
+  } catch {
+    // Direct cross-origin retries may not allow canvas inspection. A decoded,
+    // landscape-sized image is still preferable to rejecting valid artwork.
+    return true
+  }
 }
 
 function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true, onActiveImageSettled }: HeroSectionProps) {
@@ -45,7 +87,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   // supplied; applying that result halfway through a slide looks like the hero
   // rapidly changes to another title.
   const [presentedItem, setPresentedItem] = useState<SearchResult>(() => items[0])
-  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => usableBackdrop(items[0]))
+  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => usableBackdrop(items[0], fixed))
+  const [directBackdropRetries, setDirectBackdropRetries] = useState<Set<string>>(() => new Set())
+  const loadedBackdropsRef = useRef<Set<string>>(new Set())
   const [logoError, setLogoError] = useState(false)
   const [scrollBlur, setScrollBlur] = useState(0)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
@@ -57,6 +101,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
@@ -74,6 +119,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [startupEnrichmentReady, setStartupEnrichmentReady] = useState(false)
 
   useEffect(() => {
+    if (!heroTrailerPlaying && heroMpvVisible) setHeroMpvVisible(false)
+  }, [heroTrailerPlaying, heroMpvVisible])
+
+  useEffect(() => {
     let cancelled = false
     waitForContinueWatchingSettled().then(() => { if (!cancelled) setStartupEnrichmentReady(true) })
     return () => { cancelled = true }
@@ -88,6 +137,43 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     },
     [count],
   )
+
+  const handleBrokenBackdrop = useCallback((url: string) => {
+    onActiveImageSettled?.()
+
+    // A fixed Hero often contains only one item, so advancing cannot recover
+    // from a dead catalog/provider backdrop. Keep the Hero visual by falling
+    // back to its poster while a verified landscape upgrade resolves.
+    if (presentedItem.poster && presentedItem.poster !== url) {
+      setPresentedBackdrop(presentedItem.poster)
+      return
+    }
+
+    if (count > 1) goTo(activeIndex + 1)
+    else setPresentedBackdrop(undefined)
+  }, [activeIndex, count, goTo, onActiveImageSettled, presentedItem.poster])
+
+  // A custom-protocol image request can occasionally remain pending without
+  // firing load or error. Retry the source URL, then leave the broken slide,
+  // so startup can never remain on an empty black Hero indefinitely.
+  useEffect(() => {
+    const url = presentedBackdrop
+    if (!url || loadedBackdropsRef.current.has(url)) return
+    const retryingDirectly = directBackdropRetries.has(url)
+    const timer = window.setTimeout(() => {
+      if (loadedBackdropsRef.current.has(url)) return
+      if (!retryingDirectly) {
+        setDirectBackdropRetries((current) => {
+          const next = new Set(current)
+          next.add(url)
+          return next
+        })
+      } else {
+        handleBrokenBackdrop(url)
+      }
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [directBackdropRetries, handleBrokenBackdrop, presentedBackdrop])
 
   useEffect(() => {
     setLogoError(false)
@@ -129,12 +215,31 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
   const [providerArt, setProviderArt] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
 
+  // The visible title never waits behind enrichment for the rest of the
+  // carousel. Resolve its verified landscape directly; only adjacent/future
+  // slides use the serialized metadata queue.
   useEffect(() => {
-    if (!startupEnrichmentReady) return
+    if (!appManagedMetadata) return
+    const active = presentedItem
+    const tmdbId = active?.tmdbId || (String(active?.id || '').startsWith('tmdb-') ? String(active.id).replace('tmdb-', '') : undefined)
+    if (!tmdbId || upgradedBackdrops[String(active.id)]) return
+    let cancelled = false
+    getTmdbLandscapeBackdrop(active.type === 'series' ? 'series' : 'movie', tmdbId)
+      .then((url) => {
+        if (cancelled || !url) return
+        setUpgradedBackdrops((current) => ({ ...current, [String(active.id)]: url }))
+        setPresentedBackdrop(url)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [presentedItem.id, presentedItem.tmdbId, presentedItem.type, upgradedBackdrops, appManagedMetadata])
+
+  useEffect(() => {
+    if (!appManagedMetadata) return
     let cancelled = false
     const toFetch = items.filter((itm) => {
       const tmdbId = itm.tmdbId || (String(itm.id).startsWith('tmdb-') ? String(itm.id).replace('tmdb-', '') : undefined)
-      return tmdbId && !upgradedBackdrops[String(itm.id)]
+      return tmdbId && String(itm.id) !== String(presentedItem.id) && !upgradedBackdrops[String(itm.id)]
     })
     toFetch.forEach((itm) => {
       const tmdbId = itm.tmdbId || String(itm.id).replace('tmdb-', '')
@@ -164,10 +269,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         .catch(() => {})
     })
     return () => { cancelled = true }
-  }, [items, startupEnrichmentReady])
+  }, [items, presentedItem.id, upgradedBackdrops, appManagedMetadata])
 
   useEffect(() => {
-    if (!startupEnrichmentReady) return
+    if (!startupEnrichmentReady || !appManagedMetadata) return
     let cancelled = false
     setProviderArt({})
     items.forEach((itm) => {
@@ -196,7 +301,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       }).catch(() => undefined)
     })
     return () => { cancelled = true }
-  }, [items, artProviderKey, fanartApiKey, startupEnrichmentReady])
+  }, [items, artProviderKey, fanartApiKey, startupEnrichmentReady, appManagedMetadata])
 
   const displayItems = useMemo(() => items.map((raw) => {
     const art = providerArt[String(raw.id)]
@@ -207,7 +312,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     const nextItem = displayItems[activeIndex]
     if (nextItem) {
       setPresentedItem(nextItem)
-      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || usableBackdrop(nextItem))
+      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || usableBackdrop(nextItem, fixed))
     }
   // Deliberately do not depend on displayItems or upgradedBackdrops: artwork
   // arriving while this slide is visible is saved for its next appearance,
@@ -231,13 +336,13 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!onActiveBackdropChange || isSmall) return
     const activeItem = presentedItem
     if (!activeItem) { onActiveBackdropChange(undefined); return }
-    const backdrop = presentedBackdrop || usableBackdrop(activeItem)
+    const backdrop = presentedBackdrop || usableBackdrop(activeItem, fixed)
     onActiveBackdropChange(backdrop)
   }, [presentedItem, presentedBackdrop, customArtKey, isSmall])
 
   // Fetch top 3 cast for the active hero item
   useEffect(() => {
-    if (!item || !startupEnrichmentReady) return
+    if (!item || !startupEnrichmentReady || !appManagedMetadata) return
     const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
     if (!tmdbId) { setCast([]); return }
 
@@ -246,7 +351,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       .then((c) => { if (!cancelled) setCast(c) })
       .catch(() => { if (!cancelled) setCast([]) })
     return () => { cancelled = true }
-  }, [item?.id, item?.tmdbId, type, startupEnrichmentReady])
+  }, [item?.id, item?.tmdbId, type, startupEnrichmentReady, appManagedMetadata])
 
   useEffect(() => {
     if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway) {
@@ -355,6 +460,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           const isAdjacentSlide = i === activeIndex || (startupEnrichmentReady && (i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count))
           if (!isAdjacentSlide) return null
           const slideItem = i === activeIndex ? presentedItem : itm
+          const backdropUrl = i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem, fixed))
+          const cachedBackdropUrl = backdropUrl ? cachedImage(backdropUrl) : undefined
+          const retryingDirectly = i === activeIndex || Boolean(backdropUrl && directBackdropRetries.has(backdropUrl))
           return (
             <div
               key={`${itm.id ?? i}-${i}`}
@@ -368,9 +476,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               }}
             >
               <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
-                {(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem))) ? (
+                {backdropUrl ? (
                   <img
-                    src={cachedImage(i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem)))}
+                    src={retryingDirectly ? backdropUrl : cachedBackdropUrl}
                     alt=""
                     className="absolute inset-0 w-full h-full object-cover"
                     style={{ objectPosition: 'center 20%' }}
@@ -378,8 +486,34 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     loading={i === activeIndex ? 'eager' : 'lazy'}
                     decoding="async"
                     fetchPriority={i === activeIndex ? 'high' : 'auto'}
-                    onLoad={i === activeIndex ? onActiveImageSettled : undefined}
-                    onError={i === activeIndex ? onActiveImageSettled : undefined}
+                    onLoad={i === activeIndex ? (event) => {
+                      const isPosterFallback = backdropUrl === slideItem.poster
+                      if (!isUsableLoadedBackdrop(event.currentTarget, isPosterFallback)) {
+                        if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
+                          setDirectBackdropRetries((current) => {
+                            const next = new Set(current)
+                            next.add(backdropUrl)
+                            return next
+                          })
+                          return
+                        }
+                        handleBrokenBackdrop(backdropUrl)
+                        return
+                      }
+                      loadedBackdropsRef.current.add(backdropUrl)
+                      onActiveImageSettled?.()
+                    } : undefined}
+                    onError={i === activeIndex ? () => {
+                      if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
+                        setDirectBackdropRetries((current) => {
+                          const next = new Set(current)
+                          next.add(backdropUrl)
+                          return next
+                        })
+                        return
+                      }
+                      handleBrokenBackdrop(backdropUrl)
+                    } : undefined}
                   />
                 ) : (
                   <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
