@@ -17,6 +17,42 @@ const progressPending = new Map<number, Promise<AniListProgress | null>>()
 let trackedProgressCache: { data: AniListProgress[]; timestamp: number } | null = null
 let trackedProgressPending: Promise<AniListProgress[]> | null = null
 const EXACT_EPISODE_MARKS_KEY = 'anilist_exact_episode_marks'
+// AniList is currently operating at a degraded 30 requests/minute limit. Keep
+// a little margin for clock drift and its separate burst limiter.
+const ANILIST_REQUEST_SPACING_MS = 2_100
+let anilistRequestQueue: Promise<void> = Promise.resolve()
+let anilistNextRequestAt = 0
+
+class AniListRateLimitError extends Error {
+  retryAfterMs: number
+
+  constructor(retryAfterMs = 3000) {
+    super('AniList is temporarily rate-limiting requests. Please wait a moment and try again.')
+    this.name = 'AniListRateLimitError'
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** AniList applies one account/IP rate limit across every query. Serialize all
+ * calls so Home, Discovery, account sync, and detail pages cannot flood it at
+ * startup. Keep the queue alive when an individual request fails. */
+function queueAniListRequest<T>(request: () => Promise<T>): Promise<T> {
+  const queued = anilistRequestQueue.then(async () => {
+    const delay = Math.max(0, anilistNextRequestAt - Date.now())
+    if (delay) await wait(delay)
+    try {
+      return await request()
+    } finally {
+      anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + ANILIST_REQUEST_SPACING_MS)
+    }
+  })
+  anilistRequestQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
 
 export type AniListStatus = 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'PAUSED' | 'DROPPED' | 'REPEATING'
 
@@ -50,6 +86,8 @@ interface AniMedia {
   idMal?: number
   episodes?: number
   seasonYear?: number
+  description?: string
+  genres?: string[]
   bannerImage?: string
   coverImage?: { extraLarge?: string; large?: string }
   title?: { userPreferred?: string; english?: string; romaji?: string }
@@ -193,7 +231,7 @@ export function unmarkAniListEpisodeExact(localId: string, season: number, episo
   writeExactEpisodeMarks(next)
 }
 
-async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
+export async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
   const token = getAniListToken()
   if (requireAuth && !token) throw new Error('AniList token is missing')
   const headers = {
@@ -201,26 +239,89 @@ async function anilistRequest<T>(query: string, variables?: Record<string, unkno
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
   const body = JSON.stringify({ query, variables })
-  let data: any
-  try {
-    const res = await fetch(API_URL, { method: 'POST', headers, body })
-    data = await res.json().catch(() => null)
-    if (!res.ok || data?.errors?.length) {
-      const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
-      throw new Error(message)
+  return queueAniListRequest(async () => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let data: any
+      try {
+        const res = await fetch(API_URL, { method: 'POST', headers, body })
+        data = await res.json().catch(() => null)
+        const remaining = Number(res.headers.get('x-ratelimit-remaining'))
+        const resetSeconds = Number(res.headers.get('x-ratelimit-reset'))
+        if (remaining === 0 && Number.isFinite(resetSeconds)) {
+          anilistNextRequestAt = Math.max(anilistNextRequestAt, resetSeconds * 1000)
+        }
+        if (res.status === 429) {
+          const retrySeconds = Number(res.headers.get('retry-after'))
+          throw new AniListRateLimitError(Number.isFinite(retrySeconds) && retrySeconds > 0 ? retrySeconds * 1000 : 3000)
+        }
+        if (!res.ok || data?.errors?.length) {
+          const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
+          if (res.status === 429 || /too many requests/i.test(message)) throw new AniListRateLimitError()
+          throw new Error(message)
+        }
+      } catch (error) {
+        if (error instanceof AniListRateLimitError) {
+          anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + error.retryAfterMs)
+          if (attempt === 0) {
+            await wait(error.retryAfterMs)
+            continue
+          }
+          throw error
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/failed to fetch|networkerror|load failed/i.test(message)) throw error
+        try {
+          const raw = await invoke<string>('http_request', { method: 'POST', url: API_URL, headers, body })
+          data = JSON.parse(raw)
+        } catch (nativeError) {
+          const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError)
+          if (/\b429\b|too many requests/i.test(nativeMessage)) {
+            const rateLimitError = new AniListRateLimitError()
+            anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + rateLimitError.retryAfterMs)
+            if (attempt === 0) {
+              await wait(rateLimitError.retryAfterMs)
+              continue
+            }
+            throw rateLimitError
+          }
+          throw new Error('Could not reach AniList. Check your connection and try again.')
+        }
+        if (data?.errors?.length) {
+          const message = data.errors[0]?.message || 'AniList returned an error'
+          if (/too many requests/i.test(message)) {
+            const rateLimitError = new AniListRateLimitError()
+            anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + rateLimitError.retryAfterMs)
+            if (attempt === 0) {
+              await wait(rateLimitError.retryAfterMs)
+              continue
+            }
+            throw rateLimitError
+          }
+          throw new Error(message)
+        }
+      }
+      return data.data as T
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (!/failed to fetch|networkerror|load failed/i.test(message)) throw error
-    try {
-      const raw = await invoke<string>('http_request', { method: 'POST', url: API_URL, headers, body })
-      data = JSON.parse(raw)
-    } catch (nativeError) {
-      throw new Error(`AniList network request failed: ${nativeError instanceof Error ? nativeError.message : nativeError}`)
-    }
-    if (data?.errors?.length) throw new Error(data.errors[0]?.message || 'AniList returned an error')
-  }
-  return data.data as T
+    throw new AniListRateLimitError()
+  })
+}
+
+function cleanAniListDescription(value?: string): string | undefined {
+  if (!value) return undefined
+  const decoded = value
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&(amp|lt|gt|quot|#39|#x27);/gi, (entity) => ({
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&#x27;': "'",
+    }[entity.toLowerCase()] || entity))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return decoded || undefined
 }
 
 export function clearAniListProgressCaches(): void {
@@ -848,6 +949,8 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     title: mediaTitle(media),
     type: 'series',
     year: media.seasonYear,
+    overview: cleanAniListDescription(media.description),
+    genres: media.genres,
     poster: anilistPoster,
     backdrop: anilistBackdrop,
     provider,
@@ -891,6 +994,8 @@ async function getAniListEntries(userName: string, status: AniListStatus): Promi
               idMal
               episodes
               seasonYear
+              description(asHtml: false)
+              genres
               bannerImage
               coverImage { extraLarge large }
               title { userPreferred english romaji }

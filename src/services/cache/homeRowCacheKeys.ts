@@ -30,7 +30,8 @@ export function providerRowCacheKey(row: HomeRowConfig): string {
 }
 
 export function addonRowCacheKey(row: HomeRowConfig): string {
-  return `home:addon:v2:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
+  const metadataMode = localStorage.getItem('aurales_app_managed_metadata') === 'false' ? 'addon' : 'aurales'
+  return `home:addon:v3:${metadataMode}:${row.addonId}:${row.catalogType}:${row.catalogId}:${JSON.stringify(row.catalogExtra || {})}`
 }
 
 export function discoverRowCacheKey(row: HomeRowConfig): string {
@@ -38,7 +39,7 @@ export function discoverRowCacheKey(row: HomeRowConfig): string {
 }
 
 export function heroRowCacheKey(row: HomeRowConfig): string {
-  return `home:hero:v2:${JSON.stringify({
+  return `home:hero:v3:${JSON.stringify({
     sourceType: row.sourceType || 'addon',
     addonId: row.addonId || '',
     addonUrl: row.addonUrl || '',
@@ -49,6 +50,7 @@ export function heroRowCacheKey(row: HomeRowConfig): string {
     discoverConfig: row.discoverConfig || null,
     sortBy: row.sortBy || 'default',
     accountScope: providerCacheScope(row.sourceType),
+    metadataMode: localStorage.getItem('aurales_app_managed_metadata') === 'false' ? 'addon' : 'aurales',
   })}`
 }
 

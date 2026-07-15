@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { CastMember, CrewMember } from '../../types'
+import { cachedImage } from '../../services/imageCache'
 
 function ExpandableOverview({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
@@ -89,9 +90,15 @@ export default function DetailHero({
   cast,
   crew,
 }: DetailHeroProps) {
-  const [backdropLoaded, setBackdropLoaded] = useState(false)
-  const [backdropError, setBackdropError] = useState(false)
-  const [logoError, setLogoError] = useState(false)
+  // Scope image state to its URL. Resetting booleans in an effect races a fast
+  // cached image: onLoad can run first, then the effect sets loaded=false and
+  // the same URL never emits another load event, leaving the Hero black.
+  const [loadedBackdropUrl, setLoadedBackdropUrl] = useState<string | null>(null)
+  const [failedBackdropUrl, setFailedBackdropUrl] = useState<string | null>(null)
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
+  const backdropLoaded = Boolean(backdrop && loadedBackdropUrl === backdrop)
+  const backdropError = Boolean(backdrop && failedBackdropUrl === backdrop)
+  const logoError = Boolean(logo && failedLogoUrl === logo)
 
   const runtimeStr = formatRuntime(runtime)
   const topCast = cast?.slice(0, 3) ?? []
@@ -127,17 +134,20 @@ export default function DetailHero({
       {/* Backdrop image */}
       {backdrop && !backdropError ? (
         <img
-          src={backdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
+          src={cachedImage(backdrop)}
           alt=""
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded ? 'opacity-100' : 'opacity-0'}`}
           style={{ objectPosition: 'center 20%' }}
           draggable={false}
-          onLoad={() => setBackdropLoaded(true)}
-          onError={() => setBackdropError(true)}
+          onLoad={() => {
+            setLoadedBackdropUrl(backdrop)
+            setFailedBackdropUrl((failed) => failed === backdrop ? null : failed)
+          }}
+          onError={() => setFailedBackdropUrl(backdrop)}
         />
       ) : poster ? (
         <img
-          src={poster}
+          src={cachedImage(poster)}
           alt=""
           className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-50"
           draggable={false}
@@ -165,10 +175,10 @@ export default function DetailHero({
         <div className="mb-3 min-h-[60px] flex items-end">
           {logo && !logoError ? (
             <img
-              src={logo}
+              src={cachedImage(logo)}
               alt={title}
               className="max-h-[110px] md:max-h-[140px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
-              onError={() => setLogoError(true)}
+              onError={() => setFailedLogoUrl(logo)}
               draggable={false}
             />
           ) : (

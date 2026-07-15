@@ -79,6 +79,7 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  addonMeta?: Record<string, unknown>
   autoPlay?: boolean
 }
 
@@ -174,7 +175,7 @@ function parseRuntime(value: unknown): number | undefined {
 function artworkSettingsKey(): string {
   const settings = useAppStore.getState()
   return JSON.stringify({
-    artworkResolutionVersion: 2,
+    managed: settings.appManagedMetadata,
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
@@ -215,7 +216,6 @@ export default function MovieDetailPage() {
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const preloadPlaybackSources = useAppStore((s) => s.preloadPlaybackSources)
   const artSettingsSignature = useMemo(() => JSON.stringify({
-    artworkResolutionVersion: 2,
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
@@ -407,6 +407,31 @@ export default function MovieDetailPage() {
   useEffect(() => {
     async function load() {
       setMalRating(null)
+      setLoading(true)
+
+      // Mount the real detail structure from navigation/catalog data before
+      // SQLite, addon metadata, ID mapping, or TMDB's multi-endpoint request.
+      // Those sources refine this shell instead of hiding it behind a loader.
+      const immediateMovie: MovieDetails | null = state.title ? applyMovieArt({
+        id: id || 'unknown',
+        title: state.title,
+        year: state.year,
+        overview: state.overview,
+        rating: state.rating,
+        poster: state.poster,
+        backdrop: state.backdrop,
+        logo: state.logo,
+        imdbId: cleanId(state.imdbId),
+        tmdbId: cleanId(state.tmdbId),
+        malId: cleanId(state.malId),
+        anilistId: cleanId(state.anilistId),
+        genres: [],
+        cast: [],
+        crew: [],
+        recommendations: [],
+        trailers: [],
+      }) : null
+      setMovie(immediateMovie)
 
       const artKey = artworkSettingsKey()
       const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
@@ -419,7 +444,6 @@ export default function MovieDetailPage() {
         }
       }
 
-      setLoading(true)
       let result: MovieDetails | null = null
 
       const parseId = (val: unknown, prefix: string): string | undefined => {
@@ -452,9 +476,10 @@ export default function MovieDetailPage() {
         malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
         anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
+      const appManagedMetadata = useAppStore.getState().appManagedMetadata
 
       // Early resolve anime IDs if they are AniList / MAL but we don't have TMDB ID
-      if ((knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
+      if (appManagedMetadata && (knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
@@ -474,7 +499,7 @@ export default function MovieDetailPage() {
         }
       }
 
-      if (state.sourceAddonId && state.sourceAddonItemId) {
+      if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
         const normalized = await resolveAppMetadata({
           addonId: state.sourceAddonId, addonUrl: state.addonUrl, addonType: 'movie', id: state.sourceAddonItemId,
           title: state.title, year: state.year, imdbId: knownIds.imdbId, tmdbId: Number(knownIds.tmdbId) || undefined,
@@ -490,12 +515,15 @@ export default function MovieDetailPage() {
       }
 
       // If addon item, get IDs from addon meta
-      if (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId)) {
+      const shouldRequestAddonMeta = !appManagedMetadata
+        || (useAppStore.getState().useAddonMetadataFallback && !result)
+      if (shouldRequestAddonMeta && (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId))) {
         const tryAddonMeta = async (addonUrl: string) => {
           try {
-            const meta = await getAddonMeta(addonUrl, 'movie', id || '')
+            const addonItemId = state.sourceAddonItemId || id || ''
+            const meta = await getAddonMeta(addonUrl, 'movie', addonItemId)
             if (meta) {
-              const parsed = addonMetaToMovie(meta, id || '')
+              const parsed = addonMetaToMovie(meta, addonItemId)
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
               if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || String(parsed.tmdbId)
               if (parsed.malId) knownIds.malId = knownIds.malId || String(parsed.malId)
@@ -516,7 +544,22 @@ export default function MovieDetailPage() {
             if (addonResult) break
           }
         }
-        if (addonResult && !result && useAppStore.getState().useAddonMetadataFallback) result = addonResult
+        if (addonResult && !result && (!appManagedMetadata || useAppStore.getState().useAddonMetadataFallback)) result = addonResult
+      }
+
+      // Respect the metadata toggle on detail pages too. Addon metadata is
+      // already complete enough to render; external provider work must not
+      // delay or replace it when managed metadata is disabled.
+      if (!appManagedMetadata && result) {
+        const directMovie = applyMovieArt(applyInitialArtworkPreference({
+          ...result,
+          id: id || result.id,
+        }, 'movie', Boolean(result.isAnime || knownIds.anilistId || knownIds.malId)))
+        setMovie(directMovie)
+        setLoading(false)
+        const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+        if (movieCacheKey) void cacheSet(movieCacheKey, directMovie, cacheOpts)
+        return
       }
 
       // Show placeholder immediately
@@ -595,6 +638,12 @@ export default function MovieDetailPage() {
       finalResult.id = targetId
 
       const artApplied = applyMovieArt(applyInitialArtworkPreference(finalResult, 'movie', Boolean(finalResult.isAnime)))
+      // Metadata arriving after the route shell must not erase artwork that is
+      // already visible. Explicit provider-art enhancement below can still
+      // replace these fields when it has a successful result.
+      artApplied.poster ||= immediateMovie?.poster
+      artApplied.backdrop ||= immediateMovie?.backdrop
+      artApplied.logo ||= immediateMovie?.logo
 
       setMovie(artApplied)
       setLoading(false)
@@ -730,10 +779,10 @@ export default function MovieDetailPage() {
 
   if (loading || !movie) {
     return <DetailLoadingState
-      logo={movie?.logo || initialRouteArt.logo}
-      title={movie?.title || state.title}
-      backdrop={movie?.backdrop || initialRouteArt.backdrop}
-      poster={movie?.poster || initialRouteArt.poster}
+      logo={initialRouteArt.logo}
+      title={state.title}
+      backdrop={initialRouteArt.backdrop}
+      poster={initialRouteArt.poster}
     />
   }
 

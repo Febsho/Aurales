@@ -3,6 +3,11 @@ import { scheduleTask, startupTaskQueue, taskQueue, type TaskPriority } from './
 
 // [PERF] logs are dev-only — they add noise and cost in production builds
 const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
+// SQLite is a first-paint optimization, not a prerequisite for network work.
+// A healthy local read completes in a few milliseconds; if the Tauri command
+// stalls, move on quickly so nested row/catalog caches cannot stack seconds of
+// waiting before the addon request even starts.
+const CACHE_READ_TIMEOUT_MS = 250
 
 interface RawCacheEntry {
   key: string
@@ -26,6 +31,8 @@ export interface CacheOptions {
   revalidate?: 'expired' | 'once-per-session'
   priority?: TaskPriority
   queue?: 'default' | 'startup'
+  /** Persist legitimate empty arrays (for example, a ratings lookup with no matches). */
+  cacheEmptyResults?: boolean
 }
 
 function isExpired(entry: RawCacheEntry): boolean {
@@ -41,7 +48,10 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
   const memory = sessionCache.get(key)
   if (memory) return memory as CacheResult<T>
   try {
-    const entry = await invoke<RawCacheEntry | null>('cache_entry_get', { key })
+    const entry = await Promise.race([
+      invoke<RawCacheEntry | null>('cache_entry_get', { key }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), CACHE_READ_TIMEOUT_MS)),
+    ])
     if (!entry) return null
     const data = JSON.parse(entry.value) as T
     const result = { data, stale: isExpired(entry), age: ageMs(entry) }
@@ -72,7 +82,10 @@ export async function cacheSet(key: string, value: unknown, options: CacheOption
 export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, CacheResult<T>>> {
   if (keys.length === 0) return new Map()
   try {
-    const entries = await invoke<RawCacheEntry[]>('cache_entry_get_many', { keys })
+    const entries = await Promise.race([
+      invoke<RawCacheEntry[]>('cache_entry_get_many', { keys }),
+      new Promise<RawCacheEntry[]>((resolve) => setTimeout(() => resolve([]), CACHE_READ_TIMEOUT_MS)),
+    ])
     const map = new Map<string, CacheResult<T>>()
     for (const entry of entries) {
       const data = JSON.parse(entry.value) as T
@@ -161,7 +174,11 @@ export async function cachedFetch<T>(
     skipRefreshIf?: (stale: T) => boolean
   },
 ): Promise<T> {
-  const cached = await cacheGet<T>(key)
+  let cached = await cacheGet<T>(key)
+  // Older builds could persist failed catalog requests as permanent empty
+  // arrays. Treat those poisoned entries as misses so they self-heal without a
+  // manual cache clear.
+  if (cached && Array.isArray(cached.data) && cached.data.length === 0 && !options.cacheEmptyResults) cached = null
   const needsSessionRefresh = options.revalidate === 'once-per-session' && !refreshedThisSession.has(key)
 
   if (cached && !cached.stale && !needsSessionRefresh) {
@@ -205,16 +222,22 @@ export async function cachedFetch<T>(
   const existingRequest = pendingRefreshes.get(key) as Promise<T> | undefined
   if (existingRequest) return existingRequest
   if (options.revalidate === 'once-per-session') refreshedThisSession.add(key)
-  const request = scheduleTask(options.queue === 'startup' ? startupTaskQueue : taskQueue, {
-    id: `cache-miss:${key}`,
-    dedupKey: `cache:${key}`,
-    priority: options.priority || 'normal',
-    execute: async () => {
+  // Cold loads execute directly. Fetchers often call other cached services;
+  // putting outer and inner misses on the same bounded queue lets every slot
+  // wait for work that cannot start. Only stale revalidation is backgrounded.
+  const request = (async () => {
     const t0 = performance.now()
     try {
       const fresh = await fetcher()
       perfLog(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
-      await cacheSet(key, fresh, options)
+      // Empty cold catalog results are not durable screen data. They may be a
+      // legitimate empty response, but persisting them forever also turns a
+      // transient provider failure into a permanently empty Home row.
+      // Persistence is write-behind. cacheSet updates the session cache before
+      // invoking SQLite, so awaiting its IPC write here only delays first paint
+      // and can leave a successful addon response behind permanent skeletons if
+      // the native cache command stalls.
+      if (options.cacheEmptyResults || !(Array.isArray(fresh) && fresh.length === 0)) void cacheSet(key, fresh, options)
       lastRefreshTime = Date.now()
       return fresh
     } catch (e) {
@@ -224,8 +247,7 @@ export async function cachedFetch<T>(
     } finally {
       pendingRefreshes.delete(key)
     }
-    },
-  })
+  })()
   pendingRefreshes.set(key, request)
   return request
 }

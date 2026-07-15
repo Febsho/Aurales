@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
-import { mediaIdentity } from '../services/mediaPresentation'
+import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 
 const CATALOG_PREVIEW_LIMIT = 25
 
@@ -29,7 +29,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const posterSize = useAppStore((s) => s.posterSize)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
-  const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
+  // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
+  // legitimately contain duplicate/canonicalized entries with the same ID.
+  const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
   const showAllWidthClass = useMemo(() => {
     if (layout === 'landscape') {
       switch (posterSize) {
@@ -72,10 +74,10 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   }
 
   const visibleItems = useMemo(
-    () => items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId),
+    () => dedupeMediaItems(items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)),
     [items],
   )
-  const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > CATALOG_PREVIEW_LIMIT || items.length > CATALOG_PREVIEW_LIMIT))
+  const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > CATALOG_PREVIEW_LIMIT))
   const rowItems = useMemo(
     () => shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems,
     [shouldShowAll, visibleItems],
@@ -99,8 +101,8 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           </div>
         </div>
         <div className="space-y-2">
-          {rowItems.map((item) => (
-            <MediaCard key={mediaIdentity(item)} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
+          {rowItems.map((item, index) => (
+            <MediaCard key={`${mediaIdentity(item)}:${index}`} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
           ))}
         </div>
       </div>
@@ -159,16 +161,16 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       >
         {rowItems.map((item, idx) => (
           <MediaCard
-            key={mediaIdentity(item)}
+            key={`${mediaIdentity(item)}:${idx}`}
             item={item}
             layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
             disableTrailerPreview={disableTrailerPreview}
             rank={showRank ? idx + 1 : undefined}
-            onFocusItem={cinematic ? setFocusedItem : undefined}
-            onUnfocusItem={cinematic ? (unfocused) => setFocusedItem((current) => current && mediaIdentity(current) === mediaIdentity(unfocused) ? null : current) : undefined}
+            onFocusItem={cinematic ? () => setFocusedCardIndex(idx) : undefined}
+            onUnfocusItem={cinematic ? () => setFocusedCardIndex((current) => current === idx ? null : current) : undefined}
             cinematicMode={cinematic}
-            cinematicFocused={cinematic && focusedItem ? mediaIdentity(focusedItem) === mediaIdentity(item) : false}
+            cinematicFocused={cinematic && focusedCardIndex === idx}
             cinematicExpand={cinematicExpand && !fixedHome}
           />
         ))}

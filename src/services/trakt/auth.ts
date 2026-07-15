@@ -1,8 +1,47 @@
 import type { TraktTokens, TraktDeviceCode, TraktAccount } from '../../types'
+import { invoke } from '@tauri-apps/api/core'
 
 const TRAKT_API = 'https://api.trakt.tv'
 const LS_ACCOUNT = 'trakt_account'
 const BUILTIN_TRAKT_CLIENT_ID = '3649670f0821f9da74ec71ac83ec7b37c71397d22aaa3c44997bb46477262010'
+
+type TraktHttpResult = { status: number; data: any }
+
+function isTauri(): boolean {
+  return Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+}
+
+function parseJson(raw: string): any {
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch (_) { return raw }
+}
+
+async function traktRequest(url: string, options: RequestInit = {}): Promise<TraktHttpResult> {
+  if (!isTauri()) {
+    const response = await fetch(url, options)
+    return { status: response.status, data: parseJson(await response.text()) }
+  }
+
+  const nativeHeaders: Record<string, string> = {}
+  new Headers(options.headers).forEach((value, key) => { nativeHeaders[key] = value })
+
+  try {
+    const raw = await invoke<string>('http_request', {
+      method: options.method || 'GET',
+      url,
+      headers: nativeHeaders,
+      body: typeof options.body === 'string' ? options.body : null,
+    })
+    return { status: 200, data: parseJson(raw) }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const statusMatch = message.match(/^(\d{3}):(.*)$/s)
+    if (statusMatch) {
+      return { status: Number(statusMatch[1]), data: parseJson(statusMatch[2]) }
+    }
+    throw new Error(`Trakt network request failed: ${message}`)
+  }
+}
 
 export function getClientId(): string {
   return localStorage.getItem('trakt_client_id') || import.meta.env.VITE_TRAKT_CLIENT_ID || BUILTIN_TRAKT_CLIENT_ID
@@ -59,13 +98,13 @@ export async function getDeviceCode(): Promise<TraktDeviceCode> {
   const clientId = getClientId()
   if (!clientId) throw new Error('Trakt client ID not configured')
 
-  const res = await fetch(`${TRAKT_API}/oauth/device/code`, {
+  const res = await traktRequest(`${TRAKT_API}/oauth/device/code`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: clientId }),
   })
-  if (!res.ok) throw new Error(`Trakt device code error: ${res.status}`)
-  const data = await res.json()
+  if (res.status < 200 || res.status >= 300) throw new Error(`Trakt device code error: ${res.status}`)
+  const data = res.data
 
   return {
     deviceCode: data.device_code,
@@ -87,7 +126,7 @@ export async function pollForToken(deviceCode: string): Promise<TraktTokens | nu
   const clientSecret = getClientSecret()
   if (clientSecret) body.client_secret = clientSecret
 
-  const res = await fetch(`${TRAKT_API}/oauth/device/token`, {
+  const res = await traktRequest(`${TRAKT_API}/oauth/device/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -95,7 +134,7 @@ export async function pollForToken(deviceCode: string): Promise<TraktTokens | nu
 
   if (res.status === 400) return null
   if (res.status === 200) {
-    const data = await res.json()
+    const data = res.data
     const tokens: TraktTokens = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
@@ -121,18 +160,18 @@ export async function refreshAccessToken(): Promise<TraktTokens | null> {
   const secret = getClientSecret()
   if (secret) body.client_secret = secret
 
-  const res = await fetch(`${TRAKT_API}/oauth/token`, {
+  const res = await traktRequest(`${TRAKT_API}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
 
-  if (!res.ok) {
+  if (res.status < 200 || res.status >= 300) {
     clearTokens()
     return null
   }
 
-  const data = await res.json()
+  const data = res.data
   const newTokens: TraktTokens = {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
@@ -152,7 +191,7 @@ export async function traktFetch(path: string, options: RequestInit = {}): Promi
     if (!tokens) throw new Error('Failed to refresh Trakt token')
   }
 
-  const res = await fetch(`${TRAKT_API}${path}`, {
+  const res = await traktRequest(`${TRAKT_API}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -163,9 +202,9 @@ export async function traktFetch(path: string, options: RequestInit = {}): Promi
     },
   })
 
-  if (!res.ok) throw new Error(`Trakt API error: ${res.status}`)
+  if (res.status < 200 || res.status >= 300) throw new Error(`Trakt API error: ${res.status}`)
   if (res.status === 204) return null
-  return res.json()
+  return res.data
 }
 
 export async function fetchTraktAccount(): Promise<TraktAccount> {

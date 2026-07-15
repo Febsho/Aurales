@@ -150,18 +150,20 @@ export default function TrailerPreview({
     const subscribe = () => {
       player.postMessage(JSON.stringify({ event: 'listening', id: `aurales-${trailer.key}` }), 'https://www.youtube-nocookie.com')
       player.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), 'https://www.youtube-nocookie.com')
+      player.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onError'] }), 'https://www.youtube-nocookie.com')
     }
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== player) return
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
         if (data?.event === 'onStateChange' && data.info === 0) onEnded?.()
+        if (data?.event === 'onError') onUnavailable?.()
       } catch { /* Ignore unrelated iframe messages. */ }
     }
     window.addEventListener('message', handleMessage)
     subscribe()
     return () => window.removeEventListener('message', handleMessage)
-  }, [embedLoaded, trailer.key, onEnded])
+  }, [embedLoaded, trailer.key, onEnded, onUnavailable])
 
   const showMedia = directStream ? videoPlaying : embedLoaded
 

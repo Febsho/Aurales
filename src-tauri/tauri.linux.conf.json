@@ -10,10 +10,10 @@
     },
     "linux": {
       "deb": {
-        "depends": ["mpv", "ffmpeg"]
+        "depends": ["mpv", "libmpv2 | libmpv1", "ffmpeg"]
       },
       "rpm": {
-        "depends": ["mpv", "ffmpeg"]
+        "depends": ["mpv", "mpv-libs", "/usr/bin/ffmpeg"]
       },
       "appimage": {
         "bundleMediaFramework": false

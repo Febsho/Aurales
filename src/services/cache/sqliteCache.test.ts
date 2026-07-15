@@ -23,7 +23,8 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-import { cacheClearCategory, cachedFetch } from './sqliteCache'
+import { invoke } from '@tauri-apps/api/core'
+import { cacheClearCategory, cacheGet, cachedFetch } from './sqliteCache'
 
 describe('sqlite catalog cache behavior', () => {
   beforeEach(() => rows.clear())
@@ -94,5 +95,31 @@ describe('sqlite catalog cache behavior', () => {
     await cachedFetch(key, async () => ['old'], { category: 'discover', ttlSeconds: 60 })
     await cacheClearCategory('discover')
     expect(await cachedFetch(key, async () => ['new'], { category: 'discover', ttlSeconds: 60 })).toEqual(['new'])
+  })
+
+  it('does not let a stalled SQLite read hold up a cold network request', async () => {
+    vi.useFakeTimers()
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise(() => undefined))
+    const pending = cacheGet(`stalled-${Math.random()}`)
+    await vi.advanceTimersByTimeAsync(250)
+    await expect(pending).resolves.toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('returns fresh catalog data without waiting for a stalled SQLite write', async () => {
+    const invokeMock = vi.mocked(invoke)
+    const normalInvoke = invokeMock.getMockImplementation()!
+    invokeMock.mockImplementation((command: string, args?: Record<string, any>) => {
+      if (command === 'cache_entry_set') return new Promise(() => undefined)
+      return normalInvoke(command, args)
+    })
+
+    const key = `stalled-write-${Math.random()}`
+    await expect(cachedFetch(key, async () => ['addon-result'], {
+      category: 'addon_catalog',
+      ttlSeconds: 60,
+    })).resolves.toEqual(['addon-result'])
+
+    invokeMock.mockImplementation(normalInvoke)
   })
 })

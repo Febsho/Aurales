@@ -16,6 +16,14 @@ function formatMinutes(minutes: number) {
   return hours ? `${hours.toLocaleString()}h${remainder ? ` ${remainder}m` : ''}` : `${remainder}m`
 }
 
+function formatMinutesAsDays(minutes: number) {
+  const totalMinutes = Math.round(minutes)
+  const days = Math.floor(totalMinutes / 1_440)
+  const hours = Math.floor((totalMinutes % 1_440) / 60)
+  const remainder = totalMinutes % 60
+  return `${days.toLocaleString()}d${hours ? ` ${hours}h` : ''}${remainder ? ` ${remainder}m` : ''}`
+}
+
 function localDateKey(value: string | number | Date) {
   const date = new Date(value)
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -64,6 +72,7 @@ export default function ConnectedHistory() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [enrichingPosters, setEnrichingPosters] = useState(false)
   const [runtimeProgress, setRuntimeProgress] = useState({ completed: 0, total: 0 })
+  const [watchTimeInDays, setWatchTimeInDays] = useState(false)
 
   useEffect(() => {
     setSelected((current) => {
@@ -180,14 +189,17 @@ export default function ConnectedHistory() {
     {Object.keys(errors).length > 0 && <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.06] px-4 py-3 text-xs text-amber-100/65">Some services could not be loaded: {Object.keys(errors).map((source) => sourceLabels[source as ConnectedHistorySource]).join(', ')}. Results from available services are still shown.</div>}
 
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">{[
-      ['Estimated watch time', estimatedMinutes ? formatMinutes(estimatedMinutes) : runtimeProgress.total ? 'Calculating...' : '—', runtimeEligible ? `${runtimeCovered}/${runtimeEligible} titles with TMDB runtime` : 'No TMDB runtime IDs'],
+      ['Estimated watch time', estimatedMinutes ? (watchTimeInDays ? formatMinutesAsDays(estimatedMinutes) : formatMinutes(estimatedMinutes)) : runtimeProgress.total ? 'Calculating...' : '—', runtimeEligible ? `${runtimeCovered}/${runtimeEligible} titles with TMDB runtime · Click for ${watchTimeInDays ? 'hours' : 'days'}` : 'No TMDB runtime IDs'],
       ['Unique titles', statsItems.length, 'After provider deduplication'],
       ['Movies watched', moviePlays, 'Includes recorded rewatches'],
       ['Episodes watched', episodePlays, 'Highest provider count per show'],
       ['Current streak', `${streak.current} ${streak.current === 1 ? 'day' : 'days'}`, 'Consecutive dated history days'],
       ['Best streak', `${streak.longest} ${streak.longest === 1 ? 'day' : 'days'}`, 'Longest connected-history streak'],
       ['Merged duplicates', overlaps, 'Found on multiple services'],
-    ].map(([label, value, detail]) => <div key={String(label)} className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-4"><p className="text-[10px] font-bold uppercase tracking-wider text-white/30">{label}</p><p className="mt-2 text-xl font-black text-white/85">{value}</p><p className="mt-1 text-[9px] text-white/22">{detail}</p></div>)}</div>
+    ].map(([label, value, detail]) => {
+      const isWatchTime = label === 'Estimated watch time'
+      return <button type="button" key={String(label)} disabled={!isWatchTime || !estimatedMinutes} onClick={isWatchTime ? () => setWatchTimeInDays((current) => !current) : undefined} className={`rounded-2xl border border-white/[0.07] bg-white/[0.035] p-4 text-left ${isWatchTime && estimatedMinutes ? 'cursor-pointer transition-colors hover:border-accent/25 hover:bg-white/[0.055]' : ''}`}><p className="text-[10px] font-bold uppercase tracking-wider text-white/30">{label}</p><p className="mt-2 text-xl font-black text-white/85">{value}</p><p className="mt-1 text-[9px] text-white/22">{detail}</p></button>
+    })}</div>
 
     <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
       <div className="rounded-2xl border border-white/[0.07] bg-white/[0.03] p-5"><div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-bold text-white/80">History timeline</h3><p className="mt-1 text-[10px] text-white/30">Unique titles by latest watched month</p></div><span className="text-xs font-bold text-accent/70">{statsItems.length} titles</span></div>{monthly.length ? <div className="flex h-40 items-end gap-2">{monthly.map(([month, count]) => <div key={month} className="group flex min-w-0 flex-1 flex-col items-center justify-end gap-2" title={`${month}: ${count} titles`}><div className="w-full min-h-1 rounded-t bg-accent/35 transition-colors group-hover:bg-accent" style={{ height: `${Math.max(4, count / maxMonth * 120)}px` }} /><span className="hidden text-[8px] text-white/25 sm:block">{month.slice(5)}</span></div>)}</div> : <div className="grid h-40 place-items-center text-sm text-white/25">No dated history from the selected services.</div>}</div>

@@ -276,7 +276,9 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
       }
     }
     if (item && kind === 'anime') {
-      try {
+      // MDBList ratings are optional decoration. Do not keep episode metadata
+      // behind another network request; persist the rating when it arrives.
+      void (async () => {
         const { getMdblistRatings } = await import('../mdblist')
         const ratings = await getMdblistRatings({
           mediaType: item.type === 'movie' ? 'movie' : 'series',
@@ -291,7 +293,11 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
             item.rating = val
           }
         }
-      } catch (_) { /* ignore */ }
+        if (item.sourceMetadataProvider !== 'fallback_addon') {
+          await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
+            addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
+        }
+      })().catch(() => undefined)
     }
     if (!item) {
       if (!settings.useAddonMetadataFallback) throw new Error('No app metadata match')

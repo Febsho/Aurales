@@ -4,12 +4,14 @@ import type { SearchResult } from '../types'
 import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
-import { cachedImage } from '../services/imageCache'
+import { cachedImage, warmCachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
 import TrailerPreview from './TrailerPreview'
+import HeroMpvTrailer from './HeroMpvTrailer'
 import { cardArtworkUrl } from '../services/mediaPresentation'
+import { nativePlayerSupported } from '../services/player'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 
 const TMDB_GENRES: Record<number, string> = {
@@ -43,6 +45,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
   const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
+  const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
   const [snapCollapse, setSnapCollapse] = useState(false)
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(false)
@@ -89,6 +92,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
   const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
@@ -204,6 +208,9 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     setResolvedPoster(undefined)
     setResolvedBackdrop(undefined)
     setResolvedCustomArt({})
+    // Preserve the addon's art without starting TMDB/TVDB/Fanart bridge and
+    // artwork requests for every card when managed metadata is disabled.
+    if (!appManagedMetadata) return
     const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
 
@@ -283,7 +290,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       } catch (_) { /* ignore */ }
     })()
     return () => { cancelled = true }
-  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey])
+  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, appManagedMetadata])
 
   const pickWorkingUrl = (...urls: Array<string | undefined>) =>
     urls.find((url) => url && !failedImageUrls.has(url))
@@ -307,6 +314,10 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       return next
     })
   }
+  const warmDetailArtwork = useCallback(() => {
+    void warmCachedImage(backdropUrl)
+    void warmCachedImage(logoUrl)
+  }, [backdropUrl, logoUrl])
 
   const showContextMenu = useContextMenu((s) => s.show)
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -329,6 +340,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
   }, [item, showContextMenu, displayItem, posterUrl, backdropUrl, logoUrl, customArt, resolvedPoster, resolvedBackdrop, resolvedLogo])
 
   const handleClick = () => {
+    warmDetailArtwork()
     try {
       addRecentlyWatched(displayItem)
     } catch (_) { /* ignore */ }
@@ -352,6 +364,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         provider: displayItem.provider,
         sourceAddonId: displayItem.sourceAddonId,
         sourceAddonItemId: displayItem.sourceAddonItemId,
+        addonMeta: displayItem.addonMeta,
       },
     })
   }
@@ -401,6 +414,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
     setSnapCollapse(true)
     setSuppressPosterHover(true)
+    setNativeTrailerVisible(false)
     setHoverTrailer(null)
     setHoverPreviewOpen(false)
     collapseResetRef.current = window.requestAnimationFrame(() => {
@@ -434,6 +448,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     }, posterTrailerHoverDelayMs)
   }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
 
+  const useNativeTrailerPlayer = nativePlayerSupported()
+
   if (cinematicMode) {
     const cinematicGenre = displayItem.genres?.[0]
       || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
@@ -446,16 +462,27 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        onFocus={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onFocus={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onBlur={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
-        onMouseEnter={() => { announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onMouseLeave={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
         className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
       >
-        <div className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border bg-surface-elevated transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
-          {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || cinematicTrailer ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
-          {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
-          {cinematicTrailer && <TrailerPreview trailer={cinematicTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} placeholderUrl={focusMedia} className="absolute inset-0 z-[5]" />}
+        <div data-hero-viewport className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
+          {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
+          {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
+          {cinematicTrailer && (useNativeTrailerPlayer ? (
+            <HeroMpvTrailer
+              trailer={cinematicTrailer}
+              muted={!posterTrailerSound}
+              className="absolute inset-0 z-[5]"
+              onEnded={closeHoverPreview}
+              onUnavailable={closeHoverPreview}
+              onPlayingChange={setNativeTrailerVisible}
+            />
+          ) : (
+            <TrailerPreview trailer={cinematicTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} placeholderUrl={focusMedia} className="absolute inset-0 z-[5]" />
+          ))}
           {!posterUrl && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
           <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
           {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
@@ -491,8 +518,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        onFocus={announceFocus}
-        onMouseEnter={announceFocus}
+        onFocus={() => { warmDetailArtwork(); announceFocus() }}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicWidth}`}
       >
         <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
@@ -594,23 +621,37 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      onMouseEnter={() => { announceFocus(); openHoverPreview() }}
+      onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onMouseLeave={closeHoverPreview}
-      onFocus={() => { announceFocus(); openHoverPreview() }}
+      onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
       className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring ${snapCollapse ? 'transition-none' : 'transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]'} ${cardWidthClass} ${posterSlotHeightClass} ${cardLiftClass}`}
     >
-      <div className={`relative rounded-lg overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${inlineTrailerPreview ? expandedPosterHeightClass : `aspect-[2/3] rounded-2xl ${posterHoverClass}`}`}>
+      <div data-hero-viewport className={`relative rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${inlineTrailerPreview ? expandedPosterHeightClass : `aspect-[2/3] rounded-2xl ${posterHoverClass}`}`}>
         {inlineTrailerPreview ? (
-          <TrailerPreview
-            trailer={inlineTrailerPreview}
-            title={displayItem.title}
-            muted={!posterTrailerSound}
-            preferVideoOnly={!posterTrailerSound}
-            eager
-            showShade={false}
-            placeholderUrl={posterUrl}
-          />
+          <div className="relative h-full w-full">
+            {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
+            {useNativeTrailerPlayer ? (
+              <HeroMpvTrailer
+                trailer={inlineTrailerPreview}
+                muted={!posterTrailerSound}
+                className="absolute inset-0 z-[1]"
+                onEnded={closeHoverPreview}
+                onUnavailable={closeHoverPreview}
+                onPlayingChange={setNativeTrailerVisible}
+              />
+            ) : (
+              <TrailerPreview
+                trailer={inlineTrailerPreview}
+                title={displayItem.title}
+                muted={!posterTrailerSound}
+                preferVideoOnly={!posterTrailerSound}
+                eager
+                showShade={false}
+                placeholderUrl={posterUrl}
+              />
+            )}
+          </div>
         ) : posterUrl ? (
           <img
             src={cachedImage(posterUrl)}

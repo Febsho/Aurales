@@ -27,6 +27,62 @@ const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
 const BUILTIN_MDBLIST_CLIENT_ID = '1QZNjkmxhfpFEWOsOmAmkphArnbfoKeWlmbJZMOC'
 const MDBLIST_CLIENT_ID = import.meta.env.VITE_MDBLIST_CLIENT_ID || BUILTIN_MDBLIST_CLIENT_ID
 const MDBLIST_TOKEN_KEY = 'mdblist_oauth_tokens'
+const MDBLIST_REQUEST_SPACING_MS = 250
+let mdblistRequestQueue: Promise<void> = Promise.resolve()
+let mdblistNextRequestAt = 0
+
+class MdblistRateLimitError extends Error {
+  retryAfterMs: number
+
+  constructor(retryAfterMs = 10_000) {
+    super('MDBList rate limit reached')
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function queueMdblistRequest<T>(request: () => Promise<T>): Promise<T> {
+  const queued = mdblistRequestQueue.then(async () => {
+    const delay = Math.max(0, mdblistNextRequestAt - Date.now())
+    if (delay) await wait(delay)
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          return await request()
+        } catch (error) {
+          const rateLimit = error instanceof MdblistRateLimitError
+            ? error
+            : /\b429\b|rate limit|too many requests/i.test(error instanceof Error ? error.message : String(error))
+              ? new MdblistRateLimitError()
+              : null
+          if (!rateLimit) throw error
+          mdblistNextRequestAt = Math.max(mdblistNextRequestAt, Date.now() + rateLimit.retryAfterMs)
+          if (attempt === 0) {
+            await wait(rateLimit.retryAfterMs)
+            continue
+          }
+          throw rateLimit
+        }
+      }
+      throw new MdblistRateLimitError()
+    } finally {
+      mdblistNextRequestAt = Math.max(mdblistNextRequestAt, Date.now() + MDBLIST_REQUEST_SPACING_MS)
+    }
+  })
+  mdblistRequestQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
+
+function mdblistRetryAfterMs(response: Response): number {
+  const retrySeconds = Number(response.headers.get('retry-after'))
+  if (Number.isFinite(retrySeconds) && retrySeconds > 0) return retrySeconds * 1000
+  const resetSeconds = Number(response.headers.get('x-ratelimit-reset'))
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) return Math.max(1000, resetSeconds * 1000 - Date.now())
+  return 10_000
+}
 
 type MdblistMediaType = 'movie' | 'show'
 
@@ -293,55 +349,59 @@ async function mdblistFetch<T>(
   const url = new URL(`${BASE_URL}${path}`)
   if (key) url.searchParams.set('apikey', key)
 
-  if (token) {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-    }
-    if (body !== undefined) headers['Content-Type'] = 'application/json'
-    const raw = await invoke<string>('http_request', {
-      method,
-      url: url.toString(),
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : null,
-    })
-    if (!raw) return undefined as T
-    const statusMatch = raw.match(/^(\d{3}):/)
-    if (statusMatch) {
-      const code = Number(statusMatch[1])
-      if (code >= 400) {
-        const respBody = raw.slice(statusMatch[0].length)
-        try {
-          const data = JSON.parse(respBody)
-          throw new Error(String(data?.detail || data?.error || `MDBList ${method} ${path} failed (${code})`))
-        } catch (e) {
-          if (e instanceof Error && !e.message.startsWith('MDBList')) throw e
-          throw new Error(`MDBList ${method} ${path} failed (${code})`)
+  return queueMdblistRequest(async () => {
+    if (token) {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      }
+      if (body !== undefined) headers['Content-Type'] = 'application/json'
+      const raw = await invoke<string>('http_request', {
+        method,
+        url: url.toString(),
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : null,
+      })
+      if (!raw) return undefined as T
+      const statusMatch = raw.match(/^(\d{3}):/)
+      if (statusMatch) {
+        const code = Number(statusMatch[1])
+        if (code === 429) throw new MdblistRateLimitError()
+        if (code >= 400) {
+          const respBody = raw.slice(statusMatch[0].length)
+          try {
+            const data = JSON.parse(respBody)
+            throw new Error(String(data?.detail || data?.error || `MDBList ${method} ${path} failed (${code})`))
+          } catch (e) {
+            if (e instanceof Error && !e.message.startsWith('MDBList')) throw e
+            throw new Error(`MDBList ${method} ${path} failed (${code})`)
+          }
         }
       }
+      return JSON.parse(raw) as T
     }
-    return JSON.parse(raw) as T
-  }
 
-  const res = await fetch(url.toString(), {
-    method,
-    headers: {
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) {
-    let message = `MDBList ${method} ${path} failed (${res.status})`
-    try {
-      const data = await res.json()
-      message = String((data as any)?.detail || (data as any)?.error || message)
-    } catch (_) {
-      try { message = await res.text() || message } catch (_) { /* ignore */ }
+    const res = await fetch(url.toString(), {
+      method,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+    if (res.status === 429) throw new MdblistRateLimitError(mdblistRetryAfterMs(res))
+    if (!res.ok) {
+      let message = `MDBList ${method} ${path} failed (${res.status})`
+      try {
+        const data = await res.json()
+        message = String((data as any)?.detail || (data as any)?.error || message)
+      } catch (_) {
+        try { message = await res.text() || message } catch (_) { /* ignore */ }
+      }
+      throw new Error(message)
     }
-    throw new Error(message)
-  }
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
+    if (res.status === 204) return undefined as T
+    return res.json() as Promise<T>
+  })
 }
 
 function pickArray(data: unknown): unknown[] {
@@ -821,13 +881,11 @@ export async function getMdblistRatings(req: RatingRequest): Promise<MdblistRati
   return cachedFetch<MdblistRating[]>(
     cacheKey,
     () => fetchMdblistRatingsRaw(req),
-    { category: 'MDBLIST_RATINGS', ttlSeconds: 86400 },
+    { category: 'MDBLIST_RATINGS', ttlSeconds: 86400, cacheEmptyResults: true },
   )
 }
 
 async function fetchMdblistRatingsRaw(req: RatingRequest): Promise<MdblistRating[]> {
-  const apiKey = ratingsApiKey()
-
   const media = req.mediaType === 'movie' ? 'movie' : 'show'
   const candidates: string[] = []
   if (req.imdbId) candidates.push(`/imdb/${media}/${encodeURIComponent(req.imdbId)}`)
@@ -837,16 +895,17 @@ async function fetchMdblistRatingsRaw(req: RatingRequest): Promise<MdblistRating
 
   for (const path of candidates) {
     try {
-      const url = new URL(`${BASE_URL}${path}`)
-      url.searchParams.set('apikey', apiKey)
-      if (req.season != null) url.searchParams.set('season', String(req.season))
-      if (req.episode != null) url.searchParams.set('episode', String(req.episode))
-      const res = await fetch(url.toString())
-      if (!res.ok) continue
-      const data = await res.json()
-      const ratings = normalizeRatings(data)
-      if (ratings.length > 0) return ratings
-    } catch (_) {
+      const params = new URLSearchParams()
+      if (req.season != null) params.set('season', String(req.season))
+      if (req.episode != null) params.set('episode', String(req.episode))
+      const suffix = params.size ? `?${params.toString()}` : ''
+      const data = await mdblistFetch<any>('GET', `${path}${suffix}`, undefined, { allowBuiltinForRatings: true })
+      // A successful response identified the item. An empty ratings array is a
+      // valid result; probing the same title through every alternate ID only
+      // spends more of MDBList's daily request allowance.
+      return normalizeRatings(data)
+    } catch (error) {
+      if (error instanceof MdblistRateLimitError) throw error
       // Try next ID route.
     }
   }
