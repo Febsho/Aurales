@@ -3199,8 +3199,12 @@ export default function SettingsPage() {
             <>
               {/* Audio Languages */}
               <SettingSection title="Audio Languages" description="Auto-switch to the best audio track match. Primary language first.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
+                <div className="px-6 py-5 space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-sm font-bold text-white/85">Preferred languages</p>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-bold text-white/40">{store.preferredAudio.length} selected</span>
+                  </div>
+                  <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
                     {store.preferredAudio.length === 0 ? (
                       <span className="text-xs text-white/30 italic">No preferred audio languages. System default will be used.</span>
                     ) : (
@@ -3217,25 +3221,64 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                  <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/55 transition-colors hover:text-white/85">
+                      Add another language
+                      <span className="text-lg font-light text-white/35 transition-transform group-open:rotate-45">+</span>
+                    </summary>
+                    <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {APP_LANGUAGES.filter((lang) => !store.preferredAudio.includes(lang.code)).map((lang) => (
                       <button
                         key={lang.code}
                         onClick={() => store.setPreferredAudio([...store.preferredAudio, lang.code])}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.025] hover:bg-white/[0.06] border border-white/[0.06] rounded-lg text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
                       >
                         <span>{lang.flag}</span>
                         <span>{lang.name}</span>
                       </button>
                     ))}
-                  </div>
+                    </div>
+                  </details>
                 </div>
               </SettingSection>
 
-              {/* Subtitle Languages */}
-              <SettingSection title="Subtitle Languages" description="Auto-select subtitle tracks on playback. First match wins.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
+              {/* Subtitle Preferences */}
+              <SettingSection title="Subtitle Preferences" description="Choose how subtitles should appear when playback starts.">
+                <div className="px-6 py-5 space-y-5">
+                  <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-2">
+                    <div className="px-2.5 pb-2 pt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/35">Playback behavior</div>
+                    <div className="grid gap-2 md:grid-cols-3">
+                    {[
+                      { id: 'show', title: 'Show subtitles', description: 'Always select your preferred subtitle language.', symbol: 'CC' },
+                      { id: 'forced', title: 'Only signs & foreign parts', description: 'Show forced tracks only, for on-screen text and foreign dialogue.', symbol: 'ƒ' },
+                      { id: 'hide', title: 'Hide subtitles', description: 'Start playback with subtitles turned off.', symbol: '×' },
+                    ].map((mode) => {
+                      const active = store.subtitleMode === mode.id
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => store.setSubtitleMode(mode.id as 'show' | 'forced' | 'hide')}
+                          className={`group relative min-h-[96px] rounded-xl border px-3.5 py-3 text-left transition-all cursor-pointer ${active ? 'border-accent/70 bg-accent/10 shadow-[0_0_0_1px_rgba(16,185,129,0.1)]' : 'border-transparent bg-transparent hover:border-white/[0.1] hover:bg-white/[0.04]'}`}
+                        >
+                          <span className={`mb-2 grid h-7 w-7 place-items-center rounded-md text-[10px] font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.08] text-white/60'}`}>{mode.symbol}</span>
+                          <span className={`block text-[13px] font-bold ${active ? 'text-white' : 'text-white/75'}`}>{mode.title}</span>
+                          <span className="mt-1 block text-[10px] leading-relaxed text-white/35">{mode.description}</span>
+                          {active && <span className="absolute right-3 top-3 text-xs font-black text-accent">✓</span>}
+                        </button>
+                      )
+                    })}
+                    </div>
+                  </div>
+                  {store.subtitleMode === 'forced' && <p className="rounded-xl border border-amber-400/15 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-100/75">Forced tracks are supplied by the stream. If none are available, subtitles stay hidden.</p>}
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold text-white/85">Preferred languages</p>
+                      <p className="mt-0.5 text-[11px] text-white/35">Used to choose the best matching track.</p>
+                    </div>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-bold text-white/40">{store.preferredSubtitles.length} selected</span>
+                  </div>
+                  <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
                     {store.preferredSubtitles.length === 0 ? (
                       <span className="text-xs text-white/30 italic">No preferred subtitle languages. System default will be used.</span>
                     ) : (
@@ -3252,18 +3295,24 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                  <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/55 transition-colors hover:text-white/85">
+                      Add another language
+                      <span className="text-lg font-light text-white/35 transition-transform group-open:rotate-45">+</span>
+                    </summary>
+                    <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {APP_LANGUAGES.filter((lang) => !store.preferredSubtitles.includes(lang.code)).map((lang) => (
                       <button
                         key={lang.code}
                         onClick={() => store.setPreferredSubtitles([...store.preferredSubtitles, lang.code])}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.025] hover:bg-white/[0.06] border border-white/[0.06] rounded-lg text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
                       >
                         <span>{lang.flag}</span>
                         <span>{lang.name}</span>
                       </button>
                     ))}
-                  </div>
+                    </div>
+                  </details>
                 </div>
               </SettingSection>
 

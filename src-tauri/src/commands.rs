@@ -333,11 +333,23 @@ enum NativePlayerBackend {
     },
 }
 
+/// Launch-time options that cannot change on a live libmpv instance. A new
+/// launch request may only reuse the running player when these match.
+#[derive(Clone, PartialEq)]
+struct LibMpvLaunchConfig {
+    hwdec_mode: Option<String>,
+    cache_buffer_size: Option<String>,
+    mpv_cache_secs: Option<u32>,
+    mpv_network_timeout: Option<u32>,
+    mpv_custom_args: Option<String>,
+}
+
 struct NativePlayerState {
     host_hwnd: isize,
     video_hwnd: isize,
     session_id: String,
     backend: NativePlayerBackend,
+    launch_config: Option<LibMpvLaunchConfig>,
 }
 
 impl NativePlayerState {
@@ -1174,6 +1186,116 @@ pub async fn ytdlp_resolve(video_id: String, max_height: Option<u32>) -> Result<
     .map_err(|e| format!("yt-dlp task failed: {e}"))?
 }
 
+/// Reuse a live libmpv instance for a new stream instead of tearing it down.
+/// Returns Ok(true) when the running player took over playback of `url`;
+/// Ok(false) means the caller must do a full stop + relaunch (no live libmpv
+/// player, launch options differ, or the in-place swap failed).
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn try_reuse_libmpv_player(
+    url: &str,
+    title: Option<&str>,
+    start_time: Option<f64>,
+    volume: Option<f64>,
+    config: &LibMpvLaunchConfig,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<bool, String> {
+    let (player, host_hwnd, video_hwnd, session_id) = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        match state.as_ref() {
+            Some(current) => match &current.backend {
+                NativePlayerBackend::LibMpv { player }
+                    if !player.is_destroyed()
+                        && current.launch_config.as_ref() == Some(config) =>
+                {
+                    (
+                        Arc::clone(player),
+                        current.host_hwnd,
+                        current.video_hwnd,
+                        current.session_id.clone(),
+                    )
+                }
+                _ => return Ok(false),
+            },
+            None => return Ok(false),
+        }
+    };
+
+    // Stale observed values (duration, tracks, eof) belong to the old file.
+    if let Ok(mut cache) = get_property_cache().write() {
+        cache.clear();
+    }
+
+    // Per-file options: `start` only applies to the next loadfile; the rest
+    // are plain runtime properties.
+    let set = |name: &str, value: serde_json::Value| {
+        if let Err(error) = player.command(
+            "set",
+            &[serde_json::Value::String(name.to_string()), value],
+        ) {
+            player_debug_log(format!(
+                "[PLAYER REUSE] set {} failed: {}",
+                name, error
+            ));
+        }
+    };
+    set(
+        "start",
+        serde_json::Value::String(match start_time.filter(|value| *value > 0.0) {
+            Some(seconds) => seconds.to_string(),
+            None => "none".to_string(),
+        }),
+    );
+    set(
+        "force-media-title",
+        serde_json::Value::String(title.unwrap_or("").to_string()),
+    );
+    set("pause", serde_json::Value::String("no".to_string()));
+    if let Some(v) = volume {
+        set(
+            "volume",
+            serde_json::Value::String(v.max(0.0).min(130.0).to_string()),
+        );
+    }
+
+    if let (Some(w), Some(h)) = (width, height) {
+        if w > 0 && h > 0 {
+            libmpv_player::resize_video_child(
+                host_hwnd,
+                video_hwnd,
+                x.unwrap_or(0),
+                y.unwrap_or(0),
+                w,
+                h,
+            );
+        }
+    }
+
+    player_debug_log(format!(
+        "[PLAYER START] session={} stream={} backend=libmpv reuse=in-place",
+        session_id,
+        stable_stream_hash(url)
+    ));
+
+    if let Err(error) = player.command(
+        "loadfile",
+        &[
+            serde_json::Value::String(url.to_string()),
+            serde_json::Value::String("replace".to_string()),
+        ],
+    ) {
+        player_debug_log(format!(
+            "[PLAYER REUSE] loadfile failed, falling back to full relaunch: {}",
+            error
+        ));
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn launch_embedded_mpv(
     app: tauri::AppHandle,
@@ -1217,6 +1339,33 @@ pub fn launch_embedded_mpv(
                 );
             }
             *last = (url.clone(), std::time::Instant::now());
+        }
+    }
+
+    // Fast path: a live libmpv instance with identical launch options can
+    // swap files in place (loadfile replace) — no teardown, no window flash,
+    // no GPU/hwdec re-init between episodes or sources.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let launch_config = LibMpvLaunchConfig {
+            hwdec_mode: hwdec_mode.clone(),
+            cache_buffer_size: cache_buffer_size.clone(),
+            mpv_cache_secs,
+            mpv_network_timeout,
+            mpv_custom_args: mpv_custom_args.clone(),
+        };
+        if try_reuse_libmpv_player(
+            &url,
+            title.as_deref(),
+            start_time,
+            volume,
+            &launch_config,
+            x,
+            y,
+            width,
+            height,
+        )? {
+            return Ok(());
         }
     }
 
@@ -1344,6 +1493,7 @@ pub fn launch_minimal_mpv(
                 ipc_path: session_id.clone(),
                 writer: None,
             },
+            launch_config: None,
         });
     }
     {
@@ -1512,6 +1662,155 @@ fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     Ok(hwnd.0 as isize)
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+struct WindowBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    maximized: bool,
+}
+
+#[cfg(target_os = "windows")]
+static PLAYER_WINDOWED_BOUNDS: OnceLock<Mutex<Option<WindowBounds>>> = OnceLock::new();
+
+/// Fullscreen handling for the transparent, decorationless player window.
+/// Native physical coordinates avoid work-area/taskbar and DPI restore bugs.
+#[tauri::command]
+pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowPlacement, GetWindowRect, IsZoomed, SetWindowPos, ShowWindow,
+            HWND_NOTOPMOST, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_SHOWWINDOW, SW_MAXIMIZE,
+            SW_RESTORE, WINDOWPLACEMENT,
+        };
+
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        let hwnd = HWND(main_window_hwnd(&app)? as *mut _);
+        let bounds = PLAYER_WINDOWED_BOUNDS.get_or_init(|| Mutex::new(None));
+        let mut saved = bounds.lock().map_err(|e| e.to_string())?;
+
+        if fullscreen {
+            if saved.is_none() {
+                let mut rect = RECT::default();
+                let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+                if maximized {
+                    let mut placement = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    unsafe { GetWindowPlacement(hwnd, &mut placement) }
+                        .map_err(|e| format!("Failed to read maximized window bounds: {e}"))?;
+                    rect = placement.rcNormalPosition;
+                } else {
+                    unsafe { GetWindowRect(hwnd, &mut rect) }
+                        .map_err(|e| format!("Failed to read window bounds: {e}"))?;
+                }
+                *saved = Some(WindowBounds {
+                    x: rect.left,
+                    y: rect.top,
+                    width: rect.right - rect.left,
+                    height: rect.bottom - rect.top,
+                    maximized,
+                });
+                // SetWindowPos only changes the restore rectangle while a window
+                // is maximized. Restore it first so monitor-sized fullscreen is
+                // applied to the visible HWND.
+                let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+            }
+
+            // Enter the actual OS/Tauri fullscreen state. The native bounds
+            // below only compensate for transparent borderless Windows windows.
+            main.set_fullscreen(true)
+                .map_err(|e| format!("Failed to enter OS fullscreen: {e}"))?;
+
+            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            unsafe { GetMonitorInfoW(monitor, &mut info) }
+                .ok()
+                .map_err(|e| format!("Failed to read monitor bounds: {e}"))?;
+            let rect = info.rcMonitor;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                )
+            }
+            .map_err(|e| format!("Failed to enter fullscreen: {e}"))?;
+        } else {
+            main.set_fullscreen(false)
+                .map_err(|e| format!("Failed to leave OS fullscreen: {e}"))?;
+            if let Some(rect) = saved.take() {
+                let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        Some(HWND_NOTOPMOST),
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                        SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    )
+                }
+                .map_err(|e| format!("Failed to restore window: {e}"))?;
+                if rect.maximized {
+                    let _ = unsafe { ShowWindow(hwnd, SW_MAXIMIZE) };
+                }
+            }
+        }
+
+        // mpv renders in a separate native HWND, so size it from the exact
+        // Win32 client rectangle instead of delayed WebView/DPI dimensions.
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) }
+            .map_err(|e| format!("Failed to read fullscreen client bounds: {e}"))?;
+        let video_hwnd = native_player_state()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .as_ref()
+            .map(|state| state.video_hwnd)
+            .unwrap_or(0);
+        if video_hwnd != 0 {
+            libmpv_player::resize_video_child(
+                hwnd.0 as isize,
+                video_hwnd,
+                0,
+                0,
+                client.right - client.left,
+                client.bottom - client.top,
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        main.set_fullscreen(fullscreen)
+            .map_err(|e| format!("Failed to change fullscreen state: {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn main_window_xid(app: &tauri::AppHandle) -> Result<isize, String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1669,6 +1968,14 @@ fn launch_mpv_with_window(
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
+        let launch_config = LibMpvLaunchConfig {
+            hwdec_mode: hwdec_mode.clone(),
+            cache_buffer_size: cache_buffer_size.clone(),
+            mpv_cache_secs,
+            mpv_network_timeout,
+            mpv_custom_args: mpv_custom_args.clone(),
+        };
+
         if let Ok(mut cache) = get_property_cache().write() {
             cache.clear();
         }
@@ -1774,8 +2081,10 @@ fn launch_mpv_with_window(
             set_option("demuxer-max-bytes", max_bytes.to_string())?;
             set_option("demuxer-max-back-bytes", max_back_bytes.to_string())?;
             set_option("demuxer-readahead-secs", (cache_secs / 2).to_string())?;
+            set_option("demuxer-seekable-cache", "yes".to_string())?;
             set_option("network-timeout", network_timeout.to_string())?;
             set_option("hr-seek", "yes".to_string())?;
+            set_option("hr-seek-framedrop", "yes".to_string())?;
             set_option(
                 "stream-lavf-o",
                 "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
@@ -1838,6 +2147,7 @@ fn launch_mpv_with_window(
                 video_hwnd,
                 session_id,
                 backend: NativePlayerBackend::LibMpv { player },
+                launch_config: Some(launch_config),
             });
         }
 
@@ -1950,8 +2260,10 @@ fn launch_mpv_with_window(
         format!("--demuxer-max-bytes={}", max_bytes),
         format!("--demuxer-max-back-bytes={}", max_back_bytes),
         format!("--demuxer-readahead-secs={}", cache_secs / 2),
+        "--demuxer-seekable-cache=yes".to_string(),
         format!("--network-timeout={}", network_timeout),
         "--hr-seek=yes".to_string(),
+        "--hr-seek-framedrop=yes".to_string(),
         "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
         "--subs-with-matching-audio=no".to_string(),
         "--secondary-sub-visibility=no".to_string(),
@@ -2876,6 +3188,88 @@ pub async fn http_get_text(url: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| format!("HTTP request task failed: {e}"))?
+}
+
+#[derive(serde::Serialize)]
+pub struct StreamProbeResponse {
+    status: u16,
+    content_type: Option<String>,
+    accept_ranges: bool,
+    content_length: Option<u64>,
+    final_url: String,
+    sampled_bytes: u64,
+    elapsed_ms: u64,
+}
+
+// Lightweight warm-up for a prepared direct stream: a small ranged GET (many
+// CDNs reject HEAD) measures first-byte/transfer responsiveness and resolves
+// the final redirect without pulling a meaningful portion of the media.
+#[tauri::command]
+pub async fn http_probe_stream(
+    url: String,
+    timeout_ms: Option<u64>,
+) -> Result<StreamProbeResponse, String> {
+    validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || -> Result<StreamProbeResponse, String> {
+        let started = std::time::Instant::now();
+        const SAMPLE_BYTES: u64 = 256 * 1024;
+        let agent = ureq::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms.unwrap_or(4_000)))
+            .build();
+        let result = agent
+            .get(&url)
+            .set("Range", &format!("bytes=0-{}", SAMPLE_BYTES - 1))
+            .set("Accept", "*/*")
+            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
+            .call();
+        let response = match result {
+            Ok(response) => response,
+            // HTTP error statuses (403/404/410/...) are probe results, not errors.
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(e) => return Err(format!("Stream probe failed: {e}")),
+        };
+        let status = response.status();
+        let content_type = response
+            .header("Content-Type")
+            .map(|value| value.to_string());
+        let accept_ranges = status == 206
+            || response
+                .header("Accept-Ranges")
+                .map(|value| value.to_ascii_lowercase().contains("bytes"))
+                .unwrap_or(false);
+        // Prefer the full size from Content-Range ("bytes 0-1/12345"); fall
+        // back to Content-Length (which is the range length on a 206).
+        let content_length = response
+            .header("Content-Range")
+            .and_then(|value| value.rsplit('/').next())
+            .and_then(|total| total.trim().parse::<u64>().ok())
+            .or_else(|| {
+                if status == 206 {
+                    None
+                } else {
+                    response
+                        .header("Content-Length")
+                        .and_then(|value| value.trim().parse::<u64>().ok())
+                }
+            });
+        let final_url = response.get_url().to_string();
+        // Drain at most the sample range so the connection closes cleanly; never
+        // read the whole body of a non-ranged 200 response.
+        let mut reader = std::io::Read::take(response.into_reader(), SAMPLE_BYTES);
+        let sampled_bytes = std::io::copy(&mut reader, &mut std::io::sink()).unwrap_or(0);
+        let elapsed_ms = started.elapsed().as_millis().max(1) as u64;
+        Ok(StreamProbeResponse {
+            status,
+            content_type,
+            accept_ranges,
+            content_length,
+            final_url,
+            sampled_bytes,
+            elapsed_ms,
+        })
+    })
+    .await
+    .map_err(|e| format!("Stream probe task failed: {e}"))?
 }
 
 #[tauri::command]

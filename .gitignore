@@ -17,6 +17,10 @@ src/config/simkl.local.ts
 .env
 .env.local
 
+# Agent documentation (local knowledge base)
+AGENTS.md
+docs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

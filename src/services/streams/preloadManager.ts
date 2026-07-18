@@ -2,7 +2,7 @@ import type { StreamResult } from '../../types'
 import { fetchAddonStreamsStrict, getStreamAddons, type InstalledAddon } from '../addons'
 import { useAppStore } from '../../stores/appStore'
 import { tmdbProvider } from '../tmdb'
-import { canonicalStreamKey, resolveNextEpisodeWith } from './preloadUtils'
+import { canonicalStreamKey, resolveNextEpisodeWith, streamUrlTtlSeconds } from './preloadUtils'
 export { canonicalStreamKey } from './preloadUtils'
 import { cacheGet, cacheSet } from '../cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../cache/constants'
@@ -116,15 +116,7 @@ function safeTtl(request: StreamPreloadRequest, streams: StreamResult[]): number
   let ttl = request.seasonEpisode ? EPISODE_TTL_SECONDS : MOVIE_TTL_SECONDS
   for (const stream of streams) {
     if (!stream.url) continue
-    try {
-      const parsed = new URL(stream.url)
-      const expiry = Number(parsed.searchParams.get('expires') || parsed.searchParams.get('exp') || parsed.searchParams.get('e'))
-      if (Number.isFinite(expiry) && expiry > 1_000_000_000 && expiry < 4_000_000_000) {
-        ttl = Math.min(ttl, Math.max(5 * 60, expiry - Math.floor(Date.now() / 1000) - 120))
-      } else if (/token|signature|sig|policy/i.test(parsed.search)) {
-        ttl = Math.min(ttl, 20 * 60)
-      }
-    } catch { /* non-URL streams are ranked later by the existing pipeline */ }
+    ttl = streamUrlTtlSeconds(stream.url, ttl)
   }
   return ttl
 }

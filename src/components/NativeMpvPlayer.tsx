@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window'
-import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
-import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
+import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -32,7 +31,13 @@ import { saveAniListProgress, saveAniListProgressMapped } from '../services/anil
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
 import { getAddonStreams, getStreamAddons } from '../services/addons'
-import { useAppStore, getLanguageCodeFromTrack, APP_LANGUAGES } from '../stores/appStore'
+import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from '../services/streams/preloadManager'
+import { canonicalStreamKey } from '../services/streams/preloadUtils'
+import { buildSmartContext, preparedStreamRegistry } from '../services/streams/preparedStreams'
+import { rankStreams, type SmartStream } from '../services/streams/smartScoring'
+import { getPlayableStreamUrl } from '../services/streams/playableUrl'
+import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack, APP_LANGUAGES } from '../stores/appStore'
 import { setDiscordActivity, restoreDiscordBrowsingActivity } from '../services/discord'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
@@ -86,6 +91,7 @@ interface TrackOption {
   label: string
   lang?: string
   priority: number
+  forced?: boolean
 }
 
 interface NextEpInfo {
@@ -101,6 +107,7 @@ interface SubtitleSource {
   originalUrl: string
   localPath: string
   label: string
+  forced?: boolean
 }
 
 interface TimelinePreview {
@@ -109,12 +116,33 @@ interface TimelinePreview {
   time: number
 }
 
+interface PlayerChapter {
+  title: string
+  time: number
+}
+
+function introDbChapters(segments: PMDBSkipSegment[]): PlayerChapter[] {
+  const chapters = segments
+    .filter((segment) => segment.id.startsWith('introdb-'))
+    .flatMap((segment) => [
+      { title: 'Recap', time: segment.recap_start_ms },
+      { title: 'Intro', time: segment.intro_start_ms },
+      { title: 'Credits', time: segment.credits_start_ms },
+    ])
+    .flatMap((chapter) => typeof chapter.time === 'number' && chapter.time >= 0
+      ? [{ title: chapter.title, time: chapter.time / 1000 }]
+      : [])
+
+  return chapters
+    .sort((a, b) => a.time - b.time)
+    .filter((chapter, index) => index === 0 || chapter.time !== chapters[index - 1].time)
+}
+
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function languageName(value?: string): string {
-  const code = getLanguageCodeFromTrack(value)
-  return APP_LANGUAGES.find((lang) => lang.code === code)?.name || value?.toUpperCase() || 'Unknown'
+  return getLanguageNameFromTrack(value)
 }
 
 function trackLabel(track: MpvTrack, fallback: string): string {
@@ -787,6 +815,7 @@ function FullNativeMpvPlayer({
   const showUpNextRef = useRef(false)
   const upNextTriggeredRef = useRef(false)
   const upNextCancelledRef = useRef(false)
+  const nextPrepareTriggeredRef = useRef(false)
 
   // ─ State ─────────────────────────────────────────────────────────────────
   const [controlsVisible, setControlsVisible] = useState(true)
@@ -796,11 +825,9 @@ function FullNativeMpvPlayer({
   const closeRef = useRef<(() => Promise<void>) | null>(null)
   const closingRef = useRef(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  // Ref mirror avoids stale closures; windowedBoundsRef restores size on exit.
+  // Ref mirror avoids stale closures during native fullscreen transitions.
   const isFullscreenRef = useRef(false)
   useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
-  const windowedBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
-  const fullscreenMonitorBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   const fullscreenTransitionRef = useRef(0)
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
@@ -809,7 +836,13 @@ function FullNativeMpvPlayer({
   const [selectedSub, setSelectedSub] = useState<number | 'no'>('no')
   const [tracksLoaded, setTracksLoaded] = useState(false)
   const [playerReady, setPlayerReady] = useState(false)
+  const playerReadyRef = useRef(false)
   const [playerRunning, setPlayerRunning] = useState(true)
+  const bufferingStartedAtRef = useRef<number | null>(null)
+  const unstableStreamNotifiedRef = useRef(false)
+  const onPlaybackErrorRef = useRef(onPlaybackError)
+  useEffect(() => { playerReadyRef.current = playerReady }, [playerReady])
+  useEffect(() => { onPlaybackErrorRef.current = onPlaybackError }, [onPlaybackError])
   const smartStartedNotifiedRef = useRef(false)
   const smartErrorNotifiedRef = useRef(false)
   useEffect(() => { smartStartedNotifiedRef.current = false; smartErrorNotifiedRef.current = false }, [url])
@@ -834,7 +867,14 @@ function FullNativeMpvPlayer({
 
   // Timeline Preview (timestamp bubble while scrubbing)
   const [timelinePreview, setTimelinePreview] = useState<TimelinePreview>({ visible: false, leftPct: 0, time: 0 })
+  const [timelineThumbnail, setTimelineThumbnail] = useState<string | null>(null)
+  const [mediaBadges, setMediaBadges] = useState<string[]>([])
+  const [chapters, setChapters] = useState<PlayerChapter[]>([])
+  const [showChapters, setShowChapters] = useState(false)
+  const [showMediaInfo, setShowMediaInfo] = useState(false)
   const isDraggingRef = useRef(false)
+  const thumbnailRequestRef = useRef(0)
+  const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 
   // Up Next state
@@ -867,7 +907,7 @@ function FullNativeMpvPlayer({
   // Netflix-style paused info overlay — metadata fetched lazily on first pause.
   const [currentMeta, setCurrentMeta] = useState<CurrentItemMeta | null>(null)
   useEffect(() => {
-    if (!paused || currentMeta) return
+    if ((!paused && !showMediaInfo) || currentMeta) return
     const tmdbId = tmdbIdRef.current
     if (!tmdbId) return
     const item = currentItemRef.current
@@ -877,7 +917,7 @@ function FullNativeMpvPlayer({
       .then((info) => { if (!cancelled && info) setCurrentMeta(info) })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [paused, currentMeta])
+  }, [paused, showMediaInfo, currentMeta])
 
   // Volume — persisted in localStorage between sessions
   const [volume, setVolume] = useState<number>(() => {
@@ -1075,6 +1115,10 @@ function FullNativeMpvPlayer({
   // ── Timeline Preview ──────────────────────────────────────────────────────
   const hideTimelinePreview = useCallback(() => {
     isDraggingRef.current = false
+    thumbnailRequestRef.current += 1
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = null
+    setTimelineThumbnail(null)
     setTimelinePreview((preview) => ({ ...preview, visible: false }))
   }, [])
 
@@ -1083,7 +1127,33 @@ function FullNativeMpvPlayer({
     const pct = Math.max(0, Math.min(100, leftPct))
     const time = Math.max(0, Math.min(duration, (pct / 100) * duration))
     setTimelinePreview({ visible: true, leftPct: pct, time })
-  }, [duration])
+    if (!isDraggingRef.current) return
+
+    const requestId = ++thumbnailRequestRef.current
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = setTimeout(async () => {
+      const streamUrl = currentStreamUrlRef.current || url
+      if (!streamUrl || !isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
+      try {
+        const result = await getOrQueueScrubThumbnail({
+          mediaId: currentItemRef.current?.localId || currentDisplayTitle || 'playback',
+          streamUrl,
+          duration,
+          time,
+          thumbnailInterval: 30,
+          thumbnailWidth: 256,
+          thumbnailHeight: 144,
+          quality: 62,
+          maxConcurrentFfmpegWorkers: 1,
+        })
+        if (!isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
+        const path = result.exactPath || result.nearestPath
+        if (path) setTimelineThumbnail(convertFileSrc(path))
+      } catch {
+        // The timestamp preview still works when the source cannot be thumbnailed.
+      }
+    }, 180)
+  }, [currentDisplayTitle, duration, url])
 
   const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingRef.current) return
@@ -1091,6 +1161,58 @@ function FullNativeMpvPlayer({
     if (rect.width <= 0) return
     updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100)
   }, [updateTimelinePreviewAtPct])
+
+  useEffect(() => () => {
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!playerReady) return
+    let cancelled = false
+    const retryTimers: ReturnType<typeof setTimeout>[] = []
+    const loadMediaDetails = async (attempt = 0) => {
+      const [videoCodecValue, audioParamsValue, fpsValue, chapterListValue] = await Promise.all([
+        getPlayerProperty('video-codec').catch(() => null),
+        getPlayerProperty('audio-params').catch(() => null),
+        getPlayerProperty('estimated-vf-fps').catch(() => null),
+        getPlayerProperty('chapter-list').catch(() => null),
+      ])
+      if (cancelled) return
+
+      const codecRaw = String(videoCodecValue || '').toLowerCase()
+      const codec = codecRaw.includes('hevc') || codecRaw.includes('h265')
+        ? 'HEVC'
+        : codecRaw.includes('av1')
+          ? 'AV1'
+          : codecRaw.includes('h264') || codecRaw.includes('avc')
+            ? 'H.264'
+            : codecRaw ? codecRaw.toUpperCase() : ''
+      const audioParams = audioParamsValue && typeof audioParamsValue === 'object'
+        ? audioParamsValue as Record<string, unknown>
+        : {}
+      const channelCount = Number(audioParams['channel-count'] || 0)
+      const channelLabel = channelCount >= 8 ? '7.1' : channelCount >= 6 ? '5.1' : channelCount === 2 ? 'Stereo' : channelCount === 1 ? 'Mono' : ''
+      const fps = Number(fpsValue || 0)
+      setMediaBadges([codec, channelLabel, fps > 0 ? `${fps.toFixed(2)} FPS` : ''].filter(Boolean))
+
+      const parsedChapters = Array.isArray(chapterListValue)
+        ? chapterListValue.flatMap((entry, index) => {
+          if (!entry || typeof entry !== 'object') return []
+          const chapter = entry as Record<string, unknown>
+          const time = Number(chapter.time)
+          if (!Number.isFinite(time)) return []
+          return [{ title: String(chapter.title || `Chapter ${index + 1}`), time }]
+        })
+        : []
+      if (parsedChapters.length > 0) {
+        setChapters(parsedChapters)
+      } else if (attempt < 4) {
+        retryTimers.push(setTimeout(() => { loadMediaDetails(attempt + 1).catch(() => {}) }, 500 * (attempt + 1)))
+      }
+    }
+    const timer = setTimeout(() => { loadMediaDetails().catch(() => {}) }, 250)
+    return () => { cancelled = true; clearTimeout(timer); retryTimers.forEach(clearTimeout) }
+  }, [playerReady, tracksLoaded, url])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -1218,10 +1340,26 @@ function FullNativeMpvPlayer({
   }, [])
 
   // ─ Subtitle loading ───────────────────────────────────────────────────────
-  const loadAddonSubtitles = useCallback(async () => {
-    const pending = subtitles
+  const loadAddonSubtitles = useCallback(async (loadAll = false) => {
+    const state = useAppStore.getState()
+    const preferred = state.preferredSubtitles || []
+    const available = subtitles
       .map((track, index) => ({ track, index }))
-      .filter(({ track }) => track.url && !loadedSubtitleUrlsRef.current.has(track.url!))
+      .filter(({ track }) => track.url)
+    const preferredTracks = available.filter(({ track }) => {
+      const code = getLanguageCodeFromTrack(track.lang)
+      return Boolean(code && preferred.includes(code))
+    })
+    const forcedTracks = available.filter(({ track }) => /\bforced\b/i.test(track.label || ''))
+    const initial = state.subtitleMode === 'hide'
+      ? []
+      : state.subtitleMode === 'forced'
+        ? forcedTracks
+        : preferredTracks.length > 0 ? preferredTracks : available.slice(0, 2)
+    // Download only the tracks needed for auto-selection during startup.
+    // The complete catalog is loaded when the user opens the subtitle menu.
+    const selectedTracks = (loadAll ? available : initial).slice(0, loadAll ? undefined : 4)
+    const pending = selectedTracks.filter(({ track }) => !loadedSubtitleUrlsRef.current.has(track.url!))
     if (!pending.length) return
 
     // Mark all as loading immediately to prevent duplicate downloads
@@ -1245,7 +1383,7 @@ function FullNativeMpvPlayer({
     for (const r of results) {
       if (r.status === 'rejected') continue
       const { track, localPath, label } = r.value
-      subtitleSourcesRef.current.set(localPath, { originalUrl: track.url!, localPath, label })
+      subtitleSourcesRef.current.set(localPath, { originalUrl: track.url!, localPath, label, forced: /\bforced\b/i.test(track.label || '') })
       await sendPlayerCommand('sub-add', [localPath, 'auto', label, track.lang || 'und']).catch(() => {
         loadedSubtitleUrlsRef.current.delete(track.url!)
         subtitleSourcesRef.current.delete(localPath)
@@ -1285,7 +1423,10 @@ function FullNativeMpvPlayer({
       // Hide the AI-translated track from the list — it's driven only by the
       // "Live Translate" toggle, not picked as a normal subtitle option.
       .filter((t) => t.id !== aiSubtitleTrackIdRef.current && !t.title?.endsWith('(Translated)'))
-      .map((t) => ({ id: t.id, label: trackLabel(t, `Sub ${t.id}`), lang: t.lang, priority: trackPriority(t) }))
+      .map((t) => {
+        const label = trackLabel(t, `Sub ${t.id}`)
+        return { id: t.id, label, lang: t.lang, priority: trackPriority(t), forced: Boolean(t.forced || subtitleTrackSourcesRef.current.get(t.id)?.forced || /\bforced\b/i.test(label)) }
+      })
       .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label))
     const selAudio = data.find((t) => t.type === 'audio' && t.selected)
     const selSub = data.find((t) => t.type === 'sub' && t.selected)
@@ -1302,8 +1443,7 @@ function FullNativeMpvPlayer({
     const bothDone = hasAutoSelectedAudioRef.current && hasAutoSelectedSubRef.current
     if (!bothDone && autoSelectAttemptsRef.current < MAX_AUTO_SELECT && data.length > 0) {
       autoSelectAttemptsRef.current++
-      const preferredAudio = useAppStore.getState().preferredAudio || ['en', 'ja']
-      const preferredSubtitles = useAppStore.getState().preferredSubtitles || ['en']
+      const { preferredAudio = ['en', 'ja'], preferredSubtitles = ['en'], subtitleMode } = useAppStore.getState()
 
       // ── Audio auto-select ──
       if (!hasAutoSelectedAudioRef.current && audio.length > 0) {
@@ -1326,14 +1466,21 @@ function FullNativeMpvPlayer({
       }
 
       // ── Subtitle auto-select ──
-      if (!hasAutoSelectedSubRef.current && subs.length > 0) {
+      if (!hasAutoSelectedSubRef.current) {
+        if (subtitleMode === 'hide') {
+          if (selSub) sendPlayerCommand('set_property', ['sid', 'no'])
+          setSelectedSub('no')
+          hasAutoSelectedSubRef.current = true
+        } else if (subs.length > 0) {
+          const candidates = subtitleMode === 'forced' ? subs.filter((track) => track.forced) : subs
         let bestSubId: number | undefined
         let bestSubRank = Infinity
-        subs.forEach((t) => {
+          candidates.forEach((t) => {
           const code = getLanguageCodeFromTrack(t.lang)
           const rank = code ? preferredSubtitles.indexOf(code) : -1
           if (rank !== -1 && rank < bestSubRank) { bestSubRank = rank; bestSubId = t.id }
         })
+        if (bestSubId === undefined && subtitleMode === 'forced') bestSubId = candidates[0]?.id
         if (bestSubId !== undefined) {
           if (bestSubId !== selSub?.id) {
             sendPlayerCommand('set_property', ['sid', bestSubId])
@@ -1342,6 +1489,7 @@ function FullNativeMpvPlayer({
           hasAutoSelectedSubRef.current = true
         } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
           hasAutoSelectedSubRef.current = true
+        }
         }
       }
     }
@@ -1509,12 +1657,14 @@ function FullNativeMpvPlayer({
   }, [subtitles, loadAddonSubtitles, refreshTracks])
 
   // ─ Background init effects ───────────────────────────────────────────────
-  useEffect(() => {
+  useLayoutEffect(() => {
     const origHtml = document.documentElement.style.background
     const origBody = document.body.style.background
+    document.documentElement.classList.add('full-player-active')
     document.body.style.background = 'transparent'
     document.documentElement.style.background = 'transparent'
     return () => {
+      document.documentElement.classList.remove('full-player-active')
       document.body.style.background = origBody
       document.documentElement.style.background = origHtml
     }
@@ -1550,17 +1700,11 @@ function FullNativeMpvPlayer({
       await resizeEmbeddedPlayer(buildUpNextPipViewport()).catch(() => {})
       return
     }
-    // While fullscreen, always target the full monitor. Focus changes (alt-tab)
-    // can fire stray resize events with a transient/shrunken client size; using
-    // the monitor size keeps the video full instead of snapping it to a strip.
     if (isFullscreenRef.current) {
-      const mon = await currentMonitor().catch(() => null)
-      if (mon && mon.size.width > 0 && mon.size.height > 0) {
-        // Overscan a couple px so no sliver of the top/edge shows through when the
-        // window and mpv child round differently at the monitor bounds.
-        await resizeEmbeddedPlayer({ x: -2, y: -2, width: mon.size.width + 4, height: mon.size.height + 4 }).catch(() => {})
-        return
-      }
+      // The native command resolves zero dimensions from the real Win32 client
+      // rectangle, avoiding stale WebView/DPI sizes during fullscreen changes.
+      await resizeEmbeddedPlayer({ x: 0, y: 0, width: 0, height: 0 }).catch(() => {})
+      return
     }
     try {
       const size = await getCurrentWindow().innerSize()
@@ -1574,58 +1718,26 @@ function FullNativeMpvPlayer({
 
   const repairFullscreenWindow = useCallback(async () => {
     if (!isFullscreenRef.current) return
-    const win = getCurrentWindow()
-    await win.setFullscreen(true).catch(() => {})
-
-    let bounds = fullscreenMonitorBoundsRef.current
-    if (!bounds) {
-      const monitor = await currentMonitor().catch(() => null)
-      if (monitor) {
-        bounds = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height }
-        fullscreenMonitorBoundsRef.current = bounds
-      }
-    }
-    if (bounds) {
-      await win.setPosition(new PhysicalPosition(bounds.x, bounds.y)).catch(() => {})
-      await win.setSize(new PhysicalSize(bounds.width, bounds.height)).catch(() => {})
-    }
+    await invoke('set_native_player_fullscreen', { fullscreen: true }).catch(() => {})
     await applyFullVideoViewport()
     await invoke('setup_player_click_through').catch(() => {})
   }, [applyFullVideoViewport])
 
   const exitFullscreenWindow = useCallback(async () => {
     const transition = ++fullscreenTransitionRef.current
-    const win = getCurrentWindow()
     // Disable fullscreen repairs before asking Windows to leave fullscreen.
     // Focus/move events emitted during the transition must not put it back.
     isFullscreenRef.current = false
     setIsFullscreen(false)
-    await win.setFullscreen(false).catch(() => {})
-    const b = windowedBoundsRef.current
-    if (b) {
-      const restore = async () => {
-        if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
-        // Size first: on Windows a borderless window can clamp/recalculate its
-        // position when its outer size changes.
-        await win.setSize(new PhysicalSize(b.width, b.height)).catch(() => {})
-        await win.setPosition(new PhysicalPosition(b.x, b.y)).catch(() => {})
-      }
-      // Windows finishes the native fullscreen transition after the Tauri
-      // promise resolves. Re-assert the exact pre-fullscreen bounds as those
-      // delayed native messages settle, preventing cumulative rightward drift.
-      await restore()
-      await new Promise((resolve) => setTimeout(resolve, 90))
-      await restore()
-      await new Promise((resolve) => setTimeout(resolve, 180))
-      await restore()
-    }
-    windowedBoundsRef.current = null
-    fullscreenMonitorBoundsRef.current = null
+    await invoke('set_native_player_fullscreen', { fullscreen: false }).catch(() => {})
+    if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
+    // Allow the native client rectangle to settle before sizing the mpv child.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
     await applyFullVideoViewport()
   }, [applyFullVideoViewport])
 
   const toggleFullscreen = useCallback(async () => {
-    const win = getCurrentWindow()
     if (isFullscreenRef.current) {
       await exitFullscreenWindow()
     } else {
@@ -1635,18 +1747,7 @@ function FullNativeMpvPlayer({
       isFullscreenRef.current = true
       setIsFullscreen(true)
       try {
-        const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
-        windowedBoundsRef.current = { x: pos.x, y: pos.y, width: size.width, height: size.height }
-        // setFullscreen hides the taskbar but (on a transparent, decorationless
-        // window) doesn't resize the window; force the window to the monitor's
-        // full bounds so the video stretches edge-to-edge as well.
-        await win.setFullscreen(true)
-        const mon = await currentMonitor().catch(() => null)
-        if (mon) {
-          fullscreenMonitorBoundsRef.current = { x: mon.position.x, y: mon.position.y, width: mon.size.width, height: mon.size.height }
-          await win.setPosition(new PhysicalPosition(mon.position.x, mon.position.y)).catch(() => {})
-          await win.setSize(new PhysicalSize(mon.size.width, mon.size.height)).catch(() => {})
-        }
+        await invoke('set_native_player_fullscreen', { fullscreen: true })
       } catch (e) {
         isFullscreenRef.current = false
         setIsFullscreen(false)
@@ -1687,6 +1788,7 @@ function FullNativeMpvPlayer({
         e.preventDefault()
         e.stopPropagation()
         showControls()
+        if (wtControlBlocked()) { wtBlockedNotice(); return }
 
         if (e.repeat) return
 
@@ -1695,14 +1797,27 @@ function FullNativeMpvPlayer({
 
         const step = useAppStore.getState().seekStepSeconds || 10
         pressedKey = key
-        accumulatedSeekRef.current = key === 'ArrowRight' ? step : -step
+        const direction = key === 'ArrowRight' ? 1 : -1
+        const initialDelta = direction * step
+        const initialTarget = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + initialDelta))
+        progressRef.current.currentTime = initialTarget
+        setCurrentTime(initialTarget)
+        sendPlayerCommand('seek', [initialDelta, 'relative+keyframes']).catch(() => {})
+        sendWatchTogetherSeek(initialTarget)
+        accumulatedSeekRef.current = initialDelta
         setAccumulatedSeek(accumulatedSeekRef.current)
 
         holdTimeout = setTimeout(() => {
           spoolInterval = setInterval(() => {
             if (accumulatedSeekRef.current !== null) {
               const spool = Math.max(5, Math.round(step / 2))
-              accumulatedSeekRef.current += key === 'ArrowRight' ? spool : -spool
+              const delta = direction * spool
+              const target = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + delta))
+              progressRef.current.currentTime = target
+              setCurrentTime(target)
+              sendPlayerCommand('seek', [delta, 'relative+keyframes']).catch(() => {})
+              sendWatchTogetherSeek(target)
+              accumulatedSeekRef.current += delta
               setAccumulatedSeek(accumulatedSeekRef.current)
             }
           }, 150)
@@ -1758,12 +1873,6 @@ function FullNativeMpvPlayer({
           if (holdTimeout) clearTimeout(holdTimeout)
           if (spoolInterval) clearInterval(spoolInterval)
           
-          if (accumulatedSeekRef.current !== null && !wtControlBlocked()) {
-            logEvent('PLAYER DEBUG', `Keyboard seek triggered for: ${accumulatedSeekRef.current}s`)
-            sendPlayerCommand('seek', [accumulatedSeekRef.current, 'relative']).catch(() => {})
-            sendWatchTogetherSeek(progressRef.current.currentTime + accumulatedSeekRef.current)
-          }
-          
           pressedKey = null
           holdTimeout = null
           spoolInterval = null
@@ -1802,6 +1911,10 @@ function FullNativeMpvPlayer({
       status: "starting"
     }
     activeSessionRef.current = session
+    playerReadyRef.current = false
+    unstableStreamNotifiedRef.current = false
+    bufferingStartedAtRef.current = null
+    setPlayerReady(false)
     latestFullPlayerSessionId = session.id
     logEvent('PLAYER DEBUG', `Player started session ${session.id} for media ${session.mediaId}`)
 
@@ -1826,7 +1939,6 @@ function FullNativeMpvPlayer({
         if (cancelled || session.status === "stopped") return
         setPlayerRunning(true)
         session.status = "playing"
-        setPlayerReady(true)
         showControls()
         const syncNativeSurface = () => {
           resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
@@ -1924,7 +2036,13 @@ function FullNativeMpvPlayer({
               ...(pmdbSkips.status === 'fulfilled' ? pmdbSkips.value : []),
               ...(introdbSkips.status === 'fulfilled' ? introdbSkips.value : []),
             ]
-            if (!cancelled && session.status !== "stopped") setSkips(merged)
+            if (!cancelled && session.status !== "stopped") {
+              setSkips(merged)
+              const fallbackChapters = introDbChapters(merged)
+              if (fallbackChapters.length > 0) {
+                setChapters((existing) => existing.length > 0 ? existing : fallbackChapters)
+              }
+            }
           }
           resolveAndFetchSkips()
         }
@@ -1936,6 +2054,13 @@ function FullNativeMpvPlayer({
           }, delay)
           sessionTimers.add(timer)
         })
+
+        const startupTimer = setTimeout(() => {
+          sessionTimers.delete(startupTimer)
+          if (cancelled || session.status === "stopped" || playerReadyRef.current) return
+          setError('This source took too long to start. Trying another stream…')
+        }, 12_000)
+        sessionTimers.add(startupTimer)
 
         await loadAddonSubtitles()
         let attempts = 0
@@ -1988,8 +2113,12 @@ function FullNativeMpvPlayer({
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
-    listen<{ sessionId: string; eventId: number }>('mpv-playback-ready', () => {
+    listen<{ sessionId: string; eventId: number }>('mpv-playback-ready', (event) => {
       if (disposed) return
+      // FILE_LOADED means headers were parsed; PLAYBACK_RESTART means decoded
+      // playback actually began. Only the latter should dismiss loading.
+      if (event.payload.eventId !== 21) return
+      playerReadyRef.current = true
       setPlayerRunning(true)
       setPlayerReady(true)
       showControls()
@@ -2005,6 +2134,29 @@ function FullNativeMpvPlayer({
     }
   }, [showControls])
 
+  // libmpv reports why each file ended (eof/stop/error/redirect). An "error"
+  // reason means the stream itself died (404, network, demux failure) — show
+  // it instead of leaving a silent black player behind.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<{ sessionId: string; reason: string; error: string | null }>('mpv-end-file', (event) => {
+      if (disposed) return
+      const { reason, error: endError } = event.payload
+      logEvent('MPV DEBUG', `end-file reason=${reason}${endError ? ` error=${endError}` : ''}`)
+      if (reason === 'error') {
+        setError(`Playback failed: ${endError || 'the stream ended with an unknown error'}. Go back and choose another stream.`)
+      }
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
   useEffect(() => {
     if (playerReady || error) return
     let cancelled = false
@@ -2014,9 +2166,7 @@ function FullNativeMpvPlayer({
       if (cancelled) return
       setPlayerRunning(running)
 
-      if (running && Date.now() - startedAt > 5000) {
-        setPlayerReady(true)
-        showControls()
+      if (running && playerReadyRef.current) {
         clearInterval(interval)
       } else if (!running && Date.now() - startedAt > 3000) {
         await new Promise((r) => setTimeout(r, 500))
@@ -2254,6 +2404,22 @@ function FullNativeMpvPlayer({
           }
         }
         setBuffering(isBuffering === true)
+        if (isBuffering === true && playerReadyRef.current) {
+          bufferingStartedAtRef.current ??= nowMs
+          const bufferingFor = nowMs - bufferingStartedAtRef.current
+          if (
+            bufferingFor >= 12_000 &&
+            !unstableStreamNotifiedRef.current &&
+            !useWatchTogetherStore.getState().currentRoom
+          ) {
+            unstableStreamNotifiedRef.current = true
+            const message = 'This source keeps buffering. Trying a more stable stream…'
+            setError(message)
+            onPlaybackErrorRef.current?.(message)
+          }
+        } else {
+          bufferingStartedAtRef.current = null
+        }
         if (cacheBuffState !== null && cacheBuffState !== lastCacheBuffStateRef.current) {
           lastCacheBuffStateRef.current = cacheBuffState
           logEvent('MPV DEBUG', `cache-buffering-state changed: ${cacheBuffState}%`)
@@ -2284,12 +2450,12 @@ function FullNativeMpvPlayer({
         }
         if (pos != null) {
           setCurrentTime(pos)
+          playerReadyRef.current = true
           setPlayerReady(true)
           progressRef.current.currentTime = pos
         }
         if (dur != null && dur > 0) {
           setDuration(dur)
-          setPlayerReady(true)
           progressRef.current.duration = dur
         }
 
@@ -2315,7 +2481,7 @@ function FullNativeMpvPlayer({
         }
 
         // Stall detection
-        const PLAYER_STALL_TIMEOUT_MS = 30000
+        const PLAYER_STALL_TIMEOUT_MS = 12000
         const PLAYER_RESTART_COOLDOWN_MS = 15000
         const MAX_AUTO_RESTARTS = 0
 
@@ -2328,7 +2494,12 @@ function FullNativeMpvPlayer({
             const timeSinceLastPosUpdate = nowMs - lastTimePosUpdateRef.current
             if (timeSinceLastPosUpdate >= PLAYER_STALL_TIMEOUT_MS) {
               logEvent('PLAYER DEBUG', `Playback stall detected! No position update for ${Math.round(timeSinceLastPosUpdate / 1000)}s while playing.`)
-              if (autoRestartCountRef.current < MAX_AUTO_RESTARTS && nowMs - lastRestartTimeRef.current >= PLAYER_RESTART_COOLDOWN_MS) {
+              if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+                unstableStreamNotifiedRef.current = true
+                const message = 'Playback stalled on this source. Trying a more stable stream…'
+                setError(message)
+                onPlaybackErrorRef.current?.(message)
+              } else if (autoRestartCountRef.current < MAX_AUTO_RESTARTS && nowMs - lastRestartTimeRef.current >= PLAYER_RESTART_COOLDOWN_MS) {
                 logEvent('PLAYER DEBUG', `Triggering player auto-restart (attempt ${autoRestartCountRef.current + 1})`)
                 autoRestartCountRef.current++
                 lastRestartTimeRef.current = nowMs
@@ -2393,6 +2564,29 @@ function FullNativeMpvPlayer({
             upNextTriggeredRef.current = true
             setShowUpNext(true)
             setUpNextCountdown(15)
+          }
+
+          // Warm up the next episode ~90s before the end: preload its addon
+          // results, rank them, and probe the top direct link so the Up-Next
+          // switch starts instantly. Once per episode; skipped in Watch
+          // Together and when the prompt is disabled.
+          if (
+            remaining > 0 && remaining <= 90 &&
+            !nextPrepareTriggeredRef.current &&
+            promptSetting !== 'off' &&
+            !useWatchTogetherStore.getState().currentRoom &&
+            nextEpInfoRef.current &&
+            currentItemRef.current?.imdbId
+          ) {
+            nextPrepareTriggeredRef.current = true
+            const nextEp = nextEpInfoRef.current
+            preparedStreamRegistry.prepare({
+              mediaType: 'series',
+              mediaId: currentItemRef.current.imdbId,
+              imdbId: currentItemRef.current.imdbId,
+              tmdbId: tmdbIdRef.current ?? undefined,
+              seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
+            }, { title, priority: StreamPreloadPriority.CONTINUE_NEXT_EPISODE }).catch(() => {})
           }
         }
 
@@ -2509,17 +2703,52 @@ function FullNativeMpvPlayer({
     if (!ownsSession()) return
 
     setIsAutoSearching(true)
-    const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
-    const addons = getStreamAddons('series')
+    const nextRequest: StreamPreloadRequest = {
+      mediaType: 'series',
+      mediaId: item.imdbId,
+      imdbId: item.imdbId,
+      tmdbId: tmdbIdRef.current ?? undefined,
+      seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
+    }
 
     let foundUrl: string | null = null
-    for (const addon of addons) {
+    let chosenStream: PreloadedStream | null = null
+
+    // 1) Prepared stream from the near-end warm-up: already ranked + probed.
+    const prepared = preparedStreamRegistry.consume(canonicalStreamKey(nextRequest))
+    if (prepared) {
+      foundUrl = prepared.playableUrl
+      chosenStream = prepared.stream
+      logEvent('PLAYER DEBUG', `Up Next: using prepared stream from ${prepared.stream.addonName} (score ${prepared.score})`)
+    }
+
+    // 2) Preloaded/cached addon results + the same smart ranking the stream
+    //    selector uses.
+    if (!foundUrl) {
       try {
-        const streams = await getAddonStreams(addon.url, 'series', streamId)
+        const results = await streamPreloadManager.request(nextRequest, { priority: StreamPreloadPriority.PLAYBACK })
         if (!ownsSession()) return
-        const valid = streams.find((s) => s.url)
-        if (valid?.url) { foundUrl = valid.url; break }
+        const top = rankStreams(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }))
+          .find((candidate) => candidate.score > -500 && getPlayableStreamUrl(candidate.stream))
+        if (top) {
+          foundUrl = getPlayableStreamUrl(top.stream)
+          chosenStream = top.stream as PreloadedStream
+          logEvent('PLAYER DEBUG', `Up Next: smart-ranked stream from ${chosenStream.addonName} (score ${top.score})`)
+        }
       } catch (_) {}
+    }
+
+    // 3) Last resort: lenient per-addon loop — some addons only respond here.
+    if (!foundUrl) {
+      const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
+      for (const addon of getStreamAddons('series')) {
+        try {
+          const streams = await getAddonStreams(addon.url, 'series', streamId)
+          if (!ownsSession()) return
+          const valid = streams.find((s) => s.url)
+          if (valid?.url) { foundUrl = valid.url; break }
+        } catch (_) {}
+      }
     }
 
     setIsAutoSearching(false)
@@ -2540,8 +2769,9 @@ function FullNativeMpvPlayer({
     }
     await Promise.allSettled(promises)
     if (!ownsSession()) return
-    await stopEmbeddedPlayer().catch(() => {})
-    if (!ownsSession()) return
+    // No stop here: launch_embedded_mpv reuses the live libmpv instance
+    // (loadfile replace) when launch options match, so the next episode
+    // starts without tearing down the video surface.
 
     // Update current playback item refs
     const newItem: PlaybackItem = { ...item, season: nextEp.season, episode: nextEp.episode, title: `${title} · ${nextEp.title}` }
@@ -2564,6 +2794,9 @@ function FullNativeMpvPlayer({
         mpvCustomArgs: buildMpvExtraArgs(storeState)
       })
       applySavedVolume()
+      // Feed the same reliability history the stream selector uses (paths 1/2
+      // only — the lenient fallback has no addon identity attached).
+      if (chosenStream) recordReliabilityEvent(chosenStream, 'success')
 
       // Update title/subtitle in the player controls bar
       const epCode = `S${String(nextEp.season).padStart(2, '0')}E${String(nextEp.episode).padStart(2, '0')}`
@@ -2578,6 +2811,7 @@ function FullNativeMpvPlayer({
       setShowUpNext(false)
       upNextTriggeredRef.current = false
       upNextCancelledRef.current = false
+      nextPrepareTriggeredRef.current = false
       progressRef.current = { currentTime: 0, duration: 0 }
       lastSavedTimeRef.current = 0
       lastSimklPlaybackSaveRef.current = 0
@@ -2628,6 +2862,8 @@ function FullNativeMpvPlayer({
             ...(introdb.status === 'fulfilled' ? introdb.value : []),
           ]
           setSkips(merged)
+          const fallbackChapters = introDbChapters(merged)
+          if (fallbackChapters.length > 0) setChapters(fallbackChapters)
         }).catch(() => {})
       }
 
@@ -2813,8 +3049,10 @@ function FullNativeMpvPlayer({
   const seekBy = (secs: number) => {
     if (!playerRunning) return
     if (wtControlBlocked()) { wtBlockedNotice(); return }
-    const targetTime = progressRef.current.currentTime + secs
-    command('seek', [secs, 'relative'])
+    const targetTime = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + secs))
+    progressRef.current.currentTime = targetTime
+    setCurrentTime(targetTime)
+    command('seek', [secs, 'relative+keyframes'])
     sendWatchTogetherSeek(targetTime)
   }
   // seekTo is now handled directly by inline slider events.
@@ -2886,7 +3124,7 @@ function FullNativeMpvPlayer({
         aiSubtitleTrackIdRef.current = null
       }
 
-      liveAiCueIndexRef.current = 0
+      liveAiCueIndexRef.current = 1
       liveAiLastCueRef.current = ''
       sourceNextIdxRef.current = 0
       liveAiSubtitleContentRef.current = '1\n00:00:00,000 --> 00:00:00,100\n.\n\n'
@@ -3035,12 +3273,18 @@ function FullNativeMpvPlayer({
       )}
 
       {/* Center play/pause indicator — hidden while the paused info panel is up */}
-      {paused && controlsVisible && (
-        <div className="absolute inset-0 z-[2] flex items-center justify-center pointer-events-none">
-          <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
-            <svg className="w-10 h-10 ml-1" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+      {controlsVisible && playerReady && !buffering && (
+        <div className="absolute inset-0 z-[4] flex items-center justify-center pointer-events-none">
+          <div className="pointer-events-auto flex items-center gap-5">
+            <button onClick={(event) => { event.stopPropagation(); seekBy(-seekStepSeconds) }} className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white/90 shadow-2xl backdrop-blur-xl transition-transform hover:scale-105 hover:bg-white/15" aria-label={`Back ${seekStepSeconds} seconds`}>
+              <svg className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 7v5h5M5.5 11a7 7 0 1 1 1.2 6.7" strokeLinecap="round" strokeLinejoin="round"/><text x="12" y="15" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor" stroke="none">{seekStepSeconds}</text></svg>
+            </button>
+            <button onClick={(event) => { event.stopPropagation(); togglePlay() }} className="flex h-20 w-20 items-center justify-center rounded-full border border-white/12 bg-black/55 text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-transform hover:scale-105 hover:bg-white/20" aria-label={paused ? 'Play' : 'Pause'}>
+              {paused ? <svg className="ml-1 h-9 w-9" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg> : <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>}
+            </button>
+            <button onClick={(event) => { event.stopPropagation(); seekBy(seekStepSeconds) }} className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white/90 shadow-2xl backdrop-blur-xl transition-transform hover:scale-105 hover:bg-white/15" aria-label={`Forward ${seekStepSeconds} seconds`}>
+              <svg className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 7v5h-5M18.5 11a7 7 0 1 0-1.2 6.7" strokeLinecap="round" strokeLinejoin="round"/><text x="12" y="15" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor" stroke="none">{seekStepSeconds}</text></svg>
+            </button>
           </div>
         </div>
       )}
@@ -3157,14 +3401,25 @@ function FullNativeMpvPlayer({
         className={`absolute inset-x-0 bottom-0 z-[10] transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-8 pt-20 pb-6 bg-gradient-to-t from-black/90 via-black/55 to-transparent">
+        <div
+          className="mx-[clamp(20px,4vw,72px)] mb-[clamp(18px,3vw,42px)] px-[clamp(12px,2vw,32px)] py-3"
+        >
 
           {/* Info row: title + track icons */}
-          <div className="flex items-end justify-between mb-4">
+          <div className="flex items-center justify-between mb-4">
             <div className="min-w-0 pr-4">
-              <h2 className="text-2xl font-bold leading-tight truncate">{currentDisplayTitle}</h2>
+              <h2 className="text-lg font-semibold leading-tight truncate text-white/95">{currentDisplayTitle}</h2>
               {currentDisplaySubtitle && (
-                <p className="text-sm text-white/50 tracking-wider uppercase mt-1 truncate">{currentDisplaySubtitle}</p>
+                <p className="text-xs text-white/45 mt-1 truncate">{currentDisplaySubtitle}</p>
+              )}
+              {mediaBadges.length > 0 && (
+                <div className="mt-3 flex items-center gap-1.5">
+                  {mediaBadges.map((badge) => (
+                    <span key={badge} className="rounded border border-white/25 bg-black/25 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-white/80 backdrop-blur-sm">
+                      {badge}
+                    </span>
+                  ))}
+                </div>
               )}
             </div>
 
@@ -3185,9 +3440,9 @@ function FullNativeMpvPlayer({
                 )}
                 <button
                   onClick={() => setTrackMenu(trackMenu === 'subs' ? null : 'subs')}
-                  onFocus={() => loadAddonSubtitles().then(() => refreshTracks()).catch(() => {})}
+                  onFocus={() => loadAddonSubtitles(true).then(() => refreshTracks()).catch(() => {})}
                   title="Subtitles"
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${trackMenu === 'subs' || selectedSub !== 'no' ? 'bg-white/20 text-white' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'}`}
+                  className={`w-10 h-10 rounded-full border flex items-center justify-center shadow-xl backdrop-blur-xl transition-colors ${trackMenu === 'subs' ? 'border-white/15 bg-white/15 text-white' : 'border-white/10 bg-black/35 text-white/70 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <rect x="2" y="4" width="20" height="16" rx="2.5" />
@@ -3211,7 +3466,7 @@ function FullNativeMpvPlayer({
                   onClick={() => setTrackMenu(trackMenu === 'audio' ? null : 'audio')}
                   onFocus={() => refreshTracks().catch(() => {})}
                   title="Audio track"
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${trackMenu === 'audio' ? 'bg-white/20 text-white' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'}`}
+                  className={`w-10 h-10 rounded-full border flex items-center justify-center shadow-xl backdrop-blur-md transition-colors ${trackMenu === 'audio' ? 'border-white/15 bg-white/15 text-white' : 'border-white/10 bg-black/35 text-white/70 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <path d="M9 18V5l12-2v13" strokeLinecap="round" strokeLinejoin="round" />
@@ -3241,7 +3496,7 @@ function FullNativeMpvPlayer({
                   onClick={() => setShowSpeedMenu((v) => !v)}
                   title="Playback speed"
                   className={`h-7 px-2 rounded-lg flex items-center justify-center text-xs font-bold transition-colors ${
-                    playbackSpeed !== 1 ? 'bg-accent/20 text-accent' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'
+                    playbackSpeed !== 1 ? 'border border-white/15 bg-white/15 text-white' : 'border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white'
                   }`}
                 >
                   {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
@@ -3299,7 +3554,7 @@ function FullNativeMpvPlayer({
               <button
                 onClick={pickAnother}
                 title="Pick another stream"
-                className="w-9 h-9 rounded-xl bg-white/8 text-white/60 hover:bg-white/15 hover:text-white flex items-center justify-center transition-colors ml-1"
+                className="w-10 h-10 rounded-full border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors ml-1"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                   <path d="M1 4v6h6M23 20v-6h-6" strokeLinecap="round" strokeLinejoin="round" />
@@ -3311,7 +3566,7 @@ function FullNativeMpvPlayer({
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-                className="w-9 h-9 rounded-xl bg-white/8 text-white/60 hover:bg-white/15 hover:text-white flex items-center justify-center transition-colors"
+                className="w-10 h-10 rounded-full border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors"
               >
                 {isFullscreen ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -3327,12 +3582,12 @@ function FullNativeMpvPlayer({
           </div>
 
           {/* Seek bar + playback controls row */}
-          <div className="flex items-center gap-3 mb-2 px-10">
+          <div className="flex flex-wrap items-center justify-end gap-2.5 mb-2">
             {/* Play/Pause */}
             <button
               onClick={(e) => { e.stopPropagation(); togglePlay() }}
               title={paused ? 'Play (Space)' : 'Pause (Space)'}
-              className="w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors flex-shrink-0"
+              className="hidden"
             >
               {paused ? (
                 <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
@@ -3349,7 +3604,7 @@ function FullNativeMpvPlayer({
             <button
               onClick={(e) => { e.stopPropagation(); seekBy(-seekStepSeconds) }}
               title={`Back ${seekStepSeconds}s (←)`}
-              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
+              className="hidden"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
@@ -3361,7 +3616,7 @@ function FullNativeMpvPlayer({
             <button
               onClick={(e) => { e.stopPropagation(); seekBy(seekStepSeconds) }}
               title={`Forward ${seekStepSeconds}s (→)`}
-              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0"
+              className="hidden"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
@@ -3370,21 +3625,24 @@ function FullNativeMpvPlayer({
             </button>
 
             <div
-              className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5"
+              className="order-1 relative h-1.5 w-full flex-none group cursor-pointer transition-[height] duration-150 hover:h-2"
               onPointerMove={showTimelinePreviewFromPointer}
               onPointerLeave={hideTimelinePreview}
             >
               {timelinePreview.visible && (
                 <div
-                  className="pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2"
+                  className="pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2 overflow-hidden rounded-xl border border-white/20 bg-black/90 shadow-2xl"
                   style={{ left: `${timelinePreview.leftPct}%` }}
                 >
-                  <span className="rounded-lg border border-white/10 bg-black/85 px-2.5 py-1 text-xs font-semibold text-white/90 shadow-xl backdrop-blur-sm">
+                  {timelineThumbnail && (
+                    <img src={timelineThumbnail} alt="" className="h-[108px] w-48 object-cover" draggable={false} />
+                  )}
+                  <span className="block px-2.5 py-1 text-center text-[11px] font-semibold text-white/90 backdrop-blur-sm">
                     {formatTime(timelinePreview.time)}
                   </span>
                 </div>
               )}
-              <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
+              <div className="absolute inset-0 rounded-full bg-white/25 group-hover:bg-white/35 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
                 <button
                   key={`${range.type}-${range.start}-${range.end}-${index}`}
@@ -3393,7 +3651,9 @@ function FullNativeMpvPlayer({
                     event.stopPropagation()
                     if (wtControlBlocked()) { wtBlockedNotice(); return }
                     const targetTime = range.end / 1000
-                    command('seek', [targetTime, 'absolute'])
+                    progressRef.current.currentTime = targetTime
+                    setCurrentTime(targetTime)
+                    command('seek', [targetTime, 'absolute+keyframes'])
                     sendWatchTogetherSeek(targetTime)
                   }}
                   title={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
@@ -3408,14 +3668,35 @@ function FullNativeMpvPlayer({
                   style={{ left: `${range.left}%`, width: `${range.width}%` }}
                 />
               ))}
+              {duration > 0 && chapters.slice(1).map((chapter, index) => {
+                const left = Math.max(0, Math.min(100, (chapter.time / duration) * 100))
+                return (
+                  <button
+                    key={`chapter-marker-${chapter.time}-${index}`}
+                    type="button"
+                    title={`${chapter.title} · ${formatTime(chapter.time)}`}
+                    aria-label={`Go to ${chapter.title}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (wtControlBlocked()) { wtBlockedNotice(); return }
+                      progressRef.current.currentTime = chapter.time
+                      setCurrentTime(chapter.time)
+                      command('seek', [chapter.time, 'absolute+keyframes'])
+                      sendWatchTogetherSeek(chapter.time)
+                    }}
+                    className="absolute -inset-y-1 z-[5] w-px bg-black/70 shadow-[1px_0_rgba(255,255,255,0.28)] hover:w-1 hover:bg-white/90"
+                    style={{ left: `${left}%` }}
+                  />
+                )
+              })}
               <div
                 className="absolute inset-y-0 left-0 z-[1] rounded-full bg-white/90 transition-all"
                 style={{ width: `${displayProgressPct}%` }}
               />
               {/* Thumb dot */}
               <div
-                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ left: `calc(${displayProgressPct}% - 6px)` }}
+                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-80 group-hover:opacity-100 transition-opacity"
+                style={{ left: `calc(${displayProgressPct}% - 8px)` }}
               />
               <input
                 type="range"
@@ -3444,8 +3725,11 @@ function FullNativeMpvPlayer({
                   setIsDragging(false)
                   hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  command('seek', [upPct, 'absolute-percent'])
-                  if (duration > 0) sendWatchTogetherSeek((upPct / 100) * duration)
+                  const targetTime = duration > 0 ? (upPct / 100) * duration : 0
+                  progressRef.current.currentTime = targetTime
+                  setCurrentTime(targetTime)
+                  command('seek', [upPct, 'absolute-percent+keyframes'])
+                  if (duration > 0) sendWatchTogetherSeek(targetTime)
                 }}
                 onTouchStart={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect()
@@ -3467,8 +3751,11 @@ function FullNativeMpvPlayer({
                   setIsDragging(false)
                   hideTimelinePreview()
                   if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  command('seek', [upPct, 'absolute-percent'])
-                  if (duration > 0) sendWatchTogetherSeek((upPct / 100) * duration)
+                  const targetTime = duration > 0 ? (upPct / 100) * duration : 0
+                  progressRef.current.currentTime = targetTime
+                  setCurrentTime(targetTime)
+                  command('seek', [upPct, 'absolute-percent+keyframes'])
+                  if (duration > 0) sendWatchTogetherSeek(targetTime)
                 }}
                 onChange={(e) => {
                   const val = Number(e.target.value)
@@ -3482,18 +3769,63 @@ function FullNativeMpvPlayer({
           </div>
 
           {/* Timestamps row */}
-          <div className="flex items-center justify-between text-[11px] text-white/45 px-10">
-            <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
-            <button
-              onClick={() => setShowTimeRemaining((r) => !r)}
-              className="hover:text-white/70 transition-colors"
-            >
-              {duration > 0
-                ? showTimeRemaining
-                  ? `-${formatTime(displayRemaining)}`
-                  : formatTime(duration)
-                : '--:--'}
-            </button>
+          <div className="relative flex items-center justify-between text-[11px] text-white/50">
+            <div className="flex items-center gap-5">
+              <button onClick={() => { setShowMediaInfo((value) => !value); setShowChapters(false) }} className={`rounded-full px-3 py-1.5 font-semibold transition-colors ${showMediaInfo ? 'bg-white/12 text-white' : 'text-white/50 hover:bg-white/8 hover:text-white'}`}>Info</button>
+              <button disabled={chapters.length === 0} onClick={() => { setShowChapters((value) => !value); setShowMediaInfo(false) }} className={`rounded-full px-3 py-1.5 font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white/12 text-white' : 'text-white/50 hover:bg-white/8 hover:text-white'}`}>Chapters</button>
+            </div>
+            <div className="flex items-center gap-3 tabular-nums">
+              <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
+              <span className="text-white/25">/</span>
+              <button onClick={() => setShowTimeRemaining((r) => !r)} className="hover:text-white/70 transition-colors">
+                {duration > 0 ? showTimeRemaining ? `-${formatTime(displayRemaining)}` : formatTime(duration) : '--:--'}
+              </button>
+            </div>
+
+            {showMediaInfo && (
+              <div className="absolute bottom-full left-0 mb-4 w-[min(34rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/90 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl">
+                <div className="flex items-start justify-between gap-5">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Now playing</p>
+                    <h3 className="mt-1.5 text-lg font-semibold leading-tight text-white">{currentDisplayTitle}</h3>
+                    {(currentMeta?.episodeTitle || currentDisplaySubtitle) && (
+                      <p className="mt-1 text-sm text-white/50">
+                        {[currentMeta?.epCode, currentMeta?.episodeTitle || currentDisplaySubtitle].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => setShowMediaInfo(false)} aria-label="Close information" className="grid h-8 w-8 flex-none place-items-center rounded-full bg-white/5 text-lg text-white/45 transition-colors hover:bg-white/10 hover:text-white">×</button>
+                </div>
+
+                {currentMeta?.overview ? (
+                  <p className="mt-4 text-sm leading-6 text-white/68">{currentMeta.overview}</p>
+                ) : (
+                  <p className="mt-4 text-sm text-white/35">Description unavailable.</p>
+                )}
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {currentMeta?.year && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{currentMeta.year}</span>}
+                  {currentMeta?.runtime && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{currentMeta.runtime} min</span>}
+                  {currentMeta?.rating != null && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">★ {currentMeta.rating.toFixed(1)}</span>}
+                  {currentMeta?.genres?.slice(0, 3).map((genre) => <span key={genre} className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{genre}</span>)}
+                  {mediaBadges.map((badge) => <span key={badge} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-semibold text-white/45">{badge}</span>)}
+                </div>
+              </div>
+            )}
+            {showChapters && (
+              <div className="absolute bottom-full left-0 mb-4 max-h-72 w-80 overflow-y-auto rounded-2xl border border-white/10 bg-black/85 py-2 shadow-2xl backdrop-blur-2xl">
+                {chapters.map((chapter, index) => (
+                  <button
+                    key={`${chapter.time}-${index}`}
+                    onClick={() => { progressRef.current.currentTime = chapter.time; setCurrentTime(chapter.time); command('seek', [chapter.time, 'absolute+keyframes']); sendWatchTogetherSeek(chapter.time); setShowChapters(false) }}
+                    className={`flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors ${currentTime >= chapter.time && (chapters[index + 1] == null || currentTime < chapters[index + 1].time) ? 'bg-white/12 text-white' : 'hover:bg-white/8'}`}
+                  >
+                    <span className="truncate text-xs font-medium text-white/80">{chapter.title}</span>
+                    <span className="font-mono text-[10px] text-white/40">{formatTime(chapter.time)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

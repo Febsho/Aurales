@@ -27,6 +27,7 @@ import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { usePreparedStream } from '../hooks/usePreparedStream'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
@@ -769,6 +770,17 @@ export default function MovieDetailPage() {
       sourceAddonItemId: state.sourceAddonItemId,
     }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
   }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+
+  // After a short dwell, rank + probe the best direct stream so Play is instant.
+  const preparedMediaId = movie ? (movie.imdbId || state.sourceAddonItemId || id || '') : ''
+  usePreparedStream(movie && preparedMediaId ? {
+    mediaType: 'movie',
+    mediaId: preparedMediaId,
+    imdbId: movie.imdbId,
+    tmdbId: movie.tmdbId,
+    sourceAddonId: state.sourceAddonId,
+    sourceAddonItemId: state.sourceAddonItemId,
+  } : null, movie?.title)
 
   const initialRouteArt = applyInitialArtworkPreference({
     poster: state.poster,

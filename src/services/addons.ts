@@ -335,25 +335,34 @@ export async function getAddonSubtitles(
   id: string
 ): Promise<SubtitleResult[]> {
   const url = `${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`
-  const normalize = (tracks: SubtitleResult[]): SubtitleResult[] => tracks
-    .filter((track) => typeof track?.url === 'string' && track.url.length > 0)
-    .map((track) => {
+  const normalize = (tracks: unknown[]): SubtitleResult[] => tracks
+    .filter((track): track is Record<string, unknown> => Boolean(track) && typeof track === 'object')
+    .flatMap((track, index): SubtitleResult[] => {
+      const rawUrl = String(track.url || track.path || '').trim()
+      if (!rawUrl) return []
+      const lang = String(track.lang || track.language || track.languageCode || 'und').trim()
+      const label = String(track.label || track.title || track.name || '').trim() || undefined
       try {
-        return { ...track, url: new URL(track.url, `${baseUrl(addonUrl)}/`).toString() }
+        return [{
+          id: String(track.id || `addon-sub-${index}`),
+          url: new URL(rawUrl, `${baseUrl(addonUrl)}/`).toString(),
+          lang,
+          label,
+        }]
       } catch (_) {
-        return track
+        return [{ id: String(track.id || `addon-sub-${index}`), url: rawUrl, lang, label }]
       }
     })
   try {
     const res = await fetch(url)
     if (!res.ok) return []
     const data = await res.json()
-    return normalize((data.subtitles || []) as SubtitleResult[])
+    return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
   } catch (_) {
     try {
       const body = await invoke<string>('http_get_text', { url })
       const data = JSON.parse(body)
-      return normalize((data.subtitles || []) as SubtitleResult[])
+      return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
     } catch (_) {
       return []
     }
