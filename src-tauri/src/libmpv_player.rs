@@ -18,6 +18,12 @@ const MPV_FORMAT_NODE_ARRAY: c_int = 7;
 const MPV_FORMAT_NODE_MAP: c_int = 8;
 const MPV_FORMAT_BYTE_ARRAY: c_int = 9;
 
+const MPV_END_FILE_REASON_EOF: c_int = 0;
+const MPV_END_FILE_REASON_STOP: c_int = 2;
+const MPV_END_FILE_REASON_QUIT: c_int = 3;
+const MPV_END_FILE_REASON_ERROR: c_int = 4;
+const MPV_END_FILE_REASON_REDIRECT: c_int = 5;
+
 const MPV_EVENT_SHUTDOWN: c_int = 1;
 const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 const MPV_EVENT_START_FILE: c_int = 6;
@@ -70,6 +76,15 @@ struct MpvEventLogMessage {
 struct MpvEventClientMessage {
     num_args: c_int,
     args: *mut *const c_char,
+}
+
+#[repr(C)]
+struct MpvEventEndFile {
+    reason: c_int,
+    error: c_int,
+    playlist_entry_id: c_longlong,
+    playlist_insert_id: c_longlong,
+    playlist_insert_num_entries: c_int,
 }
 
 #[repr(C)]
@@ -268,8 +283,45 @@ impl LibMpvPlayer {
                         };
                     }
                 }
+                MPV_EVENT_END_FILE => {
+                    let (reason, error_code) = if event.data.is_null() {
+                        (-1, 0)
+                    } else {
+                        let end = unsafe { &*(event.data as *const MpvEventEndFile) };
+                        (end.reason, end.error)
+                    };
+                    let reason_str = match reason {
+                        MPV_END_FILE_REASON_EOF => "eof",
+                        MPV_END_FILE_REASON_STOP => "stop",
+                        MPV_END_FILE_REASON_QUIT => "quit",
+                        MPV_END_FILE_REASON_ERROR => "error",
+                        MPV_END_FILE_REASON_REDIRECT => "redirect",
+                        _ => "unknown",
+                    };
+                    let error_message = if reason == MPV_END_FILE_REASON_ERROR {
+                        Some(player.error_string(error_code))
+                    } else {
+                        None
+                    };
+                    crate::commands::player_debug_log(format!(
+                        "[MPV EVENT] session={} end-file reason={}{}",
+                        player.session_id,
+                        reason_str,
+                        error_message
+                            .as_deref()
+                            .map(|message| format!(" error={}", message))
+                            .unwrap_or_default()
+                    ));
+                    let _ = app.emit(
+                        "mpv-end-file",
+                        serde_json::json!({
+                            "sessionId": player.session_id,
+                            "reason": reason_str,
+                            "error": error_message,
+                        }),
+                    );
+                }
                 MPV_EVENT_START_FILE
-                | MPV_EVENT_END_FILE
                 | MPV_EVENT_FILE_LOADED
                 | MPV_EVENT_SEEK
                 | MPV_EVENT_PLAYBACK_RESTART
@@ -294,6 +346,10 @@ impl LibMpvPlayer {
                 _ => {}
             }
         });
+    }
+
+    pub(crate) fn is_destroyed(&self) -> bool {
+        self.destroyed.load(Ordering::SeqCst)
     }
 
     pub(crate) fn shutdown(&self) {

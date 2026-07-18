@@ -76,7 +76,7 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
   simkl: {
     key: 'watched:simkl',
     fetch: async () => {
-      const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
+      const [movies, episodes] = await Promise.all([getSimklWatchedMovies(true), getSimklWatchedEpisodes(true)])
       return { items: [...movies, ...episodes] as SimklWatchlistItem[] }
     },
     extract: (data) => extractSimklKeys(data.items),
@@ -93,14 +93,22 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
   },
 }
 
+const providerRefreshes = new Map<SyncableWatchedSource, Promise<void>>()
+
 /**
  * Bypass the cache TTL for a single provider: fetch fresh data and overwrite
  * its cache entry. Used by the per-provider background sync scheduler.
  */
 export async function forceRefreshProviderWatched(source: SyncableWatchedSource): Promise<void> {
+  const pending = providerRefreshes.get(source)
+  if (pending) return pending
   const def = PROVIDER_FETCHERS[source]
-  const fresh = await def.fetch()
-  await cacheSet(def.key, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+  const refresh = (async () => {
+    const fresh = await def.fetch()
+    await cacheSet(def.key, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+  })().finally(() => providerRefreshes.delete(source))
+  providerRefreshes.set(source, refresh)
+  return refresh
 }
 
 async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]> {

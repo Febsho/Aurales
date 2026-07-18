@@ -112,6 +112,21 @@ export async function isWatchedFromProviders(
   return checks.some(Boolean)
 }
 
+/**
+ * Context-menu checks should reflect the provider now, not merely the last
+ * background snapshot. Keep the fast cached path, then verify a negative
+ * Trakt/Simkl result with one real provider refresh.
+ */
+export async function isWatchedFromProviderFresh(
+  item: WatchedLookupItem,
+  source: 'trakt' | 'simkl',
+): Promise<boolean> {
+  if (await isWatchedFromProviders(item, [source], new Map())) return true
+  const { forceRefreshProviderWatched } = await import('./watchedCacheSync')
+  await forceRefreshProviderWatched(source)
+  return isWatchedFromProviders(item, [source], new Map())
+}
+
 export async function batchIsWatchedFromProviders(
   items: WatchedLookupItem[],
   sources: WatchedSource[],

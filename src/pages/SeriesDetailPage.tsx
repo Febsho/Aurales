@@ -34,6 +34,7 @@ import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { usePreparedStream } from '../hooks/usePreparedStream'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
@@ -2283,14 +2284,12 @@ export default function SeriesDetailPage() {
 
   useGlobalBackdrop(show?.backdrop || show?.poster)
 
-  useEffect(() => {
-    if (!show || !preloadPlaybackSources) return
+  // The episode Play would start with right now: the resume point, or the
+  // first visible episode. Shared by the DETAILS_OPEN preload effect and the
+  // prepared-stream dwell hook below.
+  const detailStreamRequest = useMemo(() => {
+    if (!show) return null
     const resume = liveResumePoint || resumeProgress
-    // Start requesting streams as soon as the show is usable. Previously this
-    // only ran for resumed shows, so a first-time viewer waited until they
-    // pressed Play before any addon request began. Prefer the resume point;
-    // otherwise preload the first visible episode (and use the season model
-    // before its episode payload has finished loading).
     const firstEpisode = seasonData?.episodes[0]
     const fallbackSeason = firstEpisode?.seasonNumber
       ?? show.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
@@ -2300,22 +2299,34 @@ export default function SeriesDetailPage() {
       : fallbackSeason != null
         ? { season: fallbackSeason, episode: firstEpisode?.episodeNumber ?? 1 }
         : null
-    if (!target) return
+    if (!target) return null
     const mediaId = show.imdbId || state.sourceAddonItemId || id || ''
-    if (!mediaId) return
-    const preloadKey = [show.id, mediaId, target.season, target.episode, state.sourceAddonId, state.sourceAddonItemId].join(':')
-    if (detailStreamPreloadRef.current === preloadKey) return
-    detailStreamPreloadRef.current = preloadKey
-    streamPreloadManager.request({
-      mediaType: 'series',
+    if (!mediaId) return null
+    return {
+      mediaType: 'series' as const,
       mediaId,
       imdbId: show.imdbId,
       tmdbId: show.tmdbId,
       seasonEpisode: target,
       sourceAddonId: state.sourceAddonId,
       sourceAddonItemId: state.sourceAddonItemId,
-    }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
-  }, [show, seasonData, liveResumePoint?.season, liveResumePoint?.episode, resumeProgress?.season, resumeProgress?.episode, id, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+    }
+  }, [show, seasonData, liveResumePoint?.season, liveResumePoint?.episode, resumeProgress?.season, resumeProgress?.episode, id, state.sourceAddonId, state.sourceAddonItemId])
+
+  useEffect(() => {
+    if (!show || !detailStreamRequest || !preloadPlaybackSources) return
+    // Start requesting streams as soon as the show is usable. Previously this
+    // only ran for resumed shows, so a first-time viewer waited until they
+    // pressed Play before any addon request began.
+    const target = detailStreamRequest.seasonEpisode
+    const preloadKey = [show.id, detailStreamRequest.mediaId, target.season, target.episode, state.sourceAddonId, state.sourceAddonItemId].join(':')
+    if (detailStreamPreloadRef.current === preloadKey) return
+    detailStreamPreloadRef.current = preloadKey
+    streamPreloadManager.request(detailStreamRequest, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
+  }, [show, detailStreamRequest, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+
+  // After a short dwell, rank + probe the best direct stream so Play is instant.
+  usePreparedStream(detailStreamRequest, show?.title)
 
   const initialRouteArt = applyInitialArtworkPreference({
     poster: state.poster,

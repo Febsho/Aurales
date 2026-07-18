@@ -102,18 +102,24 @@ export async function launchPlayer(request: PlaybackRequest): Promise<void> {
 
 // Which feature currently owns the (singleton) embedded mpv instance. The
 // hero trailer must not stop a player the real playback UI has claimed.
-let embeddedPlayerOwner: 'player' | 'hero-trailer' = 'player'
+type EmbeddedPlayerOwner = 'player' | 'hero-trailer'
+let embeddedPlayerOwner: EmbeddedPlayerOwner | null = null
 
-export function getEmbeddedPlayerOwner(): 'player' | 'hero-trailer' {
+export function getEmbeddedPlayerOwner(): EmbeddedPlayerOwner | null {
   return embeddedPlayerOwner
 }
 
-export async function stopEmbeddedPlayerIfOwner(owner: 'player' | 'hero-trailer'): Promise<void> {
+export async function stopEmbeddedPlayerIfOwner(owner: EmbeddedPlayerOwner): Promise<void> {
   if (embeddedPlayerOwner !== owner) return
   await stopEmbeddedPlayer()
 }
 
-export async function launchEmbeddedPlayer(request: PlaybackRequest, owner: 'player' | 'hero-trailer' = 'player'): Promise<void> {
+export async function launchEmbeddedPlayer(request: PlaybackRequest, owner: EmbeddedPlayerOwner = 'player'): Promise<void> {
+  // A Home hero stream may finish resolving after Continue Watching has opened
+  // the real player. Never allow that stale trailer launch to steal the singleton.
+  if (owner === 'hero-trailer' && embeddedPlayerOwner === 'player') {
+    throw new Error('Full player currently owns the embedded video surface')
+  }
   embeddedPlayerOwner = owner
   await invoke('launch_embedded_mpv', {
     url: request.url,
@@ -170,6 +176,7 @@ export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest
 }
 
 export async function stopEmbeddedPlayer(): Promise<void> {
+  embeddedPlayerOwner = null
   await invoke('stop_embedded_mpv')
 }
 

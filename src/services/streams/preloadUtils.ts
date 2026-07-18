@@ -29,7 +29,23 @@ export function canonicalStreamKey(request: CanonicalStreamRequest): string {
   return `movie:${namespace}`
 }
 
-export type SeasonLoader = (tmdbId: string | number, season: number) => Promise<Array<{ seasonNumber: number; episodeNumber: number }>>
+// Shrinks a TTL when the stream URL carries its own expiry (expires/exp/e unix
+// params) or looks tokenized/signed. Returns defaultSeconds otherwise.
+export function streamUrlTtlSeconds(url: string, defaultSeconds: number): number {
+  try {
+    const parsed = new URL(url)
+    const expiry = Number(parsed.searchParams.get('expires') || parsed.searchParams.get('exp') || parsed.searchParams.get('e'))
+    if (Number.isFinite(expiry) && expiry > 1_000_000_000 && expiry < 4_000_000_000) {
+      return Math.min(defaultSeconds, Math.max(5 * 60, expiry - Math.floor(Date.now() / 1000) - 120))
+    }
+    if (/token|signature|sig|policy/i.test(parsed.search)) {
+      return Math.min(defaultSeconds, 20 * 60)
+    }
+  } catch { /* non-URL streams are ranked later by the existing pipeline */ }
+  return defaultSeconds
+}
+
+export type SeasonLoader =(tmdbId: string | number, season: number) => Promise<Array<{ seasonNumber: number; episodeNumber: number }>>
 
 export async function resolveNextEpisodeWith(
   request: CanonicalStreamRequest,

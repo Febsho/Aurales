@@ -5,7 +5,7 @@ import { useContextMenu, type ProviderKey, type ProviderWatchState } from '../ho
 import { useAppStore } from '../stores/appStore'
 import { useToast } from './ui/Toast'
 import type { SearchResult } from '../types'
-import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders } from '../services/watchedStatus'
+import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders, isWatchedFromProviderFresh } from '../services/watchedStatus'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { saveRecommendationFeedback } from '../services/discovery/feedbackStore'
@@ -25,6 +25,7 @@ export default function ContextMenu() {
   const navigate = useNavigate()
   const { toast } = useToast()
   const [providerStates, setProviderStates] = useState<ProviderWatchState[]>([])
+  const providerLoadIdRef = useRef(0)
   const [adjusted, setAdjusted] = useState({ x: 0, y: 0 })
 
   const traktConnected = useAppStore((s) => s.traktConnected)
@@ -151,13 +152,9 @@ export default function ContextMenu() {
     return () => { cancelled = true }
   }, [open, target])
 
-  useEffect(() => {
-    if (!open || !target || !enrichedItem) { setProviderStates([]); return }
-    loadProviderStates(enrichedItem)
-  }, [open, target, enrichedItem])
-
   const loadProviderStates = useCallback(async (item: SearchResult) => {
     if (!target) return
+    const loadId = ++providerLoadIdRef.current
     const states: ProviderWatchState[] = []
 
     const localWatched = checkLocalWatched(item, target, watchProgress)
@@ -178,27 +175,40 @@ export default function ContextMenu() {
 
     setProviderStates([...states])
 
+    const applyResult = (provider: ProviderKey, watched: boolean) => {
+      if (providerLoadIdRef.current !== loadId) return
+      setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, watched, loading: false } : s))
+    }
+
     if (traktConnected) {
       checkTraktWatched(item, target).then((watched) => {
-        setProviderStates((prev) => prev.map((s) => s.provider === 'trakt' ? { ...s, watched, loading: false } : s))
+        applyResult('trakt', watched)
       })
     }
     if (simklConnected) {
       checkSimklWatched(item, target).then((watched) => {
-        setProviderStates((prev) => prev.map((s) => s.provider === 'simkl' ? { ...s, watched, loading: false } : s))
+        applyResult('simkl', watched)
       })
     }
     if (pmdbConnected) {
       checkPmdbWatched(item, target).then((watched) => {
-        setProviderStates((prev) => prev.map((s) => s.provider === 'pmdb' ? { ...s, watched, loading: false } : s))
+        applyResult('pmdb', watched)
       })
     }
     if (anilistConnected && isAnimeItem(item)) {
       checkAniListWatched(item, target).then((watched) => {
-        setProviderStates((prev) => prev.map((s) => s.provider === 'anilist' ? { ...s, watched, loading: false } : s))
+        applyResult('anilist', watched)
       })
     }
   }, [target, traktConnected, simklConnected, pmdbConnected, anilistConnected, watchProgress])
+
+  useEffect(() => {
+    if (!open || !target || !enrichedItem) {
+      providerLoadIdRef.current += 1
+      return
+    }
+    loadProviderStates(enrichedItem)
+  }, [open, target, enrichedItem, loadProviderStates])
 
   const handleToggleProvider = useCallback(async (provider: ProviderKey) => {
     if (!target) return
@@ -715,7 +725,7 @@ async function checkTraktWatched(
       lookup.isAnime = isAnimeItem(item)
       lookup.appSeasonEpCounts = target.appSeasonCounts
     }
-    return await isWatchedFromProviders(lookup, ['trakt'], new Map())
+    return await isWatchedFromProviderFresh(lookup, 'trakt')
   } catch (err) {
     console.error('[TraktCheck] error:', err)
     return false
@@ -745,7 +755,7 @@ async function checkSimklWatched(
       lookup.isAnime = isAnimeItem(item)
       lookup.appSeasonEpCounts = target.appSeasonCounts
     }
-    return isWatchedFromProviders(lookup, ['simkl'], new Map())
+    return await isWatchedFromProviderFresh(lookup, 'simkl')
   } catch (_) { return false }
 }
 

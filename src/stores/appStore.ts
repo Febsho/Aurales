@@ -136,8 +136,10 @@ interface AppState {
   addRecentlyWatched: (item: SearchResult) => void
 
   preferredSubtitles: string[]
+  subtitleMode: 'show' | 'forced' | 'hide'
   preferredAudio: string[]
   setPreferredSubtitles: (langs: string[]) => void
+  setSubtitleMode: (mode: 'show' | 'forced' | 'hide') => void
   setPreferredAudio: (langs: string[]) => void
 
   continueWatchingSource: ProgressProvider
@@ -459,6 +461,11 @@ function loadPersistedPreferredSubtitles(): string[] {
   return ['en']
 }
 
+function loadPersistedSubtitleMode(): 'show' | 'forced' | 'hide' {
+  const mode = localStorage.getItem('aurales_subtitle_mode')
+  return mode === 'forced' || mode === 'hide' || mode === 'show' ? mode : 'show'
+}
+
 function loadPersistedPreferredAudio(): string[] {
   try {
     const raw = localStorage.getItem('aurales_preferred_audio')
@@ -514,11 +521,33 @@ export const APP_LANGUAGES: LanguageItem[] = [
 
 export function getLanguageCodeFromTrack(langStr?: string): string | null {
   if (!langStr) return null
-  const cleaned = langStr.toLowerCase().trim()
+  const cleaned = langStr
+    .toLowerCase()
+    .trim()
+    .replace(/_/g, '-')
+    .replace(/\b(?:forced|default|sdh|cc)\b/g, '')
+    .replace(/[()[\]]/g, ' ')
+    .trim()
+  const tag = cleaned.split(/[\s/|,]+/)[0]
+  const base = tag.split('-')[0]
   const found = APP_LANGUAGES.find(
-    (l) => l.code === cleaned || l.iso3.includes(cleaned) || l.name.toLowerCase() === cleaned
+    (l) => l.code === cleaned || l.code === base || l.iso3.includes(cleaned) || l.iso3.includes(base) || l.name.toLowerCase() === cleaned
   )
-  return found ? found.code : null
+  return found?.code || (/^[a-z]{2,3}$/.test(base) ? base : null)
+}
+
+export function getLanguageNameFromTrack(langStr?: string): string {
+  if (!langStr) return 'Unknown'
+  const code = getLanguageCodeFromTrack(langStr)
+  const known = APP_LANGUAGES.find((language) => language.code === code || language.iso3.includes(code || ''))
+  if (known) return known.name
+  if (code) {
+    try {
+      const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(code)
+      if (name && name.toLowerCase() !== code.toLowerCase()) return name
+    } catch (_) { /* fall through */ }
+  }
+  return langStr.trim() || 'Unknown'
 }
 
 const DEFAULT_HOME_ROWS: HomeRowConfig[] = buildDefaultHomeRows()
@@ -692,6 +721,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
 
   preferredSubtitles: loadPersistedPreferredSubtitles(),
+  subtitleMode: loadPersistedSubtitleMode(),
   preferredAudio: loadPersistedPreferredAudio(),
   setPreferredSubtitles: (langs) => {
     localStorage.setItem('aurales_preferred_subtitles', JSON.stringify(langs))
@@ -700,6 +730,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       updates.subtitleTranslationLang = langs[0]
     }
     set(updates)
+  },
+  setSubtitleMode: (mode) => {
+    localStorage.setItem('aurales_subtitle_mode', mode)
+    set({ subtitleMode: mode })
   },
   setPreferredAudio: (langs) => {
     localStorage.setItem('aurales_preferred_audio', JSON.stringify(langs))
@@ -780,8 +814,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   cacheBufferSize: (localStorage.getItem('aurales_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
-  autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') === 'true',
-  preloadPlaybackSources: localStorage.getItem('aurales_preload_playback_sources') === 'true',
+  // Default ON: instant playback (detail-page prepare + startup preload) is
+  // the expected experience; users who want the manual picker opt out.
+  autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') !== 'false',
+  preloadPlaybackSources: localStorage.getItem('aurales_preload_playback_sources') !== 'false',
   subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
@@ -1046,14 +1082,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_mpv_cache_secs', '60')
     localStorage.setItem('aurales_mpv_network_timeout', '15')
     localStorage.setItem('aurales_mpv_custom_args', '')
-    localStorage.setItem('aurales_preload_playback_sources', 'false')
+    localStorage.setItem('aurales_preload_playback_sources', 'true')
     set({
       hwdecMode: 'auto',
       cacheBufferSize: 'default',
       mpvCacheSecs: 60,
       mpvNetworkTimeout: 15,
       mpvCustomArgs: '',
-      preloadPlaybackSources: false,
+      preloadPlaybackSources: true,
     })
   },
 

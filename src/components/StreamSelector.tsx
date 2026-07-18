@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
-import { useAppStore, getLanguageCodeFromTrack } from '../stores/appStore'
+import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { getAddonSubtitles, getStreamAddons, getSubtitleAddons } from '../services/addons'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import NativeMpvPlayer from './NativeMpvPlayer'
@@ -18,7 +18,10 @@ import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { stopEmbeddedPlayer, nativePlayerSupported } from '../services/player'
 import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
-import { loadReliabilityHistory, recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { buildSmartContext, preparedStreamRegistry, type PreparedStream } from '../services/streams/preparedStreams'
+import { canonicalStreamKey } from '../services/streams/preloadUtils'
+import { probeStreamUrl } from '../services/streams/streamProbe'
 import { cachedImage } from '../services/imageCache'
 
 interface AddonStream extends StreamResult {
@@ -131,6 +134,12 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const autoSmartStartedRef = useRef(false)
   const manualSelectionRequestedRef = useRef(false)
   const startSmartPlayRef = useRef<() => void>(() => {})
+  const handlePlayRef = useRef<(stream: AddonStream, index: number, urlOverride?: string) => void>(() => {})
+  const fastPathTriedRef = useRef(false)
+  const pendingSmartFallbackRef = useRef<AddonStream | null>(null)
+  const warmedStreamUrlsRef = useRef(new Map<string, string>())
+  const warmingStreamUrlsRef = useRef(new Set<string>())
+  const resumeSmartFallbackRef = useRef<(failed: AddonStream) => void>(() => {})
   const hadPlaybackRef = useRef(false)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const addons = useAppStore((s) => s.addons)
@@ -188,7 +197,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       setLoading(false)
       return
     }
-    const makeStreamId = (baseId: string) => seasonEpisode
+    const makeStreamId = (baseId: string) => seasonEpisode && !/:\d+:\d+$/.test(baseId)
       ? `${baseId}:${seasonEpisode.season}:${seasonEpisode.episode}`
       : baseId
 
@@ -233,20 +242,27 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       if (!subtitleSeenUrls.has(a.url)) { allSubAddons.push(a); subtitleSeenUrls.add(a.url) }
     }
 
-    Promise.all(allSubAddons.map(async (addon) => {
+    const subtitleBaseIds = Array.from(new Set([
+      sourceAddonItemId,
+      cleanMediaId,
+      tmdbId ? `tmdb:${tmdbId}` : undefined,
+      tvdbId ? `tvdb:${tvdbId}` : undefined,
+    ].filter((id): id is string => Boolean(id))))
+
+    Promise.all(allSubAddons.flatMap((addon) => subtitleBaseIds.map(async (baseId) => {
       try {
-        const baseId = addon.manifest.id === sourceAddonId && sourceAddonItemId ? sourceAddonItemId : cleanMediaId
         const streamId = makeStreamId(baseId)
         const tracks = await getAddonSubtitles(addon.url, mediaType, streamId)
         return tracks.map((track) => ({
           ...track,
+          label: track.label || getLanguageNameFromTrack(track.lang),
           source: 'addon' as const,
           addonName: addon.manifest.name,
         }))
       } catch (_) {
         return []
       }
-    })).then((results) => {
+    }))).then((results) => {
       const unique = results.flat().filter((subtitle, index, all) =>
         all.findIndex((candidate) => candidate.url === subtitle.url && candidate.lang === subtitle.lang) === index
       )
@@ -329,13 +345,19 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         if (!subtitle || typeof subtitle !== 'object') return false
         return typeof (subtitle as SubtitleResult).url === 'string'
       })
-      .map((subtitle, index) => ({
-        id: subtitle.id || `stream-sub-${index}`,
-        url: subtitle.url,
-        lang: subtitle.lang || 'und',
-        label: subtitle.label || subtitle.lang || `Stream subtitle ${index + 1}`,
-        source: 'stream' as const,
-      }))
+      .map((subtitle, index) => {
+        const raw = subtitle as SubtitleResult & { language?: string; languageCode?: string; title?: string; name?: string }
+        const lang = raw.lang || raw.language || raw.languageCode || 'und'
+        let subtitleUrl = raw.url
+        try { subtitleUrl = new URL(raw.url, stream.url || window.location.href).toString() } catch (_) { /* keep original */ }
+        return {
+          id: raw.id || `stream-sub-${index}`,
+          url: subtitleUrl,
+          lang,
+          label: raw.label || raw.title || raw.name || getLanguageNameFromTrack(lang) || `Stream subtitle ${index + 1}`,
+          source: 'stream' as const,
+        }
+      })
   }
 
   const mergeSubtitles = (stream: AddonStream): SubtitleResult[] => {
@@ -412,11 +434,55 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     [playback?.stream, subtitles]
   )
 
+  // Fast path: a prepared (ranked + probed) stream from the detail-page dwell
+  // lets playback start before the addon fetch even settles. The fetch effect
+  // above has already kicked off, so streams/subtitles still arrive for the
+  // fallback queue.
+  useEffect(() => {
+    if (!open || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || autoSmartStartedRef.current || fastPathTriedRef.current) return
+    fastPathTriedRef.current = true
+    const cleanMediaId = String(mediaId).trim().replace(/:(\d+):(\d+)$/, '')
+    if (!cleanMediaId) return
+    const request = { mediaType, mediaId: cleanMediaId, tmdbId, seasonEpisode }
+    const playPrepared = (prepared: PreparedStream) => {
+      autoSmartStartedRef.current = true
+      smartActiveRef.current = true
+      smartQueueRef.current = null // backfilled on demand if this stream fails
+      setSmartStatus(`Instant play from ${prepared.stream.addonName}`)
+      handlePlayRef.current(prepared.stream as AddonStream, -1, prepared.playableUrl)
+    }
+    const ready = preparedStreamRegistry.consume(canonicalStreamKey(request))
+    if (ready) { playPrepared(ready); return }
+    // Not ready yet (Play clicked before the detail-page prepare finished, or
+    // no dwell happened at all): join/start the prepare and race it against
+    // the ranked smart-play path — whichever settles first starts playback.
+    let cancelled = false
+    void Promise.race([
+      preparedStreamRegistry.prepare(request, { title, priority: StreamPreloadPriority.PLAYBACK }),
+      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3_000)),
+    ]).then((prepared) => {
+      if (cancelled || !prepared) return
+      if (autoSmartStartedRef.current || manualSelectionRequestedRef.current || hadPlaybackRef.current) return
+      preparedStreamRegistry.consume(prepared.mediaKey)
+      playPrepared(prepared)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [open, playback, autoPlayFirstStream, mediaId, mediaType, seasonEpisode, tmdbId])
+
   useEffect(() => {
     if (!open || loading || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || filteredStreams.length === 0 || autoSmartStartedRef.current) return
     autoSmartStartedRef.current = true
     startSmartPlayRef.current()
   }, [open, loading, playback, autoPlayFirstStream, filteredStreams.length])
+
+  // A fast-path stream failed before the addon results had arrived: resume the
+  // smart fallback as soon as there is something to fall back to.
+  useEffect(() => {
+    if (!pendingSmartFallbackRef.current || filteredStreams.length === 0) return
+    const failed = pendingSmartFallbackRef.current
+    pendingSmartFallbackRef.current = null
+    resumeSmartFallbackRef.current(failed)
+  }, [filteredStreams.length])
 
   useEffect(() => {
     const resolving = open && autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)
@@ -428,13 +494,16 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (!open) return
     autoSmartStartedRef.current = false
     manualSelectionRequestedRef.current = false
+    fastPathTriedRef.current = false
+    pendingSmartFallbackRef.current = null
   }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
 
   if (!open) return null
 
 
-  const handlePlay = async (stream: AddonStream, index: number) => {
-    const url = getPlayableUrl(stream)
+  const handlePlay = async (stream: AddonStream, index: number, urlOverride?: string) => {
+    const originalUrl = getPlayableUrl(stream)
+    const url = urlOverride || (originalUrl ? warmedStreamUrlsRef.current.get(originalUrl) : undefined) || originalUrl
     if (!url) {
       setPlayError('This stream is not a direct playable video URL. Pick a direct HTTP/HLS/DASH stream instead.')
       return
@@ -462,31 +531,73 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     }
   }
 
+  const warmManualStream = (stream: AddonStream) => {
+    const url = getPlayableUrl(stream)
+    if (!url || warmedStreamUrlsRef.current.has(url) || warmingStreamUrlsRef.current.has(url) || warmingStreamUrlsRef.current.size >= 2) return
+    warmingStreamUrlsRef.current.add(url)
+    probeStreamUrl(url, 2_500).then((probe) => {
+      if (probe?.ok) warmedStreamUrlsRef.current.set(url, probe.finalUrl || url)
+    }).finally(() => warmingStreamUrlsRef.current.delete(url))
+  }
+
+  const rankSelectorStreams = (candidates: AddonStream[]): AddonStream[] =>
+    rankStreams(candidates as SmartStream[], buildSmartContext({
+      title, season: seasonEpisode?.season, episode: seasonEpisode?.episode, subtitles, mode: smartMode,
+    })).filter((candidate) => candidate.score > -500).map((candidate) => candidate.stream as AddonStream)
+
+  const selectorMediaKey = (): string => canonicalStreamKey({
+    mediaType, mediaId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''), tmdbId, seasonEpisode,
+  })
+
   const startSmartPlay = () => {
-    const store = useAppStore.getState()
-    const ranked = rankStreams(providerStreams as SmartStream[], {
-      title, season: seasonEpisode?.season, episode: seasonEpisode?.episode,
-      preferredAudio: store.preferredAudio, preferredSubtitles: store.preferredSubtitles,
-      subtitles, mode: smartMode, player: (window as any).__TAURI_INTERNALS__ ? 'mpv' : 'web',
-      maxSizeGb: store.cacheBufferSize === 'default' ? 20 : store.cacheBufferSize === 'large' ? 45 : 80,
-      history: loadReliabilityHistory(),
-    }).filter((candidate) => candidate.score > -500).map((candidate) => candidate.stream as AddonStream)
+    const ranked = rankSelectorStreams(providerStreams)
+    // A validated prepared stream beats pure heuristics: move it to the front
+    // and play it via its probed (post-redirect) URL.
+    let urlOverride: string | undefined
+    const prepared = preparedStreamRegistry.peek(selectorMediaKey())
+    if (prepared?.stream.url) {
+      const index = ranked.findIndex((candidate) => candidate.url === prepared.stream.url)
+      if (index >= 0) {
+        if (index > 0) ranked.unshift(ranked.splice(index, 1)[0])
+        urlOverride = prepared.playableUrl
+        preparedStreamRegistry.consume(prepared.mediaKey)
+      }
+    }
     smartQueueRef.current = new SmartFallbackQueue(ranked)
     smartActiveRef.current = true
     const first = smartQueueRef.current.next()
     if (!first) { setPlayError('No playable streams were found.'); return }
     setSmartStatus(`Smart Play selected ${first.addonName}`)
-    handlePlay(first, streams.indexOf(first))
+    handlePlay(first, streams.indexOf(first), urlOverride)
   }
   startSmartPlayRef.current = startSmartPlay
+  handlePlayRef.current = handlePlay
 
-  const handlePlaybackError = () => {
-    if (!playback) return
-    recordReliabilityEvent(playback.stream, 'failed_start')
+  const resumeSmartFallback = (failed: AddonStream) => {
     if (!smartActiveRef.current) return
-    const next = smartQueueRef.current?.next()
+    const ranked = rankSelectorStreams(providerStreams).filter((candidate) => candidate.url !== failed.url)
+    smartQueueRef.current = new SmartFallbackQueue(ranked)
+    const next = smartQueueRef.current.next()
     if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
-    setSmartStatus(`Stream failed â€” trying ${next.addonName}`)
+    setSmartStatus(`Stream failed — trying ${next.addonName}`)
+    handlePlay(next, streams.indexOf(next))
+  }
+  resumeSmartFallbackRef.current = resumeSmartFallback
+
+  const handlePlaybackError = (message?: string) => {
+    if (!playback) return
+    recordReliabilityEvent(playback.stream, /buffer|stutter|unstable/i.test(message || '') ? 'unstable' : 'failed_start')
+    if (!smartActiveRef.current) return
+    if (!smartQueueRef.current) {
+      // Fast path started before the addon fetch settled — build the fallback
+      // queue now, or wait for results if none have arrived yet.
+      if (filteredStreams.length === 0) { pendingSmartFallbackRef.current = playback.stream; return }
+      resumeSmartFallback(playback.stream)
+      return
+    }
+    const next = smartQueueRef.current.next()
+    if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
+    setSmartStatus(`Stream failed — trying ${next.addonName}`)
     handlePlay(next, streams.indexOf(next))
   }
 
@@ -687,6 +798,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             return (
             <button
               key={`${stream.addonId}-${i}`}
+              onMouseEnter={() => warmManualStream(stream)}
+              onFocus={() => warmManualStream(stream)}
               onClick={() => { smartActiveRef.current = false; recordReliabilityEvent(stream, 'preferred'); handlePlay(stream, streams.indexOf(stream)) }}
               aria-label={`Play ${getStreamHeading(stream, i)}`}
               className="group flex min-h-[82px] w-full items-start gap-4 rounded-2xl border border-white/[0.07] bg-[#151719]/90 px-4 py-3.5 text-left shadow-[0_10px_30px_rgba(0,0,0,0.22)] transition-all hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-[#1d2023] focus-visible:border-accent/50 focus-visible:outline-none"

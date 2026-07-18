@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
-import { formatTime } from '../services/player'
+import { formatTime, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -14,7 +15,7 @@ import {
 } from '../services/trakt/scrobble'
 import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
-import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack } from '../stores/appStore'
+import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   play as wtPlay,
@@ -57,11 +58,83 @@ interface PreparedSubtitle {
   url: string
   lang: string
   label: string
+  forced: boolean
 }
 
 function srtToVtt(input: string): string {
   const normalized = input.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
+}
+
+async function fetchSubtitleText(url: string): Promise<string> {
+  try {
+    const response = await fetch(url)
+    if (response.ok) return await response.text()
+  } catch (_) { /* use the native HTTP fallback below */ }
+  if ((window as any).__TAURI_INTERNALS__) return await invoke<string>('http_get_text', { url })
+  throw new Error('Could not fetch source subtitle content')
+}
+
+async function requestSubtitleTranslation(apiKey: string, model: string, content: string, language: string): Promise<string> {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const blocks = normalized.split(/\n{2,}/)
+  const cues = blocks.map((block, blockIndex) => {
+    const lines = block.split('\n')
+    const timelineIndex = lines.findIndex((line) => line.includes('-->'))
+    return timelineIndex < 0 ? null : {
+      blockIndex,
+      lines,
+      timelineIndex,
+      text: lines.slice(timelineIndex + 1).join('\n').trim(),
+    }
+  }).filter((cue): cue is NonNullable<typeof cue> => Boolean(cue?.text))
+
+  if (cues.length === 0) throw new Error('No subtitle cues were found in this track')
+
+  for (let offset = 0; offset < cues.length; offset += 30) {
+    const batch = cues.slice(offset, offset + 30)
+    const requestBody = {
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content: `Translate subtitle dialogue into natural ${language}. Return only a valid JSON array of translated strings in the same order and with exactly the same number of items. Preserve line breaks and simple formatting tags. Do not include timestamps, explanations, or markdown fences.`,
+        },
+        { role: 'user', content: JSON.stringify(batch.map((cue) => cue.text)) },
+      ],
+    }
+
+    let raw: string
+    if ((window as any).__TAURI_INTERNALS__) {
+      raw = await openRouterChat(apiKey, requestBody)
+    } else {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'X-Title': 'Aurales Media Player' },
+        body: JSON.stringify(requestBody),
+      })
+      if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
+      raw = await response.text()
+    }
+
+    const payload = JSON.parse(raw)
+    const answer = String(payload.choices?.[0]?.message?.content || '').trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+    const arrayStart = answer.indexOf('[')
+    const arrayEnd = answer.lastIndexOf(']')
+    const translated = JSON.parse(arrayStart >= 0 && arrayEnd > arrayStart ? answer.slice(arrayStart, arrayEnd + 1) : answer)
+    if (!Array.isArray(translated) || translated.length !== batch.length || translated.some((item) => typeof item !== 'string')) {
+      throw new Error('The translation model returned an invalid subtitle batch')
+    }
+
+    batch.forEach((cue, index) => {
+      blocks[cue.blockIndex] = [...cue.lines.slice(0, cue.timelineIndex + 1), translated[index]].join('\n')
+    })
+  }
+
+  return blocks.join('\n\n')
 }
 
 export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onReportBad }: InAppPlayerProps) {
@@ -131,48 +204,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setTranslatingSub(true)
     setTranslationError('')
     try {
-      const res = await fetch(track.url)
-      if (!res.ok) throw new Error('Could not fetch source subtitle content')
-      const text = await res.text()
+      const text = await fetchSubtitleText(track.url)
 
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${openrouterApiKey}`,
-          'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-          'X-Title': 'Aurales Media Player',
-        },
-        body: JSON.stringify({
-          model: openrouterModel || 'google/gemini-2.5-flash',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an expert subtitle translator. You are translating a WebVTT or SRT subtitle file into ${langName}.
-             
-IMPORTANT RULES:
-1. Translate all dialogue lines into natural, fluent ${langName}, preserving emotional tone and character context.
-2. Keep all WebVTT/SRT timing formatting, timestamps, cue IDs, and metadata structure EXACTLY identical.
-3. Do NOT translate timestamps, numbers, or technical keys.
-4. Output ONLY the translated file content. Do NOT wrap output in markdown blocks (like \`\`\`vtt or \`\`\`srt). Do not include any explanations, warnings, or intro/outro text.`
-            },
-            {
-              role: 'user',
-              content: text
-            }
-          ]
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`)
-      }
-
-      const data = await response.json()
-      let translatedText = data.choices?.[0]?.message?.content || ''
-      if (!translatedText) throw new Error('Received empty translation response')
-
-      translatedText = translatedText.replace(/```(vtt|srt|webvtt)?/gi, '').replace(/```/g, '').trim()
+      const translatedText = await requestSubtitleTranslation(
+        openrouterApiKey,
+        openrouterModel || 'google/gemini-2.5-flash',
+        text,
+        langName,
+      )
 
       const blob = new Blob([srtToVtt(translatedText)], { type: 'text/vtt' })
       const objectUrl = URL.createObjectURL(blob)
@@ -181,6 +220,7 @@ IMPORTANT RULES:
         id: `ai-translated-${langCode}-${Date.now()}`,
         url: objectUrl,
         lang: langCode,
+        forced: false,
         label: `✨ AI Translated (${langName})`
       }
 
@@ -296,13 +336,12 @@ IMPORTANT RULES:
         id: track.id || `sub-${index}`,
         url: track.url,
         lang: track.lang || 'und',
-        label: track.label || track.lang || `Subtitle ${index + 1}`,
+        label: `${getLanguageNameFromTrack(track.lang)} · ${track.source === 'addon' ? (track.addonName || 'Addon') : 'Stream'}`,
+        forced: /\bforced\b/i.test(track.label || ''),
       }
 
       try {
-        const res = await fetch(track.url)
-        if (!res.ok) return fallback
-        const text = await res.text()
+        const text = await fetchSubtitleText(track.url)
         const blob = new Blob([srtToVtt(text)], { type: 'text/vtt' })
         const objectUrl = URL.createObjectURL(blob)
         objectUrls.push(objectUrl)
@@ -322,15 +361,24 @@ IMPORTANT RULES:
 
   // ── Auto-select subtitle track by language priority ──
   useEffect(() => {
+    const { preferredSubtitles: preferredSubs = ['en'], subtitleMode } = useAppStore.getState()
+    if (subtitleMode === 'hide') {
+      setSelectedSubtitle('off')
+      if (videoRef.current) Array.from(videoRef.current.textTracks).forEach((track) => { track.mode = 'disabled' })
+      return
+    }
     if (preparedSubtitles.length === 0) return
-    const preferredSubs = useAppStore.getState().preferredSubtitles || ['en']
+    const candidates = subtitleMode === 'forced'
+      ? preparedSubtitles.map((track, index) => ({ track, index })).filter(({ track }) => track.forced)
+      : preparedSubtitles.map((track, index) => ({ track, index }))
     let bestIdx = -1
     let bestRank = Infinity
-    preparedSubtitles.forEach((t, idx) => {
+    candidates.forEach(({ track: t, index: idx }) => {
       const code = getLanguageCodeFromTrack(t.lang)
       const rank = code ? preferredSubs.indexOf(code) : -1
       if (rank !== -1 && rank < bestRank) { bestRank = rank; bestIdx = idx }
     })
+    if (bestIdx === -1 && subtitleMode === 'forced') bestIdx = candidates[0]?.index ?? -1
     if (bestIdx !== -1) {
       setSelectedSubtitle(String(bestIdx))
       if (videoRef.current) {
@@ -435,7 +483,7 @@ IMPORTANT RULES:
 
     const next = Array.from(tracks).map((track, index) => ({
       id: track.id || String(index),
-      label: track.label || track.language || `Audio ${index + 1}`,
+      label: track.label || getLanguageNameFromTrack(track.language) || `Audio ${index + 1}`,
       index,
       enabled: track.enabled,
     }))
