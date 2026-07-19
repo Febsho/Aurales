@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { buildYoutubeEmbedUrl, youtubeThumbnailUrl, type TrailerSource } from '../services/trailers'
-import { getDirectYoutubeStream, type DirectStream } from '../services/youtubeDirect'
+import { getDirectYoutubeStream, proxyAdaptiveYoutubeStream, type DirectStream } from '../services/youtubeDirect'
+import { resolveHeroStreams } from '../services/heroTrailerStreams'
 import { useAppStore } from '../stores/appStore'
 
 interface TrailerPreviewProps {
@@ -12,6 +13,9 @@ interface TrailerPreviewProps {
   eager?: boolean
   showShade?: boolean
   preferVideoOnly?: boolean
+  /** Prefer an adaptive 1080p stream pair instead of the compatible 360p
+   * muxed rendition. Intended for large Hero surfaces. */
+  highQuality?: boolean
   onEnded?: () => void
   allowIframeFallback?: boolean
   onUnavailable?: () => void
@@ -32,6 +36,7 @@ export default function TrailerPreview({
   allowIframeFallback = true,
   onUnavailable,
   placeholderUrl,
+  highQuality = false,
 }: TrailerPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -68,8 +73,13 @@ export default function TrailerPreview({
     }
     // Do not leave the preview stuck on artwork if the native resolver hangs.
     // The iframe is slower/less clean, but it is a reliable playback fallback.
+    const resolveDirect = highQuality
+      ? resolveHeroStreams(trailer.key, 1080).then((stream) => stream
+          ? proxyAdaptiveYoutubeStream({ ...stream, height: 1080 })
+          : getDirectYoutubeStream(trailer.key))
+      : getDirectYoutubeStream(trailer.key)
     Promise.race<DirectStream | null>([
-      getDirectYoutubeStream(trailer.key),
+      resolveDirect,
       new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6000)),
     ])
       .then((stream) => {
@@ -81,7 +91,7 @@ export default function TrailerPreview({
     return () => {
       cancelled = true
     }
-  }, [trailer.key, trailer.directUrl])
+  }, [trailer.key, trailer.directUrl, highQuality])
 
   useEffect(() => {
     if (directStream === null && !allowIframeFallback) onUnavailable?.()

@@ -8,6 +8,13 @@ import './index.css'
 const ContextMenu = lazy(() => import('./components/ContextMenu'))
 const ArtworkDebugOverlay = lazy(() => import('./components/ArtworkDebugOverlay'))
 
+// WebKitGTK has to use its non-DMA-BUF renderer on GPU/driver combinations
+// where GBM allocation fails. Mark Linux early so CSS can avoid effects that
+// are disproportionately expensive on that reliable fallback path.
+if (navigator.userAgent.includes('Linux')) {
+  document.documentElement.dataset.platform = 'linux'
+}
+
 if (import.meta.hot) {
   import.meta.hot.on('vite:beforeUpdate', async () => {
     const { cacheClearAll } = await import('./services/cache/sqliteCache')

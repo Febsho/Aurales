@@ -8,6 +8,7 @@ import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import WatchlistButton from '../components/WatchlistButton'
+import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import { buildTasteProfile, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
@@ -663,6 +664,7 @@ export default function DiscoverPage() {
 
   return (
     <div className="pb-12">
+      <div className="pt-8"><CatalogKeyNotice /></div>
       <div className="px-6 pt-8 pb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>

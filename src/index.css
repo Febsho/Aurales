@@ -116,6 +116,53 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* WebKitGTK's reliable non-DMA-BUF path performs poorly when repeatedly
+   sampling the full window for glass effects. Opaque translucent surfaces
+   retain the visual hierarchy without forcing a repaint on every frame. */
+html[data-platform="linux"] * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* WebKitGTK otherwise opens native select menus with the system's light
+   palette while the app-provided option text remains white. */
+html[data-platform="linux"] {
+  color-scheme: dark;
+}
+
+html[data-platform="linux"] select {
+  background-color: #18181b !important;
+  color: #f5f5f7 !important;
+}
+
+html[data-platform="linux"] select option,
+html[data-platform="linux"] select optgroup {
+  background-color: #18181b;
+  color: #f5f5f7;
+}
+
+html[data-platform="linux"] select:disabled {
+  color: rgba(245, 245, 247, 0.4) !important;
+}
+
+html[data-platform="linux"].hero-bg-active::before {
+  /* This backdrop is static, unlike the former scroll-driven Hero filter, so
+     a moderate blur preserves the intended artwork treatment at a much lower
+     repaint cost than the default 40px pass. */
+  filter: blur(22px) brightness(0.32);
+  transform: scale(1.08);
+}
+
+html[data-platform="linux"] .hero-mpv-shell-backdrop > div > span {
+  filter: brightness(0.28);
+  transform: none;
+}
+
+html[data-platform="linux"] .detail-content-shell__ambient img {
+  filter: brightness(0.3) saturate(1.1);
+  transform: none;
+}
+
 /* Blurred hero backdrop visible behind home page content */
 html.hero-bg-active::before {
   content: '';

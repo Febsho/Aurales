@@ -8,6 +8,15 @@ export function nativePlayerSupported(): boolean {
     && (platform.includes('Windows') || platform.includes('Linux'))
 }
 
+// Inline trailers need a transparent WebKit view layered above a native video
+// child. That composition is reliable on Windows, but WebKitGTK's fallback
+// renderer can keep the X11 child fully occluded. Linux trailers therefore use
+// the browser video/YouTube path while full playback continues to use libmpv.
+export function nativeTrailerPlayerSupported(): boolean {
+  return !!(window as any).__TAURI_INTERNALS__
+    && navigator.userAgent.includes('Windows')
+}
+
 export interface PlaybackRequest {
   url: string
   title?: string

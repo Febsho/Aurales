@@ -157,7 +157,7 @@ function SettingToggle({ checked, onChange, label }: { checked: boolean; onChang
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a1916] ${checked ? 'border-accent bg-accent' : 'border-white/10 bg-white/10 hover:bg-white/15'}`}
     >
-      <span className={`pointer-events-none absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
+      <span className={`pointer-events-none absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,0,0,0.12)] transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
     </button>
   )
 }
