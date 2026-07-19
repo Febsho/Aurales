@@ -12,6 +12,15 @@ use tauri::Manager;
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
+        // WebKitGTK's DMA-BUF renderer cannot allocate GBM buffers on a
+        // number of Linux GPU/driver combinations (especially NVIDIA and
+        // hybrid systems), leaving the window blank. Keep the reliable
+        // renderer here; Linux-specific CSS below avoids the costly effects
+        // that make this fallback path slow.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+
         // X11/XWayland provides an embeddable native surface for libmpv. Keep
         // native Wayland only on systems without DISPLAY, where this embedded
         // surface backend is unavailable.

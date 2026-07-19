@@ -56,6 +56,20 @@ function proxiedUrl(port: number, format: InnertubeFormat): string {
   return `http://127.0.0.1:${port}/stream?u=${encodeURIComponent(format.url || '')}&clen=${format.contentLength || 0}&mime=${encodeURIComponent(mime)}`
 }
 
+/** Route adaptive URLs resolved by yt-dlp through the same bounded-range
+ * localhost proxy used by browser trailer playback. WebKitGTK's media stack
+ * otherwise issues open-ended requests that googlevideo frequently rejects. */
+export async function proxyAdaptiveYoutubeStream(stream: DirectStream): Promise<DirectStream> {
+  const port = await getProxyPort()
+  return {
+    ...stream,
+    videoUrl: proxiedUrl(port, { url: stream.videoUrl, mimeType: 'video/mp4' }),
+    audioUrl: stream.audioUrl
+      ? proxiedUrl(port, { url: stream.audioUrl, mimeType: 'audio/mp4' })
+      : undefined,
+  }
+}
+
 async function callPlayerApi(client: Record<string, unknown>, userAgent: string, videoId: string): Promise<PlayerResponse> {
   // Goes through the ytproxy agent (not the generic http_request) so the
   // returned stream URLs are IP-bound to the same route the proxy fetches on.

@@ -11,7 +11,7 @@ import { useContextMenu } from '../hooks/useContextMenu'
 import TrailerPreview from './TrailerPreview'
 import HeroMpvTrailer from './HeroMpvTrailer'
 import { cardArtworkUrl } from '../services/mediaPresentation'
-import { nativePlayerSupported } from '../services/player'
+import { nativeTrailerPlayerSupported } from '../services/player'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 
 const TMDB_GENRES: Record<number, string> = {
@@ -448,7 +448,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     }, posterTrailerHoverDelayMs)
   }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
 
-  const useNativeTrailerPlayer = nativePlayerSupported()
+  const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
 
   if (cinematicMode) {
     const cinematicGenre = displayItem.genres?.[0]

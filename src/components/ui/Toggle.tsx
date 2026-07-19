@@ -49,7 +49,11 @@ export default function Toggle({
       >
         <span
           className={[
-            'inline-block rounded-full bg-white shadow-sm',
+            // Drop shadow + 1px dark outline keep the white thumb visible on any
+            // track color, including a white accent (bg-accent) where a plain
+            // white-on-white thumb would vanish.
+            'inline-block rounded-full bg-white',
+            'shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,0,0,0.12)]',
             'transition-transform duration-200 ease-in-out',
             'absolute top-1/2 -translate-y-1/2 left-[3px]',
             thumbSize,

@@ -9,6 +9,8 @@ import { cachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
 import HeroMpvTrailer from './HeroMpvTrailer'
+import TrailerPreview from './TrailerPreview'
+import { nativeTrailerPlayerSupported } from '../services/player'
 import { Button } from './ui'
 import WatchlistButton from './WatchlistButton'
 import { waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
@@ -81,6 +83,8 @@ function isUsableLoadedBackdrop(image: HTMLImageElement, allowPortrait = false):
 
 function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true, onActiveImageSettled }: HeroSectionProps) {
   const navigate = useNavigate()
+  const linuxReducedEffects = document.documentElement.dataset.platform === 'linux'
+  const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
   const [activeIndex, setActiveIndex] = useState(0)
   // Keep the currently displayed slide stable.  Artwork providers resolve
   // asynchronously and may return a different backdrop/logo than the catalog
@@ -185,6 +189,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   }, [itemSetKey])
 
   const [scrolledAway, setScrolledAway] = useState(false)
+  const scrolledAwayRef = useRef(false)
 
   useEffect(() => {
     if (count <= 1) return
@@ -194,7 +199,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     return () => clearInterval(id)
   }, [count, scrolledAway, heroTrailerPlaying])
 
-  // Scroll blur: listen to the scroll container (closest overflow-y parent)
+  // Scroll blur: listen to the scroll container (closest overflow-y parent).
+  // WebKitGTK's fallback renderer cannot animate a full-bleed image filter
+  // smoothly, so Linux only tracks the threshold used to pause the carousel.
   useEffect(() => {
     if (isSmall) return
     const el = heroRef.current
@@ -202,14 +209,26 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     const scrollParent = el.closest('[class*="overflow-y"]') as HTMLElement | null
     if (!scrollParent) return
 
-    const onScroll = () => {
+    let frame = 0
+    const update = () => {
+      frame = 0
       const t = scrollParent.scrollTop
-      setScrollBlur(Math.min(t / 400, 1) * 20)
-      setScrolledAway(t > 100)
+      if (!linuxReducedEffects) setScrollBlur(Math.min(t / 400, 1) * 20)
+      const nextScrolledAway = t > 100
+      if (nextScrolledAway !== scrolledAwayRef.current) {
+        scrolledAwayRef.current = nextScrolledAway
+        setScrolledAway(nextScrolledAway)
+      }
+    }
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(update)
     }
     scrollParent.addEventListener('scroll', onScroll, { passive: true })
-    return () => scrollParent.removeEventListener('scroll', onScroll)
-  }, [isSmall])
+    return () => {
+      scrollParent.removeEventListener('scroll', onScroll)
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [isSmall, linuxReducedEffects])
 
   // Upgrade backdrops to highest-voted from TMDB images endpoint
   const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
@@ -470,8 +489,8 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               style={{
                 opacity: i === activeIndex ? 1 : 0,
                 pointerEvents: 'none',
-                filter: !cinematic && scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
-                transform: !cinematic && scrollBlur > 0 ? 'scale(1.05)' : undefined,
+                filter: !linuxReducedEffects && !cinematic && scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
+                transform: !linuxReducedEffects && !cinematic && scrollBlur > 0 ? 'scale(1.05)' : undefined,
                 transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
               }}
             >
@@ -519,7 +538,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                   <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
                 )}
               </div>
-              {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (
+              {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (useNativeTrailerPlayer ? (
                 <HeroMpvTrailer
                   trailer={heroTrailer}
                   muted={heroTrailerMuted}
@@ -536,7 +555,26 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     setHeroMpvVisible(false)
                   }}
                 />
-              )}
+              ) : (
+                <TrailerPreview
+                  trailer={heroTrailer}
+                  title={slideItem.title}
+                  muted={heroTrailerMuted}
+                  eager
+                  highQuality
+                  showShade={false}
+                  placeholderUrl={backdropUrl}
+                  className="pointer-events-none absolute inset-0"
+                  onEnded={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                  }}
+                  onUnavailable={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                  }}
+                />
+              ))}
             </div>
           )
         })}

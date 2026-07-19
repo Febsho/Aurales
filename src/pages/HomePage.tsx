@@ -6,6 +6,7 @@ import { EmptyState } from '../components/ui'
 import HeroSection from '../components/HeroSection'
 import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
+import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
   getSimklWatchStatusList,
@@ -1116,6 +1117,8 @@ export default function HomePage() {
 
   return (
     <div ref={homeRootRef} className={`pb-12 relative ${homeHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${homeHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
+
+      <CatalogKeyNotice />
 
       {isEditing && (
         <div className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/10 py-4 px-6 flex items-center justify-center gap-4">
