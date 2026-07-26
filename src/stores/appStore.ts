@@ -765,10 +765,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   animeTrackingProvider: (localStorage.getItem('anime_tracking_provider') || 'anilist') as 'anilist' | 'simkl' | 'trakt' | 'local',
 
   blurSpoilers: localStorage.getItem('aurales_blur_spoilers') === 'true',
-  blurThumbnails: localStorage.getItem('aurales_blur_thumbnails') !== 'false',
-  blurTitles: localStorage.getItem('aurales_blur_titles') !== 'false',
-  blurDescriptions: localStorage.getItem('aurales_blur_descriptions') !== 'false',
-  keepNextEpisodeVisible: localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
+  blurThumbnails: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_thumbnails') !== 'false',
+  blurTitles: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_titles') !== 'false',
+  blurDescriptions: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_descriptions') !== 'false',
+  keepNextEpisodeVisible: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
   posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
   heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '3'),
@@ -871,7 +871,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIntrodbApiKey: (key) => { localStorage.setItem('introdb_api_key', key); set({ introdbApiKey: key }) },
   setAnimeTrackingProvider: (prov) => { localStorage.setItem('anime_tracking_provider', prov); set({ animeTrackingProvider: prov }) },
 
-  setBlurSpoilers: (val) => { localStorage.setItem('aurales_blur_spoilers', String(val)); set({ blurSpoilers: val }) },
+  setBlurSpoilers: (val) => {
+    localStorage.setItem('aurales_blur_spoilers', String(val))
+    localStorage.setItem('aurales_blur_thumbnails', String(val))
+    localStorage.setItem('aurales_blur_titles', String(val))
+    localStorage.setItem('aurales_blur_descriptions', String(val))
+    localStorage.setItem('aurales_keep_next_episode_visible', String(val))
+    set({
+      blurSpoilers: val,
+      blurThumbnails: val,
+      blurTitles: val,
+      blurDescriptions: val,
+      keepNextEpisodeVisible: val,
+    })
+  },
   setBlurThumbnails: (val) => { localStorage.setItem('aurales_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
   setBlurTitles: (val) => { localStorage.setItem('aurales_blur_titles', String(val)); set({ blurTitles: val }) },
   setBlurDescriptions: (val) => { localStorage.setItem('aurales_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
@@ -1069,7 +1082,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
   mpvCacheSecs: Number(localStorage.getItem('aurales_mpv_cache_secs') || '60'),
-  mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '15'),
+  mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '60'),
   mpvCustomArgs: localStorage.getItem('aurales_mpv_custom_args') || '',
   seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
   setMpvCacheSecs: (secs) => { localStorage.setItem('aurales_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
@@ -1080,14 +1093,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_hwdec_mode', 'auto')
     localStorage.setItem('aurales_cache_buffer_size', 'default')
     localStorage.setItem('aurales_mpv_cache_secs', '60')
-    localStorage.setItem('aurales_mpv_network_timeout', '15')
+    localStorage.setItem('aurales_mpv_network_timeout', '60')
     localStorage.setItem('aurales_mpv_custom_args', '')
     localStorage.setItem('aurales_preload_playback_sources', 'true')
     set({
       hwdecMode: 'auto',
       cacheBufferSize: 'default',
       mpvCacheSecs: 60,
-      mpvNetworkTimeout: 15,
+      mpvNetworkTimeout: 60,
       mpvCustomArgs: '',
       preloadPlaybackSources: true,
     })

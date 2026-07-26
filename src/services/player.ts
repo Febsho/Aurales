@@ -8,6 +8,29 @@ export function nativePlayerSupported(): boolean {
     && (platform.includes('Windows') || platform.includes('Linux'))
 }
 
+let resolvedEmbeddedPlayerSupport: boolean | null = null
+let embeddedPlayerSupportRequest: Promise<boolean> | null = null
+
+export async function resolveNativePlayerSupported(): Promise<boolean> {
+  if (resolvedEmbeddedPlayerSupport !== null) return resolvedEmbeddedPlayerSupport
+  if (embeddedPlayerSupportRequest) return embeddedPlayerSupportRequest
+  if (!nativePlayerSupported()) {
+    resolvedEmbeddedPlayerSupport = false
+    return false
+  }
+
+  embeddedPlayerSupportRequest = invoke<boolean>('get_embedded_player_supported')
+    .then((supported) => {
+      resolvedEmbeddedPlayerSupport = supported
+      return supported
+    })
+    .catch(() => {
+      resolvedEmbeddedPlayerSupport = false
+      return false
+    })
+  return embeddedPlayerSupportRequest
+}
+
 // Inline trailers need a transparent WebKit view layered above a native video
 // child. That composition is reliable on Windows, but WebKitGTK's fallback
 // renderer can keep the X11 child fully occluded. Linux trailers therefore use

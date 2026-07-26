@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
 import { formatTime, openRouterChat } from '../services/player'
@@ -137,11 +137,12 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
   return blocks.join('\n\n')
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onReportBad }: InAppPlayerProps) {
+export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted }: InAppPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
+  const playbackStartedRef = useRef(false)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -168,6 +169,25 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
+
+  // This player is portaled next to #root. Hide the application shell while it
+  // is active so top navigation, search affordances, and window-level controls
+  // cannot render above the fallback player on systems without X11/XWayland.
+  useLayoutEffect(() => {
+    const root = document.getElementById('root')
+    document.documentElement.classList.add('full-player-active')
+    if (root) {
+      root.style.visibility = 'hidden'
+      root.style.pointerEvents = 'none'
+    }
+    return () => {
+      document.documentElement.classList.remove('full-player-active')
+      if (root) {
+        root.style.visibility = ''
+        root.style.pointerEvents = ''
+      }
+    }
+  }, [])
 
   const [showTranslateModal, setShowTranslateModal] = useState(false)
   const [translatingSub, setTranslatingSub] = useState(false)
@@ -292,13 +312,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setLoading(true)
     setError('')
     setPaused(false)
+    playbackStartedRef.current = false
     lastAniListPlaybackSaveRef.current = 0
     video.volume = volume
     video.muted = false
     video.load()
     const playTimer = setTimeout(() => {
       video.play().then(() => {
-        onPlaybackStarted?.()
         setPaused(false)
         if (startTime && startTime > 0) {
           video.currentTime = startTime
@@ -324,7 +344,18 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         onPlaybackError?.(message)
       })
     }, 50)
-    return () => clearTimeout(playTimer)
+    const startupTimer = setTimeout(() => {
+      if (playbackStartedRef.current) return
+      const message = 'The embedded WebView player did not receive a playable video frame. Trying another stream…'
+      setLoading(false)
+      setPaused(true)
+      setError(message)
+      onPlaybackError?.(message)
+    }, 15_000)
+    return () => {
+      clearTimeout(playTimer)
+      clearTimeout(startupTimer)
+    }
   }, [url])
 
   useEffect(() => {
@@ -706,11 +737,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   return (
     <div
-      className={`fixed inset-0 z-[60] bg-black text-white ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
+      className={`fixed inset-0 z-[10000] bg-black text-white ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
       onMouseMove={showControlsTemporarily}
       onClick={showControlsTemporarily}
     >
-      {onReportBad && controlsVisible && <button onClick={(event) => { event.stopPropagation(); onReportBad() }} className="absolute right-6 top-6 z-30 rounded-full bg-black/65 px-4 py-2 text-xs text-white/70 hover:text-white">Report bad stream</button>}
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full bg-black object-contain"
@@ -725,7 +755,16 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
           const video = videoRef.current
           if (video?.paused) video.play().catch(() => setPaused(true))
         }}
-        onPlaying={() => { setLoading(false); setPaused(false); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0) }}
+        onPlaying={() => {
+          setLoading(false)
+          setPaused(false)
+          if (!playbackStartedRef.current) {
+            playbackStartedRef.current = true
+            onPlaybackStarted?.()
+          }
+          const wt = useWatchTogetherStore.getState()
+          if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0)
+        }}
         onTimeUpdate={(event) => handleTimeUpdate(event.currentTarget.currentTime, event.currentTarget.duration || 0)}
         onLoadedMetadata={(event) => {
           setDuration(event.currentTarget.duration || 0)

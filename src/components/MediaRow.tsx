@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, useState } from 'react'
+import React, { useCallback, useRef, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
@@ -32,6 +32,14 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
   // legitimately contain duplicate/canonicalized entries with the same ID.
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
+  const handleCardFocus = useCallback((_item: SearchResult, cardIndex?: number) => {
+    if (cardIndex != null) setFocusedCardIndex(cardIndex)
+  }, [])
+  const handleCardUnfocus = useCallback((_item: SearchResult, cardIndex?: number) => {
+    if (cardIndex != null) {
+      setFocusedCardIndex((current) => current === cardIndex ? null : current)
+    }
+  }, [])
   const showAllWidthClass = useMemo(() => {
     if (layout === 'landscape') {
       switch (posterSize) {
@@ -165,10 +173,14 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
             item={item}
             layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
-            disableTrailerPreview={disableTrailerPreview}
+            // In fixed Hero mode the focused card drives the banner. Keep the
+            // trailer in that large Hero surface instead of starting a second
+            // preview inside the poster itself.
+            disableTrailerPreview={disableTrailerPreview || fixedHome}
             rank={showRank ? idx + 1 : undefined}
-            onFocusItem={cinematic ? () => setFocusedCardIndex(idx) : undefined}
-            onUnfocusItem={cinematic ? () => setFocusedCardIndex((current) => current === idx ? null : current) : undefined}
+            cardIndex={idx}
+            onFocusItem={cinematic ? handleCardFocus : undefined}
+            onUnfocusItem={cinematic ? handleCardUnfocus : undefined}
             cinematicMode={cinematic}
             cinematicFocused={cinematic && focusedCardIndex === idx}
             cinematicExpand={cinematicExpand && !fixedHome}

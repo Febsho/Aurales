@@ -6,6 +6,8 @@ use std::os::raw::{c_char, c_double, c_int, c_longlong, c_ulonglong, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use tauri::Emitter;
 
 const MPV_FORMAT_NONE: c_int = 0;
@@ -48,6 +50,57 @@ type MpvObserveProperty =
 type MpvWaitEvent = unsafe extern "C" fn(*mut MpvHandle, c_double) -> *mut MpvEvent;
 type MpvErrorString = unsafe extern "C" fn(c_int) -> *const c_char;
 type MpvRequestLogMessages = unsafe extern "C" fn(*mut MpvHandle, *const c_char) -> c_int;
+#[cfg(target_os = "linux")]
+type MpvRenderContext = c_void;
+#[cfg(target_os = "linux")]
+type MpvRenderContextCreate = unsafe extern "C" fn(
+    *mut *mut MpvRenderContext,
+    *mut MpvHandle,
+    *mut MpvRenderParam,
+) -> c_int;
+#[cfg(target_os = "linux")]
+type MpvRenderContextUpdate =
+    unsafe extern "C" fn(*mut MpvRenderContext) -> c_ulonglong;
+#[cfg(target_os = "linux")]
+type MpvRenderContextRender =
+    unsafe extern "C" fn(*mut MpvRenderContext, *mut MpvRenderParam) -> c_int;
+#[cfg(target_os = "linux")]
+type MpvRenderContextFree = unsafe extern "C" fn(*mut MpvRenderContext);
+
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_INVALID: c_int = 0;
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct MpvRenderParam {
+    param_type: c_int,
+    data: *mut c_void,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct MpvOpenGlInitParams {
+    get_proc_address:
+        Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>,
+    get_proc_address_ctx: *mut c_void,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct MpvOpenGlFbo {
+    fbo: c_int,
+    width: c_int,
+    height: c_int,
+    internal_format: c_int,
+}
 
 #[repr(C)]
 struct MpvEvent {
@@ -128,16 +181,43 @@ struct LibMpvApi {
     wait_event: MpvWaitEvent,
     error_string: MpvErrorString,
     request_log_messages: MpvRequestLogMessages,
+    #[cfg(target_os = "linux")]
+    render_context_create: MpvRenderContextCreate,
+    #[cfg(target_os = "linux")]
+    render_context_update: MpvRenderContextUpdate,
+    #[cfg(target_os = "linux")]
+    render_context_render: MpvRenderContextRender,
+    #[cfg(target_os = "linux")]
+    render_context_free: MpvRenderContextFree,
 }
 
 unsafe impl Send for LibMpvApi {}
 unsafe impl Sync for LibMpvApi {}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn initialize_numeric_locale() -> Result<(), String> {
+    static NUMERIC_LOCALE_READY: OnceLock<bool> = OnceLock::new();
+    let ready = NUMERIC_LOCALE_READY.get_or_init(|| {
+        // libmpv's client API requires a process-wide C numeric locale. GTK
+        // initializes the user's locale first, so do this after GTK startup
+        // but before creating the first mpv handle.
+        let locale = b"C\0";
+        !unsafe { libc::setlocale(libc::LC_NUMERIC, locale.as_ptr().cast()) }.is_null()
+    });
+    if *ready {
+        Ok(())
+    } else {
+        Err("failed to set LC_NUMERIC=C before initializing libmpv".to_string())
+    }
+}
 
 pub(crate) struct LibMpvPlayer {
     api: Arc<LibMpvApi>,
     handle: *mut MpvHandle,
     destroyed: AtomicBool,
     session_id: String,
+    #[cfg(target_os = "linux")]
+    render_context: std::sync::Mutex<Option<usize>>,
 }
 
 unsafe impl Send for LibMpvPlayer {}
@@ -145,6 +225,9 @@ unsafe impl Sync for LibMpvPlayer {}
 
 impl LibMpvPlayer {
     pub(crate) fn create(dll_path: &Path, session_id: String) -> Result<Arc<Self>, String> {
+        #[cfg(target_os = "linux")]
+        initialize_numeric_locale()?;
+
         let api = Arc::new(load_api(dll_path)?);
         let handle = unsafe { (api.create)() };
         if handle.is_null() {
@@ -156,6 +239,8 @@ impl LibMpvPlayer {
             handle,
             destroyed: AtomicBool::new(false),
             session_id,
+            #[cfg(target_os = "linux")]
+            render_context: std::sync::Mutex::new(None),
         }))
     }
 
@@ -360,6 +445,100 @@ impl LibMpvPlayer {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) unsafe fn create_opengl_render_context(
+        &self,
+        get_proc_address: unsafe extern "C" fn(
+            *mut c_void,
+            *const c_char,
+        ) -> *mut c_void,
+    ) -> Result<(), String> {
+        let mut slot = self.render_context.lock().map_err(|e| e.to_string())?;
+        if slot.is_some() {
+            return Ok(());
+        }
+
+        let api_name = b"opengl\0";
+        let mut init = MpvOpenGlInitParams {
+            get_proc_address: Some(get_proc_address),
+            get_proc_address_ctx: std::ptr::null_mut(),
+        };
+        let mut params = [
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_API_TYPE,
+                data: api_name.as_ptr() as *mut c_void,
+            },
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
+                data: (&mut init as *mut MpvOpenGlInitParams).cast(),
+            },
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        let mut context = std::ptr::null_mut();
+        let rc = (self.api.render_context_create)(
+            &mut context,
+            self.handle,
+            params.as_mut_ptr(),
+        );
+        self.check(rc)?;
+        if context.is_null() {
+            return Err("libmpv created a null OpenGL render context".to_string());
+        }
+        *slot = Some(context as usize);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) unsafe fn render_opengl_frame(
+        &self,
+        framebuffer: c_int,
+        width: c_int,
+        height: c_int,
+    ) -> Result<(), String> {
+        let slot = self.render_context.lock().map_err(|e| e.to_string())?;
+        let Some(context) = *slot else {
+            return Ok(());
+        };
+        (self.api.render_context_update)(context as *mut MpvRenderContext);
+        let mut fbo = MpvOpenGlFbo {
+            fbo: framebuffer,
+            width: width.max(1),
+            height: height.max(1),
+            internal_format: 0,
+        };
+        let mut flip_y: c_int = 1;
+        let mut params = [
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_OPENGL_FBO,
+                data: (&mut fbo as *mut MpvOpenGlFbo).cast(),
+            },
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_FLIP_Y,
+                data: (&mut flip_y as *mut c_int).cast(),
+            },
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        self.check((self.api.render_context_render)(
+            context as *mut MpvRenderContext,
+            params.as_mut_ptr(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) unsafe fn free_opengl_render_context(&self) {
+        if let Ok(mut slot) = self.render_context.lock() {
+            if let Some(context) = slot.take() {
+                (self.api.render_context_free)(context as *mut MpvRenderContext);
+            }
+        }
+    }
+
     fn check(&self, rc: c_int) -> Result<(), String> {
         if rc < 0 {
             Err(self.error_string(rc))
@@ -456,6 +635,22 @@ fn load_api(dll_path: &Path) -> Result<LibMpvApi, String> {
                 .map_err(|e| e.to_string())?,
             request_log_messages: *library
                 .get(b"mpv_request_log_messages\0")
+                .map_err(|e| e.to_string())?,
+            #[cfg(target_os = "linux")]
+            render_context_create: *library
+                .get(b"mpv_render_context_create\0")
+                .map_err(|e| e.to_string())?,
+            #[cfg(target_os = "linux")]
+            render_context_update: *library
+                .get(b"mpv_render_context_update\0")
+                .map_err(|e| e.to_string())?,
+            #[cfg(target_os = "linux")]
+            render_context_render: *library
+                .get(b"mpv_render_context_render\0")
+                .map_err(|e| e.to_string())?,
+            #[cfg(target_os = "linux")]
+            render_context_free: *library
+                .get(b"mpv_render_context_free\0")
                 .map_err(|e| e.to_string())?,
             _library: library,
         })
@@ -840,19 +1035,116 @@ pub(crate) fn destroy_video_child(video_hwnd: isize) {
 // the player UI. Wayland does not expose embeddable window IDs, so the app is
 // started through X11/XWayland when DISPLAY is available.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 mod linux_x11 {
-    use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
+    use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
     use std::ptr;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     type Display = c_void;
     type Window = c_ulong;
+    type Atom = c_ulong;
+
+    static NATIVE_SURFACE_CONTROLS: AtomicBool = AtomicBool::new(false);
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    union ClientMessageData {
+        bytes: [c_char; 20],
+        shorts: [i16; 10],
+        longs: [c_long; 5],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct XClientMessageEvent {
+        event_type: c_int,
+        serial: c_ulong,
+        send_event: c_int,
+        display: *mut Display,
+        window: Window,
+        message_type: Atom,
+        format: c_int,
+        data: ClientMessageData,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    union XEvent {
+        event_type: c_int,
+        client_message: XClientMessageEvent,
+        padding: [c_long; 24],
+    }
+
+    #[repr(C)]
+    struct XWindowChanges {
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        border_width: c_int,
+        sibling: Window,
+        stack_mode: c_int,
+    }
+
+    const CW_SIBLING: c_uint = 1 << 5;
+    const CW_STACK_MODE: c_uint = 1 << 6;
+    const BELOW: c_int = 1;
+    const CLIENT_MESSAGE: c_int = 33;
+    const SUBSTRUCTURE_NOTIFY_MASK: c_long = 1 << 19;
+    const SUBSTRUCTURE_REDIRECT_MASK: c_long = 1 << 20;
+    const NET_WM_STATE_REMOVE: c_long = 0;
+    const NET_WM_STATE_ADD: c_long = 1;
 
     #[link(name = "X11")]
     extern "C" {
         fn XInitThreads() -> c_int;
         fn XOpenDisplay(name: *const c_char) -> *mut Display;
         fn XCloseDisplay(display: *mut Display) -> c_int;
+        fn XDefaultRootWindow(display: *mut Display) -> Window;
+        fn XInternAtom(
+            display: *mut Display,
+            atom_name: *const c_char,
+            only_if_exists: c_int,
+        ) -> Atom;
+        fn XSendEvent(
+            display: *mut Display,
+            window: Window,
+            propagate: c_int,
+            event_mask: c_long,
+            event: *mut XEvent,
+        ) -> c_int;
+        fn XQueryTree(
+            display: *mut Display,
+            window: Window,
+            root_return: *mut Window,
+            parent_return: *mut Window,
+            children_return: *mut *mut Window,
+            child_count_return: *mut c_uint,
+        ) -> c_int;
+        fn XFree(data: *mut c_void) -> c_int;
+        fn XTranslateCoordinates(
+            display: *mut Display,
+            source: Window,
+            destination: Window,
+            source_x: c_int,
+            source_y: c_int,
+            destination_x: *mut c_int,
+            destination_y: *mut c_int,
+            child_return: *mut Window,
+        ) -> c_int;
+        fn XGetGeometry(
+            display: *mut Display,
+            drawable: Window,
+            root_return: *mut Window,
+            x_return: *mut c_int,
+            y_return: *mut c_int,
+            width_return: *mut c_uint,
+            height_return: *mut c_uint,
+            border_width_return: *mut c_uint,
+            depth_return: *mut c_uint,
+        ) -> c_int;
         fn XCreateSimpleWindow(
             display: *mut Display,
             parent: Window,
@@ -865,7 +1157,20 @@ mod linux_x11 {
             background: c_ulong,
         ) -> Window;
         fn XMapWindow(display: *mut Display, window: Window) -> c_int;
+        fn XConfigureWindow(
+            display: *mut Display,
+            window: Window,
+            value_mask: c_uint,
+            changes: *mut XWindowChanges,
+        ) -> c_int;
         fn XLowerWindow(display: *mut Display, window: Window) -> c_int;
+        fn XRaiseWindow(display: *mut Display, window: Window) -> c_int;
+        fn XRestackWindows(
+            display: *mut Display,
+            windows: *mut Window,
+            window_count: c_int,
+        ) -> c_int;
+        fn XSync(display: *mut Display, discard: c_int) -> c_int;
         fn XMoveResizeWindow(
             display: *mut Display,
             window: Window,
@@ -892,15 +1197,240 @@ mod linux_x11 {
         }
     }
 
+    unsafe fn parent_of(display: *mut Display, window: Window) -> Result<Window, String> {
+        let mut root = 0;
+        let mut parent = 0;
+        let mut children = ptr::null_mut();
+        let mut child_count = 0;
+        let status = XQueryTree(
+            display,
+            window,
+            &mut root,
+            &mut parent,
+            &mut children,
+            &mut child_count,
+        );
+        if !children.is_null() {
+            XFree(children.cast());
+        }
+        if status == 0 || parent == 0 {
+            Err("Failed to resolve the Linux WebKit window hierarchy.".into())
+        } else {
+            Ok(parent)
+        }
+    }
+
+    unsafe fn children_of(display: *mut Display, window: Window) -> Vec<Window> {
+        let mut root = 0;
+        let mut parent = 0;
+        let mut children = ptr::null_mut();
+        let mut child_count = 0;
+        if XQueryTree(
+            display,
+            window,
+            &mut root,
+            &mut parent,
+            &mut children,
+            &mut child_count,
+        ) == 0
+            || children.is_null()
+        {
+            return Vec::new();
+        }
+        let result = std::slice::from_raw_parts(children, child_count as usize).to_vec();
+        XFree(children.cast());
+        result
+    }
+
+    unsafe fn window_area(display: *mut Display, window: Window) -> u64 {
+        let mut root = 0;
+        let mut x = 0;
+        let mut y = 0;
+        let mut width = 0;
+        let mut height = 0;
+        let mut border = 0;
+        let mut depth = 0;
+        if XGetGeometry(
+            display,
+            window,
+            &mut root,
+            &mut x,
+            &mut y,
+            &mut width,
+            &mut height,
+            &mut border,
+            &mut depth,
+        ) == 0
+        {
+            0
+        } else {
+            width as u64 * height as u64
+        }
+    }
+
+    /// Tauri exposes the GTK top-level XID. Walk through full-size GTK wrapper
+    /// windows to find WebKit's drawing layer, which must remain directly above
+    /// the native video surface for transparent React controls to work.
+    unsafe fn webview_layer(
+        display: *mut Display,
+        host: Window,
+        excluded: Window,
+    ) -> Option<(Window, Window)> {
+        let host_area = window_area(display, host);
+        if host_area == 0 {
+            return None;
+        }
+
+        let mut parent = host;
+        let mut layer = host;
+        for _ in 0..8 {
+            let next = children_of(display, layer)
+                .into_iter()
+                .filter(|child| *child != excluded)
+                .map(|child| (child, window_area(display, child)))
+                // Skip titlebar and input-only helper windows.
+                .filter(|(_, area)| area.saturating_mul(2) >= host_area)
+                .max_by_key(|(_, area)| *area)
+                .map(|(child, _)| child);
+            let Some(next) = next else {
+                break;
+            };
+            parent = layer;
+            layer = next;
+        }
+
+        (layer != host).then_some((layer, parent))
+    }
+
+    unsafe fn coordinates_in_parent(
+        display: *mut Display,
+        webview: Window,
+        parent: Window,
+        x: i32,
+        y: i32,
+    ) -> (i32, i32) {
+        let mut translated_x = x;
+        let mut translated_y = y;
+        let mut child = 0;
+        XTranslateCoordinates(
+            display,
+            webview,
+            parent,
+            x,
+            y,
+            &mut translated_x,
+            &mut translated_y,
+            &mut child,
+        );
+        (translated_x, translated_y)
+    }
+
+    unsafe fn stack_below_webview(display: *mut Display, video: Window, webview: Window) {
+        let mut changes = XWindowChanges {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            border_width: 0,
+            sibling: webview,
+            stack_mode: BELOW,
+        };
+        XConfigureWindow(
+            display,
+            video,
+            CW_SIBLING | CW_STACK_MODE,
+            &mut changes,
+        );
+        // KWin/XWayland can ignore the ConfigureWindow sibling hint for an
+        // override-redirect video surface after mpv maps its first frame.
+        // Restack the pair explicitly (first entry is topmost), then force the
+        // request through before returning to the compositor.
+        let mut windows = [webview, video];
+        XLowerWindow(display, video);
+        XRaiseWindow(display, webview);
+        XRestackWindows(display, windows.as_mut_ptr(), windows.len() as c_int);
+        XSync(display, 0);
+    }
+
+    pub(crate) fn set_fullscreen(webview: isize, fullscreen: bool) -> Result<(), String> {
+        if webview == 0 {
+            return Err("Cannot change Linux fullscreen state without an X11 window.".into());
+        }
+        let mut slot = display_slot().lock().map_err(|e| e.to_string())?;
+        let opened_here = *slot == 0;
+        let display = if opened_here {
+            unsafe { XOpenDisplay(ptr::null()) }
+        } else {
+            *slot as *mut Display
+        };
+        if display.is_null() {
+            return Err("Cannot send the Linux fullscreen request: X11 is unavailable.".into());
+        }
+
+        let state_name = b"_NET_WM_STATE\0";
+        let fullscreen_name = b"_NET_WM_STATE_FULLSCREEN\0";
+        let state_atom =
+            unsafe { XInternAtom(display, state_name.as_ptr().cast(), 0) };
+        let fullscreen_atom =
+            unsafe { XInternAtom(display, fullscreen_name.as_ptr().cast(), 0) };
+        let mut event = XEvent {
+            client_message: XClientMessageEvent {
+                event_type: CLIENT_MESSAGE,
+                serial: 0,
+                send_event: 1,
+                display,
+                window: webview as Window,
+                message_type: state_atom,
+                format: 32,
+                data: ClientMessageData {
+                    longs: [
+                        if fullscreen {
+                            NET_WM_STATE_ADD
+                        } else {
+                            NET_WM_STATE_REMOVE
+                        },
+                        fullscreen_atom as c_long,
+                        0,
+                        1,
+                        0,
+                    ],
+                },
+            },
+        };
+        let sent = unsafe {
+            XSendEvent(
+                display,
+                XDefaultRootWindow(display),
+                0,
+                SUBSTRUCTURE_NOTIFY_MASK | SUBSTRUCTURE_REDIRECT_MASK,
+                &mut event,
+            )
+        };
+        unsafe {
+            XFlush(display);
+            if opened_here {
+                XCloseDisplay(display);
+            }
+        }
+        if sent == 0 {
+            Err("KWin rejected the Linux fullscreen request.".into())
+        } else {
+            if !opened_here {
+                *slot = display as usize;
+            }
+            Ok(())
+        }
+    }
+
     pub(crate) fn create(
-        parent: isize,
+        host: isize,
         x: i32,
         y: i32,
         width: i32,
         height: i32,
     ) -> Result<isize, String> {
-        if parent == 0 {
-            return Err("Cannot create mpv video surface: X11 parent window is missing".into());
+        if host == 0 {
+            return Err("Cannot create mpv video surface: X11 host window is missing".into());
         }
 
         let mut slot = display_slot().lock().map_err(|e| e.to_string())?;
@@ -918,12 +1448,34 @@ mod linux_x11 {
             );
         }
 
+        // Prefer a sibling beneath WebKit when GTK exposes a drawing-layer
+        // XID. On Wayland/XWayland that layer often does not exist. In that
+        // case a detached root sibling cannot remain below the composited
+        // WebKit surface reliably (and visibly lags while the window moves),
+        // so embed mpv as a real child of the Aurales window instead. mpv's
+        // own OSC is enabled for that path because X11 children necessarily
+        // paint above their parent.
+        let (webview, parent, native_surface_controls) =
+            match unsafe { webview_layer(display, host as Window, 0) } {
+                Some((webview, parent)) => (webview, parent, false),
+                None => (0, host as Window, true),
+            };
+        NATIVE_SURFACE_CONTROLS.store(native_surface_controls, Ordering::SeqCst);
+        crate::commands::player_debug_log(format!(
+            "[LINUX SURFACE] host={} webview={} parent={} native_controls={}",
+            host, webview, parent, native_surface_controls
+        ));
+        let (parent_x, parent_y) = if native_surface_controls {
+            (x, y)
+        } else {
+            unsafe { coordinates_in_parent(display, host as Window, parent, x, y) }
+        };
         let window = unsafe {
             XCreateSimpleWindow(
                 display,
-                parent as Window,
-                x,
-                y,
+                parent,
+                parent_x,
+                parent_y,
                 width.max(1) as c_uint,
                 height.max(1) as c_uint,
                 0,
@@ -940,17 +1492,17 @@ mod linux_x11 {
 
         unsafe {
             XMapWindow(display, window);
-            // Keep WebKitGTK above the video surface so the existing React
-            // controls remain fully interactive and visually identical.
-            XLowerWindow(display, window);
+            if webview != 0 {
+                stack_below_webview(display, window, webview);
+            }
             XFlush(display);
         }
         *slot = display as usize;
         Ok(window as isize)
     }
 
-    pub(crate) fn resize(window: isize, x: i32, y: i32, width: i32, height: i32) {
-        if window == 0 {
+    pub(crate) fn resize(host: isize, window: isize, x: i32, y: i32, width: i32, height: i32) {
+        if host == 0 || window == 0 {
             return;
         }
         let Ok(slot) = display_slot().lock() else {
@@ -960,16 +1512,30 @@ mod linux_x11 {
             return;
         }
         unsafe {
+            let display = *slot as *mut Display;
+            let Ok(parent) = parent_of(display, window as Window) else {
+                return;
+            };
+            let (parent_x, parent_y) = coordinates_in_parent(display, host as Window, parent, x, y);
             XMoveResizeWindow(
-                *slot as *mut Display,
+                display,
                 window as Window,
-                x,
-                y,
+                parent_x,
+                parent_y,
                 width.max(1) as c_uint,
                 height.max(1) as c_uint,
             );
-            XLowerWindow(*slot as *mut Display, window as Window);
-            XFlush(*slot as *mut Display);
+            // A direct child is intentionally the visible/input surface and
+            // uses mpv's OSC. Only sibling mode needs explicit restacking.
+            if parent != host as Window {
+                if let Some((stack_target, _)) =
+                    webview_layer(display, host as Window, window as Window)
+                        .filter(|(_, layer_parent)| *layer_parent == parent)
+                {
+                    stack_below_webview(display, window as Window, stack_target);
+                }
+            }
+            XFlush(display);
         }
     }
 
@@ -988,15 +1554,31 @@ mod linux_x11 {
             XCloseDisplay(*slot as *mut Display);
         }
         *slot = 0;
+        NATIVE_SURFACE_CONTROLS.store(false, Ordering::SeqCst);
+    }
+
+    pub(crate) fn uses_native_surface_controls() -> bool {
+        NATIVE_SURFACE_CONTROLS.load(Ordering::SeqCst)
     }
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub(crate) fn initialize_linux_x11() {
     linux_x11::initialize();
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn set_linux_window_fullscreen(
+    parent_window: isize,
+    fullscreen: bool,
+) -> Result<(), String> {
+    linux_x11::set_fullscreen(parent_window, fullscreen)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub(crate) fn create_video_child(
     parent_window: isize,
     x: i32,
@@ -1008,18 +1590,25 @@ pub(crate) fn create_video_child(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub(crate) fn resize_video_child(
-    _parent_window: isize,
+    parent_window: isize,
     video_window: isize,
     x: i32,
     y: i32,
     width: i32,
     height: i32,
 ) {
-    linux_x11::resize(video_window, x, y, width, height);
+    linux_x11::resize(parent_window, video_window, x, y, width, height);
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn destroy_video_child(video_window: isize) {
     linux_x11::destroy(video_window);
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn linux_video_uses_native_controls() -> bool {
+    linux_x11::uses_native_surface_controls()
 }

@@ -16,14 +16,32 @@ jobs:
           - platform: windows-latest
             args: ''
           - platform: ubuntu-22.04
-            # Merge the Linux bundle configuration so the release includes the
-            # .deb package consumed by the Flatpak build and Linux users.
-            args: '--config src-tauri/tauri.linux.conf.json'
+            # Only the AppImage is uploaded by tauri-action. A .deb is built
+            # separately below as an internal Flatpak assembly input.
+            args: '--config src-tauri/tauri.linux.conf.json --bundles appimage'
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const packageVersion = require('./package.json').version;
+          const lockVersion = require('./package-lock.json').version;
+          const tauriVersion = require('./src-tauri/tauri.conf.json').version;
+          const cargoVersion = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
+            .match(/^version = "([^"]+)"/m)?.[1];
+          const versions = { packageVersion, lockVersion, tauriVersion, cargoVersion };
+          if (Object.values(versions).some((version) => version !== expected)) {
+            throw new Error(`Tag v${expected} does not match project versions: ${JSON.stringify(versions)}`);
+          }
+          console.log(`Building Aurales v${expected}`);
+          NODE
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -113,22 +131,40 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Aurales v__VERSION__'
-          releaseBody: 'See the assets to download and install this version.'
+          releaseBody: |
+            ## Downloads
+
+            **Windows:** use the NSIS setup `.exe` (recommended) or the `.msi`.
+
+            **Linux:** use the `.AppImage` for a portable download or the
+            `.flatpak` bundle for a sandboxed installation. AppImage playback
+            requires mpv; distro-specific commands are in the README.
+
+            See the generated release notes below for the changes in this version.
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      # This is deliberately built after tauri-action so it cannot be detected
+      # and uploaded as a public release asset.
+      - name: Build internal Flatpak input
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
 
       - name: Build Flatpak bundle
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get install -y flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
+          flatpak install --user -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
           cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
           flatpak-builder --user --force-clean --repo=flatpak-repo flatpak-build packaging/flatpak/com.aurales.app.yml
           version="${GITHUB_REF_NAME#v}"
-          flatpak build-bundle flatpak-repo "Aurales_${version}_amd64.flatpak" com.aurales.app
+          flatpak build-bundle \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            flatpak-repo "Aurales_${version}_amd64.flatpak" com.aurales.app
           ls -la *.flatpak
 
       - name: Upload Flatpak to release

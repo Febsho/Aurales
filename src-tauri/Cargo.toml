@@ -1,8 +1,8 @@
 [package]
 name = "aurales-app"
-version = "0.2.3"
+version = "0.2.4"
 description = "Aurales - A modern streaming catalog app"
-authors = ["you"]
+authors = ["Aurales contributors"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.77.2"
@@ -35,4 +35,6 @@ libloading = "0.8"
 windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-raw-window-handle = "0.6"
+libc = "0.2"
+gtk = "0.18.2"
+webkit2gtk = "2.0.2"

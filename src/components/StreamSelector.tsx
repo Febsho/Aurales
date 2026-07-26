@@ -15,7 +15,8 @@ import { selectStream as wtSelectStream, play as wtPlay } from '../services/watc
 import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
 import type { RoomStream } from '../services/watch-together/types'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
-import { stopEmbeddedPlayer, nativePlayerSupported } from '../services/player'
+import { stopEmbeddedPlayer } from '../services/player'
+import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
 import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
 import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
@@ -121,6 +122,7 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
 ]
 
 export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, onResolvingChange }: StreamSelectorProps) {
+  const nativePlayerAvailable = useNativePlayerSupported()
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
   const [playError, setPlayError] = useState('')
@@ -627,6 +629,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   if (autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)) return null
 
   if (playback) {
+    if (nativePlayerAvailable === undefined) return null
     const isAnimePlayback = Boolean(anilistId || malId)
     const simklMediaType: 'movie' | 'show' | 'anime' = isAnimePlayback ? 'anime' : mediaType === 'series' ? 'show' : 'movie'
     const playbackItem: PlaybackItem = {
@@ -649,7 +652,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       episode: seasonEpisode?.episode,
     }
 
-    if (nativePlayerSupported()) {
+    if (nativePlayerAvailable) {
       return createPortal(
         <NativeMpvPlayer
           url={playback.url}

@@ -144,6 +144,7 @@ function mergeShowDetails(original: ShowDetails, provider: ShowDetails): ShowDet
     voteCount: provider.voteCount ?? original.voteCount,
     certification: provider.certification || original.certification,
     status: provider.status || original.status,
+    seriesType: provider.seriesType || original.seriesType,
     numberOfSeasons: provider.numberOfSeasons ?? original.numberOfSeasons,
     numberOfEpisodes: provider.numberOfEpisodes ?? original.numberOfEpisodes,
     seasons: provider.seasons.length > 0 ? provider.seasons : original.seasons,

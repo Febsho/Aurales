@@ -147,18 +147,106 @@ function SettingRow({ label, description, children }: { label: string; descripti
   )
 }
 
-function SettingToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+function SettingToggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-label={label}
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a1916] ${checked ? 'border-accent bg-accent' : 'border-white/10 bg-white/10 hover:bg-white/15'}`}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border transition-[background-color,border-color,box-shadow,opacity] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a1916] ${disabled ? 'cursor-not-allowed opacity-35' : 'cursor-pointer'} ${checked ? 'border-accent bg-accent' : `border-white/10 bg-white/10 ${disabled ? '' : 'hover:bg-white/15'}`}`}
     >
       <span className={`pointer-events-none absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,0,0,0.12)] transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
     </button>
+  )
+}
+
+type SettingSelectOption = { value: string | number; label: string }
+
+function SettingSelect({
+  value,
+  options,
+  onChange,
+  className = 'w-52',
+  label,
+}: {
+  value: string | number
+  options: SettingSelectOption[]
+  onChange: (value: string) => void
+  className?: string
+  label?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const selected = options.find((option) => String(option.value) === String(value)) || options[0]
+
+  useEffect(() => {
+    if (!open) return
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePress, true)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress, true)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div ref={rootRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className={`flex h-11 w-full items-center justify-between gap-3 rounded-xl border px-4 text-left text-sm font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-colors ${
+          open
+            ? 'border-white/25 bg-white/12 text-white'
+            : 'border-white/10 bg-black/25 text-white/85 hover:border-white/18 hover:bg-white/8'
+        }`}
+      >
+        <span className="truncate">{selected?.label}</span>
+        <svg className={`h-4 w-4 flex-none text-white/45 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className="settings-select-menu absolute inset-x-0 top-full z-[120] mt-2 max-h-72 overflow-x-hidden overflow-y-auto rounded-xl border border-white/12 bg-[#171714]/98 p-1.5 shadow-[0_20px_60px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
+        >
+          {options.map((option) => {
+            const active = String(option.value) === String(value)
+            return (
+              <button
+                key={String(option.value)}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => {
+                  onChange(String(option.value))
+                  setOpen(false)
+                }}
+                className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                  active ? 'bg-white/12 font-semibold text-white' : 'text-white/65 hover:bg-white/7 hover:text-white'
+                }`}
+              >
+                <span className="truncate">{option.label}</span>
+                <span className={`h-1.5 w-1.5 flex-none rounded-full ${active ? 'bg-accent shadow-[0_0_10px_var(--color-accent)]' : 'bg-transparent'}`} />
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -186,50 +274,14 @@ function ServiceIcon({ service, className = 'w-4.5 h-4.5' }: { service: string; 
 }
 
 function SearchEngineSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { id: string; name: string }[] }) {
-  const [open, setOpen] = useState(false)
-  const selected = options.find((o) => o.id === value)
-
-  const pick = (id: string) => {
-    onChange(id)
-    setOpen(false)
-  }
-
   return (
-    <>
-      {open && <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />}
-      <div className="relative w-48" style={{ zIndex: open ? 50 : undefined }}>
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setOpen((v) => !v)}
-          className="w-full flex items-center justify-between px-3 py-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded-xl text-sm text-white cursor-pointer transition-colors select-none"
-        >
-          <span className="truncate">{selected?.name ?? value}</span>
-          <svg className={`w-4 h-4 text-white/40 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </div>
-        {open && (
-          <div className="absolute z-50 mt-1 w-full bg-[#1a1a1f] border border-white/[0.12] rounded-xl shadow-2xl overflow-hidden">
-            {options.map((opt) => (
-              <div
-                key={opt.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => pick(opt.id)}
-                className={`w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors select-none ${
-                  opt.id === value
-                    ? 'bg-green-500/15 text-green-400'
-                    : 'text-white/70 hover:bg-white/[0.08] hover:text-white'
-                }`}
-              >
-                {opt.name}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </>
+    <SettingSelect
+      label="Search engine"
+      value={value}
+      onChange={onChange}
+      className="w-48"
+      options={options.map((option) => ({ value: option.id, label: option.name }))}
+    />
   )
 }
 
@@ -682,15 +734,17 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
 
 function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <select
+    <SettingSelect
+      label="Artwork provider"
       value={value === 'default' ? 'tmdb' : value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-    >
-      <option value="tmdb">TMDb</option>
-      <option value="tvdb">TVDb</option>
-      <option value="fanart">Fanart.tv</option>
-    </select>
+      onChange={onChange}
+      className="w-36"
+      options={[
+        { value: 'tmdb', label: 'TMDb' },
+        { value: 'tvdb', label: 'TVDb' },
+        { value: 'fanart', label: 'Fanart.tv' },
+      ]}
+    />
   )
 }
 
@@ -1156,14 +1210,12 @@ export default function SettingsPage() {
   }
 
   const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
-  const getAnilistClientSecret = () => localStorage.getItem('anilist_client_secret') || import.meta.env.VITE_ANILIST_CLIENT_SECRET || ''
 
   const handleAnilistConnect = async () => {
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
       const clientId = getAnilistClientId()
-      const clientSecret = getAnilistClientSecret()
       if (!clientId) {
         throw new Error('AniList client ID not configured.')
       }
@@ -1172,8 +1224,11 @@ export default function SettingsPage() {
       const callbackServerPromise = invoke<string>('start_anilist_callback_server')
 
       const redirectUri = 'http://localhost:42814/'
-      const responseType = clientSecret ? 'code' : 'token'
-      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=${responseType}`
+      // Aurales is a desktop client, so its client secret cannot be kept
+      // confidential. AniList's implicit grant returns the access token
+      // directly and avoids the authorization-code exchange that some OAuth
+      // deployments reject with unsupported_grant_type.
+      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token`
       await invoke('open_simkl_auth', { url: authUrl })
 
       setAnilistMessage('Waiting for AniList authorization...')
@@ -1182,20 +1237,7 @@ export default function SettingsPage() {
         throw new Error('AniList did not return a response.')
       }
 
-      let token: string
-      if (clientSecret) {
-        const tokenJson = await invoke<string>('exchange_anilist_token', {
-          code: callbackResult,
-          clientId,
-          clientSecret,
-          redirectUri,
-        })
-        const tokenData = JSON.parse(tokenJson)
-        token = tokenData.access_token
-        if (!token) throw new Error('AniList token exchange did not return an access token.')
-      } else {
-        token = callbackResult
-      }
+      const token = callbackResult
 
       setAniListToken(token)
       setAnilistTokenInput(token)
@@ -1792,7 +1834,7 @@ export default function SettingsPage() {
   const cinematicTheme = store.interfaceTheme === 'cinematic'
 
   return (
-    <div className="flex h-full">
+    <div className="settings-page flex h-full">
       {/* ─── Left Sidebar ─── */}
       <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
         {categories.map((cat) => (
@@ -2551,34 +2593,37 @@ export default function SettingsPage() {
             <>
               <SettingSection title="Interface Theme" description="Choose the classic Aurales layout or a cinematic TV-focused browsing experience.">
                 <SettingRow label="Theme" description="Cinematic TV uses larger focus targets and unified horizontal rows. Navigation is configured separately below.">
-                  <select
+                  <SettingSelect
+                    label="Interface theme"
                     value={store.interfaceTheme}
-                    onChange={(event) => store.setInterfaceTheme(event.target.value as 'default' | 'cinematic')}
-                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="default">Default Aurales</option>
-                    <option value="cinematic">Cinematic TV</option>
-                  </select>
+                    onChange={(value) => store.setInterfaceTheme(value as 'default' | 'cinematic')}
+                    options={[
+                      { value: 'default', label: 'Classic Aurales' },
+                      { value: 'cinematic', label: 'Cinematic TV' },
+                    ]}
+                  />
                 </SettingRow>
-                <SettingRow label="Background" description="Choose between the default theme's OLED black or the Cinematic TV background color.">
-                  <select
+                <SettingRow label="Background" description="Use the selected interface theme's intended background, or force pure OLED black.">
+                  <SettingSelect
+                    label="Interface background"
                     value={store.themeBackground}
-                    onChange={(event) => store.setThemeBackground(event.target.value as 'theme' | 'oled')}
-                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="theme">Theme default</option>
-                    <option value="oled">Pure Black (OLED)</option>
-                  </select>
+                    onChange={(value) => store.setThemeBackground(value as 'theme' | 'oled')}
+                    options={[
+                      { value: 'theme', label: 'Theme Background' },
+                      { value: 'oled', label: 'Pure Black (OLED)' },
+                    ]}
+                  />
                 </SettingRow>
                 <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
-                  <select
+                  <SettingSelect
+                    label="Navigation style"
                     value={store.navigationStyle}
-                    onChange={(event) => store.setNavigationStyle(event.target.value as 'sidebar' | 'topbar')}
-                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="sidebar">Sidebar</option>
-                    <option value="topbar">Cinematic top bar</option>
-                  </select>
+                    onChange={(value) => store.setNavigationStyle(value as 'sidebar' | 'topbar')}
+                    options={[
+                      { value: 'sidebar', label: 'Sidebar' },
+                      { value: 'topbar', label: 'Cinematic top bar' },
+                    ]}
+                  />
                 </SettingRow>
                 <SettingRow label="Poster size" description="Scale posters and cards across Home, Discover, and your library.">
                   <div className="flex flex-wrap gap-2">
@@ -2589,8 +2634,10 @@ export default function SettingsPage() {
                         <button
                           key={opt}
                           onClick={() => store.setPosterSize(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          className={`flex h-8 items-center justify-center rounded-full border px-3.5 text-xs font-bold transition-all cursor-pointer ${
+                            active
+                              ? 'border-white/25 bg-white/12 text-white shadow-[inset_0_1px_rgba(255,255,255,0.08),0_8px_20px_rgba(0,0,0,0.16)]'
+                              : 'border-white/5 bg-white/5 text-white/55 hover:border-white/12 hover:bg-white/9 hover:text-white'
                           }`}
                         >
                           {labelMap[opt]}
@@ -2603,62 +2650,19 @@ export default function SettingsPage() {
 
               <SettingSection title="Home Hero" description="Choose how the featured area behaves on the home page in both interface themes.">
                 <SettingRow label="Hero mode" description="Dynamic Focus rotates the current hero; Fixed Featured Hero stays stable for the visit.">
-                  <select value={store.homeHeroMode} onChange={(event) => store.setHomeHeroMode(event.target.value as typeof store.homeHeroMode)} className="w-56 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold">
-                    <option value="dynamic">Dynamic Focus</option><option value="fixed">Fixed Featured Hero</option><option value="disabled">Disabled</option>
-                  </select>
+                  <SettingSelect
+                    label="Home hero mode"
+                    value={store.homeHeroMode}
+                    onChange={(value) => store.setHomeHeroMode(value as typeof store.homeHeroMode)}
+                    className="w-56"
+                    options={[
+                      { value: 'dynamic', label: 'Dynamic Focus' },
+                      { value: 'fixed', label: 'Fixed Featured Hero' },
+                      { value: 'disabled', label: 'Disabled' },
+                    ]}
+                  />
                 </SettingRow>
               </SettingSection>
-
-              {/* Accent Color */}
-              <SettingSection title="Accent Color" description="Choose your interface highlight color.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-3 items-center">
-                    {(['green', 'purple', 'blue', 'red', 'orange', 'pink', 'white'] as const).map((color) => {
-                      const colorClasses: Record<string, { bg: string; border: string }> = {
-                        green: { bg: 'bg-[#10b981]', border: 'border-[#10b981]' },
-                        purple: { bg: 'bg-[#8b5cf6]', border: 'border-[#8b5cf6]' },
-                        blue: { bg: 'bg-[#3b82f6]', border: 'border-[#3b82f6]' },
-                        red: { bg: 'bg-[#ef4444]', border: 'border-[#ef4444]' },
-                        orange: { bg: 'bg-[#f97316]', border: 'border-[#f97316]' },
-                        pink: { bg: 'bg-[#ec4899]', border: 'border-[#ec4899]' },
-                        white: { bg: 'bg-white', border: 'border-white' },
-                      }
-                      const active = store.accentColor === color
-                      return (
-                        <button
-                          key={color}
-                          onClick={() => store.setAccentColor(color)}
-                          className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer capitalize ${
-                            active
-                              ? 'bg-white text-black border-white shadow-lg scale-105'
-                              : 'bg-white/5 border-white/5 text-white/70 hover:bg-white/10 hover:text-white'
-                          }`}
-                        >
-                          <span className={`w-3.5 h-3.5 rounded-full ${colorClasses[color].bg} ${active ? 'ring-2 ring-black' : ''}`} />
-                          <span>{color}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Startup Page */}
-              <SettingSection title="Startup Page" description="Which page Aurales lands on at launch.">
-                <SettingRow label="Default start page">
-                  <select
-                    value={store.defaultStartPage}
-                    onChange={(e) => store.setDefaultStartPage(e.target.value as 'home' | 'discover' | 'collections' | 'search')}
-                    className="w-56 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="home">Home Dashboard</option>
-                    <option value="discover">Discover</option>
-                    <option value="collections">Collections</option>
-                    <option value="search">Search</option>
-                  </select>
-                </SettingRow>
-              </SettingSection>
-
 
               {/* Card overlays */}
               <SettingSection>
@@ -2672,19 +2676,21 @@ export default function SettingsPage() {
                   <SettingToggle checked={store.posterTrailerPreviews} onChange={(v) => store.setPosterTrailerPreviews(v)} />
                 </SettingRow>
                 <SettingRow label="Poster trailer hover delay" description="Choose how long to hover before poster trailers start.">
-                  <select
+                  <SettingSelect
+                    label="Poster trailer hover delay"
                     value={store.posterTrailerHoverDelayMs}
-                    onChange={(e) => store.setPosterTrailerHoverDelayMs(Number(e.target.value))}
-                    className="w-40 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    <option value={0}>No delay</option>
-                    <option value={250}>0.25 seconds</option>
-                    <option value={500}>0.5 seconds</option>
-                    <option value={750}>0.75 seconds</option>
-                    <option value={1000}>1 second</option>
-                    <option value={1500}>1.5 seconds</option>
-                    <option value={2000}>2 seconds</option>
-                  </select>
+                    onChange={(value) => store.setPosterTrailerHoverDelayMs(Number(value))}
+                    className="w-40"
+                    options={[
+                      { value: 0, label: 'No delay' },
+                      { value: 250, label: '0.25 seconds' },
+                      { value: 500, label: '0.5 seconds' },
+                      { value: 750, label: '0.75 seconds' },
+                      { value: 1000, label: '1 second' },
+                      { value: 1500, label: '1.5 seconds' },
+                      { value: 2000, label: '2 seconds' },
+                    ]}
+                  />
                 </SettingRow>
                 <SettingRow label="Poster trailer sound" description="Play poster hover trailers with audio when available. Muted previews can use sharper visual-only streams.">
                   <SettingToggle checked={store.posterTrailerSound} onChange={(v) => store.setPosterTrailerSound(v)} />
@@ -2704,18 +2710,20 @@ export default function SettingsPage() {
                   </div>
                 </SettingRow>
                 <SettingRow label="Hero trailer delay" description="Automatically starts a muted trailer in the Hero banner after this delay.">
-                  <select
+                  <SettingSelect
+                    label="Hero trailer delay"
                     value={store.heroTrailerDelay}
-                    onChange={(e) => store.setHeroTrailerDelay(Number(e.target.value))}
-                    className="w-40 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    <option value={0}>Off</option>
-                    <option value={3}>3 seconds</option>
-                    <option value={5}>5 seconds</option>
-                    <option value={10}>10 seconds</option>
-                    <option value={15}>15 seconds</option>
-                    <option value={30}>30 seconds</option>
-                  </select>
+                    onChange={(value) => store.setHeroTrailerDelay(Number(value))}
+                    className="w-40"
+                    options={[
+                      { value: 0, label: 'Off' },
+                      { value: 3, label: '3 seconds' },
+                      { value: 5, label: '5 seconds' },
+                      { value: 10, label: '10 seconds' },
+                      { value: 15, label: '15 seconds' },
+                      { value: 30, label: '30 seconds' },
+                    ]}
+                  />
                 </SettingRow>
               </SettingSection>
 
@@ -2771,16 +2779,16 @@ export default function SettingsPage() {
                   <SettingToggle label="Blur spoilers" checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
                 </SettingRow>
                 <SettingRow label="Blur thumbnails">
-                  <SettingToggle label="Blur thumbnails" checked={store.blurThumbnails} onChange={(v) => store.setBlurThumbnails(v)} />
+                  <SettingToggle label="Blur thumbnails" checked={store.blurThumbnails} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurThumbnails(v)} />
                 </SettingRow>
                 <SettingRow label="Blur titles">
-                  <SettingToggle label="Blur titles" checked={store.blurTitles} onChange={(v) => store.setBlurTitles(v)} />
+                  <SettingToggle label="Blur titles" checked={store.blurTitles} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurTitles(v)} />
                 </SettingRow>
                 <SettingRow label="Blur descriptions">
-                  <SettingToggle label="Blur descriptions" checked={store.blurDescriptions} onChange={(v) => store.setBlurDescriptions(v)} />
+                  <SettingToggle label="Blur descriptions" checked={store.blurDescriptions} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurDescriptions(v)} />
                 </SettingRow>
                 <SettingRow label="Keep next episode visible" description="Leave the episode you are up to clear, blur only those after it.">
-                  <SettingToggle label="Keep next episode visible" checked={store.keepNextEpisodeVisible} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
+                  <SettingToggle label="Keep next episode visible" checked={store.keepNextEpisodeVisible} disabled={!store.blurSpoilers} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
                 </SettingRow>
               </SettingSection>
 
@@ -3826,7 +3834,7 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Next episode prompt */}
-              <SettingSection title="Next Episode Prompt" description="When the Up Next pill appears before an episode ends.">
+              <SettingSection title="Next Episode Prompt" description="Auto follows an ending or credits chapter when the stream provides one, with a near-end fallback.">
                 <div className="px-6 py-4">
                   <div className="flex flex-wrap gap-2">
                     {(['auto', 'off', '30s', '45s', '1m', '1.5m', '2m'] as const).map((opt) => {
@@ -3901,7 +3909,7 @@ export default function SettingsPage() {
                     min="5"
                     max="120"
                     value={store.mpvNetworkTimeout}
-                    onChange={(e) => store.setMpvNetworkTimeout(Number(e.target.value) || 15)}
+                    onChange={(e) => store.setMpvNetworkTimeout(Number(e.target.value) || 60)}
                     className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </SettingRow>

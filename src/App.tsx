@@ -147,8 +147,13 @@ export default function App() {
   }, [discordRichPresence])
 
   useEffect(() => {
-    const { imageCacheSizeMb, imageKeepDays } = useAppStore.getState()
-    void import('./services/imageCache').then(({ configureImageCache }) => configureImageCache(imageCacheSizeMb, imageKeepDays))
+    const cancelIdle = scheduleIdleWork(() => {
+      const { imageCacheSizeMb, imageKeepDays } = useAppStore.getState()
+      void import('./services/imageCache')
+        .then(({ configureImageCache }) => configureImageCache(imageCacheSizeMb, imageKeepDays))
+        .catch(() => {})
+    }, 1800)
+    return cancelIdle
   }, [])
 
   useEffect(() => {

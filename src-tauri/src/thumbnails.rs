@@ -1024,7 +1024,7 @@ fn extract_frame(
 ) -> Result<ImageStats, String> {
     let ffmpeg = find_ffmpeg();
     let filter = format!(
-        "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        "scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     );
     let mut command = Command::new(&ffmpeg);
     command

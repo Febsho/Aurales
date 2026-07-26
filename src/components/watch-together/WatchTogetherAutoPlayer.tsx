@@ -4,7 +4,7 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
-import { nativePlayerSupported } from '../../services/player'
+import { useNativePlayerSupported } from '../../hooks/useNativePlayerSupported'
 import NativeMpvPlayer from '../NativeMpvPlayer'
 
 // Lazy: keeps the heavy player stack out of the startup bundle — it only loads
@@ -14,6 +14,7 @@ const InAppPlayer = lazy(() => import('../InAppPlayer'))
 const ACTIVE_STATUSES = new Set(['playing', 'paused', 'buffering', 'waiting_for_ready'])
 
 export default function WatchTogetherAutoPlayer() {
+  const nativePlayerAvailable = useNativePlayerSupported()
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
   const [active, setActive] = useState(false)
@@ -87,13 +88,13 @@ export default function WatchTogetherAutoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaKey, media?.localMediaId])
 
-  if (!active || !media || !selectedLocalStream || !playbackItem) return null
+  if (!active || !media || !selectedLocalStream || !playbackItem || nativePlayerAvailable === undefined) return null
 
   const stream = selectedLocalStream.stream
   const url = getPlayableStreamUrl(stream)
   if (!url) return null
 
-  const PlayerComponent = nativePlayerSupported() ? NativeMpvPlayer : InAppPlayer
+  const PlayerComponent = nativePlayerAvailable ? NativeMpvPlayer : InAppPlayer
 
   const subtitle = episode
     ? `S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}`

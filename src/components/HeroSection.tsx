@@ -234,6 +234,51 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
   const [providerArt, setProviderArt] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
 
+  // Resolve the visible logo immediately. Fixed heroes never advance to a new
+  // slide, so the old "apply enrichment on the next appearance" behavior left
+  // them permanently using the catalog's lower-quality wordmark while the
+  // details page used the configured artwork provider.
+  useEffect(() => {
+    if (!appManagedMetadata || !presentedItem) return
+    let cancelled = false
+    const key = String(presentedItem.id)
+
+    resolveArtFromProviders(
+      presentedItem.type === 'series' ? 'series' : 'movie',
+      {
+        tmdbId: presentedItem.tmdbId,
+        tvdbId: presentedItem.tvdbId,
+        imdbId: presentedItem.imdbId,
+      },
+      presentedItem.isAnime,
+    ).then(async (art) => {
+      if (!art.logo || cancelled) return
+      await preloadImage(art.logo).catch(() => undefined)
+      if (cancelled) return
+
+      setProviderArt((current) => ({ ...current, [key]: { ...current[key], ...art } }))
+      setPresentedItem((current) => {
+        if (String(current.id) !== key) return current
+        const withPreferredLogo = applySearchResultArt({ ...current, logo: art.logo })
+        return withPreferredLogo.logo === current.logo ? current : withPreferredLogo
+      })
+      setLogoError(false)
+    }).catch(() => undefined)
+
+    return () => { cancelled = true }
+  }, [
+    presentedItem.id,
+    presentedItem.tmdbId,
+    presentedItem.tvdbId,
+    presentedItem.imdbId,
+    presentedItem.isAnime,
+    presentedItem.type,
+    artProviderKey,
+    fanartApiKey,
+    customArtKey,
+    appManagedMetadata,
+  ])
+
   // The visible title never waits behind enrichment for the rest of the
   // carousel. Resolve its verified landscape directly; only adjacent/future
   // slides use the serialized metadata queue.
@@ -294,7 +339,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!startupEnrichmentReady || !appManagedMetadata) return
     let cancelled = false
     setProviderArt({})
-    items.forEach((itm) => {
+    items.filter((itm) => String(itm.id) !== String(presentedItem.id)).forEach((itm) => {
       const key = String(itm.id)
       scheduleTask(metadataTaskQueue, {
         id: `hero-art:${key}`,
@@ -320,7 +365,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       }).catch(() => undefined)
     })
     return () => { cancelled = true }
-  }, [items, artProviderKey, fanartApiKey, startupEnrichmentReady, appManagedMetadata])
+  }, [items, presentedItem.id, artProviderKey, fanartApiKey, startupEnrichmentReady, appManagedMetadata])
 
   const displayItems = useMemo(() => items.map((raw) => {
     const art = providerArt[String(raw.id)]
@@ -447,17 +492,21 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const ratingLabel = item.rating ? `R` : ''
   const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
 
-  // Fixed cinematic Home keeps a shelf anchored below the banner. Give the
-  // banner a little more vertical presence and reduce its top offset so neither
-  // gap feels oversized, without affecting dynamic heroes or other themes.
-  const heroHeight = isSmall ? '380px' : cinematic ? (fixed ? 'clamp(580px, 74vh, 900px)' : 'clamp(520px, 68vh, 820px)') : 'clamp(550px, 85vh, 1200px)'
+  // The fixed cinematic Home divides the viewport between the banner and the
+  // active shelf. CSS owns that calculation so it can respond to both 1080p TV
+  // windows and high-density 4K displays without a 1440p-specific cap.
+  const heroHeight = isSmall
+    ? '380px'
+    : cinematic
+      ? (fixed ? 'var(--fixed-cinematic-hero-height, clamp(580px, 74vh, 900px))' : 'clamp(520px, 68vh, 820px)')
+      : 'clamp(550px, 85vh, 1200px)'
 
   const maskGradient = 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
 
   return (
     <div
       ref={heroRef}
-      className={`relative overflow-hidden select-none group ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? (fixed ? 'mt-[5.5rem]' : 'mt-[7.25rem]') : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? (fixed ? 'mt-[5.5rem]' : 'mt-[7.25rem]') : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
@@ -630,19 +679,19 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         )}
 
         {/* Content — bottom-left */}
-        <div className={`absolute bottom-0 left-0 right-0 z-10 ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
+        <div className={`hero-content-overlay absolute bottom-0 left-0 right-0 z-10 ${fixed && !cinematic && !isSmall ? 'fixed-default-hero-content' : ''} ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
           {/* Title */}
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (
               <img
                 src={cachedImage(item.logo)}
                 alt={item.title}
-                className={`${isSmall ? 'h-14 max-w-[70%]' : 'h-[112px] md:h-[132px] max-w-[60%]'} w-auto object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
+                className={`hero-title-logo ${isSmall ? 'max-h-14 max-w-[70%]' : 'max-h-[150px] md:max-h-[190px] max-w-[90%]'} w-auto object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
                 onError={() => setLogoError(true)}
                 draggable={false}
               />
             ) : (
-              <h1 className={`${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
+              <h1 className={`hero-title-text ${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
                 {item.title}
               </h1>
             )}

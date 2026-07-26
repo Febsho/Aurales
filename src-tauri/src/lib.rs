@@ -2,31 +2,112 @@ mod commands;
 mod db;
 mod image_cache;
 mod libmpv_player;
+#[cfg(target_os = "linux")]
+mod linux_render_surface;
 mod thumbnails;
 mod ytproxy;
 
 use db::Database;
 use tauri::Manager;
 
+#[cfg(target_os = "linux")]
+enum RenderNodeChoice {
+    NonNvidia(String),
+    NvidiaOnly,
+    None,
+}
+
+/// Pick the DRM render node WebKit should draw with. NVIDIA nodes reject
+/// WebKit's GBM buffer allocation, so any other vendor's node wins.
+#[cfg(target_os = "linux")]
+fn preferred_webkit_render_node() -> RenderNodeChoice {
+    const NVIDIA_VENDOR: &str = "0x10de";
+    let mut nvidia_seen = false;
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return RenderNodeChoice::None;
+    };
+    let mut nodes: Vec<_> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("renderD")
+        })
+        .collect();
+    nodes.sort_by_key(|entry| entry.file_name());
+    for entry in nodes {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let vendor = std::fs::read_to_string(entry.path().join("device/vendor"))
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        if vendor == NVIDIA_VENDOR {
+            nvidia_seen = true;
+        } else if std::path::Path::new("/dev/dri").join(&name).exists() {
+            return RenderNodeChoice::NonNvidia(format!("/dev/dri/{name}"));
+        }
+    }
+    if nvidia_seen {
+        RenderNodeChoice::NvidiaOnly
+    } else {
+        RenderNodeChoice::None
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
-        // WebKitGTK's DMA-BUF renderer cannot allocate GBM buffers on a
-        // number of Linux GPU/driver combinations (especially NVIDIA and
-        // hybrid systems), leaving the window blank. Keep the reliable
-        // renderer here; Linux-specific CSS below avoids the costly effects
-        // that make this fallback path slow.
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // WebKit's GPU (DMA-BUF) renderer is required for correct rendering of
+        // the transparent player window: the software fallback repaints only
+        // damaged regions (closed menus ghost over the video) and drops CSS
+        // filter effects (the blurred hero backdrop renders sharp). NVIDIA's
+        // driver cannot allocate WebKit's GBM buffers ("Failed to create GBM
+        // buffer", invisible window), so route rendering to a non-NVIDIA DRM
+        // node when one exists, and fall back to shared-memory buffer
+        // transport on NVIDIA-only machines. AURALES_DISABLE_DMABUF_RENDERER=1
+        // opts back into the old software path.
+        let disable_dmabuf = std::env::var("AURALES_DISABLE_DMABUF_RENDERER")
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        let webkit_env_untouched = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+            && std::env::var_os("WEBKIT_WEB_RENDER_DEVICE_FILE").is_none()
+            && std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none();
+        if disable_dmabuf {
+            if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+            // Without the GPU renderer, forced compositing at least prevents
+            // stale-pixel ghosting on the transparent player window.
+            if std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none() {
+                std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+            }
+        } else if webkit_env_untouched {
+            match preferred_webkit_render_node() {
+                RenderNodeChoice::NonNvidia(node) => {
+                    std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", node);
+                }
+                RenderNodeChoice::NvidiaOnly => {
+                    std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+                }
+                RenderNodeChoice::None => {
+                    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+                    std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+                }
+            }
         }
 
-        // X11/XWayland provides an embeddable native surface for libmpv. Keep
-        // native Wayland only on systems without DISPLAY, where this embedded
-        // surface backend is unavailable.
-        if std::env::var_os("DISPLAY").is_some() {
+        // The Linux player renders through GTK's GLArea and libmpv's Render
+        // API, so video/UI composition no longer depends on X11 window
+        // stacking. WebKitGTK itself still crashes on some native-Wayland GPU
+        // combinations (notably transparent hybrid-GPU windows). Prefer its
+        // mature XWayland backend when available; pure Wayland systems remain
+        // supported, and AURALES_NATIVE_WAYLAND=1 opts in explicitly.
+        let native_wayland = std::env::var("AURALES_NATIVE_WAYLAND")
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        if !native_wayland && std::env::var_os("DISPLAY").is_some() {
             std::env::set_var("GDK_BACKEND", "x11");
-            libmpv_player::initialize_linux_x11();
         }
     }
 
@@ -50,6 +131,11 @@ pub fn run() {
             image_cache::handle_request(ctx.app_handle().clone(), request, responder);
         })
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if let Err(error) = libmpv_player::initialize_numeric_locale() {
+                log::error!("[MPV LIB] {error}");
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -95,6 +181,7 @@ pub fn run() {
             commands::minimal_mpv_command,
             commands::stop_minimal_mpv,
             commands::get_minimal_player_state,
+            commands::get_embedded_player_supported,
             commands::get_embedded_player_running,
             commands::get_player_debug_logs,
             commands::clear_player_debug_logs,

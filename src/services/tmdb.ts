@@ -198,7 +198,7 @@ export async function getTmdbCardMetadata(
     if (resolvedType) mediaType = resolvedType
   }
 
-  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }>(`tmdb_card_v9:${mediaType}:${id}`, async () => {
+  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }>(`tmdb_card_v10:${mediaType}:${id}`, async () => {
     const [details, images] = await Promise.all([
       tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
       tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
@@ -210,8 +210,10 @@ export async function getTmdbCardMetadata(
     return {
       poster: pickBestPoster(images, details.poster_path as string),
       backdrop: pickBestBackdrop(images, details.backdrop_path as string),
-      logo: primaryLogo ? `${IMG_BASE}/w500${primaryLogo.file_path as string}` : undefined,
-      englishLogo: englishLogo ? `${IMG_BASE}/w500${englishLogo.file_path as string}` : undefined,
+      // Logos are often extremely wide. A w500 source becomes visibly soft
+      // when used in a full-screen hero even though its height is modest.
+      logo: primaryLogo ? `${IMG_BASE}/original${primaryLogo.file_path as string}` : undefined,
+      englishLogo: englishLogo ? `${IMG_BASE}/original${englishLogo.file_path as string}` : undefined,
       genre: typeof genres[0]?.name === 'string' ? genres[0].name : undefined,
     }
   }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
@@ -417,6 +419,7 @@ export const tmdbProvider: MetadataProvider = {
       logo: primaryLogo ? `${IMG_BASE}/w300${primaryLogo.file_path as string}` : undefined,
       certification: undefined,
       status: details.status as string,
+      seriesType: details.type as string,
       numberOfSeasons: details.number_of_seasons as number,
       numberOfEpisodes: details.number_of_episodes as number,
       seasons,
