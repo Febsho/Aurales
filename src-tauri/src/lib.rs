@@ -12,28 +12,24 @@ use tauri::Manager;
 
 #[cfg(target_os = "linux")]
 enum RenderNodeChoice {
-    NonNvidia(String),
-    NvidiaOnly,
+    NvidiaPresent,
+    NonNvidiaOnly,
     None,
 }
 
-/// Pick the DRM render node WebKit should draw with. NVIDIA nodes reject
-/// WebKit's GBM buffer allocation, so any other vendor's node wins.
+/// Classify the available DRM render nodes without forcing WebKit onto a GPU
+/// that may not be driving the current display.
 #[cfg(target_os = "linux")]
-fn preferred_webkit_render_node() -> RenderNodeChoice {
+fn classify_render_nodes() -> RenderNodeChoice {
     const NVIDIA_VENDOR: &str = "0x10de";
     let mut nvidia_seen = false;
+    let mut non_nvidia_seen = false;
     let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
         return RenderNodeChoice::None;
     };
     let mut nodes: Vec<_> = entries
         .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("renderD")
-        })
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
         .collect();
     nodes.sort_by_key(|entry| entry.file_name());
     for entry in nodes {
@@ -44,11 +40,13 @@ fn preferred_webkit_render_node() -> RenderNodeChoice {
         if vendor == NVIDIA_VENDOR {
             nvidia_seen = true;
         } else if std::path::Path::new("/dev/dri").join(&name).exists() {
-            return RenderNodeChoice::NonNvidia(format!("/dev/dri/{name}"));
+            non_nvidia_seen = true;
         }
     }
     if nvidia_seen {
-        RenderNodeChoice::NvidiaOnly
+        RenderNodeChoice::NvidiaPresent
+    } else if non_nvidia_seen {
+        RenderNodeChoice::NonNvidiaOnly
     } else {
         RenderNodeChoice::None
     }
@@ -62,11 +60,12 @@ pub fn run() {
         // the transparent player window: the software fallback repaints only
         // damaged regions (closed menus ghost over the video) and drops CSS
         // filter effects (the blurred hero backdrop renders sharp). NVIDIA's
-        // driver cannot allocate WebKit's GBM buffers ("Failed to create GBM
-        // buffer", invisible window), so route rendering to a non-NVIDIA DRM
-        // node when one exists. WebKit's shared-memory DMA-BUF fallback still
-        // attempts to create a GBM EGL display on NVIDIA-only Wayland systems
-        // and aborts the whole process, so disable DMA-BUF there completely.
+        // driver cannot reliably allocate WebKit's GBM buffers ("Failed to
+        // create GBM buffer", invisible window). On hybrid systems, forcing
+        // WebKit onto the non-NVIDIA node can also abort startup when that GPU
+        // is not driving the display ("Could not create GBM EGL display").
+        // Disable DMA-BUF whenever NVIDIA is present instead of guessing which
+        // render node owns the current display.
         // AURALES_DISABLE_DMABUF_RENDERER=1 forces the same safe software path.
         let disable_dmabuf = std::env::var("AURALES_DISABLE_DMABUF_RENDERER")
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -84,14 +83,13 @@ pub fn run() {
                 std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
             }
         } else if webkit_env_untouched {
-            match preferred_webkit_render_node() {
-                RenderNodeChoice::NonNvidia(node) => {
-                    std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", node);
-                }
-                RenderNodeChoice::NvidiaOnly => {
+            match classify_render_nodes() {
+                RenderNodeChoice::NvidiaPresent => {
                     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
                     std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
                 }
+                // Let WebKit select the GPU associated with the active display.
+                RenderNodeChoice::NonNvidiaOnly => {}
                 RenderNodeChoice::None => {
                     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
                     std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
