@@ -1,9 +1,10 @@
-# Flatpak manifest for Aurales. CI copies the built .deb next to this file as
-# aurales.deb before running flatpak-builder (see .github/workflows/release.yml).
+# Flatpak manifest for Aurales. CI creates a private .deb build input and copies
+# it next to this file as aurales.deb. The .deb is never published as a release
+# asset; public Linux downloads are the AppImage and Flatpak bundle.
 # The GNOME runtime ships the WebKitGTK 4.1 the Tauri WebView needs.
 id: com.aurales.app
 runtime: org.gnome.Platform
-runtime-version: '46'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: aurales
 finish-args:
@@ -15,6 +16,15 @@ finish-args:
   - --device=dri
   # Discord Rich Presence IPC socket (harmless if Discord is absent)
   - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/discord-ipc-1
+  - --filesystem=xdg-run/discord-ipc-2
+  - --filesystem=xdg-run/discord-ipc-3
+  - --filesystem=xdg-run/discord-ipc-4
+  - --filesystem=xdg-run/discord-ipc-5
+  - --filesystem=xdg-run/discord-ipc-6
+  - --filesystem=xdg-run/discord-ipc-7
+  - --filesystem=xdg-run/discord-ipc-8
+  - --filesystem=xdg-run/discord-ipc-9
 modules:
   - name: aurales
     buildsystem: simple
@@ -40,6 +50,9 @@ modules:
           size=$(basename "$(dirname "$(dirname "$icon")")")
           install -Dm644 "$icon" "/app/share/icons/hicolor/$size/apps/com.aurales.app.png"
         done
+      - install -Dm644 com.aurales.app.metainfo.xml /app/share/metainfo/com.aurales.app.metainfo.xml
     sources:
       - type: file
         path: aurales.deb
+      - type: file
+        path: com.aurales.app.metainfo.xml

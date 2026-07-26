@@ -11,6 +11,7 @@ function getStoredKey(name: string): string {
 // gitignored). Resolution order: user-provided (Settings) → build-time env → built-in.
 const BUILTIN_TMDB_API_KEY = '64e0744d0e17577a503c56855c3fb99d'
 const BUILTIN_TVDB_API_KEY = '0802723a-231e-4f0c-bf30-58e95334954a'
+const BUILTIN_OMDB_API_KEY = 'thewdb'
 
 export function getTmdbApiKey(): string {
   return getStoredKey('tmdb_api_key') || import.meta.env.VITE_TMDB_API_KEY || BUILTIN_TMDB_API_KEY
@@ -18,6 +19,10 @@ export function getTmdbApiKey(): string {
 
 export function getTvdbApiKey(): string {
   return getStoredKey('tvdb_api_key') || import.meta.env.VITE_TVDB_API_KEY || BUILTIN_TVDB_API_KEY
+}
+
+export function getOmdbApiKey(): string {
+  return getStoredKey('omdb_api_key') || import.meta.env.VITE_OMDB_API_KEY || BUILTIN_OMDB_API_KEY
 }
 
 /** True when an effective TMDB key exists (user-provided, build-time, or built-in). */

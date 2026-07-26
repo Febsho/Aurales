@@ -108,7 +108,6 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   // Landscape cards scale with the global poster-size setting so the Continue
   // Watching row fits the same way the poster rows do.
   const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
-  const [focusedItem, setFocusedItem] = useState<ContinueWatchingItem | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -548,6 +547,26 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     anilistId: item.anilistId,
   })
 
+  const announceHeroFocus = (item: ContinueWatchingItem) => {
+    window.dispatchEvent(new CustomEvent<SearchResult>('aurales:media-focus', {
+      detail: {
+        id: item.mediaId,
+        title: item.title,
+        type: item.mediaType,
+        provider: 'continue-watching',
+        poster: item.poster,
+        backdrop: item.backdrop,
+        imdbId: item.imdbId,
+        tmdbId: item.tmdbId,
+        malId: item.malId,
+        anilistId: item.anilistId,
+        isAnime: Boolean(item.anilistId || item.malId),
+        season: item.season,
+        episode: item.episode,
+      },
+    }))
+  }
+
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!cinematic || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
     const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > button'))
@@ -652,14 +671,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             <button
               key={item.id}
               onClick={() => playItem(item)}
-              onMouseEnter={() => setFocusedItem(item)}
-              onMouseLeave={() => setFocusedItem((current) => current?.id === item.id ? null : current)}
+              onMouseEnter={() => announceHeroFocus(item)}
               onFocus={(event) => {
-                setFocusedItem(item)
+                announceHeroFocus(item)
                 const card = event.currentTarget
                 window.setTimeout(() => revealContinueCard(card), 80)
               }}
-              onBlur={() => setFocusedItem((current) => current?.id === item.id ? null : current)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setCwMenu({ x: e.clientX, y: e.clientY, item })

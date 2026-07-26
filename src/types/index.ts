@@ -82,6 +82,7 @@ export interface ShowDetails {
   logo?: string
   certification?: string
   status?: string
+  seriesType?: string
   numberOfSeasons?: number
   numberOfEpisodes?: number
   originalLanguage?: string

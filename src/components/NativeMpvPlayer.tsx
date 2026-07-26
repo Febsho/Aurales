@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -119,6 +119,19 @@ interface TimelinePreview {
 interface PlayerChapter {
   title: string
   time: number
+}
+
+function findEndingChapterTime(chapters: PlayerChapter[], duration: number): number | null {
+  if (duration <= 0) return null
+
+  const endingChapterPattern = /(?:^|\b)(?:end(?:ing)?\s*credits?|credits?|credit\s*roll|outro|ending|end\s*titles?|ending\s*theme|ed\s*\d*)(?:\b|$)/i
+  const candidates = chapters
+    .filter((chapter) => endingChapterPattern.test(chapter.title.trim()))
+    // Ignore malformed early markers and chapters that start after playback.
+    .filter((chapter) => chapter.time >= duration * 0.5 && chapter.time < duration - 1)
+    .sort((a, b) => a.time - b.time)
+
+  return candidates[0]?.time ?? null
 }
 
 function introDbChapters(segments: PMDBSkipSegment[]): PlayerChapter[] {
@@ -745,7 +758,6 @@ function FullNativeMpvPlayer({
   onPickAnother,
   onPlaybackError,
   onPlaybackStarted,
-  onReportBad,
 }: NativeMpvPlayerProps) {
 
   // ─ Refs ───────────────────────────────────────────────────────────────────
@@ -829,6 +841,19 @@ function FullNativeMpvPlayer({
   const isFullscreenRef = useRef(false)
   useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
   const fullscreenTransitionRef = useRef(0)
+  useEffect(() => {
+    let disposed = false
+    const syncFullscreenState = async () => {
+      const fullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
+      if (disposed) return
+      isFullscreenRef.current = fullscreen
+      setIsFullscreen(fullscreen)
+    }
+    syncFullscreenState().catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [])
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
   const [subTracks, setSubTracks] = useState<TrackOption[]>([])
@@ -871,6 +896,11 @@ function FullNativeMpvPlayer({
   const [mediaBadges, setMediaBadges] = useState<string[]>([])
   const [chapters, setChapters] = useState<PlayerChapter[]>([])
   const [showChapters, setShowChapters] = useState(false)
+  const [chapterThumbs, setChapterThumbs] = useState<Record<string, string>>({})
+  const chapterThumbsRef = useRef<Record<string, string>>({})
+  const chapterThumbRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chapterStripRef = useRef<HTMLDivElement | null>(null)
+  const chapterPanscanRef = useRef(0)
   const [showMediaInfo, setShowMediaInfo] = useState(false)
   const isDraggingRef = useRef(false)
   const thumbnailRequestRef = useRef(0)
@@ -903,6 +933,15 @@ function FullNativeMpvPlayer({
   // Current display title/subtitle — updated when autoplay transitions episodes
   const [currentDisplayTitle, setCurrentDisplayTitle] = useState(title)
   const [currentDisplaySubtitle, setCurrentDisplaySubtitle] = useState(subtitle)
+  const getThumbnailMediaId = useCallback(() => {
+    const item = currentItemRef.current
+    if (!item) return currentDisplayTitle || 'playback'
+    return [
+      item.localId,
+      item.season != null ? `season-${item.season}` : '',
+      item.episode != null ? `episode-${item.episode}` : '',
+    ].filter(Boolean).join('-')
+  }, [currentDisplayTitle])
 
   // Netflix-style paused info overlay — metadata fetched lazily on first pause.
   const [currentMeta, setCurrentMeta] = useState<CurrentItemMeta | null>(null)
@@ -935,7 +974,12 @@ function FullNativeMpvPlayer({
     setShowSpeedMenu(false)
     sendPlayerCommand('set_property', ['speed', speed]).catch(() => {})
   }, [])
-
+  const dismissPlayerOptions = useCallback(() => {
+    setTrackMenu(null)
+    setShowSpeedMenu(false)
+    setShowMediaInfo(false)
+    setShowChapters(false)
+  }, [])
   // Store
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const simklSaveResumePosition = useAppStore((s) => s.simklSaveResumePosition)
@@ -1039,10 +1083,10 @@ function FullNativeMpvPlayer({
     
     const overrideMap: Record<string, string> = {
       apply: 'no',
-      scale_only: 'scale_only',
+      scale_only: 'scale',
       ignore: 'yes'
     }
-    sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subtitleAssOverride] || 'scale_only']).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subtitleAssOverride] || 'scale']).catch(() => {})
   }, [
     subtitleFontSize, subtitleColor, subtitleBgOpacity, subtitleBorderStyle, subtitleScale,
     subtitleBold, subtitleItalic, subtitleOutlineColor, subtitleBgColor, subtitleOutlineThickness,
@@ -1136,15 +1180,15 @@ function FullNativeMpvPlayer({
       if (!streamUrl || !isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
       try {
         const result = await getOrQueueScrubThumbnail({
-          mediaId: currentItemRef.current?.localId || currentDisplayTitle || 'playback',
+          mediaId: getThumbnailMediaId(),
           streamUrl,
           duration,
           time,
-          thumbnailInterval: 30,
-          thumbnailWidth: 256,
-          thumbnailHeight: 144,
-          quality: 62,
-          maxConcurrentFfmpegWorkers: 1,
+          thumbnailInterval: 10,
+          thumbnailWidth: 480,
+          thumbnailHeight: 270,
+          quality: 82,
+          maxConcurrentFfmpegWorkers: 2,
         })
         if (!isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
         const path = result.exactPath || result.nearestPath
@@ -1153,7 +1197,7 @@ function FullNativeMpvPlayer({
         // The timestamp preview still works when the source cannot be thumbnailed.
       }
     }, 180)
-  }, [currentDisplayTitle, duration, url])
+  }, [duration, getThumbnailMediaId, url])
 
   const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingRef.current) return
@@ -1213,6 +1257,121 @@ function FullNativeMpvPlayer({
     const timer = setTimeout(() => { loadMediaDetails().catch(() => {}) }, 250)
     return () => { cancelled = true; clearTimeout(timer); retryTimers.forEach(clearTimeout) }
   }, [playerReady, tracksLoaded, url])
+
+  // Some sources (notably HMAX WEB-DLs) author chapter times with a constant
+  // offset (often +1h) or list chapters past the end of the file, so the raw
+  // mpv chapter-list can't be trusted for seeking until it's normalized.
+  const displayChapters = useMemo(() => {
+    if (chapters.length === 0 || duration <= 0) return chapters
+    const sorted = [...chapters].sort((a, b) => a.time - b.time)
+    const looksShifted = sorted[0].time > 0
+      && (sorted[0].time > duration * 0.5 || sorted[sorted.length - 1].time > duration)
+    const offset = looksShifted ? sorted[0].time : 0
+    return sorted
+      .map((chapter) => ({ ...chapter, time: chapter.time - offset }))
+      .filter((chapter) => chapter.time >= 0 && chapter.time < duration - 1)
+      .filter((chapter, index, list) => index === 0 || chapter.time - list[index - 1].time >= 1)
+  }, [chapters, duration])
+  const autoNextEpisodeChapterTime = useMemo(
+    () => findEndingChapterTime(displayChapters, duration),
+    [displayChapters, duration],
+  )
+  const autoNextEpisodeChapterTimeRef = useRef<number | null>(null)
+  useEffect(() => {
+    autoNextEpisodeChapterTimeRef.current = autoNextEpisodeChapterTime
+  }, [autoNextEpisodeChapterTime])
+
+  useEffect(() => {
+    chapterThumbsRef.current = {}
+    setChapterThumbs({})
+  }, [url])
+
+  // Chapter tile thumbnails come from the same ffmpeg scrub-thumbnail cache
+  // as the timeline preview. Warm them as soon as chapters are known so the
+  // shared Windows/Linux UI does not open onto an empty strip.
+  useEffect(() => {
+    if (!playerReady || duration <= 0 || displayChapters.length === 0) return
+    const streamUrl = currentStreamUrlRef.current || url
+    if (!streamUrl) return
+    let cancelled = false
+    const mediaId = getThumbnailMediaId()
+    const initialTime = progressRef.current.currentTime
+    const prioritizedChapters = [...displayChapters].sort((a, b) => {
+      const aDistance = Math.abs(a.time - initialTime)
+      const bDistance = Math.abs(b.time - initialTime)
+      return aDistance - bDistance || a.time - b.time
+    })
+    const loadThumbs = async (attempt: number) => {
+      let stillGenerating = false
+      for (const chapter of prioritizedChapters) {
+        if (cancelled) return
+        const key = `${Math.round(chapter.time)}`
+        if (chapterThumbsRef.current[key]) continue
+        try {
+          const result = await getOrQueueScrubThumbnail({
+            mediaId,
+            streamUrl,
+            duration,
+            // Sample slightly into the chapter so tiles don't land on the
+            // black fade frame at the cut.
+            time: Math.min(chapter.time + 2, Math.max(duration - 5, 0)),
+            thumbnailInterval: 10,
+            thumbnailWidth: 480,
+            thumbnailHeight: 270,
+            quality: 82,
+            maxConcurrentFfmpegWorkers: 2,
+          })
+          if (cancelled) return
+          if (result.exactPath) {
+            chapterThumbsRef.current = { ...chapterThumbsRef.current, [key]: convertFileSrc(result.exactPath) }
+            setChapterThumbs(chapterThumbsRef.current)
+          } else {
+            stillGenerating = true
+          }
+        } catch {
+          // The tile keeps its placeholder when the source can't be thumbnailed.
+        }
+      }
+      if (!cancelled && stillGenerating && attempt < 12) {
+        const retryDelay = Math.min(700 + attempt * 250, 2500)
+        chapterThumbRetryRef.current = setTimeout(() => { loadThumbs(attempt + 1).catch(() => {}) }, retryDelay)
+      }
+    }
+    loadThumbs(0).catch(() => {})
+    return () => {
+      cancelled = true
+      if (chapterThumbRetryRef.current) clearTimeout(chapterThumbRetryRef.current)
+    }
+  }, [playerReady, displayChapters, duration, url, getThumbnailMediaId])
+
+  // Center the active chapter tile when the strip opens.
+  useEffect(() => {
+    if (!showChapters) return
+    const active = chapterStripRef.current?.querySelector('[data-active-chapter="true"]')
+    if (active instanceof HTMLElement) {
+      active.scrollIntoView({ inline: 'center', block: 'nearest' })
+    }
+  }, [showChapters])
+
+  // Chapter browsing uses a softly animated cover-style presentation,
+  // matching TV players without snapping between contain and fill.
+  useEffect(() => {
+    if (!playerReady) return
+    let animationFrame = 0
+    const from = chapterPanscanRef.current
+    const target = showChapters ? 1 : 0
+    const startedAt = performance.now()
+    const animatePanscan = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / 320)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      const value = from + (target - from) * eased
+      chapterPanscanRef.current = value
+      sendPlayerCommand('set_property', ['panscan', Number(value.toFixed(3))]).catch(() => {})
+      if (progress < 1) animationFrame = requestAnimationFrame(animatePanscan)
+    }
+    animationFrame = requestAnimationFrame(animatePanscan)
+    return () => cancelAnimationFrame(animationFrame)
+  }, [playerReady, showChapters])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -1326,8 +1485,21 @@ function FullNativeMpvPlayer({
   const showControls = useCallback(() => {
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-    hideTimerRef.current = setTimeout(() => setControlsVisible(false), 4000)
-  }, [])
+    hideTimerRef.current = setTimeout(() => {
+      setControlsVisible(false)
+      dismissPlayerOptions()
+    }, 4000)
+  }, [dismissPlayerOptions])
+
+  useEffect(() => {
+    const dismissOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('[data-player-popover]')) return
+      dismissPlayerOptions()
+    }
+    document.addEventListener('pointerdown', dismissOnOutsidePress, true)
+    return () => document.removeEventListener('pointerdown', dismissOnOutsidePress, true)
+  }, [dismissPlayerOptions])
 
   const command = useCallback((name: string, args: unknown[] = []) => {
     sendPlayerCommand(name, args).catch((e) => {
@@ -1738,7 +1910,10 @@ function FullNativeMpvPlayer({
   }, [applyFullVideoViewport])
 
   const toggleFullscreen = useCallback(async () => {
-    if (isFullscreenRef.current) {
+    const actualFullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
+    isFullscreenRef.current = actualFullscreen
+    setIsFullscreen(actualFullscreen)
+    if (actualFullscreen) {
       await exitFullscreenWindow()
     } else {
       // Flip state up front so the window-drag strip is gated off immediately —
@@ -1755,9 +1930,13 @@ function FullNativeMpvPlayer({
       }
     }
     // Re-sync the mpv child to the new client size (retries as the transition settles).
-    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(() => { applyFullVideoViewport() }, d))
+    const linux = document.documentElement.dataset.platform === 'linux'
+    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(() => {
+      if (linux && isFullscreenRef.current) repairFullscreenWindow().catch(() => {})
+      else applyFullVideoViewport()
+    }, d))
     showControls()
-  }, [showControls, applyFullVideoViewport, exitFullscreenWindow])
+  }, [showControls, applyFullVideoViewport, exitFullscreenWindow, repairFullscreenWindow])
 
   useEffect(() => {
     let pressedKey: string | null = null
@@ -1826,6 +2005,12 @@ function FullNativeMpvPlayer({
       }
 
       if (key === 'Escape') {
+        if (trackMenu || showSpeedMenu || showMediaInfo || showChapters) {
+          e.preventDefault()
+          e.stopPropagation()
+          dismissPlayerOptions()
+          return
+        }
         if (isFullscreen) {
           e.preventDefault()
           e.stopPropagation()
@@ -1891,7 +2076,7 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, dismissPlayerOptions])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1986,10 +2171,10 @@ function FullNativeMpvPlayer({
         
         const overrideMap: Record<string, string> = {
           apply: 'no',
-          scale_only: 'scale_only',
+          scale_only: 'scale',
           ignore: 'yes'
         }
-        sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subState.subtitleAssOverride] || 'scale_only']).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subState.subtitleAssOverride] || 'scale']).catch(() => {})
 
         if (playbackItem) {
           const startProgress = startTime && progressRef.current.duration > 0
@@ -2113,6 +2298,11 @@ function FullNativeMpvPlayer({
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
+    const syncSurfaceLayer = () => {
+      if (disposed) return
+      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+      invoke('setup_player_click_through').catch(() => {})
+    }
     listen<{ sessionId: string; eventId: number }>('mpv-playback-ready', (event) => {
       if (disposed) return
       // FILE_LOADED means headers were parsed; PLAYBACK_RESTART means decoded
@@ -2122,8 +2312,8 @@ function FullNativeMpvPlayer({
       setPlayerRunning(true)
       setPlayerReady(true)
       showControls()
-      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
-      invoke('setup_player_click_through').catch(() => {})
+      syncSurfaceLayer()
+
     }).then((fn) => {
       if (disposed) fn()
       else unlisten = fn
@@ -2539,18 +2729,22 @@ function FullNativeMpvPlayer({
           }
 
           // Detect near-end for Up Next, honoring the Next Episode Prompt
-          // setting. 'auto' = ≤90s remaining OR ≥92% through; timed options
-          // use a fixed remaining threshold; 'off' disables the prompt.
+          // setting. Auto follows an embedded Credits/Ending/Outro chapter
+          // when one is available and falls back to the duration heuristic
+          // for streams without a useful ending chapter.
           // Suppressed in Watch Together — autoplaying a new episode locally
           // would desync the whole room.
           const remaining = dur - pos
           const pctDone = pos / dur
           const promptSetting = useAppStore.getState().nextEpisodePrompt
           const promptThresholds: Record<string, number> = { '30s': 30, '45s': 45, '1m': 60, '1.5m': 90, '2m': 120 }
+          const endingChapterTime = autoNextEpisodeChapterTimeRef.current
           const shouldPrompt = promptSetting === 'off'
             ? false
             : promptSetting === 'auto'
-              ? (remaining <= 90 || pctDone >= 0.92)
+              ? endingChapterTime != null
+                ? pos >= endingChapterTime
+                : (remaining <= 90 || pctDone >= 0.92)
               : remaining <= (promptThresholds[promptSetting] ?? 90)
           if (
             shouldPrompt &&
@@ -2570,8 +2764,11 @@ function FullNativeMpvPlayer({
           // results, rank them, and probe the top direct link so the Up-Next
           // switch starts instantly. Once per episode; skipped in Watch
           // Together and when the prompt is disabled.
+          const approachingAutoChapter = promptSetting === 'auto'
+            && endingChapterTime != null
+            && endingChapterTime - pos <= 90
           if (
-            remaining > 0 && remaining <= 90 &&
+            remaining > 0 && (remaining <= 90 || approachingAutoChapter) &&
             !nextPrepareTriggeredRef.current &&
             promptSetting !== 'off' &&
             !useWatchTogetherStore.getState().currentRoom &&
@@ -3231,7 +3428,6 @@ function FullNativeMpvPlayer({
       style={{ background: playerReady ? 'rgba(0,0,0,0.05)' : '#000' }}
       onMouseMove={showControls}
     >
-      {onReportBad && controlsVisible && <button onClick={onReportBad} className="absolute right-6 top-6 z-30 rounded-full bg-black/65 px-4 py-2 text-xs text-white/70 hover:text-white">Report bad stream</button>}
       {!playerReady && !error && (
         <div className="absolute inset-0 z-[3] flex items-center justify-center bg-black pointer-events-none">
           <div className="flex flex-col items-center gap-4">
@@ -3274,8 +3470,8 @@ function FullNativeMpvPlayer({
 
       {/* Center play/pause indicator — hidden while the paused info panel is up */}
       {controlsVisible && playerReady && !buffering && (
-        <div className="absolute inset-0 z-[4] flex items-center justify-center pointer-events-none">
-          <div className="pointer-events-auto flex items-center gap-5">
+        <div className={`absolute inset-0 z-[4] flex items-center justify-center pointer-events-none transition-all duration-250 ease-out ${showChapters ? 'scale-95 opacity-0' : 'scale-100 opacity-100'}`}>
+          <div className={`flex items-center gap-5 ${showChapters ? 'pointer-events-none' : 'pointer-events-auto'}`}>
             <button onClick={(event) => { event.stopPropagation(); seekBy(-seekStepSeconds) }} className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white/90 shadow-2xl backdrop-blur-xl transition-transform hover:scale-105 hover:bg-white/15" aria-label={`Back ${seekStepSeconds} seconds`}>
               <svg className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 7v5h5M5.5 11a7 7 0 1 1 1.2 6.7" strokeLinecap="round" strokeLinejoin="round"/><text x="12" y="15" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor" stroke="none">{seekStepSeconds}</text></svg>
             </button>
@@ -3366,47 +3562,17 @@ function FullNativeMpvPlayer({
         </>
       )}
 
-      {/* Skip Intro / Credits button */}
-      {activeSkip && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            if (wtControlBlocked()) { wtBlockedNotice(); return }
-            let endMs: number
-            if (skipType === 'intro') endMs = activeSkip.intro_end_ms
-            else if (skipType === 'recap') endMs = activeSkip.recap_end_ms ?? activeSkip.intro_end_ms
-            else endMs = activeSkip.credits_end_ms ?? duration * 1000
-            const targetSec = endMs / 1000
-            if (!isNaN(targetSec)) {
-              command('seek', [targetSec, 'absolute'])
-              sendWatchTogetherSeek(targetSec)
-              setActiveSkip(null)
-              setSkipType(null)
-            }
-          }}
-          className={`absolute z-[20] right-8 px-6 py-3 bg-black/70 hover:bg-black/90 border border-white/25 text-white rounded-xl text-sm font-semibold shadow-2xl backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-            controlsVisible ? 'bottom-36' : 'bottom-8'
-          }`}
-        >
-          <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M5.88 4.12L13.76 12l-7.88 7.88L8 22l10-10L8 2z" />
-            <path d="M18 5h2v14h-2z" />
-          </svg>
-          Skip {skipType === 'intro' ? 'Intro' : skipType === 'recap' ? 'Recap' : 'Credits'}
-        </button>
-      )}
-
       {/* ── Bottom controls bar ── */}
       <div
         className={`absolute inset-x-0 bottom-0 z-[10] transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className="mx-[clamp(20px,4vw,72px)] mb-[clamp(18px,3vw,42px)] px-[clamp(12px,2vw,32px)] py-3"
+          className={`mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
         >
 
           {/* Info row: title + track icons */}
-          <div className="flex items-center justify-between mb-4">
+          <div className={`flex items-center justify-between transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 -translate-y-2 overflow-hidden opacity-0' : 'mb-4 max-h-28 translate-y-0 overflow-visible opacity-100'}`}>
             <div className="min-w-0 pr-4">
               <h2 className="text-lg font-semibold leading-tight truncate text-white/95">{currentDisplayTitle}</h2>
               {currentDisplaySubtitle && (
@@ -3423,9 +3589,38 @@ function FullNativeMpvPlayer({
               )}
             </div>
 
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="flex flex-shrink-0 items-center gap-3">
+              {activeSkip && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (wtControlBlocked()) { wtBlockedNotice(); return }
+                    let endMs: number
+                    if (skipType === 'intro') endMs = activeSkip.intro_end_ms
+                    else if (skipType === 'recap') endMs = activeSkip.recap_end_ms ?? activeSkip.intro_end_ms
+                    else endMs = activeSkip.credits_end_ms ?? duration * 1000
+                    const targetSec = endMs / 1000
+                    if (!isNaN(targetSec)) {
+                      command('seek', [targetSec, 'absolute+exact'])
+                      sendWatchTogetherSeek(targetSec)
+                      setActiveSkip(null)
+                      setSkipType(null)
+                    }
+                  }}
+                  aria-label={`Skip ${skipType === 'intro' ? 'intro' : skipType === 'recap' ? 'recap' : 'credits'}`}
+                  className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-xs font-bold text-black shadow-[0_8px_28px_rgba(0,0,0,0.4)] transition-transform duration-150 hover:scale-[1.03] active:scale-[0.98]"
+                >
+                  <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M5.88 4.12L13.76 12l-7.88 7.88L8 22l10-10L8 2z" />
+                    <path d="M18 5h2v14h-2z" />
+                  </svg>
+                  Skip {skipType === 'intro' ? 'Intro' : skipType === 'recap' ? 'Recap' : 'Credits'}
+                </button>
+              )}
+
+              <div className="flex h-11 items-center gap-0.5 rounded-full border border-white/10 bg-black/45 p-1 shadow-[0_8px_28px_rgba(0,0,0,0.35)] backdrop-blur-xl">
               {/* Subtitle button */}
-              <div className="relative">
+              <div className="relative" data-player-popover>
                 {trackMenu === 'subs' && (
                   <TrackMenuPanel
                     type="subs"
@@ -3439,10 +3634,15 @@ function FullNativeMpvPlayer({
                   />
                 )}
                 <button
-                  onClick={() => setTrackMenu(trackMenu === 'subs' ? null : 'subs')}
+                  onClick={() => {
+                    setShowSpeedMenu(false)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setTrackMenu(trackMenu === 'subs' ? null : 'subs')
+                  }}
                   onFocus={() => loadAddonSubtitles(true).then(() => refreshTracks()).catch(() => {})}
                   title="Subtitles"
-                  className={`w-10 h-10 rounded-full border flex items-center justify-center shadow-xl backdrop-blur-xl transition-colors ${trackMenu === 'subs' ? 'border-white/15 bg-white/15 text-white' : 'border-white/10 bg-black/35 text-white/70 hover:bg-white/10 hover:text-white'}`}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${trackMenu === 'subs' ? 'bg-white/18 text-white' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <rect x="2" y="4" width="20" height="16" rx="2.5" />
@@ -3452,7 +3652,7 @@ function FullNativeMpvPlayer({
               </div>
 
               {/* Audio button */}
-              <div className="relative">
+              <div className="relative" data-player-popover>
                 {trackMenu === 'audio' && (
                   <TrackMenuPanel
                     type="audio"
@@ -3463,10 +3663,15 @@ function FullNativeMpvPlayer({
                   />
                 )}
                 <button
-                  onClick={() => setTrackMenu(trackMenu === 'audio' ? null : 'audio')}
+                  onClick={() => {
+                    setShowSpeedMenu(false)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setTrackMenu(trackMenu === 'audio' ? null : 'audio')
+                  }}
                   onFocus={() => refreshTracks().catch(() => {})}
                   title="Audio track"
-                  className={`w-10 h-10 rounded-full border flex items-center justify-center shadow-xl backdrop-blur-md transition-colors ${trackMenu === 'audio' ? 'border-white/15 bg-white/15 text-white' : 'border-white/10 bg-black/35 text-white/70 hover:bg-white/10 hover:text-white'}`}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${trackMenu === 'audio' ? 'bg-white/18 text-white' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <path d="M9 18V5l12-2v13" strokeLinecap="round" strokeLinejoin="round" />
@@ -3476,7 +3681,7 @@ function FullNativeMpvPlayer({
               </div>
 
               {/* Speed */}
-              <div className="relative ml-1">
+              <div className="relative ml-1" data-player-popover>
                 {showSpeedMenu && (
                   <div className="absolute bottom-full mb-2 right-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
                     {SPEED_OPTIONS.map((s) => (
@@ -3493,10 +3698,15 @@ function FullNativeMpvPlayer({
                   </div>
                 )}
                 <button
-                  onClick={() => setShowSpeedMenu((v) => !v)}
+                  onClick={() => {
+                    setTrackMenu(null)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setShowSpeedMenu((v) => !v)
+                  }}
                   title="Playback speed"
-                  className={`h-7 px-2 rounded-lg flex items-center justify-center text-xs font-bold transition-colors ${
-                    playbackSpeed !== 1 ? 'border border-white/15 bg-white/15 text-white' : 'border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white'
+                  className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-[11px] font-bold transition-colors ${
+                    playbackSpeed !== 1 ? 'bg-white/18 text-white' : 'text-white/60 hover:bg-white/10 hover:text-white'
                   }`}
                 >
                   {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
@@ -3514,7 +3724,7 @@ function FullNativeMpvPlayer({
                     changeVolume(newVol)
                   }}
                   title={volume > 0 ? 'Mute (M)' : 'Unmute (M)'}
-                  className="w-5 h-5 flex items-center justify-center text-white/50 hover:text-white transition-colors flex-shrink-0"
+                  className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/55 transition-colors hover:bg-white/10 hover:text-white"
                 >
                   {volume === 0 ? (
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -3554,7 +3764,7 @@ function FullNativeMpvPlayer({
               <button
                 onClick={pickAnother}
                 title="Pick another stream"
-                className="w-10 h-10 rounded-full border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors ml-1"
+                className="ml-0.5 flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                   <path d="M1 4v6h6M23 20v-6h-6" strokeLinecap="round" strokeLinejoin="round" />
@@ -3566,7 +3776,7 @@ function FullNativeMpvPlayer({
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-                className="w-10 h-10 rounded-full border border-white/10 bg-black/35 text-white/60 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors"
+                className="flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
                 {isFullscreen ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -3578,11 +3788,12 @@ function FullNativeMpvPlayer({
                   </svg>
                 )}
               </button>
+              </div>
             </div>
           </div>
 
           {/* Seek bar + playback controls row */}
-          <div className="flex flex-wrap items-center justify-end gap-2.5 mb-2">
+          <div className={`flex flex-wrap items-center justify-end gap-2.5 transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mb-2 max-h-10 translate-y-0 overflow-visible opacity-100'}`}>
             {/* Play/Pause */}
             <button
               onClick={(e) => { e.stopPropagation(); togglePlay() }}
@@ -3668,27 +3879,6 @@ function FullNativeMpvPlayer({
                   style={{ left: `${range.left}%`, width: `${range.width}%` }}
                 />
               ))}
-              {duration > 0 && chapters.slice(1).map((chapter, index) => {
-                const left = Math.max(0, Math.min(100, (chapter.time / duration) * 100))
-                return (
-                  <button
-                    key={`chapter-marker-${chapter.time}-${index}`}
-                    type="button"
-                    title={`${chapter.title} · ${formatTime(chapter.time)}`}
-                    aria-label={`Go to ${chapter.title}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      if (wtControlBlocked()) { wtBlockedNotice(); return }
-                      progressRef.current.currentTime = chapter.time
-                      setCurrentTime(chapter.time)
-                      command('seek', [chapter.time, 'absolute+keyframes'])
-                      sendWatchTogetherSeek(chapter.time)
-                    }}
-                    className="absolute -inset-y-1 z-[5] w-px bg-black/70 shadow-[1px_0_rgba(255,255,255,0.28)] hover:w-1 hover:bg-white/90"
-                    style={{ left: `${left}%` }}
-                  />
-                )
-              })}
               <div
                 className="absolute inset-y-0 left-0 z-[1] rounded-full bg-white/90 transition-all"
                 style={{ width: `${displayProgressPct}%` }}
@@ -3769,10 +3959,10 @@ function FullNativeMpvPlayer({
           </div>
 
           {/* Timestamps row */}
-          <div className="relative flex items-center justify-between text-[11px] text-white/50">
+          <div className="relative flex items-center justify-between text-[11px] text-white/50" data-player-popover>
             <div className="flex items-center gap-5">
-              <button onClick={() => { setShowMediaInfo((value) => !value); setShowChapters(false) }} className={`rounded-full px-3 py-1.5 font-semibold transition-colors ${showMediaInfo ? 'bg-white/12 text-white' : 'text-white/50 hover:bg-white/8 hover:text-white'}`}>Info</button>
-              <button disabled={chapters.length === 0} onClick={() => { setShowChapters((value) => !value); setShowMediaInfo(false) }} className={`rounded-full px-3 py-1.5 font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white/12 text-white' : 'text-white/50 hover:bg-white/8 hover:text-white'}`}>Chapters</button>
+              <button onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${showMediaInfo ? 'bg-white text-black' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Info</button>
+              <button disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Chapters</button>
             </div>
             <div className="flex items-center gap-3 tabular-nums">
               <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
@@ -3812,21 +4002,59 @@ function FullNativeMpvPlayer({
                 </div>
               </div>
             )}
-            {showChapters && (
-              <div className="absolute bottom-full left-0 mb-4 max-h-72 w-80 overflow-y-auto rounded-2xl border border-white/10 bg-black/85 py-2 shadow-2xl backdrop-blur-2xl">
-                {chapters.map((chapter, index) => (
-                  <button
-                    key={`${chapter.time}-${index}`}
-                    onClick={() => { progressRef.current.currentTime = chapter.time; setCurrentTime(chapter.time); command('seek', [chapter.time, 'absolute+keyframes']); sendWatchTogetherSeek(chapter.time); setShowChapters(false) }}
-                    className={`flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors ${currentTime >= chapter.time && (chapters[index + 1] == null || currentTime < chapters[index + 1].time) ? 'bg-white/12 text-white' : 'hover:bg-white/8'}`}
-                  >
-                    <span className="truncate text-xs font-medium text-white/80">{chapter.title}</span>
-                    <span className="font-mono text-[10px] text-white/40">{formatTime(chapter.time)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
+
+          {/* Chapter strip: tabs above, clean thumbnail row below (Apple TV style) */}
+          {displayChapters.length > 0 && (
+            <div
+              aria-hidden={!showChapters}
+              data-player-popover
+              className={`grid transition-[grid-template-rows,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div
+                  ref={chapterStripRef}
+                  className="mt-[clamp(8px,1.5vh,16px)] -mx-[clamp(8px,2vw,32px)] flex gap-3 overflow-x-auto px-[clamp(8px,2vw,32px)] pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                >
+                  {displayChapters.map((chapter, index) => {
+                    const next = displayChapters[index + 1]
+                    const isActive = displayCurrentTime >= chapter.time && (next == null || displayCurrentTime < next.time)
+                    const thumb = chapterThumbs[`${Math.round(chapter.time)}`]
+                    return (
+                      <button
+                        key={`chapter-tile-${chapter.time}-${index}`}
+                        type="button"
+                        data-active-chapter={isActive || undefined}
+                        aria-label={`Go to ${chapter.title}`}
+                        title={`${chapter.title} · ${formatTime(chapter.time)}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (wtControlBlocked()) { wtBlockedNotice(); return }
+                          progressRef.current.currentTime = chapter.time
+                          setCurrentTime(chapter.time)
+                          command('seek', [chapter.time, 'absolute+exact'])
+                          sendWatchTogetherSeek(chapter.time)
+                        }}
+                        className="group/chapter flex-none text-left focus:outline-none"
+                      >
+                        <div className={`relative aspect-video w-[clamp(11rem,min(18vw,27vh),19rem)] overflow-hidden rounded-xl bg-white/5 transition-all duration-150 ${isActive ? 'ring-2 ring-white shadow-[0_10px_36px_rgba(0,0,0,0.65)]' : 'ring-1 ring-white/12 hover:ring-white/70'}`}>
+                          {thumb ? (
+                            <img src={thumb} alt="" draggable={false} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full animate-pulse bg-white/10" />
+                          )}
+                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-3 pb-2 pt-7 opacity-0 transition-opacity duration-150 group-hover/chapter:opacity-100">
+                            <p className="truncate text-xs font-semibold text-white">{chapter.title}</p>
+                            <p className="font-mono text-[10px] text-white/60">{formatTime(chapter.time)}</p>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

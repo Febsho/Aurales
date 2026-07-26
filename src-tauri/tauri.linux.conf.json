@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": ["appimage"],
     "externalBin": ["binaries/yt-dlp"],
     "resources": {
       "binaries/*.dll": null,
@@ -12,11 +12,8 @@
       "deb": {
         "depends": ["mpv", "libmpv2 | libmpv1", "ffmpeg"]
       },
-      "rpm": {
-        "depends": ["mpv", "mpv-libs", "/usr/bin/ffmpeg"]
-      },
       "appimage": {
-        "bundleMediaFramework": false
+        "bundleMediaFramework": true
       }
     }
   }

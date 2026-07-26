@@ -727,10 +727,13 @@ export default function DiscoverPage() {
           {tasteProfile.confidence==='low'&&<section className="mx-6 mb-8 rounded-2xl border border-accent/20 bg-accent/[.05] p-5"><h2 className="font-black">Choose a few things you like</h2><p className="mb-4 mt-1 text-sm text-white/45">This gives Aurales a starting point while your watch history grows.</p><div className="flex flex-wrap gap-2">{Object.entries(genreMap).slice(0,12).map(([id,name])=><button key={id} onClick={()=>toggleStarterGenre(Number(id))} className={`rounded-full border px-3 py-1.5 text-sm ${starterGenres.includes(Number(id))?'border-accent/50 bg-accent/15 text-accent':'border-white/10 bg-white/[.04] text-white/60'}`}>{name}</button>)}</div></section>}
           {viewState==='content'&&heroRecommendation ? <section onClick={()=>openHeroDetail(false)} className="group relative mx-6 mb-10 min-h-[430px] cursor-pointer select-none overflow-hidden rounded-[2rem] border border-white/10 bg-white/[.03]">
             {heroPool.map((entry, index) => {
+              const previousHeroIndex = (activeHeroIndex - 1 + heroPool.length) % heroPool.length
+              const nextHeroIndex = (activeHeroIndex + 1) % heroPool.length
+              if (index !== activeHeroIndex && index !== previousHeroIndex && index !== nextHeroIndex) return null
               const art = heroArt[String(entry.item.id)]
               const src = entry.item.backdrop || art?.backdrop || entry.item.poster || art?.poster
               if (!src) return null
-              return <img key={String(entry.item.id)} src={src} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ease-in-out" style={{ opacity: index === activeHeroIndex ? 1 : 0 }} />
+              return <img key={String(entry.item.id)} src={src} alt="" draggable={false} loading={index === activeHeroIndex ? 'eager' : 'lazy'} decoding="async" fetchPriority={index === activeHeroIndex ? 'high' : 'low'} className="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ease-in-out" style={{ opacity: index === activeHeroIndex ? 1 : 0 }} />
             })}
             <div className="absolute inset-0 bg-gradient-to-r from-black via-black/70 to-black/10" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
@@ -757,4 +760,3 @@ export default function DiscoverPage() {
     </div>
   )
 }
-

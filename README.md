@@ -9,7 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/version-0.2.4-white?style=flat-square" alt="Version 0.2.4" />
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
   <img src="https://img.shields.io/badge/player-mpv-purple?style=flat-square" alt="mpv" />
@@ -19,6 +20,76 @@
 ---
 
 Aurales is an elegant, offline-first desktop media hub that aggregates streaming metadata, handles watch status synchronization across major tracking services, supports the extensive Stremio addon ecosystem for streaming links, and utilizes a highly optimized embedded or native **mpv** window for flawless playback.
+
+## Download & Install
+
+Download version **0.2.4** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+
+### Windows
+
+Download and run the NSIS setup file ending in `-setup.exe` (recommended). The `.msi` installer remains available for managed or enterprise installations.
+
+### Linux
+
+Aurales publishes two Linux downloads for x86-64 systems:
+
+- **Flatpak bundle** — recommended for the most consistent installation across distributions.
+- **AppImage** — portable and does not need a traditional installation.
+
+#### Flatpak (all distributions)
+
+Install Flatpak with your distribution's package manager if it is not already available, then install the downloaded bundle:
+
+```bash
+flatpak install --user ./Aurales_0.2.4_amd64.flatpak
+flatpak run com.aurales.app
+```
+
+To update a manually downloaded bundle, download the newer `.flatpak` file and run the same `flatpak install --user` command again.
+
+#### AppImage
+
+Aurales uses the system **mpv/libmpv** installation for native Linux playback. Install the runtime for your distribution first:
+
+**Ubuntu / Debian**
+
+```bash
+sudo apt update
+sudo apt install mpv ffmpeg
+```
+
+If the AppImage reports that FUSE is missing, install `libfuse2` on Debian and older Ubuntu releases, or `libfuse2t64` on current Ubuntu releases.
+
+**Fedora**
+
+```bash
+sudo dnf install \
+  "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
+sudo dnf install mpv ffmpeg fuse-libs
+```
+
+**Arch Linux / EndeavourOS / Manjaro**
+
+```bash
+sudo pacman -S mpv ffmpeg fuse2
+```
+
+**openSUSE**
+
+```bash
+sudo zypper install mpv ffmpeg fuse
+```
+
+Some distributions keep multimedia packages in an optional repository. Enable the distribution's standard multimedia repository if `mpv` is not found.
+
+Then make the downloaded AppImage executable and launch it:
+
+```bash
+chmod +x ./Aurales_0.2.4_amd64.AppImage
+./Aurales_0.2.4_amd64.AppImage
+```
+
+AppImage and Flatpak provide broad Linux coverage without publishing a separate package for every distribution. Native `.deb`, `.rpm`, Snap, and AUR packages can be added later if there is demand for package-manager integration.
 
 ## Features
 
@@ -76,7 +147,7 @@ Aurales synchronizes your watch history, watchlist, rating, and current progress
 | **Desktop Framework** | [Tauri 2](https://v2.tauri.app/) (Rust + TypeScript) |
 | **Frontend UI** | React 19, Tailwind CSS 4, Zustand 5, React Router 7 |
 | **Build System** | Vite 8, TypeScript |
-| **Media Player** | Native mpv (bundled sidecar) + libmpv FFI |
+| **Media Player** | Native mpv + libmpv FFI (bundled on Windows, system runtime on Linux) |
 | **Database & Cache** | SQLite (via rusqlite, static/bundled build) |
 
 ---
@@ -103,10 +174,36 @@ For detailed deployment guides (Docker, Nginx reverse proxy, HTTPS Certbot, and 
 
 - **App Database & Settings Cache**:
   - Windows: `%APPDATA%/com.aurales.app/`
+  - Linux: `~/.local/share/com.aurales.app/`
 - **Player Debug Logs**:
   - Located in `player_debug.log` at the root of the app directory during development. Helpful if you encounter subtitle rendering or video decoding issues.
 - **Build Logs**:
   - `tauri-build.stdout.log` and `tauri-build.stderr.log` contain outputs from compiler stages.
+
+---
+
+## Building from Source
+
+Requirements:
+
+- Node.js LTS and npm
+- Rust stable
+- Tauri 2 system dependencies for your platform
+- Linux: WebKitGTK 4.1 development packages, mpv/libmpv, FFmpeg, and the standard GTK build toolchain
+
+```bash
+npm ci
+npm run build
+npm run tauri build
+```
+
+Linux release bundles can be built with:
+
+```bash
+npm run tauri build -- --config src-tauri/tauri.linux.conf.json
+```
+
+Tagged releases are created by pushing a tag such as `v0.2.4`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

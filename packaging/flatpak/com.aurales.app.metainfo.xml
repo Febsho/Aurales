@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.aurales.app</id>
+  <name>Aurales</name>
+  <summary>Discover, track, and play movies and series</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="com.aurales">
+    <name>Aurales contributors</name>
+  </developer>
+  <description>
+    <p>
+      Aurales is a desktop media hub with multi-provider watch tracking,
+      mood-based discovery, Stremio addon support, and native mpv playback.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.aurales.app.desktop</launchable>
+  <url type="homepage">https://github.com/Febsho/Aurales</url>
+  <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.2.4" date="2026-07-26">
+      <description>
+        <p>Improves Linux playback, interface polish, and release packaging.</p>
+      </description>
+    </release>
+  </releases>
+</component>

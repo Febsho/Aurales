@@ -3,19 +3,70 @@ use crate::libmpv_player::{self, LibMpvPlayer};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicIsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Manager, State};
 
 // ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
 
-static DISCORD_PIPE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+type DiscordIpcStream = std::fs::File;
+#[cfg(unix)]
+type DiscordIpcStream = std::os::unix::net::UnixStream;
 
-fn discord_pipe() -> &'static Mutex<Option<std::fs::File>> {
+static DISCORD_PIPE: OnceLock<Mutex<Option<DiscordIpcStream>>> = OnceLock::new();
+
+fn discord_pipe() -> &'static Mutex<Option<DiscordIpcStream>> {
     DISCORD_PIPE.get_or_init(|| Mutex::new(None))
 }
 
 const DISCORD_APP_ID: &str = "1514350347227893951";
+
+#[cfg(unix)]
+fn discord_ipc_candidates() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for variable in ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"] {
+        if let Some(value) = std::env::var_os(variable) {
+            let path = PathBuf::from(value);
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // XDG_RUNTIME_DIR is normally /run/user/<uid>, but some launchers do
+        // not pass it through to the application.
+        let user_runtime = PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
+        if !roots.contains(&user_runtime) {
+            roots.push(user_runtime);
+        }
+    }
+    let tmp = PathBuf::from("/tmp");
+    if !roots.contains(&tmp) {
+        roots.push(tmp);
+    }
+
+    let mut candidates = Vec::new();
+    for root in roots {
+        for index in 0..10 {
+            let socket_name = format!("discord-ipc-{}", index);
+            candidates.push(root.join(&socket_name));
+            // Discord installed through Flatpak or Snap can place its socket
+            // below the desktop runtime directory instead of directly in it.
+            candidates.push(root.join("app/com.discordapp.Discord").join(&socket_name));
+            candidates.push(root.join("snap.discord").join(&socket_name));
+            candidates.push(
+                root.join(".flatpak/com.discordapp.Discord/xdg-run")
+                    .join(&socket_name),
+            );
+        }
+    }
+    candidates
+}
 
 fn discord_ipc_encode(opcode: u32, payload: &str) -> Vec<u8> {
     let len = payload.len() as u32;
@@ -34,12 +85,50 @@ fn discord_ipc_connect() -> Result<(), String> {
         return Ok(());
     }
 
-    let pipe_path = r"\\.\pipe\discord-ipc-0";
+    #[cfg(target_os = "windows")]
     let mut pipe = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(pipe_path)
+        .open(r"\\.\pipe\discord-ipc-0")
         .map_err(|e| format!("Discord not running or IPC unavailable: {}", e))?;
+
+    #[cfg(unix)]
+    let mut pipe = {
+        use std::os::unix::net::UnixStream;
+
+        let mut failures = Vec::new();
+        let mut connected = None;
+        for path in discord_ipc_candidates() {
+            match UnixStream::connect(&path) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(error) if path.exists() => {
+                    failures.push(format!("{}: {}", path.display(), error))
+                }
+                Err(_) => {}
+            }
+        }
+
+        let stream = connected.ok_or_else(|| {
+            if failures.is_empty() {
+                "Discord not running or no Discord IPC socket was found".to_string()
+            } else {
+                format!(
+                    "Discord IPC sockets were unavailable: {}",
+                    failures.join("; ")
+                )
+            }
+        })?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .map_err(|e| format!("Failed to configure Discord IPC read timeout: {}", e))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+            .map_err(|e| format!("Failed to configure Discord IPC write timeout: {}", e))?;
+        stream
+    };
 
     let handshake = serde_json::json!({
         "v": 1,
@@ -172,6 +261,34 @@ fn discord_ipc_set_activity(activity: serde_json::Value) -> Result<(), String> {
         }
     }
 
+    // Discord replies to every command. Drain those replies on Unix too so a
+    // long playback session cannot eventually fill the socket buffer.
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        pipe.set_nonblocking(true)
+            .map_err(|e| format!("Failed to configure Discord IPC socket: {}", e))?;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut drain = [0u8; 8192];
+        loop {
+            match pipe.read(&mut drain) {
+                Ok(0) => {
+                    *guard = None;
+                    return Err("Discord IPC connection closed".to_string());
+                }
+                Ok(n) if n == drain.len() => continue,
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    *guard = None;
+                    return Err(format!("Failed to read Discord IPC response: {}", error));
+                }
+            }
+        }
+        pipe.set_nonblocking(false)
+            .map_err(|e| format!("Failed to restore Discord IPC socket: {}", e))?;
+    }
+
     Ok(())
 }
 
@@ -270,6 +387,7 @@ pub fn discord_disconnect() -> Result<(), String> {
 // Result: the host is a ghost — mouse events fall through to WebView2 and
 // JavaScript controls work correctly.
 
+#[cfg(target_os = "windows")]
 static MPV_HOST_ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
 static MPV_PIPE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static SIMKL_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -409,7 +527,7 @@ pub(crate) fn player_debug_log(message: impl Into<String>) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("c:\\Users\\justi\\Documents\\Dev\\Aurales\\aurales-app\\player_debug.log")
+        .open(std::env::temp_dir().join("aurales-player-debug.log"))
     {
         let _ = writeln!(file, "{}", message);
     }
@@ -448,7 +566,11 @@ pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
         .map(|player| player.session_id == session_id)
         .unwrap_or(false);
     if should_clear {
-        if let Some(player) = state.take() {
+        if let Some(mut player) = state.take() {
+            if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
+                #[cfg(target_os = "linux")]
+                crate::linux_render_surface::detach(libmpv);
+            }
             cleanup_player_windows(player.host_hwnd, player.video_hwnd);
         }
     }
@@ -1192,6 +1314,7 @@ pub async fn ytdlp_resolve(video_id: String, max_height: Option<u32>) -> Result<
 /// player, launch options differ, or the in-place swap failed).
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn try_reuse_libmpv_player(
+    app: &tauri::AppHandle,
     url: &str,
     title: Option<&str>,
     start_time: Option<f64>,
@@ -1222,6 +1345,8 @@ fn try_reuse_libmpv_player(
             None => return Ok(false),
         }
     };
+    #[cfg(target_os = "linux")]
+    let _ = (host_hwnd, video_hwnd);
 
     // Stale observed values (duration, tracks, eof) belong to the old file.
     if let Ok(mut cache) = get_property_cache().write() {
@@ -1262,6 +1387,7 @@ fn try_reuse_libmpv_player(
 
     if let (Some(w), Some(h)) = (width, height) {
         if w > 0 && h > 0 {
+            #[cfg(target_os = "windows")]
             libmpv_player::resize_video_child(
                 host_hwnd,
                 video_hwnd,
@@ -1270,6 +1396,14 @@ fn try_reuse_libmpv_player(
                 w,
                 h,
             );
+            #[cfg(target_os = "linux")]
+            crate::linux_render_surface::resize(
+                app,
+                x.unwrap_or(0),
+                y.unwrap_or(0),
+                w,
+                h,
+            )?;
         }
     }
 
@@ -1355,6 +1489,7 @@ pub fn launch_embedded_mpv(
             mpv_custom_args: mpv_custom_args.clone(),
         };
         if try_reuse_libmpv_player(
+            &app,
             &url,
             title.as_deref(),
             start_time,
@@ -1374,8 +1509,10 @@ pub fn launch_embedded_mpv(
     #[cfg(target_os = "windows")]
     let hwnd = main_window_hwnd(&app)?;
 
+    // Linux uses libmpv's Render API inside GTK and does not require a native
+    // X11 window ID. Keep a non-zero host marker for the shared player state.
     #[cfg(target_os = "linux")]
-    let hwnd = main_window_xid(&app)?;
+    let hwnd = 1;
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let hwnd: isize = {
@@ -1674,7 +1811,6 @@ struct WindowBounds {
 
 #[cfg(target_os = "windows")]
 static PLAYER_WINDOWED_BOUNDS: OnceLock<Mutex<Option<WindowBounds>>> = OnceLock::new();
-
 /// Fullscreen handling for the transparent, decorationless player window.
 /// Native physical coordinates avoid work-area/taskbar and DPI restore bugs.
 #[tauri::command]
@@ -1799,7 +1935,20 @@ pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> 
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        // Let GTK request fullscreen through the active display backend. This
+        // maps to xdg_toplevel on Wayland and EWMH on X11, so no compositor-
+        // specific positioning or XWayland fallback is required.
+        main.set_fullscreen(fullscreen)
+            .map_err(|e| format!("Failed to change Linux fullscreen state: {e}"))?;
+        crate::linux_render_surface::resize(&app, 0, 0, 0, 0)?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let main = app
             .get_webview_window("main")
@@ -1811,25 +1960,23 @@ pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn main_window_xid(app: &tauri::AppHandle) -> Result<isize, String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    if std::env::var_os("DISPLAY").is_none() {
-        return Err(
-            "Embedded mpv requires X11/XWayland; no X11 display is available.".to_string(),
-        );
+#[tauri::command]
+pub fn get_embedded_player_supported(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return main_window_hwnd(&app).is_ok();
     }
-    let main = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
-    let handle = main
-        .window_handle()
-        .map_err(|e| format!("Failed to get the Linux window handle: {e}"))?;
-    match handle.as_raw() {
-        RawWindowHandle::Xlib(handle) => Ok(handle.window as isize),
-        RawWindowHandle::Xcb(handle) => Ok(handle.window.get() as isize),
-        _ => Err("Embedded mpv requires the X11/XWayland window backend.".to_string()),
+
+    #[cfg(target_os = "linux")]
+    {
+        return app.get_webview_window("main").is_some()
+            && libmpv_player::find_libmpv().is_some();
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -2003,7 +2150,15 @@ fn launch_mpv_with_window(
             _ => "auto-safe",
         };
         let cache_secs = mpv_cache_secs.unwrap_or(60);
-        let network_timeout = mpv_network_timeout.unwrap_or(15);
+        let requested_network_timeout = mpv_network_timeout.unwrap_or(60);
+        // Torrent-backed HTTP gateways can accept the TCP/TLS connection
+        // immediately while taking longer to produce the first byte for a
+        // cold stream. A 15 second timeout made every cold source look broken
+        // on Linux, even though retrying the same URL succeeded moments later.
+        #[cfg(target_os = "linux")]
+        let network_timeout = requested_network_timeout.max(60);
+        #[cfg(not(target_os = "linux"))]
+        let network_timeout = requested_network_timeout;
         let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
             Some("large") => ("256MiB", "128MiB"),
             Some("aggressive") => ("512MiB", "256MiB"),
@@ -2013,8 +2168,11 @@ fn launch_mpv_with_window(
         let video_y = y.unwrap_or(0);
         let video_width = width.unwrap_or(1).max(1);
         let video_height = height.unwrap_or(1).max(1);
+        #[cfg(target_os = "windows")]
         let video_hwnd =
             libmpv_player::create_video_child(hwnd, video_x, video_y, video_width, video_height)?;
+        #[cfg(target_os = "linux")]
+        let video_hwnd = 0;
         let player = match LibMpvPlayer::create(&libmpv, session_id.clone()) {
             Ok(player) => player,
             Err(error) => {
@@ -2038,7 +2196,9 @@ fn launch_mpv_with_window(
                 player.set_option(name, &value)
             };
 
+            #[cfg(target_os = "windows")]
             set_option("wid", video_hwnd.to_string())?;
+            #[cfg(target_os = "windows")]
             set_option("force-window", "immediate".to_string())?;
             set_option("osc", "no".to_string())?;
             set_option("osd-bar", "no".to_string())?;
@@ -2049,14 +2209,15 @@ fn launch_mpv_with_window(
             set_option("input-default-bindings", "no".to_string())?;
             set_option("input-builtin-bindings", "no".to_string())?;
             set_option("hwdec", hwdec.to_string())?;
+            #[cfg(target_os = "windows")]
             set_option("vo", "gpu-next".to_string())?;
+            #[cfg(target_os = "linux")]
+            set_option("vo", "libmpv".to_string())?;
             #[cfg(target_os = "windows")]
             {
                 set_option("gpu-api", "d3d11".to_string())?;
                 set_option("d3d11-flip", "no".to_string())?;
             }
-            #[cfg(target_os = "linux")]
-            set_option("gpu-context", "x11egl".to_string())?;
             set_option("vd-lavc-dr", "yes".to_string())?;
             set_option("terminal", "no".to_string())?;
             set_option(
@@ -2087,7 +2248,7 @@ fn launch_mpv_with_window(
             set_option("hr-seek-framedrop", "yes".to_string())?;
             set_option(
                 "stream-lavf-o",
-                "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
+                "reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay_max=10".to_string(),
             )?;
             set_option("subs-with-matching-audio", "no".to_string())?;
             set_option("secondary-sub-visibility", "no".to_string())?;
@@ -2112,6 +2273,18 @@ fn launch_mpv_with_window(
             libmpv_player::destroy_video_child(video_hwnd);
             return Err(error);
         }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = crate::linux_render_surface::attach(
+            &app,
+            Arc::clone(&player),
+            video_x,
+            video_y,
+            video_width,
+            video_height,
+        ) {
+            player.shutdown();
+            return Err(error);
+        }
         player.request_log_messages("warn");
         player_debug_log("[THUMBNAILS] timeline previews use the independent ffmpeg sprite worker");
         player.observe_properties(&[
@@ -2132,9 +2305,12 @@ fn launch_mpv_with_window(
             "secondary-sub-end",
             "sub-start",
             "sub-end",
+            "chapter-list",
         ]);
         player.start_event_loop(app);
         if let Err(error) = player.command("loadfile", &[serde_json::Value::String(url)]) {
+            #[cfg(target_os = "linux")]
+            crate::linux_render_surface::detach(&player);
             player.shutdown();
             libmpv_player::destroy_video_child(video_hwnd);
             return Err(error);
@@ -2198,7 +2374,7 @@ fn launch_mpv_with_window(
     };
 
     let cache_secs = mpv_cache_secs.unwrap_or(60);
-    let network_timeout = mpv_network_timeout.unwrap_or(15);
+    let network_timeout = mpv_network_timeout.unwrap_or(60);
 
     let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
         Some("large") => ("256MiB", "128MiB"),
@@ -2264,7 +2440,7 @@ fn launch_mpv_with_window(
         format!("--network-timeout={}", network_timeout),
         "--hr-seek=yes".to_string(),
         "--hr-seek-framedrop=yes".to_string(),
-        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
+        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay_max=10".to_string(),
         "--subs-with-matching-audio=no".to_string(),
         "--secondary-sub-visibility=no".to_string(),
         "--sub-auto=fuzzy".to_string(),
@@ -2811,7 +2987,13 @@ pub fn get_player_snapshot() -> Result<PlayerSnapshot, String> {
 /// never do on Win32).  We find mpv's window by matching the mpv process ID
 /// among the host's child windows, then call SetWindowPos to move/resize it.
 #[tauri::command]
-pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+pub fn resize_embedded_mpv(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::{HWND, RECT};
@@ -2845,27 +3027,20 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
 
     #[cfg(target_os = "linux")]
     {
-        let (host_window, video_window) = {
-            let state = native_player_state().lock().map_err(|e| e.to_string())?;
-            match state.as_ref() {
-                Some(state) => (state.host_hwnd, state.video_hwnd),
-                None => return Ok(()),
-            }
-        };
-        if video_window != 0 && width > 0 && height > 0 {
-            libmpv_player::resize_video_child(
-                host_window,
-                video_window,
-                x,
-                y,
-                width,
-                height,
-            );
+        let running = native_player_state()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if running {
+            crate::linux_render_surface::resize(&app, x, y, width, height)?;
         }
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let _ = (x, y, width, height);
+    let _ = (app, x, y, width, height);
+
+    #[cfg(target_os = "windows")]
+    let _ = app;
 
     Ok(())
 }
@@ -3032,10 +3207,14 @@ pub fn setup_player_click_through() -> Result<(), String> {
 pub fn stop_embedded_mpv() -> Result<(), String> {
     let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
     if let Some(mut player) = state.take() {
-        cleanup_player_windows(player.host_hwnd, player.video_hwnd);
         let session_id = player.session_id.clone();
+        let host_hwnd = player.host_hwnd;
+        let video_hwnd = player.video_hwnd;
         match &mut player.backend {
             NativePlayerBackend::LibMpv { player } => {
+                #[cfg(target_os = "linux")]
+                crate::linux_render_surface::detach(player);
+                cleanup_player_windows(host_hwnd, video_hwnd);
                 player_debug_log(format!(
                     "[PLAYER EXIT] session={} status=terminated-by-stop",
                     session_id
@@ -3043,6 +3222,7 @@ pub fn stop_embedded_mpv() -> Result<(), String> {
                 player.shutdown();
             }
             NativePlayerBackend::Process { child, .. } => {
+                cleanup_player_windows(host_hwnd, video_hwnd);
                 player_debug_log(format!(
                     "[PLAYER EXIT] session={} pid={} status=killed-by-stop",
                     session_id,
@@ -3622,7 +3802,7 @@ pub async fn fetch_simkl_user(access_token: String, client_id: String) -> Result
         let response = ureq::get("https://api.simkl.com/users/settings")
             .query("client_id", &client_id)
             .query("app-name", "Aurales")
-            .query("app-version", "0.1.0")
+            .query("app-version", env!("CARGO_PKG_VERSION"))
             .set("Authorization", &format!("Bearer {access_token}"))
             .set("simkl-api-key", &client_id)
             .set("Accept", "application/json")
@@ -3906,20 +4086,29 @@ pub async fn exchange_anilist_token(
 
     // ureq is a blocking HTTP client — run it outside the async executor.
     tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://anilist.co/api/v2/oauth/token")
-            .set("Content-Type", "application/x-www-form-urlencoded")
+        // AniList's token endpoint expects a JSON body — a form-encoded POST is
+        // rejected with `unsupported_grant_type` because its OAuth server only
+        // parses grant_type out of JSON. Match the documented request exactly.
+        let result = ureq::post("https://anilist.co/api/v2/oauth/token")
             .set("Accept", "application/json")
-            .send_form(&[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client_id),
-                ("client_secret", &client_secret),
-                ("redirect_uri", &redirect_uri),
-                ("code", &code),
-            ])
-            .map_err(|e| format!("AniList token exchange request failed: {}", e))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read AniList token response body: {}", e))
+            .send_json(ureq::json!({
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "code": code,
+            }));
+        match result {
+            Ok(response) => response
+                .into_string()
+                .map_err(|e| format!("Failed to read AniList token response body: {}", e)),
+            // Surface AniList's own error JSON (e.g. invalid_grant) instead of a
+            // bare status code, so the settings page can show why it failed.
+            Err(ureq::Error::Status(_, response)) => Err(response
+                .into_string()
+                .unwrap_or_else(|e| format!("AniList token exchange failed: {}", e))),
+            Err(e) => Err(format!("AniList token exchange request failed: {}", e)),
+        }
     })
     .await
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?

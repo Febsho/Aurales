@@ -24,29 +24,28 @@ const TMDB_GENRES: Record<number, string> = {
 
 interface MediaCardProps {
   item: SearchResult
+  cardIndex?: number
   layout?: 'poster' | 'landscape'
   disableArtOverride?: boolean
   disableTrailerPreview?: boolean
   rank?: number
-  onFocusItem?: (item: SearchResult) => void
-  onUnfocusItem?: (item: SearchResult) => void
+  onFocusItem?: (item: SearchResult, cardIndex?: number) => void
+  onUnfocusItem?: (item: SearchResult, cardIndex?: number) => void
   cinematicMode?: boolean
   cinematicFocused?: boolean
   /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
   cinematicExpand?: boolean
 }
 
-function MediaCard({ item, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true }: MediaCardProps) {
+function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const hoverRequestRef = useRef(0)
-  const collapseResetRef = useRef<number | null>(null)
   const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
   const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
   const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
-  const [snapCollapse, setSnapCollapse] = useState(false)
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(false)
 
@@ -56,13 +55,18 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     ? displayItem
     : applyInitialArtworkPreference(displayItem, displayItem.type, Boolean(displayItem.isAnime))
   const announceFocus = () => {
+    if (displayItem.type === 'movie') {
+      void import('../pages/MovieDetailPage')
+    } else {
+      void import('../pages/SeriesDetailPage')
+    }
     const focusedItem = {
       ...displayItem,
       poster: posterUrl || initialArtItem.poster,
       backdrop: backdropUrl || initialArtItem.backdrop,
       logo: logoUrl || initialArtItem.logo,
     }
-    onFocusItem?.(focusedItem)
+    onFocusItem?.(focusedItem, cardIndex)
     window.dispatchEvent(new CustomEvent<SearchResult>('aurales:media-focus', { detail: focusedItem }))
   }
   const customArt = disableArtOverride ? {} : getSearchResultCustomArt(item)
@@ -399,7 +403,6 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     return () => {
       if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
       if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
-      if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
       hoverRequestRef.current += 1
     }
   }, [])
@@ -411,16 +414,10 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     }
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
     hoverRequestRef.current += 1
-    if (collapseResetRef.current) window.cancelAnimationFrame(collapseResetRef.current)
-    setSnapCollapse(true)
     setSuppressPosterHover(true)
     setNativeTrailerVisible(false)
     setHoverTrailer(null)
     setHoverPreviewOpen(false)
-    collapseResetRef.current = window.requestAnimationFrame(() => {
-      setSnapCollapse(false)
-      collapseResetRef.current = null
-    })
   }, [])
 
   const openHoverPreview = useCallback(() => {
@@ -463,9 +460,9 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onFocus={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
-        onBlur={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        onBlur={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
-        onMouseLeave={() => { onUnfocusItem?.(displayItem); closeHoverPreview() }}
+        onMouseLeave={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
       >
         <div data-hero-viewport className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
@@ -612,9 +609,8 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
     : rawGenre
   const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
   const cardWidthClass = inlineTrailerPreview ? expandedPosterWidthClass : widthClass
-  const cardLiftClass = inlineTrailerPreview ? '-translate-y-2' : ''
-  const posterHoverClass = suppressPosterHover || snapCollapse ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
-  const posterImageHoverClass = suppressPosterHover || snapCollapse ? '' : 'group-hover:scale-105'
+  const posterHoverClass = suppressPosterHover ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
+  const posterImageHoverClass = suppressPosterHover ? '' : 'group-hover:scale-105'
 
   return (
     <button
@@ -625,7 +621,7 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false, disabl
       onMouseLeave={closeHoverPreview}
       onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
-      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring ${snapCollapse ? 'transition-none' : 'transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]'} ${cardWidthClass} ${posterSlotHeightClass} ${cardLiftClass}`}
+      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cardWidthClass} ${posterSlotHeightClass}`}
     >
       <div data-hero-viewport className={`relative rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${inlineTrailerPreview ? expandedPosterHeightClass : `aspect-[2/3] rounded-2xl ${posterHoverClass}`}`}>
         {inlineTrailerPreview ? (

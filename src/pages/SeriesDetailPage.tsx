@@ -35,6 +35,7 @@ import type { AnimeMappingResult } from '../services/anime-mapping/types'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { usePreparedStream } from '../hooks/usePreparedStream'
+import { useStreamFeatures } from '../hooks/useStreamFeatures'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
@@ -112,7 +113,7 @@ function preservePresentedArtwork(next: ShowDetails, current?: ShowDetails | nul
 
 async function cachedProviderShow(provider: 'tmdb' | 'tvdb', id: string): Promise<ShowDetails> {
   const cleanProviderId = id.replace(/^(tmdb|tvdb)[-:]/i, '')
-  const key = `detail:series-provider:v1:${provider}:${cleanProviderId}`
+  const key = `detail:series-provider:v2:${provider}:${cleanProviderId}`
   const cached = await cacheGet<ShowDetails>(key)
   if (cached?.data) return cached.data
 
@@ -161,7 +162,7 @@ function artworkSettingsKey(): string {
 }
 
 function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
-  const settingsKey = `${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `v2:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -198,7 +199,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `v2:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)
@@ -2327,6 +2328,11 @@ export default function SeriesDetailPage() {
 
   // After a short dwell, rank + probe the best direct stream so Play is instant.
   usePreparedStream(detailStreamRequest, show?.title)
+  const streamFeatures = useStreamFeatures(detailStreamRequest)
+
+  // Shows carry no runtime of their own; the hero shows a per-episode length,
+  // so take the first episode that reports one.
+  const typicalEpisodeRuntime = seasonData?.episodes.find((episode) => (episode.runtime ?? 0) > 0)?.runtime
 
   const initialRouteArt = applyInitialArtworkPreference({
     poster: state.poster,
@@ -2423,6 +2429,11 @@ export default function SeriesDetailPage() {
   const allEpisodesWatched = allEpisodes.length > 0
     && show.seasons.every((season) => seasonCache[season.seasonNumber] !== undefined)
     && allEpisodes.every((episode) => watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
+  const latestSeasonAirDate = show.seasons
+    .map((season) => season.airDate)
+    .filter((date): date is string => Boolean(date))
+    .sort()
+    .at(-1)
 
   return (
     <div className="min-h-screen bg-black pb-12">
@@ -2431,6 +2442,7 @@ export default function SeriesDetailPage() {
         year={show.year}
         overview={show.overview}
         rating={malRating ?? show.rating}
+        voteCount={show.voteCount}
         genres={show.genres}
         certification={show.certification}
         poster={show.poster}
@@ -2438,10 +2450,14 @@ export default function SeriesDetailPage() {
         logo={show.logo}
         imdbId={show.imdbId}
         type="series"
+        runtime={typicalEpisodeRuntime}
         status={show.status}
+        seriesType={show.seriesType}
         numberOfSeasons={show.numberOfSeasons}
+        latestSeasonAirDate={latestSeasonAirDate}
         cast={show.cast}
         crew={show.crew}
+        streamFeatures={streamFeatures}
         ratingsStrip={
           <div className="flex flex-col gap-3">
             <RatingsStrip

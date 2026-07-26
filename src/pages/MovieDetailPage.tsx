@@ -28,6 +28,7 @@ import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { usePreparedStream } from '../hooks/usePreparedStream'
+import { useStreamFeatures } from '../hooks/useStreamFeatures'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 
@@ -773,14 +774,16 @@ export default function MovieDetailPage() {
 
   // After a short dwell, rank + probe the best direct stream so Play is instant.
   const preparedMediaId = movie ? (movie.imdbId || state.sourceAddonItemId || id || '') : ''
-  usePreparedStream(movie && preparedMediaId ? {
-    mediaType: 'movie',
+  const heroStreamRequest = movie && preparedMediaId ? {
+    mediaType: 'movie' as const,
     mediaId: preparedMediaId,
     imdbId: movie.imdbId,
     tmdbId: movie.tmdbId,
     sourceAddonId: state.sourceAddonId,
     sourceAddonItemId: state.sourceAddonItemId,
-  } : null, movie?.title)
+  } : null
+  usePreparedStream(heroStreamRequest, movie?.title)
+  const streamFeatures = useStreamFeatures(heroStreamRequest)
 
   const initialRouteArt = applyInitialArtworkPreference({
     poster: state.poster,
@@ -806,10 +809,11 @@ export default function MovieDetailPage() {
         title={movie.title}
         originalTitle={movie.originalTitle}
         year={movie.year}
+        releaseDate={movie.releaseDate}
         overview={movie.overview}
-        tagline={movie.tagline}
         runtime={movie.runtime}
         rating={malRating ?? movie.rating}
+        voteCount={movie.voteCount}
         genres={movie.genres}
         certification={movie.certification}
         poster={movie.poster}
@@ -819,6 +823,7 @@ export default function MovieDetailPage() {
         type="movie"
         cast={movie.cast}
         crew={movie.crew}
+        streamFeatures={streamFeatures}
         ratingsStrip={
           <RatingsStrip
             mediaType="movie"

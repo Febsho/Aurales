@@ -59,8 +59,6 @@ export async function mapTvdbEpisodeWithAniBridge(
       result.mal = { id: Number(descriptor.id), episodeNumber: mappedEpisode }
     } else if (descriptor.provider === 'tmdb_show') {
       result.tmdb = { id: Number(descriptor.id), seasonNumber: parseSeasonScope(descriptor.scope), episodeNumber: mappedEpisode }
-    } else if (descriptor.provider === 'tvdb_show') {
-      result.trakt = result.trakt
     }
   }
 

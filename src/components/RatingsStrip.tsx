@@ -103,17 +103,17 @@ export default function RatingsStrip(props: RatingsStripProps) {
 
   if (props.compact) {
     return (
-      <div className={`flex flex-wrap items-center gap-1.5 ${props.className || ''}`}>
+      <div className={`flex flex-wrap items-center gap-3 ${props.className || ''}`}>
         {visibleRatings.map((rating) => (
           <div
             key={`${rating.source}-${rating.value}`}
-            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold text-white/90"
+            className="inline-flex items-center gap-1.5 rounded-md text-[15px] font-semibold text-white/90"
             title={`${rating.label}: ${rating.value}`}
           >
             {rating.iconUrl ? (
-              <img src={rating.iconUrl} alt={rating.label} className="h-3 w-3 object-contain" loading="lazy" />
+              <img src={rating.iconUrl} alt={rating.label} className="h-[18px] w-[18px] object-contain" loading="lazy" />
             ) : (
-              <span className="text-[9px] font-black opacity-80">{rating.icon}</span>
+              <span className="text-[12px] font-black opacity-80">{rating.icon}</span>
             )}
             <span>{rating.value}</span>
           </div>
