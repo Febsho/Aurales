@@ -64,9 +64,10 @@ pub fn run() {
         // filter effects (the blurred hero backdrop renders sharp). NVIDIA's
         // driver cannot allocate WebKit's GBM buffers ("Failed to create GBM
         // buffer", invisible window), so route rendering to a non-NVIDIA DRM
-        // node when one exists, and fall back to shared-memory buffer
-        // transport on NVIDIA-only machines. AURALES_DISABLE_DMABUF_RENDERER=1
-        // opts back into the old software path.
+        // node when one exists. WebKit's shared-memory DMA-BUF fallback still
+        // attempts to create a GBM EGL display on NVIDIA-only Wayland systems
+        // and aborts the whole process, so disable DMA-BUF there completely.
+        // AURALES_DISABLE_DMABUF_RENDERER=1 forces the same safe software path.
         let disable_dmabuf = std::env::var("AURALES_DISABLE_DMABUF_RENDERER")
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
@@ -88,7 +89,8 @@ pub fn run() {
                     std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", node);
                 }
                 RenderNodeChoice::NvidiaOnly => {
-                    std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+                    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+                    std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
                 }
                 RenderNodeChoice::None => {
                     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
