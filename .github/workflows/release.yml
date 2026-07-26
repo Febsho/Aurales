@@ -154,33 +154,54 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
+        run: |
+          npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
+          cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
+
+      - name: Upload internal Flatpak input
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurales-flatpak-input
+          path: packaging/flatpak/aurales.deb
+          retention-days: 1
+
+  flatpak:
+    name: release (Flatpak)
+    needs: release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download internal Flatpak input
+        uses: actions/download-artifact@v4
+        with:
+          name: aurales-flatpak-input
+          path: packaging/flatpak
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build Flatpak bundle
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get install -y flatpak
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y flathub org.flatpak.Builder org.gnome.Platform//50 org.gnome.Sdk//50
-          cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
-          flatpak run org.flatpak.Builder \
-            --user --force-clean --repo=flatpak-repo \
-            flatpak-build packaging/flatpak/com.aurales.app.yml
-          version="${GITHUB_REF_NAME#v}"
-          flatpak build-bundle \
-            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
-            flatpak-repo "Aurales_${version}_amd64.flatpak" com.aurales.app
-          ls -la *.flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Aurales_${{ steps.version.outputs.value }}_amd64.flatpak
+          manifest-path: packaging/flatpak/com.aurales.app.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
 
       - name: Upload Flatpak to release
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
-        run: |
-          file=$(ls Aurales_*_amd64.flatpak | head -n1)
-          curl -sf -X POST \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$file" \
-            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${file}"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: Aurales_${{ steps.version.outputs.value }}_amd64.flatpak
