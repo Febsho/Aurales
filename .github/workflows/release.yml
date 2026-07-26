@@ -159,11 +159,13 @@ jobs:
       - name: Build Flatpak bundle
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get install -y flatpak flatpak-builder appstream-compose
+          sudo apt-get install -y flatpak
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+          flatpak install --user -y flathub org.flatpak.Builder org.gnome.Platform//50 org.gnome.Sdk//50
           cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
-          flatpak-builder --user --force-clean --repo=flatpak-repo flatpak-build packaging/flatpak/com.aurales.app.yml
+          flatpak run org.flatpak.Builder \
+            --user --force-clean --repo=flatpak-repo \
+            flatpak-build packaging/flatpak/com.aurales.app.yml
           version="${GITHUB_REF_NAME#v}"
           flatpak build-bundle \
             --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
