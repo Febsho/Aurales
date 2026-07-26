@@ -38,14 +38,44 @@ Aurales publishes two Linux downloads for x86-64 systems:
 
 #### Flatpak (all distributions)
 
-Install Flatpak with your distribution's package manager if it is not already available, then install the downloaded bundle:
+Install Flatpak first if it is not already available:
+
+**Ubuntu / Debian**
 
 ```bash
-flatpak install --user ./Aurales_0.2.4_amd64.flatpak
+sudo apt update
+sudo apt install flatpak curl
+```
+
+**Fedora**
+
+```bash
+sudo dnf install flatpak curl
+```
+
+**Arch Linux / EndeavourOS / Manjaro**
+
+```bash
+sudo pacman -S flatpak curl
+```
+
+**openSUSE**
+
+```bash
+sudo zypper install flatpak curl
+```
+
+Download and install Aurales directly from GitHub:
+
+```bash
+curl -fL \
+  https://github.com/Febsho/Aurales/releases/download/v0.2.4/Aurales_0.2.4_amd64.flatpak \
+  -o Aurales_0.2.4_amd64.flatpak
+flatpak install --user -y ./Aurales_0.2.4_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
-To update a manually downloaded bundle, download the newer `.flatpak` file and run the same `flatpak install --user` command again.
+To update, run the download and `flatpak install --user` commands again with the new version number.
 
 #### AppImage
 
@@ -55,7 +85,7 @@ Aurales uses the system **mpv/libmpv** installation for native Linux playback. I
 
 ```bash
 sudo apt update
-sudo apt install mpv ffmpeg
+sudo apt install mpv ffmpeg curl
 ```
 
 If the AppImage reports that FUSE is missing, install `libfuse2` on Debian and older Ubuntu releases, or `libfuse2t64` on current Ubuntu releases.
@@ -65,29 +95,35 @@ If the AppImage reports that FUSE is missing, install `libfuse2` on Debian and o
 ```bash
 sudo dnf install \
   "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
-sudo dnf install mpv ffmpeg fuse-libs
+sudo dnf install mpv ffmpeg fuse-libs curl
 ```
 
 **Arch Linux / EndeavourOS / Manjaro**
 
 ```bash
-sudo pacman -S mpv ffmpeg fuse2
+sudo pacman -S mpv ffmpeg fuse2 curl
 ```
 
 **openSUSE**
 
 ```bash
-sudo zypper install mpv ffmpeg fuse
+sudo zypper install mpv ffmpeg fuse curl
 ```
 
 Some distributions keep multimedia packages in an optional repository. Enable the distribution's standard multimedia repository if `mpv` is not found.
 
-Then make the downloaded AppImage executable and launch it:
+Download Aurales directly from GitHub, install it for your user, and launch it:
 
 ```bash
-chmod +x ./Aurales_0.2.4_amd64.AppImage
-./Aurales_0.2.4_amd64.AppImage
+mkdir -p ~/.local/bin
+curl -fL \
+  https://github.com/Febsho/Aurales/releases/download/v0.2.4/Aurales_0.2.4_amd64.AppImage \
+  -o ~/.local/bin/aurales
+chmod +x ~/.local/bin/aurales
+~/.local/bin/aurales
 ```
+
+To update the AppImage, run the `curl` command again with the new version number.
 
 AppImage and Flatpak provide broad Linux coverage without publishing a separate package for every distribution. Native `.deb`, `.rpm`, Snap, and AUR packages can be added later if there is demand for package-manager integration.
 
