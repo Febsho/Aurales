@@ -159,7 +159,7 @@ jobs:
       - name: Build Flatpak bundle
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get install -y flatpak flatpak-builder
+          sudo apt-get install -y flatpak flatpak-builder appstream-compose
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
           cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
