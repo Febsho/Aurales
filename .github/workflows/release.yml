@@ -76,8 +76,13 @@ jobs:
             src-tauri/binaries/mpv-x86_64-unknown-linux-gnu
           cp -L "$(command -v ffmpeg)" \
             src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
-          libmpv_path="$(ldconfig -p | awk '/libmpv\\.so\\.[12] .*x86-64/ { print $NF; exit }')"
-          test -n "$libmpv_path"
+          # Do not exit awk early: GitHub Actions enables pipefail, so an early
+          # reader exit gives ldconfig SIGPIPE and fails the step with code 141.
+          libmpv_path="$(
+            ldconfig -p | awk \
+              '$1 ~ /^libmpv\.so\.[12]$/ && path == "" { path=$NF } END { print path }'
+          )"
+          test -f "$libmpv_path"
           cp -L "$libmpv_path" "src-tauri/binaries/$(basename "$libmpv_path")"
           curl -fsSL -o src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu \
             https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
