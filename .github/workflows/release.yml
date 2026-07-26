@@ -151,6 +151,9 @@ jobs:
       # and uploaded as a public release asset.
       - name: Build internal Flatpak input
         if: matrix.platform == 'ubuntu-22.04'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
 
       - name: Build Flatpak bundle
