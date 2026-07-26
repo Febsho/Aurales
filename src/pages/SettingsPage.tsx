@@ -1224,20 +1224,27 @@ export default function SettingsPage() {
       const callbackServerPromise = invoke<string>('start_anilist_callback_server')
 
       const redirectUri = 'http://localhost:42814/'
-      // Aurales is a desktop client, so its client secret cannot be kept
-      // confidential. AniList's implicit grant returns the access token
-      // directly and avoids the authorization-code exchange that some OAuth
-      // deployments reject with unsupported_grant_type.
-      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token`
+      const authParams = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+      })
+      const authUrl = `https://anilist.co/api/v2/oauth/authorize?${authParams}`
       await invoke('open_simkl_auth', { url: authUrl })
 
       setAnilistMessage('Waiting for AniList authorization...')
-      const callbackResult = await callbackServerPromise
-      if (!callbackResult) {
-        throw new Error('AniList did not return a response.')
+      const code = await callbackServerPromise
+      if (!code) {
+        throw new Error('AniList did not return an authorization code.')
       }
 
-      const token = callbackResult
+      // Keep the client secret out of the WebView/JavaScript bundle. The
+      // native command reads ANILIST_CLIENT_SECRET from the release build.
+      const token = await invoke<string>('exchange_anilist_token', {
+        code,
+        clientId,
+        redirectUri,
+      })
 
       setAniListToken(token)
       setAnilistTokenInput(token)

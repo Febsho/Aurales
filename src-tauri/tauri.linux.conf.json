@@ -2,9 +2,14 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "targets": ["appimage"],
-    "externalBin": ["binaries/yt-dlp"],
+    "externalBin": [
+      "binaries/mpv",
+      "binaries/ffmpeg",
+      "binaries/yt-dlp"
+    ],
     "resources": {
       "binaries/*.dll": null,
+      "binaries/libmpv.so.*": "libmpv/",
       "resources/mpv-scripts/*": "mpv-scripts/",
       "resources/mpv-script-opts/*": "mpv-script-opts/"
     },

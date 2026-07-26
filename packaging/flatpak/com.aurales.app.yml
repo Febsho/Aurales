@@ -26,20 +26,77 @@ finish-args:
   - --filesystem=xdg-run/discord-ipc-8
   - --filesystem=xdg-run/discord-ipc-9
 modules:
+  # GNOME Platform provides FFmpeg and the GPU/audio stack, but not libmpv.
+  # Build mpv in the sandbox so the Flatpak always uses the same native player
+  # as the AppImage without depending on host packages.
+  - name: libass
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+    config-opts:
+      - --disable-static
+      - --enable-asm
+      - --enable-fontconfig
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.5
+        commit: 4a05d8127f525943ebf45fdc6497c9e665947f0d
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Ddemos=false
+      - -Dvulkan=enabled
+      - -Dshaderc=enabled
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+    sources:
+      - type: git
+        url: https://github.com/haasn/libplacebo.git
+        tag: v7.360.1
+        commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-date=false
+      - -Dcplayer=true
+      - -Dlibmpv=true
+      - -Dtests=false
+      - -Djavascript=disabled
+      - -Dlua=disabled
+      - -Dwerror=false
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /share/applications
+      - /share/bash-completion
+      - /share/icons
+      - /share/man
+      - /share/zsh
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.41.0
+        commit: 41f6a645068483470267271e1d09966ca3b9f413
+
   - name: aurales
     buildsystem: simple
     build-commands:
       - ar -x aurales.deb
       - tar -xf data.tar.gz
-      - mkdir -p /app/bin && cp -a usr/bin/. /app/bin/
+      # The private .deb also feeds the self-contained AppImage build, so it
+      # contains Linux media sidecars. Only import the application and yt-dlp:
+      # mpv/libmpv come from the sandbox modules above and FFmpeg from GNOME.
+      - install -Dm755 usr/bin/aurales-app /app/bin/aurales-app
+      - install -Dm755 usr/bin/yt-dlp /app/bin/yt-dlp
       # The main binary name follows productName; create a stable launcher name.
-      - |
-        if [ ! -e /app/bin/aurales ]; then
-          for candidate in Aurales aurales-app; do
-            if [ -e "/app/bin/$candidate" ]; then ln -s "$candidate" /app/bin/aurales; break; fi
-          done
-        fi
-      - if [ -d usr/lib ]; then cp -a usr/lib /app/; fi
+      - ln -s aurales-app /app/bin/aurales
+      - mkdir -p /app/lib/Aurales
+      - cp -a usr/lib/Aurales/mpv-scripts /app/lib/Aurales/
+      - cp -a usr/lib/Aurales/mpv-script-opts /app/lib/Aurales/
       - |
         desktop=$(ls usr/share/applications/*.desktop | head -n1)
         install -Dm644 "$desktop" /app/share/applications/com.aurales.app.desktop

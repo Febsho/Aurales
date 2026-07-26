@@ -580,6 +580,15 @@ pub(crate) fn libmpv_candidates() -> Vec<PathBuf> {
                 candidates.push(dir.join(name));
                 candidates.push(dir.join("binaries").join(name));
                 candidates.push(dir.join("resources").join(name));
+                // Tauri places AppImage resources below usr/lib/Aurales while
+                // the executable lives in usr/bin.
+                candidates.push(
+                    dir.join("..")
+                        .join("lib")
+                        .join("Aurales")
+                        .join("libmpv")
+                        .join(name),
+                );
             }
         }
     }
@@ -594,7 +603,13 @@ pub(crate) fn libmpv_candidates() -> Vec<PathBuf> {
     // Distro-installed libmpv lives on the loader path, not beside the app.
     #[cfg(target_os = "linux")]
     for name in LIBMPV_NAMES {
-        for dir in ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"] {
+        for dir in [
+            "/app/lib",
+            "/app/lib/x86_64-linux-gnu",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib64",
+            "/usr/lib",
+        ] {
             candidates.push(PathBuf::from(dir).join(name));
         }
     }

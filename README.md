@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.4-white?style=flat-square" alt="Version 0.2.4" />
+  <img src="https://img.shields.io/badge/version-0.2.5-white?style=flat-square" alt="Version 0.2.5" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -23,7 +23,7 @@ Aurales is an elegant, offline-first desktop media hub that aggregates streaming
 
 ## Download & Install
 
-Download version **0.2.4** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.2.5** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
 ### Windows
 
@@ -69,9 +69,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.2.4/Aurales_0.2.4_amd64.flatpak \
-  -o Aurales_0.2.4_amd64.flatpak
-flatpak install --user -y ./Aurales_0.2.4_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.2.5/Aurales_0.2.5_amd64.flatpak \
+  -o Aurales_0.2.5_amd64.flatpak
+flatpak install --user -y ./Aurales_0.2.5_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -79,45 +79,17 @@ To update, run the download and `flatpak install --user` commands again with the
 
 #### AppImage
 
-Aurales uses the system **mpv/libmpv** installation for native Linux playback. Install the runtime for your distribution first:
-
-**Ubuntu / Debian**
-
-```bash
-sudo apt update
-sudo apt install mpv ffmpeg curl
-```
-
-If the AppImage reports that FUSE is missing, install `libfuse2` on Debian and older Ubuntu releases, or `libfuse2t64` on current Ubuntu releases.
-
-**Fedora**
-
-```bash
-sudo dnf install \
-  "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
-sudo dnf install mpv ffmpeg fuse-libs curl
-```
-
-**Arch Linux / EndeavourOS / Manjaro**
-
-```bash
-sudo pacman -S mpv ffmpeg fuse2 curl
-```
-
-**openSUSE**
-
-```bash
-sudo zypper install mpv ffmpeg fuse curl
-```
-
-Some distributions keep multimedia packages in an optional repository. Enable the distribution's standard multimedia repository if `mpv` is not found.
+The AppImage includes **mpv, libmpv, FFmpeg, and yt-dlp**. No system media
+packages are required. If it reports that FUSE is missing, install `libfuse2`
+on Debian and older Ubuntu releases, `libfuse2t64` on current Ubuntu releases,
+`fuse-libs` on Fedora, or `fuse2` on Arch-based distributions.
 
 Download Aurales directly from GitHub, install it for your user, and launch it:
 
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.2.4/Aurales_0.2.4_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.2.5/Aurales_0.2.5_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -183,7 +155,7 @@ Aurales synchronizes your watch history, watchlist, rating, and current progress
 | **Desktop Framework** | [Tauri 2](https://v2.tauri.app/) (Rust + TypeScript) |
 | **Frontend UI** | React 19, Tailwind CSS 4, Zustand 5, React Router 7 |
 | **Build System** | Vite 8, TypeScript |
-| **Media Player** | Native mpv + libmpv FFI (bundled on Windows, system runtime on Linux) |
+| **Media Player** | Native mpv + libmpv FFI (bundled in Windows, AppImage, and Flatpak releases) |
 | **Database & Cache** | SQLite (via rusqlite, static/bundled build) |
 
 ---
@@ -239,7 +211,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.2.4`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.2.5`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

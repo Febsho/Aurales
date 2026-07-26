@@ -6,3 +6,6 @@
 # Bundled sidecar binaries (downloaded at build time)
 /binaries/*.exe
 /binaries/*.dll
+/binaries/mpv-*-linux-gnu
+/binaries/ffmpeg-*-linux-gnu
+/binaries/libmpv.so.*
