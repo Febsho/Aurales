@@ -3980,12 +3980,12 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
     }
     let _guard = AnilistCallbackGuard;
 
-    let listener = match TcpListener::bind("[::1]:42814").await {
-        Ok(l) => l,
-        Err(_) => TcpListener::bind("127.0.0.1:42814")
-            .await
-            .map_err(|e| format!("Failed to bind callback port 42814: {}", e))?,
-    };
+    // The registered redirect uses `localhost`. Bind IPv4 consistently rather
+    // than selecting IPv6 first: browsers fall back from localhost to IPv4,
+    // while IPv4-only systems cannot reach an [::1]-only listener.
+    let listener = TcpListener::bind("127.0.0.1:42814")
+        .await
+        .map_err(|e| format!("Failed to bind callback port 42814: {}", e))?;
 
     let (mut stream, _) =
         tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
@@ -4005,7 +4005,7 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
         return Ok(token);
     }
     if let Some(code) = parse_oauth_code(&request) {
-        write_oauth_success_response(&mut stream, "Connected!").await;
+        write_oauth_success_response(&mut stream, "Authorization received").await;
         return Ok(code);
     }
 
@@ -4069,11 +4069,19 @@ async fn write_oauth_success_response(stream: &mut tokio::net::TcpStream, title:
 pub async fn exchange_anilist_token(
     code: String,
     client_id: String,
-    client_secret: String,
     redirect_uri: String,
 ) -> Result<String, String> {
+    const CLIENT_SECRET: Option<&str> = option_env!("ANILIST_CLIENT_SECRET");
     let client_id = client_id.trim().to_string();
-    let client_secret = client_secret.trim().to_string();
+    let client_secret = CLIENT_SECRET
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "AniList login is not configured in this build. Set \
+             ANILIST_CLIENT_SECRET when building Aurales."
+                .to_string()
+        })?
+        .to_string();
     let redirect_uri = redirect_uri.trim().to_string();
     let code = code.trim().to_string();
 
@@ -4101,17 +4109,74 @@ pub async fn exchange_anilist_token(
         match result {
             Ok(response) => response
                 .into_string()
-                .map_err(|e| format!("Failed to read AniList token response body: {}", e)),
+                .map_err(|e| format!("Failed to read AniList token response body: {}", e))
+                .and_then(parse_anilist_access_token),
             // Surface AniList's own error JSON (e.g. invalid_grant) instead of a
             // bare status code, so the settings page can show why it failed.
-            Err(ureq::Error::Status(_, response)) => Err(response
-                .into_string()
-                .unwrap_or_else(|e| format!("AniList token exchange failed: {}", e))),
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(anilist_oauth_error(status, &body))
+            }
             Err(e) => Err(format!("AniList token exchange request failed: {}", e)),
         }
     })
     .await
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?
+}
+
+fn parse_anilist_access_token(body: String) -> Result<String, String> {
+    let data: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "AniList returned an invalid token response.".to_string())?;
+    data.get("access_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anilist_oauth_error(200, &body))
+}
+
+fn anilist_oauth_error(status: u16, body: &str) -> String {
+    if let Ok(data) = serde_json::from_str::<serde_json::Value>(body) {
+        let message = data
+            .get("message")
+            .or_else(|| data.get("error_description"))
+            .or_else(|| data.get("error"))
+            .and_then(|value| value.as_str());
+        if let Some(message) = message {
+            return format!("AniList login failed: {message}");
+        }
+    }
+    format!("AniList token exchange failed ({status}).")
+}
+
+#[cfg(test)]
+mod anilist_oauth_tests {
+    use super::{anilist_oauth_error, parse_anilist_access_token, parse_oauth_code};
+
+    #[test]
+    fn parses_authorization_callback_code() {
+        let request = "GET /?code=abc%2B123 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(parse_oauth_code(request).as_deref(), Some("abc+123"));
+    }
+
+    #[test]
+    fn extracts_only_the_access_token_from_token_response() {
+        let response =
+            r#"{"token_type":"Bearer","expires_in":31536000,"access_token":"jwt-token"}"#;
+        assert_eq!(
+            parse_anilist_access_token(response.to_string()).as_deref(),
+            Ok("jwt-token")
+        );
+    }
+
+    #[test]
+    fn surfaces_anilist_oauth_message() {
+        let body = r#"{"error":"invalid_grant","message":"Authorization code expired"}"#;
+        assert_eq!(
+            anilist_oauth_error(400, body),
+            "AniList login failed: Authorization code expired"
+        );
+    }
 }
 
 // ─── Cache Entries ──────────────────────────────────────────────────────────

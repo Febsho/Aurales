@@ -48,7 +48,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libx11-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2
+            libx11-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libfuse2 mpv libmpv1 ffmpeg
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -67,15 +68,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Prepare bundled yt-dlp (Linux)
+      - name: Prepare bundled Linux media runtime
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           mkdir -p src-tauri/binaries
-          # Linux relies on system mpv (deb/rpm dependency, PATH fallback in the app);
-          # only yt-dlp is bundled as a sidecar.
+          cp -L "$(command -v mpv)" \
+            src-tauri/binaries/mpv-x86_64-unknown-linux-gnu
+          cp -L "$(command -v ffmpeg)" \
+            src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          libmpv_path="$(ldconfig -p | awk '/libmpv\\.so\\.[12] .*x86-64/ { print $NF; exit }')"
+          test -n "$libmpv_path"
+          cp -L "$libmpv_path" "src-tauri/binaries/$(basename "$libmpv_path")"
           curl -fsSL -o src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu \
             https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
-          chmod +x src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu
+          chmod +x \
+            src-tauri/binaries/mpv-x86_64-unknown-linux-gnu \
+            src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu \
+            src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu
           ls -la src-tauri/binaries
 
       - name: Prepare bundled mpv and yt-dlp (Windows)
@@ -127,6 +136,7 @@ jobs:
           VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
           VITE_TRAKT_CLIENT_SECRET: ${{ secrets.VITE_TRAKT_CLIENT_SECRET }}
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+          ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
           VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
         with:
           tagName: v__VERSION__
@@ -137,8 +147,8 @@ jobs:
             **Windows:** use the NSIS setup `.exe` (recommended) or the `.msi`.
 
             **Linux:** use the `.AppImage` for a portable download or the
-            `.flatpak` bundle for a sandboxed installation. AppImage playback
-            requires mpv; distro-specific commands are in the README.
+            `.flatpak` bundle for a sandboxed installation. Both packages
+            include mpv, libmpv, FFmpeg, and yt-dlp.
 
             See the generated release notes below for the changes in this version.
           releaseDraft: true
@@ -154,6 +164,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+          ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
         run: |
           npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
           cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb

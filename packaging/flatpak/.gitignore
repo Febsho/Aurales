@@ -1,0 +1,4 @@
+aurales.deb
+.flatpak-builder/
+build-dir/
+repo/

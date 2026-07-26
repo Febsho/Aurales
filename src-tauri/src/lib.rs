@@ -12,18 +12,20 @@ use tauri::Manager;
 
 #[cfg(target_os = "linux")]
 enum RenderNodeChoice {
-    NvidiaPresent,
-    NonNvidiaOnly,
+    Preferred {
+        path: String,
+        force_shm_transport: bool,
+    },
+    Automatic,
     None,
 }
 
-/// Classify the available DRM render nodes without forcing WebKit onto a GPU
-/// that may not be driving the current display.
+/// Select the render node belonging to the boot/display GPU. On hybrid systems
+/// this is more reliable than choosing a vendor: a secondary iGPU may expose a
+/// valid render node but still be unable to create an EGL display.
 #[cfg(target_os = "linux")]
 fn classify_render_nodes() -> RenderNodeChoice {
     const NVIDIA_VENDOR: &str = "0x10de";
-    let mut nvidia_seen = false;
-    let mut non_nvidia_seen = false;
     let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
         return RenderNodeChoice::None;
     };
@@ -32,23 +34,34 @@ fn classify_render_nodes() -> RenderNodeChoice {
         .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
         .collect();
     nodes.sort_by_key(|entry| entry.file_name());
-    for entry in nodes {
+    let mut available = Vec::new();
+    for entry in &nodes {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let vendor = std::fs::read_to_string(entry.path().join("device/vendor"))
-            .map(|value| value.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        if vendor == NVIDIA_VENDOR {
-            nvidia_seen = true;
-        } else if std::path::Path::new("/dev/dri").join(&name).exists() {
-            non_nvidia_seen = true;
+        let device = std::path::Path::new("/dev/dri").join(&name);
+        if !device.exists() {
+            continue;
         }
+        let boot_vga = std::fs::read_to_string(entry.path().join("device/boot_vga"))
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false);
+        let force_shm_transport = std::fs::read_to_string(entry.path().join("device/vendor"))
+            .map(|value| value.trim().eq_ignore_ascii_case(NVIDIA_VENDOR))
+            .unwrap_or(false);
+        if boot_vga {
+            return RenderNodeChoice::Preferred {
+                path: device.to_string_lossy().into_owned(),
+                force_shm_transport,
+            };
+        }
+        available.push((device, force_shm_transport));
     }
-    if nvidia_seen {
-        RenderNodeChoice::NvidiaPresent
-    } else if non_nvidia_seen {
-        RenderNodeChoice::NonNvidiaOnly
-    } else {
-        RenderNodeChoice::None
+    match available.as_slice() {
+        [(device, force_shm_transport)] => RenderNodeChoice::Preferred {
+            path: device.to_string_lossy().into_owned(),
+            force_shm_transport: *force_shm_transport,
+        },
+        [] => RenderNodeChoice::None,
+        _ => RenderNodeChoice::Automatic,
     }
 }
 
@@ -59,14 +72,12 @@ pub fn run() {
         // WebKit's GPU (DMA-BUF) renderer is required for correct rendering of
         // the transparent player window: the software fallback repaints only
         // damaged regions (closed menus ghost over the video) and drops CSS
-        // filter effects (the blurred hero backdrop renders sharp). NVIDIA's
-        // driver cannot reliably allocate WebKit's GBM buffers ("Failed to
-        // create GBM buffer", invisible window). On hybrid systems, forcing
-        // WebKit onto the non-NVIDIA node can also abort startup when that GPU
-        // is not driving the display ("Could not create GBM EGL display").
-        // Disable DMA-BUF whenever NVIDIA is present instead of guessing which
-        // render node owns the current display.
-        // AURALES_DISABLE_DMABUF_RENDERER=1 forces the same safe software path.
+        // filter effects (the blurred hero backdrop renders sharp). On hybrid
+        // systems WebKit must use the GPU that owns the display.
+        // Selecting a secondary render node can abort startup with "Could not
+        // create GBM EGL display"; disabling DMA-BUF avoids that crash but
+        // forces expensive software rendering. Prefer the boot/display GPU and
+        // retain AURALES_DISABLE_DMABUF_RENDERER=1 as an explicit safe fallback.
         let disable_dmabuf = std::env::var("AURALES_DISABLE_DMABUF_RENDERER")
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
@@ -84,12 +95,19 @@ pub fn run() {
             }
         } else if webkit_env_untouched {
             match classify_render_nodes() {
-                RenderNodeChoice::NvidiaPresent => {
-                    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-                    std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+                RenderNodeChoice::Preferred {
+                    path,
+                    force_shm_transport,
+                } => {
+                    std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", path);
+                    // NVIDIA cannot always allocate WebKit's exportable GBM
+                    // buffers. SHM transport keeps GPU compositing enabled but
+                    // avoids that allocation path.
+                    if force_shm_transport {
+                        std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+                    }
                 }
-                // Let WebKit select the GPU associated with the active display.
-                RenderNodeChoice::NonNvidiaOnly => {}
+                RenderNodeChoice::Automatic => {}
                 RenderNodeChoice::None => {
                     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
                     std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");

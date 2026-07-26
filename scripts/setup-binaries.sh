@@ -88,6 +88,30 @@ have_libmpv() {
     return 1
 }
 
+stage_linux_media_runtime() {
+    local mpv_path ffmpeg_path libmpv_path
+    mpv_path="$(command -v mpv 2>/dev/null || true)"
+    ffmpeg_path="$(command -v ffmpeg 2>/dev/null || true)"
+    libmpv_path=""
+    for d in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu; do
+        for name in libmpv.so.2 libmpv.so.1; do
+            if [ -e "$d/$name" ]; then
+                libmpv_path="$d/$name"
+                break 2
+            fi
+        done
+    done
+    if [ -n "$mpv_path" ] && [ -n "$ffmpeg_path" ] && [ -n "$libmpv_path" ]; then
+        cp -L "$mpv_path" "$BIN_DIR/mpv-$TRIPLE"
+        cp -L "$ffmpeg_path" "$BIN_DIR/ffmpeg-$TRIPLE"
+        cp -L "$libmpv_path" "$BIN_DIR/$(basename "$libmpv_path")"
+        chmod +x "$BIN_DIR/mpv-$TRIPLE" "$BIN_DIR/ffmpeg-$TRIPLE"
+        ok "Bundled Linux media runtime staged (mpv, libmpv, ffmpeg)."
+        return 0
+    fi
+    return 1
+}
+
 MISSING=()
 command -v mpv    >/dev/null 2>&1 || MISSING+=("mpv")
 command -v ffmpeg >/dev/null 2>&1 || MISSING+=("ffmpeg")
@@ -95,6 +119,7 @@ have_libmpv                       || MISSING+=("libmpv")
 
 if [ "${#MISSING[@]}" -eq 0 ]; then
     ok "System dependencies already present (mpv, libmpv, ffmpeg)."
+    stage_linux_media_runtime
     ok $'\nAll binaries ready. You can now run: npm run tauri dev'
     exit 0
 fi
@@ -130,4 +155,5 @@ fi
 
 info "Installing system dependencies..."
 eval "$INSTALL_CMD"
+stage_linux_media_runtime
 ok $'\nAll binaries ready. You can now run: npm run tauri dev'
