@@ -50,7 +50,7 @@ import type { TraktDeviceCode } from '../types'
 const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
 import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
-import { checkForUpdate, downloadAndInstall, getAppVersion } from '../services/updater'
+import { canSelfUpdate, checkForUpdate, downloadAndInstall, FLATPAK_UPDATE_COMMAND, getAppVersion } from '../services/updater'
 import type { UpdateInfo, UpdateProgress } from '../services/updater'
 import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
@@ -292,8 +292,13 @@ function AppUpdateSection() {
   const [installing, setInstalling] = useState(false)
   const [progress, setProgress] = useState<UpdateProgress | null>(null)
   const [noUpdate, setNoUpdate] = useState(false)
+  const [selfUpdates, setSelfUpdates] = useState(true)
 
   const appVersion = getAppVersion()
+
+  useEffect(() => {
+    canSelfUpdate().then(setSelfUpdates)
+  }, [])
 
   const handleCheck = async () => {
     setChecking(true)
@@ -357,7 +362,7 @@ function AppUpdateSection() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {updateInfo && !installing ? (
+            {updateInfo && !installing && selfUpdates ? (
               <button
                 onClick={handleInstall}
                 className="px-4 py-2 bg-accent text-black font-bold rounded-xl text-xs transition-colors hover:bg-accent-hover cursor-pointer"
@@ -402,6 +407,16 @@ function AppUpdateSection() {
             <p className="text-[10px] text-white/30 text-right">
               {progressPct != null ? `${progressPct}%` : progress ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} MB` : 'Preparing...'}
             </p>
+          </div>
+        )}
+
+        {/* Flatpak installs cannot be updated from inside the sandbox */}
+        {updateInfo && !selfUpdates && (
+          <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+            <p className="text-xs text-white/60">This is a Flatpak install, so the update is installed outside the app. Run:</p>
+            <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
+              {FLATPAK_UPDATE_COMMAND}
+            </code>
           </div>
         )}
 

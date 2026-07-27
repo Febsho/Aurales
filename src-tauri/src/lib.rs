@@ -225,6 +225,7 @@ pub fn run() {
             commands::ytproxy_port,
             commands::innertube_player,
             commands::github_release_notes,
+            commands::install_kind,
             commands::ytdlp_resolve,
             commands::openrouter_chat,
             commands::download_subtitle,

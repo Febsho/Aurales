@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  canSelfUpdate,
   checkForUpdate,
   downloadAndInstall,
+  FLATPAK_UPDATE_COMMAND,
   getAppVersion,
   getLatestReleaseNotes,
   type UpdateInfo,
@@ -86,6 +88,7 @@ export default function UpdatePrompt() {
   const [notes, setNotes] = useState<string>('')
   const [progress, setProgress] = useState<{ downloaded: number; total: number | null }>({ downloaded: 0, total: null })
   const [error, setError] = useState<string>('')
+  const [selfUpdates, setSelfUpdates] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -93,8 +96,9 @@ export default function UpdatePrompt() {
       try {
         const found = await checkForUpdate()
         if (cancelled || !found) return
-        const release = await getLatestReleaseNotes()
+        const [release, canUpdate] = await Promise.all([getLatestReleaseNotes(), canSelfUpdate()])
         if (cancelled) return
+        setSelfUpdates(canUpdate)
         setUpdate(found)
         setNotes(release?.body || found.body || '')
         setPhase('available')
@@ -181,6 +185,15 @@ export default function UpdatePrompt() {
             </div>
           )}
 
+          {!selfUpdates && (
+            <div className="mb-4 rounded-xl border border-white/[0.10] bg-black/25 px-4 py-3 text-xs text-white/60">
+              <p>This is a Flatpak install, so the update is installed outside the app. Run:</p>
+              <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
+                {FLATPAK_UPDATE_COMMAND}
+              </code>
+            </div>
+          )}
+
           {phase === 'error' && (
             <p className="mb-4 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-xs text-red-200/90">
               Update failed: {error}
@@ -207,14 +220,16 @@ export default function UpdatePrompt() {
                 onClick={() => setPhase('hidden')}
                 className="rounded-full px-5 py-2.5 text-sm font-bold text-white/55 transition-colors hover:bg-white/[0.07] hover:text-white/85 cursor-pointer"
               >
-                Later
+                {selfUpdates ? 'Later' : 'Close'}
               </button>
-              <button
-                onClick={startUpdate}
-                className="rounded-full border border-white/25 bg-white/90 px-6 py-2.5 text-sm font-black text-black shadow-[0_8px_28px_rgba(255,255,255,0.18),inset_0_1px_0_rgba(255,255,255,0.9)] transition-all hover:bg-white cursor-pointer"
-              >
-                {phase === 'error' ? 'Try again' : 'Update now'}
-              </button>
+              {selfUpdates && (
+                <button
+                  onClick={startUpdate}
+                  className="rounded-full border border-white/25 bg-white/90 px-6 py-2.5 text-sm font-black text-black shadow-[0_8px_28px_rgba(255,255,255,0.18),inset_0_1px_0_rgba(255,255,255,0.9)] transition-all hover:bg-white cursor-pointer"
+                >
+                  {phase === 'error' ? 'Try again' : 'Update now'}
+                </button>
+              )}
             </div>
           )}
         </div>
