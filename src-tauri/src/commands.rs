@@ -2191,20 +2191,36 @@ fn launch_mpv_with_window(
 
         let mut option_log: Vec<String> = Vec::new();
         {
+            // Options that only exist in some libmpv versions. `--osc` and
+            // `--ytdl` are declared by mpv's builtin Lua scripts, and mpv 0.41
+            // dropped them from the option table entirely, so setting them
+            // fails with "option not found" on newer runtimes (the Flatpak
+            // ships 0.41, the AppImage still ships 0.34). Both are redundant
+            // next to `--load-scripts=no`, so a failure here is never fatal.
+            for (name, value) in [("osc", "no"), ("ytdl", "no")] {
+                option_log.push(format!("--{}={}", name, value));
+                if let Err(error) = player.set_option(name, value) {
+                    player_debug_log(format!(
+                        "[PLAYER CONFIG] skipped --{}={} ({})",
+                        name, value, error
+                    ));
+                }
+            }
+
             let mut set_option = |name: &str, value: String| -> Result<(), String> {
                 option_log.push(format!("--{}={}", name, value));
-                player.set_option(name, &value)
+                player
+                    .set_option(name, &value)
+                    .map_err(|error| format!("--{}={}: {}", name, value, error))
             };
 
             #[cfg(target_os = "windows")]
             set_option("wid", video_hwnd.to_string())?;
             #[cfg(target_os = "windows")]
             set_option("force-window", "immediate".to_string())?;
-            set_option("osc", "no".to_string())?;
             set_option("osd-bar", "no".to_string())?;
             set_option("config", "no".to_string())?;
             set_option("load-scripts", "no".to_string())?;
-            set_option("ytdl", "no".to_string())?;
             set_option("cursor-autohide", "1000".to_string())?;
             set_option("input-default-bindings", "no".to_string())?;
             set_option("input-builtin-bindings", "no".to_string())?;
@@ -3301,6 +3317,23 @@ fn validate_http_url(url: &str) -> Result<(), String> {
     } else {
         Err("Only HTTP(S) subtitle URLs are supported.".to_string())
     }
+}
+
+// How this copy of Aurales was installed, so the UI knows whether the built-in
+// updater can actually install anything.
+//
+// The Flatpak is assembled from the .deb bundle, so its binary carries the
+// bundler's Debian marker. The updater therefore routes the downloaded
+// AppImage through `dpkg -i` and bails out with "invalid updater binary
+// format" — and even if the format matched, /app is read-only inside the
+// sandbox. Flatpak installs update through `flatpak update` instead.
+#[tauri::command]
+pub fn install_kind() -> &'static str {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists() {
+        return "flatpak";
+    }
+    "self-updating"
 }
 
 // Fetches the latest GitHub release (tag, name, body markdown) so the update

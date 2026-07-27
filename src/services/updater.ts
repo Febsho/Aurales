@@ -13,6 +13,22 @@ export interface UpdateProgress {
   total: number | null
 }
 
+/** Command a Flatpak user runs to get the new version. */
+export const FLATPAK_UPDATE_COMMAND = 'flatpak update com.aurales.app'
+
+let installKind: Promise<string> | null = null
+
+/**
+ * Whether the built-in updater can install an update itself. Flatpak installs
+ * cannot: the sandbox is read-only, and the bundled binary is marked as a
+ * Debian package, so the updater rejects the downloaded AppImage with
+ * "invalid updater binary format". They update via `flatpak update`.
+ */
+export async function canSelfUpdate(): Promise<boolean> {
+  installKind ??= invoke<string>('install_kind').catch(() => 'self-updating')
+  return (await installKind) !== 'flatpak'
+}
+
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   try {
     const update = await check()
@@ -31,6 +47,10 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 export async function downloadAndInstall(
   onProgress?: (progress: UpdateProgress) => void
 ): Promise<void> {
+  if (!(await canSelfUpdate())) {
+    throw new Error(`Flatpak installs update outside the app. Run: ${FLATPAK_UPDATE_COMMAND}`)
+  }
+
   const update = await check()
   if (!update) throw new Error('No update available')
 
