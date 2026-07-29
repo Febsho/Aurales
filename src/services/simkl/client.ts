@@ -65,7 +65,7 @@ export async function simklRequest<T = unknown>(
   const urlParams = new URLSearchParams()
   urlParams.set('client_id', clientId)
   urlParams.set('app-name', 'Aurales')
-  urlParams.set('app-version', '0.1.0')
+  urlParams.set('app-version', '0.2.6')
 
   let finalPath = path
   if (path.includes('?')) {

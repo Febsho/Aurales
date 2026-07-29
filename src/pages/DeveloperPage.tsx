@@ -197,7 +197,7 @@ export default function DeveloperPage() {
     const report = {
       os: mpvInfo?.os || 'unknown',
       arch: mpvInfo?.arch || 'unknown',
-      appVersion: 'v0.1.0',
+      appVersion: 'v0.2.6',
       mpvPath: mpvInfo?.path || 'Not Found',
       mpvArgs: {
         hwdecMode: store.hwdecMode,
@@ -380,7 +380,7 @@ Last file: ${thumbnailDebug?.lastOutputPath || '-'}`}
               <div className="space-y-3.5 text-sm">
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">App Version</span>
-                  <span className="font-semibold">v0.1.0</span>
+                  <span className="font-semibold">v0.2.6</span>
                 </div>
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">OS Platform</span>

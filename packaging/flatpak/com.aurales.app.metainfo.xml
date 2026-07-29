@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.6" date="2026-07-29">
+      <description>
+        <p>
+          Improves release playback reliability and introduces coordinated,
+          cache-first network traffic for faster browsing and safer addon usage.
+        </p>
+      </description>
+    </release>
     <release version="0.2.5" date="2026-07-26">
       <description>
         <p>
