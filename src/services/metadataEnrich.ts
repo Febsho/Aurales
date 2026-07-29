@@ -4,6 +4,7 @@ import { tvdbProvider } from './tvdb'
 import { resolveAnimeIds, lookupByTvdbId, lookupByAniListId, lookupByMalId, lookupByImdbId } from './animeLists'
 import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
+import { coordinatedJson } from './network/requestCoordinator'
 
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 
@@ -12,9 +13,14 @@ async function tmdbApiFetch(path: string, params: Record<string, string> = {}): 
   const url = new URL(`${TMDB_BASE}${path}`)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString())
-  if (!res.ok) throw new Error(`TMDB error: ${res.status}`)
-  return res.json()
+  return coordinatedJson(url.toString(), {}, {
+    label: 'TMDB',
+    kind: 'metadata',
+    dedupeKey: `${path}:${new URLSearchParams(params).toString()}`,
+    priority: 'visible',
+    timeoutMs: 12_000,
+    retry: 'none',
+  })
 }
 
 export async function tmdbFindByExternalId(

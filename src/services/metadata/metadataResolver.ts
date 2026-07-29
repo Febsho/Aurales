@@ -11,6 +11,7 @@ import type { SearchResult } from '../../types'
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
 const ANIME_RESOLVER_VERSION = 8
 const METADATA_CLASSIFIER_VERSION = 5
+export type MetadataEnrichmentMode = 'cache-only' | 'visible-card' | 'detail'
 
 function numericProviderId(value: string | number | undefined): number | undefined {
   if (value == null) return undefined
@@ -102,9 +103,13 @@ export async function getAppMetadataByIdsBatch(items: {
   }
 }
 
-export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]): Promise<SearchResult[]> {
+export async function enrichSearchResultsWithAppMetadata(
+  items: SearchResult[],
+  options: { mode?: MetadataEnrichmentMode } = {},
+): Promise<SearchResult[]> {
   const settings = useAppStore.getState()
   if (!settings.appManagedMetadata) return items
+  const mode = options.mode || 'cache-only'
 
   // 1. Check in-memory cache first, then batch-fetch remaining from DB
   const memResults: (AppMediaItem | null)[] = items.map((item) => {
@@ -171,11 +176,11 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   })
 
   // 3. Resolve uncached items in batch with concurrency limit (e.g. 4)
-  if (uncachedInputs.length > 0) {
+  if (uncachedInputs.length > 0 && mode !== 'cache-only') {
     try {
       const resolvedList = await resolveMetadataBatch(
         uncachedInputs.map(x => x.input),
-        6
+        mode === 'visible-card' ? 1 : 3
       )
       resolvedList.forEach((resolvedItem) => {
         if (!resolvedItem) return

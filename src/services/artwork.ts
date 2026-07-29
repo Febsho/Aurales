@@ -1,6 +1,6 @@
 import type { EpisodeDetails, MovieDetails, SearchResult, ShowDetails } from '../types'
 import { useAppStore } from '../stores/appStore'
-import type { ArtProviderSettings } from '../stores/appStore'
+import type { ArtProvider, ArtProviderSettings } from '../stores/appStore'
 
 interface ArtIds {
   imdbId?: string
@@ -130,6 +130,7 @@ export async function resolveArtFromProviders(
   mediaType: 'movie' | 'series',
   ids: { tmdbId?: string | number; tvdbId?: string | number; imdbId?: string },
   isAnime = false,
+  role: 'poster' | 'backdrop' | 'all' = 'all',
 ): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
   const { appManagedMetadata, artProviders, fanartApiKey } = useAppStore.getState()
   // When addon metadata is authoritative, its artwork is authoritative too.
@@ -141,10 +142,13 @@ export async function resolveArtFromProviders(
   const backdropProvider = artProviders[getProviderKey(mediaType, isAnime, 'Backdrop')]
   const logoProvider = artProviders[getProviderKey(mediaType, isAnime, 'Logo')]
 
-  const needed = new Set([posterProvider, backdropProvider, logoProvider])
+  const needed = new Set<ArtProvider>()
+  if (role === 'poster' || role === 'all') needed.add(posterProvider)
+  if (role === 'backdrop' || role === 'all') needed.add(backdropProvider)
+  if (role === 'all') needed.add(logoProvider)
   // A connected personal Fanart key also provides the preferred English-logo
   // fallback when TMDB only has a non-English logo.
-  if (fanartApiKey) needed.add('fanart')
+  if (role === 'all' && fanartApiKey) needed.add('fanart')
 
   const results: Record<string, { poster?: string; backdrop?: string; logo?: string }> = {}
 
@@ -180,7 +184,7 @@ export async function resolveArtFromProviders(
   // exists — not just for series/TMDB-selected. Anime *movies* select the
   // anime providers (TVDB/Fanart), which have no movie record, so without this
   // they'd resolve no logo at all.
-  fetches.push(
+  if (needed.has('tmdb') || role !== 'all') fetches.push(
     tmdbIdPromise.then((tmdbId) => {
       if (!tmdbId) return undefined
       return import('./tmdb').then(({ getTmdbCardMetadata }) =>
@@ -243,9 +247,9 @@ export async function resolveArtFromProviders(
   await Promise.all(fetches)
 
   return {
-    poster: results[posterProvider]?.poster || results.tmdb?.poster,
-    backdrop: results[backdropProvider]?.backdrop || results.tmdb?.backdrop,
-    logo: logoProvider === 'tmdb'
+    poster: role === 'backdrop' ? undefined : results[posterProvider]?.poster || results.tmdb?.poster,
+    backdrop: role === 'poster' ? undefined : results[backdropProvider]?.backdrop || results.tmdb?.backdrop,
+    logo: role !== 'all' ? undefined : logoProvider === 'tmdb'
       ? tmdbEnglishLogo || results.fanart?.logo || results.tmdb?.logo
       : results[logoProvider]?.logo || tmdbEnglishLogo || results.tmdb?.logo,
   }

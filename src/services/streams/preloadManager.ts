@@ -159,17 +159,18 @@ class StreamPreloadManager {
   }
 
   setContinueWatching(items: Array<StreamPreloadRequest & { progressPct?: number }>): void {
-    this.pendingContinue = items.slice(0, 5)
+    const mode = useAppStore.getState().playbackPreloadMode
+    this.pendingContinue = mode === 'aggressive' ? items.slice(0, 5) : mode === 'smart' ? items.slice(0, 1) : []
     this.continueWatchingReady = true
     this.maybeScheduleStartup()
   }
 
   private maybeScheduleStartup(): void {
-    if (!useAppStore.getState().preloadPlaybackSources) return
+    if (useAppStore.getState().playbackPreloadMode === 'off') return
     if (!this.homeReady || !this.continueWatchingReady || this.startupScheduled || this.pendingContinue.length === 0) return
     this.startupScheduled = true
     const run = async () => {
-      if (!useAppStore.getState().preloadPlaybackSources) return
+      if (useAppStore.getState().playbackPreloadMode === 'off') return
       if (!navigator.onLine) return
       devLog(`Idle startup preload: ${this.pendingContinue.length} Continue Watching targets`)
       for (const item of this.pendingContinue) {
@@ -193,33 +194,53 @@ class StreamPreloadManager {
   private async execute(request: StreamPreloadRequest, mediaKey: string, flight: AggregateFlight): Promise<PreloadedStream[]> {
     if (!navigator.onLine && flight.priority < StreamPreloadPriority.DETAILS_OPEN) return []
     const addons = allStreamAddons(request.mediaType).sort((a, b) => this.addonScore(b.manifest.id) - this.addonScore(a.manifest.id))
+    const mode = useAppStore.getState().playbackPreloadMode
     if (!addons.length) return []
     const results = new Map<string, PreloadedStream[]>()
-    const refreshes: Promise<void>[] = []
-
-    await Promise.all(addons.map(async (addon) => {
+    const processAddon = async (addon: InstalledAddon): Promise<boolean> => {
       const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId
         ? request.sourceAddonItemId
         : cleanId(request.mediaId)
-      if (!baseId) return
+      if (!baseId) return false
       const streamId = request.seasonEpisode ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
       const key = cacheKey(mediaKey, addon, streamId)
       const cached = await cacheGet<AddonCacheEntry>(key)
       const now = Date.now()
       if (cached?.data && cached.data.staleUntil > now) {
-        results.set(addon.manifest.id, this.decorate(cached.data.streams, addon))
+        const decorated = this.decorate(cached.data.streams, addon)
+        results.set(addon.manifest.id, decorated)
         devLog(`${cached.data.expiresAt > now && !cached.stale ? 'Cache HIT' : 'Cache STALE'}: ${mediaKey} / ${addon.manifest.id}`)
         this.emit(flight, results, true, false)
+        if (decorated.length > 0 && cached.data.expiresAt > now) return true
       }
       if (!cached?.data || cached.stale || cached.data.expiresAt <= now) {
-        refreshes.push(this.fetchAddon(request, mediaKey, addon, streamId, flight.priority).then((entry) => {
+        const usable = await this.fetchAddon(request, mediaKey, addon, streamId, flight.priority).then((entry) => {
           results.set(addon.manifest.id, this.decorate(entry.streams, addon))
           this.emit(flight, results, false, false)
-        }).catch(() => undefined))
+          return entry.streams.length > 0
+        }).catch(() => false)
+        return usable
       }
-    }))
+      return (cached?.data.streams.length || 0) > 0
+    }
 
-    await Promise.all(refreshes)
+    if (flight.priority < StreamPreloadPriority.PLAYBACK && mode === 'smart') {
+      let attempted = 0
+      for (const addon of addons) {
+        if (flight.priority < StreamPreloadPriority.PLAYBACK) {
+          if ((this.performance[addon.manifest.id]?.consecutiveFailures || 0) >= 3) continue
+          if (attempted >= 3) break
+          attempted += 1
+        }
+        const usable = await processAddon(addon)
+        // A Play action promotes this shared flight. Once promoted, continue
+        // progressively through every remaining addon instead of returning the
+        // limited preparation result to the player.
+        if (usable && flight.priority < StreamPreloadPriority.PLAYBACK) break
+      }
+    } else {
+      await Promise.all(addons.map(processAddon))
+    }
     const final = [...results.values()].flat()
     flight.latest = final
     for (const subscriber of flight.subscribers) subscriber(final, { cached: false, complete: true })
@@ -251,7 +272,12 @@ class StreamPreloadManager {
           const timeout = window.setTimeout(() => controller.abort(), ADDON_TIMEOUT_MS)
           const started = performance.now()
           try {
-            const streams = await fetchAddonStreamsStrict(addon.url, request.mediaType, streamId, controller.signal)
+            const requestPriority = priority >= StreamPreloadPriority.PLAYBACK
+              ? 'playback'
+              : priority >= StreamPreloadPriority.DETAILS_OPEN
+                ? 'interactive'
+                : 'background'
+            const streams = await fetchAddonStreamsStrict(addon.url, request.mediaType, streamId, controller.signal, requestPriority)
             const latency = Math.round(performance.now() - started)
             this.recordStats(addon.manifest.id, true, latency, streams.length)
             const ttl = safeTtl(request, streams)

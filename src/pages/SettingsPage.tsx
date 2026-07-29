@@ -3825,8 +3825,16 @@ export default function SettingsPage() {
                 <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
                   <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
                 </SettingRow>
-                <SettingRow label="Faster source loading" description="Look for playback sources in the background when you open a movie or episode page, so they are ready sooner when you press Play.">
-                  <SettingToggle checked={store.preloadPlaybackSources} onChange={store.setPreloadPlaybackSources} />
+                <SettingRow label="Playback source preload" description="Smart checks one Continue Watching title and up to three healthy addons. Aggressive keeps five titles warm.">
+                  <SettingSelect
+                    value={store.playbackPreloadMode}
+                    onChange={(value) => store.setPlaybackPreloadMode(value as 'off' | 'smart' | 'aggressive')}
+                    options={[
+                      { value: 'off', label: 'Off' },
+                      { value: 'smart', label: 'Smart' },
+                      { value: 'aggressive', label: 'Aggressive' },
+                    ]}
+                  />
                 </SettingRow>
                 <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
                   <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />

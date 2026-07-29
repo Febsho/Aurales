@@ -1,10 +1,10 @@
 import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
-import { appMediaToSearchResult, resolveMetadataBatch } from './metadata'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
+import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -15,50 +15,7 @@ export interface InstalledAddon {
 }
 
 const installedAddons: Map<string, InstalledAddon> = new Map()
-const MAX_CATALOG_REQUESTS_PER_ADDON = 1
 const ADDON_CATALOG_TIMEOUT_MS = 15_000
-const catalogRequestStates = new Map<string, { active: number; waiters: Array<() => void> }>()
-
-async function withAddonRequestSlot<T>(
-  addonUrl: string,
-  request: () => Promise<T>,
-  priority: 'normal' | 'detail' = 'normal',
-): Promise<T> {
-  let key = baseUrl(addonUrl)
-  try {
-    // Different configured manifests on the same self-hosted service still
-    // share one backend. Limit by origin so separate config paths cannot each
-    // open their own burst against that process.
-    key = new URL(key).origin
-  } catch (_) { /* retain the normalized addon URL */ }
-  const state = catalogRequestStates.get(key) || { active: 0, waiters: [] }
-  catalogRequestStates.set(key, state)
-  if (state.active >= MAX_CATALOG_REQUESTS_PER_ADDON) {
-    await new Promise<void>((resolve) => {
-      if (priority === 'detail') state.waiters.unshift(resolve)
-      else state.waiters.push(resolve)
-    })
-  }
-  state.active += 1
-  try {
-    return await request()
-  } finally {
-    state.active -= 1
-    const next = state.waiters.shift()
-    if (next) next()
-    else if (state.active === 0) catalogRequestStates.delete(key)
-  }
-}
-
-async function fetchAddonResponse(url: string): Promise<Response> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), ADDON_CATALOG_TIMEOUT_MS)
-  try {
-    return await fetch(url, { signal: controller.signal })
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 export function syncAddonsFromStore(addons: InstalledAddon[]): void {
   const currentIds = new Set(addons.map((addon) => addon.manifest.id))
@@ -84,9 +41,14 @@ function addonSupportsResource(manifest: StremioAddonManifest, resourceName: str
 
 export async function loadAddonManifest(url: string): Promise<StremioAddonManifest> {
   const manifestUrl = url.endsWith('/manifest.json') ? url : `${url.replace(/\/$/, '')}/manifest.json`
-  const res = await fetch(manifestUrl)
-  if (!res.ok) throw new Error(`Failed to load addon manifest: ${res.status}`)
-  return await res.json()
+  return coordinatedJson<StremioAddonManifest>(manifestUrl, {}, {
+    label: addonLabel(url),
+    kind: 'addon',
+    dedupeKey: `manifest:${baseUrl(url)}`,
+    priority: 'interactive',
+    timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+    retry: 'interactive-once',
+  })
 }
 
 export function installAddon(manifest: StremioAddonManifest, url: string): void {
@@ -107,6 +69,12 @@ export function getAddonById(addonId: string): InstalledAddon | undefined {
 
 function baseUrl(addonUrl: string): string {
   return addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
+}
+
+function addonLabel(addonUrl: string): string {
+  const installed = [...installedAddons.values()].find((addon) => baseUrl(addon.url) === baseUrl(addonUrl))
+  if (installed) return installed.displayName || installed.manifest.name
+  try { return new URL(addonUrl).hostname } catch { return 'Addon' }
 }
 
 function appManagedMetadataEnabled(): boolean {
@@ -206,37 +174,26 @@ async function fetchAddonCatalog(
   catalogId: string,
   extra?: Record<string, string>,
   addonId?: string,
+  requestContext?: { cancelGroup?: string; priority?: RequestPriority },
 ): Promise<SearchResult[]> {
   const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
 
   try {
-    const res = await withAddonRequestSlot(addonUrl, () => fetchAddonResponse(`${baseUrl(addonUrl)}${path}`))
-    if (!res.ok) throw new Error(`Addon catalog error: ${res.status}`)
-    const data = await res.json()
+    const data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
+      label: addonLabel(addonUrl),
+      kind: 'addon',
+      dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
+      priority: requestContext?.priority || 'visible',
+      cancelGroup: requestContext?.cancelGroup,
+      timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+      retry: 'interactive-once',
+    })
     const raw = ((data.metas || []) as Record<string, unknown>[]).filter((m) => m.id)
     const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
-    // Keep this in sync with appStore.setAppManagedMetadata. The old
-    // `orynt_...` key meant the Settings toggle was ignored and every addon
-    // catalog synchronously resolved all entries through external providers.
-    const managed = appManagedMetadataEnabled()
-    if (!managed) return previews
-
-    const resolved = await resolveMetadataBatch(raw.map((meta, index) => ({
-      addonId: addonId || addonUrl, addonUrl, addonType: String(meta.type || type), id: String(meta.id || ''),
-      title: previews[index].title, year: previews[index].year, imdbId: previews[index].imdbId,
-      tmdbId: Number(previews[index].tmdbId) || undefined, tvdbId: Number(previews[index].tvdbId) || undefined,
-      anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
-      rawAddonMeta: meta,
-    })))
-    const bySourceId = new Map(
-      resolved
-        .filter((item) => item.sourceMetadataProvider !== 'fallback_addon')
-        .map((item) => [item.sourceAddonItemId, item])
-    )
-    return previews.map((preview) => {
-      const item = bySourceId.get(preview.sourceAddonItemId)
-      return item ? appMediaToSearchResult(item, addonUrl) : preview
-    })
+    // Catalogs are previews. Resolving every result here used to turn one
+    // addon request into dozens of metadata/artwork calls before first paint.
+    // Visible cards and detail pages enrich only what the user can see.
+    return previews
   } catch (_) {
     return []
   }
@@ -249,6 +206,7 @@ export async function getAddonCatalog(
   extra?: Record<string, string>,
   addonId?: string,
   _forceRefresh = false,
+  requestContext?: { cancelGroup?: string; priority?: RequestPriority },
 ): Promise<SearchResult[]> {
   const key = catalogCacheKey({
     scope: 'catalog',
@@ -259,7 +217,10 @@ export async function getAddonCatalog(
     filters: { extra: extra || {}, appManagedMetadata: appManagedMetadataEnabled() },
     version: 2,
   })
-  return cachedFetch(key, () => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId), {
+  return cachedFetch(key, (cacheContext) => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId, {
+    ...requestContext,
+    priority: cacheContext?.background ? 'background' : requestContext?.priority,
+  }), {
     category: CACHE_CATEGORIES.ADDON_CATALOG,
     ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
     skipRefreshIf: (cached) => cached.length > 0 && typeof navigator !== 'undefined' && !navigator.onLine,
@@ -272,9 +233,14 @@ export async function getAddonStreams(
   id: string
 ): Promise<StreamResult[]> {
   try {
-    const res = await fetch(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`)
-    if (!res.ok) return []
-    const data = await res.json()
+    const data = await coordinatedJson<{ streams?: StreamResult[] }>(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, {}, {
+      label: addonLabel(addonUrl),
+      kind: 'addon',
+      dedupeKey: `stream:${type}:${id}`,
+      priority: 'playback',
+      timeoutMs: 8_000,
+      retry: 'interactive-once',
+    })
     return (data.streams || []) as StreamResult[]
   } catch (_) {
     return []
@@ -291,10 +257,23 @@ export async function fetchAddonStreamsStrict(
   type: string,
   id: string,
   signal?: AbortSignal,
+  priority: RequestPriority = 'playback',
 ): Promise<StreamResult[]> {
-  const res = await fetch(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, { signal })
-  if (!res.ok) throw new Error(`Addon stream error: ${res.status}`)
-  const data = await res.json() as { streams?: unknown }
+  const group = signal ? `stream:${type}:${id}:${Math.random().toString(36).slice(2)}` : undefined
+  if (signal && group) {
+    signal.addEventListener('abort', () => {
+      import('./network/requestCoordinator').then(({ cancelRequestGroup }) => cancelRequestGroup(group))
+    }, { once: true })
+  }
+  const data = await coordinatedJson<{ streams?: unknown }>(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, {}, {
+    label: addonLabel(addonUrl),
+    kind: 'addon',
+    dedupeKey: `stream:${type}:${id}`,
+    priority,
+    cancelGroup: group,
+    timeoutMs: 8_000,
+    retry: priority === 'background' ? 'none' : 'interactive-once',
+  })
   if (data.streams != null && !Array.isArray(data.streams)) throw new Error('Malformed streams response')
   return ((data.streams || []) as unknown[]).filter((stream): stream is StreamResult => Boolean(
     stream && typeof stream === 'object' &&
@@ -311,13 +290,14 @@ export async function getAddonMeta(
     const source = baseUrl(addonUrl)
     const key = `addon-meta:v1:${source}:${type}:${id}`
     return await cachedFetch<Record<string, unknown>>(key, async () => {
-      const res = await withAddonRequestSlot(
-        addonUrl,
-        () => fetchAddonResponse(`${source}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`),
-        'detail',
-      )
-      if (!res.ok) throw new Error(`Addon meta error: ${res.status}`)
-      const data = await res.json()
+      const data = await coordinatedJson<{ meta?: Record<string, unknown> }>(`${source}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `meta:${type}:${id}`,
+        priority: 'interactive',
+        timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+        retry: 'interactive-once',
+      })
       if (!data.meta) throw new Error('Addon meta response is empty')
       return data.meta as Record<string, unknown>
     }, {
@@ -354,10 +334,21 @@ export async function getAddonSubtitles(
       }
     })
   try {
-    const res = await fetch(url)
-    if (!res.ok) return []
-    const data = await res.json()
-    return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
+    return await cachedFetch<SubtitleResult[]>(`addon-subtitle:v1:${baseUrl(addonUrl)}:${type}:${id}`, async () => {
+      const data = await coordinatedJson<{ subtitles?: unknown[] }>(url, {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `subtitles:${type}:${id}`,
+        priority: 'playback',
+        timeoutMs: 8_000,
+        retry: 'interactive-once',
+      })
+      return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
+    }, {
+      category: CACHE_CATEGORIES.ADDON_SUBTITLE,
+      ttlSeconds: CACHE_TTLS.ADDON_SUBTITLE,
+      cacheEmptyResults: true,
+    })
   } catch (_) {
     try {
       const body = await invoke<string>('http_get_text', { url })

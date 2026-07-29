@@ -8,6 +8,7 @@ import { EmptyState } from '../components/ui'
 import { MediaRowSkeleton } from '../components/ui/Skeleton'
 import { getAddonCatalog } from '../services/addons'
 import { searchEngines, type SearchEngineId } from '../services/searchEngines'
+import { cancelRequestGroup } from '../services/network/requestCoordinator'
 
 const SEARCH_HISTORY_KEY = 'orynt_search_history'
 const MAX_HISTORY = 10
@@ -204,6 +205,7 @@ export default function SearchPage() {
   const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const requestIdRef = useRef(0)
+  const activeRequestGroupRef = useRef<string | null>(null)
 
   const movies = useMemo(() => results.filter((item) => item.type === 'movie' && !isAnime(item)).slice(0, 24), [results])
   const series = useMemo(() => results.filter((item) => item.type === 'series' && !isAnime(item)).slice(0, 24), [results])
@@ -214,6 +216,9 @@ export default function SearchPage() {
 
   const executeSearch = useCallback(async (text: string) => {
     const requestId = ++requestIdRef.current
+    if (activeRequestGroupRef.current) cancelRequestGroup(activeRequestGroupRef.current)
+    const requestGroup = `search:${requestId}`
+    activeRequestGroupRef.current = requestGroup
     if (!text) {
       setResults([])
       setSearched(false)
@@ -237,7 +242,7 @@ export default function SearchPage() {
     const fireEngine = (engineId: SearchEngineId, type: 'movie' | 'series') => {
       const engine = searchEngines[engineId]
       if (!engine) return
-      const p = engine.search(text, type).then(mergeAndShow).catch(() => {})
+      const p = engine.search(text, type, { cancelGroup: requestGroup }).then(mergeAndShow).catch(() => {})
       pending.push(p)
     }
 
@@ -268,7 +273,15 @@ export default function SearchPage() {
       .filter((addon) => addon.enabled)
       .flatMap((addon) => addon.manifest.catalogs
         .filter((catalog) => catalog.extra?.some((extra) => extra.name === 'search'))
-        .map((catalog) => getAddonCatalog(addon.url, catalog.type, catalog.id, { search: text }, addon.manifest.id)))
+        .map((catalog) => getAddonCatalog(
+          addon.url,
+          catalog.type,
+          catalog.id,
+          { search: text },
+          addon.manifest.id,
+          false,
+          { cancelGroup: requestGroup, priority: 'interactive' },
+        )))
     for (const addonP of addonSearches) {
       const p = addonP.then(mergeAndShow).catch(() => {})
       pending.push(p)
@@ -351,7 +364,10 @@ export default function SearchPage() {
     // 300ms: long enough to skip most mid-typing queries (each one fans out to
     // every engine and addon), short enough to still feel instant.
     const timer = setTimeout(() => executeSearch(query), 300)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      if (activeRequestGroupRef.current) cancelRequestGroup(activeRequestGroupRef.current)
+    }
   }, [query, executeSearch])
 
   const totalMovies = movies.length + animeMovies.length

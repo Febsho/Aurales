@@ -3,6 +3,7 @@ import { getTmdbApiKey } from './apiKeys'
 import { cachedFetch, cacheGet, cacheSet } from './cache/sqliteCache'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
@@ -28,15 +29,25 @@ function backdropSize(): string {
   return imageQuality() === 'data-saver' ? 'w1280' : 'original'
 }
 
-async function tmdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
+async function tmdbFetch(
+  path: string,
+  params: Record<string, string> = {},
+  request: { priority?: RequestPriority; cancelGroup?: string } = {},
+): Promise<unknown> {
   const apiKey = getTmdbApiKey()
   const url = new URL(`${BASE_URL}${path}`)
   url.searchParams.set('api_key', apiKey)
   if (!('language' in params)) url.searchParams.set('language', 'en-US')
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString())
-  if (!res.ok) throw new Error(`TMDB error: ${res.status}`)
-  return res.json()
+  return coordinatedJson<unknown>(url.toString(), {}, {
+    label: 'TMDB',
+    kind: 'metadata',
+    dedupeKey: `${path}:${new URLSearchParams(params).toString()}`,
+    priority: request.priority || 'visible',
+    cancelGroup: request.cancelGroup,
+    timeoutMs: 12_000,
+    retry: request.priority === 'background' ? 'none' : 'interactive-once',
+  })
 }
 
 export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number | undefined> {
@@ -157,11 +168,12 @@ export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show'
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
-  const result = await cachedFetch<string | null>(`tmdb_backdrop_v4:${mediaType}:${id}`, async () => {
+  const result = await cachedFetch<string | null>(`tmdb_backdrop_v4:${mediaType}:${id}`, async (cacheContext) => {
+    const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
     try {
       const [details, images] = await Promise.all([
-        tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
-        tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
+        tmdbFetch(`/${mediaType}/${id}`, {}, { priority }) as Promise<Record<string, unknown>>,
+        tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }, { priority }) as Promise<Record<string, unknown>>,
       ])
       return pickBestBackdrop(images, details.backdrop_path as string) || null
     } catch (_) {
@@ -184,9 +196,11 @@ export async function getTmdbCardMetadata(
   // Some addon/anime catalogs label movies as series. When IMDb is known,
   // use TMDB's external-ID mapping to select the authoritative endpoint.
   if (imdbId) {
-    const resolvedType = await cachedFetch<'movie' | 'tv' | null>(`tmdb_media_type_v1:${imdbId}:${id}`, async () => {
+    const resolvedType = await cachedFetch<'movie' | 'tv' | null>(`tmdb_media_type_v1:${imdbId}:${id}`, async (cacheContext) => {
       try {
-        const found = await tmdbFetch(`/find/${encodeURIComponent(imdbId)}`, { external_source: 'imdb_id' }) as Record<string, unknown>
+        const found = await tmdbFetch(`/find/${encodeURIComponent(imdbId)}`, { external_source: 'imdb_id' }, {
+          priority: cacheContext?.background ? 'background' : 'visible',
+        }) as Record<string, unknown>
         const movieMatch = ((found.movie_results as Record<string, unknown>[]) || []).some((item) => String(item.id) === id)
         if (movieMatch) return 'movie'
         const tvMatch = ((found.tv_results as Record<string, unknown>[]) || []).some((item) => String(item.id) === id)
@@ -198,10 +212,11 @@ export async function getTmdbCardMetadata(
     if (resolvedType) mediaType = resolvedType
   }
 
-  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }>(`tmdb_card_v10:${mediaType}:${id}`, async () => {
+  return cachedFetch<{ poster?: string; backdrop?: string; logo?: string; englishLogo?: string; genre?: string }>(`tmdb_card_v10:${mediaType}:${id}`, async (cacheContext) => {
+    const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
     const [details, images] = await Promise.all([
-      tmdbFetch(`/${mediaType}/${id}`) as Promise<Record<string, unknown>>,
-      tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/${mediaType}/${id}`, {}, { priority }) as Promise<Record<string, unknown>>,
+      tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }, { priority }) as Promise<Record<string, unknown>>,
     ])
     const genres = Array.isArray(details.genres) ? details.genres as Array<Record<string, unknown>> : []
     const logos = (images.logos as Record<string, unknown>[]) || []
@@ -262,11 +277,19 @@ export const tmdbProvider: MetadataProvider = {
   id: 'tmdb',
   name: 'TMDB',
 
-  async search(query: string): Promise<SearchResult[]> {
+  async search(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
     const params = { query, include_adult: 'false' }
+    if (type) {
+      const mediaType = type === 'movie' ? 'movie' : 'tv'
+      const data = await tmdbFetch(`/search/${mediaType}`, params, {
+        priority: 'interactive',
+        cancelGroup: context?.cancelGroup,
+      }) as Record<string, unknown>
+      return ((data.results as Record<string, unknown>[]) || []).map((item) => mapSearchResult(item, type))
+    }
     const [movies, shows] = await Promise.all([
-      tmdbFetch('/search/movie', params) as Promise<Record<string, unknown>>,
-      tmdbFetch('/search/tv', params) as Promise<Record<string, unknown>>,
+      tmdbFetch('/search/movie', params, { priority: 'interactive', cancelGroup: context?.cancelGroup }) as Promise<Record<string, unknown>>,
+      tmdbFetch('/search/tv', params, { priority: 'interactive', cancelGroup: context?.cancelGroup }) as Promise<Record<string, unknown>>,
     ])
     return [
       ...(((movies.results as Record<string, unknown>[]) || []).map((item) => mapSearchResult(item, 'movie'))),

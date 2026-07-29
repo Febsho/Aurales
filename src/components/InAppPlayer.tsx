@@ -29,6 +29,7 @@ import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../s
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
+import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 
 interface InAppPlayerProps {
   url: string
@@ -138,6 +139,10 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
 }
 
 export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted }: InAppPlayerProps) {
+  useEffect(() => {
+    setRequestPlaybackActive(true)
+    return () => setRequestPlaybackActive(false)
+  }, [])
   const videoRef = useRef<HTMLVideoElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)

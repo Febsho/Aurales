@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
+use webkit2gtk::WebViewExt;
 
 const GL_DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 
@@ -159,6 +160,14 @@ fn install_layer(webview: &webkit2gtk::WebView) -> Result<(), String> {
     if already_installed {
         return Ok(());
     }
+
+    // libmpv is composed inside this GTK window, so only the WebKit widget
+    // needs alpha. Keeping the top-level Linux window transparent makes
+    // WebKitGTK's fallback renderer accumulate stale control frames and can
+    // leave the GLArea completely black in packaged builds. The Linux Tauri
+    // config therefore uses an opaque top-level; make the WebView itself
+    // transparent explicitly so CSS transparency still reveals the video.
+    webview.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
 
     let parent_widget = webview
         .parent()

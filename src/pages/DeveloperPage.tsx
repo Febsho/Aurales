@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { launchEmbeddedPlayer } from '../services/player'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
+import { requestDiagnostics, type RequestDiagnostics } from '../services/network/requestCoordinator'
 
 function hashUrl(value: string): string {
   let hash = 2166136261
@@ -64,6 +65,7 @@ export default function DeveloperPage() {
   const [playbackState, setPlaybackState] = useState<any>(null)
   const [thumbnailDebug, setThumbnailDebug] = useState<ThumbnailDebugState | null>(null)
   const [logEntries, setLogEntries] = useState(getLogs())
+  const [requests, setRequests] = useState<RequestDiagnostics>(() => requestDiagnostics())
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const store = useAppStore()
@@ -80,6 +82,11 @@ export default function DeveloperPage() {
         setError(String(err))
         setLoading(false)
       })
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => setRequests(requestDiagnostics()), 1_000)
+    return () => clearInterval(interval)
   }, [])
 
   // Subscribe to log updates
@@ -203,6 +210,7 @@ export default function DeveloperPage() {
       thumbnailDebug: thumbnailDebug || 'No thumbnail debug state',
       events: logEntries.map(e => `[${e.timestamp}] [${e.prefix}] ${e.message}`),
       nativePlayerLogs,
+      requestDiagnostics: requests,
     }
 
     navigator.clipboard.writeText(JSON.stringify(report, null, 2))
@@ -238,6 +246,50 @@ export default function DeveloperPage() {
             {error}
           </div>
         )}
+
+        <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-5">
+          <div>
+            <h2 className="text-lg font-black tracking-tight text-white">Request Traffic</h2>
+            <p className="text-white/40 text-sm mt-1">Privacy-safe counters only. URLs, searches, headers, and credentials are never recorded.</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              ['Cache hits', requests.cacheHits],
+              ['Cache misses', requests.cacheMisses],
+              ['Network calls', requests.networkCalls],
+              ['Deduplicated', requests.deduplicated],
+              ['Cancelled', requests.cancelled],
+              ['Queued', requests.queued],
+              ['Active', requests.active],
+              ['HTTP 429', requests.rateLimited],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-white/[0.05] bg-black/20 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-white/35">{label}</div>
+                <div className="mt-1 text-xl font-black text-white">{value}</div>
+              </div>
+            ))}
+          </div>
+          {requests.origins.length > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-white/[0.05]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-white/[0.03] text-white/40">
+                  <tr><th className="p-3">Provider / addon</th><th>Calls</th><th>Failures</th><th>Latency</th><th>State</th></tr>
+                </thead>
+                <tbody>
+                  {requests.origins.map((origin) => (
+                    <tr key={origin.label} className="border-t border-white/[0.04] text-white/70">
+                      <td className="p-3 font-semibold text-white/85">{origin.label}</td>
+                      <td>{origin.calls}</td>
+                      <td>{origin.failures}</td>
+                      <td>{origin.averageLatencyMs} ms</td>
+                      <td>{origin.cooldownUntil && origin.cooldownUntil > Date.now() ? 'Cooldown' : origin.consecutiveFailures ? `${origin.consecutiveFailures} recent failures` : 'Healthy'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
         <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-5">
           <div className="flex items-center justify-between gap-4">
