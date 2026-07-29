@@ -7,7 +7,7 @@ import { preparedStreamRegistry } from '../services/streams/preparedStreams'
 // Just enough to skip prepare while flipping through pages; the detail-page
 // stream fetch (DETAILS_OPEN) is already in flight, so preparing early only
 // costs one rank + probe.
-const DWELL_MS = 250
+const DWELL_MS = 1_250
 
 // After the user has dwelled on a detail page for a moment (i.e. is not just
 // flipping through pages), prepare the best direct stream so Play starts
@@ -15,9 +15,10 @@ const DWELL_MS = 250
 export function usePreparedStream(request: StreamPreloadRequest | null, title?: string): void {
   const mediaKey = request ? canonicalStreamKey(request) : null
   const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
+  const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
 
   useEffect(() => {
-    if (!request || !mediaKey || !autoPlayFirstStream) return
+    if (!request || !mediaKey || !autoPlayFirstStream || playbackPreloadMode === 'off') return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       if (!navigator.onLine) return
@@ -30,5 +31,5 @@ export function usePreparedStream(request: StreamPreloadRequest | null, title?: 
     // Keyed on the canonical media key: a new media (or episode target)
     // restarts the dwell timer; unmount cancels an in-flight prepare.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mediaKey, autoPlayFirstStream])
+  }, [mediaKey, autoPlayFirstStream, playbackPreloadMode])
 }

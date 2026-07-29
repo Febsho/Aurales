@@ -216,7 +216,7 @@ export default function MovieDetailPage() {
   const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
   const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
-  const preloadPlaybackSources = useAppStore((s) => s.preloadPlaybackSources)
+  const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
   const artSettingsSignature = useMemo(() => JSON.stringify({
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
@@ -259,7 +259,7 @@ export default function MovieDetailPage() {
   } | null>(null)
 
   useEffect(() => {
-    if (!movie || !preloadPlaybackSources) return
+    if (!movie) return
 
     let active = true
 
@@ -680,7 +680,7 @@ export default function MovieDetailPage() {
   }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
 
   useEffect(() => {
-    if (!movie) return
+    if (!movie || playbackPreloadMode === 'off') return
     const isAnime = !!(movie.malId || movie.anilistId)
     if (!isAnime) return
 
@@ -770,7 +770,7 @@ export default function MovieDetailPage() {
       sourceAddonId: state.sourceAddonId,
       sourceAddonItemId: state.sourceAddonItemId,
     }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
-  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId, playbackPreloadMode])
 
   // After a short dwell, rank + probe the best direct stream so Play is instant.
   const preparedMediaId = movie ? (movie.imdbId || state.sourceAddonItemId || id || '') : ''

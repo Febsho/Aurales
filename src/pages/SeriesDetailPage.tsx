@@ -486,7 +486,7 @@ export default function SeriesDetailPage() {
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
-  const preloadPlaybackSources = useAppStore((s) => s.preloadPlaybackSources)
+  const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
 
   const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
     if (!show) return null
@@ -2315,7 +2315,7 @@ export default function SeriesDetailPage() {
   }, [show, seasonData, liveResumePoint?.season, liveResumePoint?.episode, resumeProgress?.season, resumeProgress?.episode, id, state.sourceAddonId, state.sourceAddonItemId])
 
   useEffect(() => {
-    if (!show || !detailStreamRequest || !preloadPlaybackSources) return
+    if (!show || !detailStreamRequest || playbackPreloadMode === 'off') return
     // Start requesting streams as soon as the show is usable. Previously this
     // only ran for resumed shows, so a first-time viewer waited until they
     // pressed Play before any addon request began.
@@ -2324,7 +2324,7 @@ export default function SeriesDetailPage() {
     if (detailStreamPreloadRef.current === preloadKey) return
     detailStreamPreloadRef.current = preloadKey
     streamPreloadManager.request(detailStreamRequest, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
-  }, [show, detailStreamRequest, state.sourceAddonId, state.sourceAddonItemId, preloadPlaybackSources])
+  }, [show, detailStreamRequest, state.sourceAddonId, state.sourceAddonItemId, playbackPreloadMode])
 
   // After a short dwell, rank + probe the best direct stream so Play is instant.
   usePreparedStream(detailStreamRequest, show?.title)

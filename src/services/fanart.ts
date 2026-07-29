@@ -1,6 +1,7 @@
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { useAppStore } from '../stores/appStore'
+import { coordinatedJson } from './network/requestCoordinator'
 
 const BASE = 'https://webservice.fanart.tv/v3.2'
 
@@ -59,10 +60,11 @@ export async function getFanartMovieArt(tmdbId: string | number): Promise<{ post
   const apiKey = useAppStore.getState().fanartApiKey
   if (!apiKey || !tmdbId) return {}
 
-  return cachedFetch(`fanart_movie_v2:${cacheKeyToken(apiKey)}:${tmdbId}`, async () => {
-    const res = await fetch(`${BASE}/movies/${tmdbId}?client_key=${encodeURIComponent(apiKey)}`)
-    if (!res.ok) return {}
-    const data = await res.json() as FanartMovieResponse
+  return cachedFetch(`fanart_movie_v2:${cacheKeyToken(apiKey)}:${tmdbId}`, async (cacheContext) => {
+    const data = await coordinatedJson<FanartMovieResponse>(`${BASE}/movies/${tmdbId}?client_key=${encodeURIComponent(apiKey)}`, {}, {
+      label: 'Fanart.tv', kind: 'metadata', dedupeKey: `movie:${tmdbId}`,
+      priority: cacheContext?.background ? 'background' : 'visible', timeoutMs: 12_000, retry: 'none',
+    })
     return {
       poster: pickBest(data.movieposter),
       backdrop: pickBest(data.moviebackground, true),
@@ -75,10 +77,11 @@ export async function getFanartShowArt(tvdbId: string | number): Promise<{ poste
   const apiKey = useAppStore.getState().fanartApiKey
   if (!apiKey || !tvdbId) return {}
 
-  return cachedFetch(`fanart_show_v2:${cacheKeyToken(apiKey)}:${tvdbId}`, async () => {
-    const res = await fetch(`${BASE}/tv/${tvdbId}?client_key=${encodeURIComponent(apiKey)}`)
-    if (!res.ok) return {}
-    const data = await res.json() as FanartShowResponse
+  return cachedFetch(`fanart_show_v2:${cacheKeyToken(apiKey)}:${tvdbId}`, async (cacheContext) => {
+    const data = await coordinatedJson<FanartShowResponse>(`${BASE}/tv/${tvdbId}?client_key=${encodeURIComponent(apiKey)}`, {}, {
+      label: 'Fanart.tv', kind: 'metadata', dedupeKey: `series:${tvdbId}`,
+      priority: cacheContext?.background ? 'background' : 'visible', timeoutMs: 12_000, retry: 'none',
+    })
     return {
       poster: pickBest(data.tvposter),
       backdrop: pickBest(data.showbackground, true),

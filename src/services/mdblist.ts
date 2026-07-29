@@ -349,7 +349,16 @@ async function mdblistFetch<T>(
   const url = new URL(`${BASE_URL}${path}`)
   if (key) url.searchParams.set('apikey', key)
 
-  return queueMdblistRequest(async () => {
+  const { requestCoordinator } = await import('./network/requestCoordinator')
+  return requestCoordinator.run<T>({
+    origin: BASE_URL,
+    label: 'MDBList',
+    kind: 'metadata',
+    dedupeKey: `${method}:${path}:${body === undefined ? '' : JSON.stringify(body)}`,
+    priority: method === 'GET' ? 'visible' : 'interactive',
+    timeoutMs: 20_000,
+    retry: 'none',
+  }, (signal) => queueMdblistRequest(async () => {
     if (token) {
       const headers: Record<string, string> = {
         Accept: 'application/json',
@@ -383,6 +392,7 @@ async function mdblistFetch<T>(
 
     const res = await fetch(url.toString(), {
       method,
+      signal,
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
@@ -401,7 +411,7 @@ async function mdblistFetch<T>(
     }
     if (res.status === 204) return undefined as T
     return res.json() as Promise<T>
-  })
+  }))
 }
 
 function pickArray(data: unknown): unknown[] {

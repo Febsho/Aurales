@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
+import { requestCoordinator } from './network/requestCoordinator'
 
 const BASE_URL = 'https://publicmetadb.com/api/external'
 
@@ -30,12 +31,20 @@ async function pmdbFetch(
   if (!apiKey) return { ok: false, status: 0, data: null }
 
   try {
-    const result = await invoke<RustPmdbResponse>('pmdb_request', {
-      method,
-      url: `${BASE_URL}${path}`,
-      apiKey,
-      body: bodyObj !== undefined ? JSON.stringify(bodyObj) : null,
-    })
+    const result = await requestCoordinator.run<RustPmdbResponse>({
+      origin: BASE_URL,
+      label: 'PublicMetaDB',
+      kind: 'metadata',
+      dedupeKey: `${method}:${path}:${bodyObj === undefined ? '' : JSON.stringify(bodyObj)}`,
+      priority: method === 'GET' ? 'visible' : 'interactive',
+      timeoutMs: 15_000,
+      retry: 'none',
+    }, () => invoke<RustPmdbResponse>('pmdb_request', {
+        method,
+        url: `${BASE_URL}${path}`,
+        apiKey,
+        body: bodyObj !== undefined ? JSON.stringify(bodyObj) : null,
+      }))
 
     let data: unknown = null
     try { data = JSON.parse(result.body) } catch (_) { data = result.body }

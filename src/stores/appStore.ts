@@ -21,6 +21,7 @@ function invalidateCatalogData(): void {
 type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
+export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
 export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
 export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
 
@@ -229,7 +230,7 @@ interface AppState {
   audioPassthrough: boolean
   autoSkipSegments: boolean
   autoPlayFirstStream: boolean
-  preloadPlaybackSources: boolean
+  playbackPreloadMode: PlaybackPreloadMode
   subtitleFontSize: number
   subtitleBgOpacity: string
   subtitleColor: string
@@ -351,7 +352,7 @@ interface AppState {
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
   setAutoPlayFirstStream: (val: boolean) => void
-  setPreloadPlaybackSources: (val: boolean) => void
+  setPlaybackPreloadMode: (mode: PlaybackPreloadMode) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
   setSubtitleColor: (color: string) => void
@@ -817,7 +818,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Default ON: instant playback (detail-page prepare + startup preload) is
   // the expected experience; users who want the manual picker opt out.
   autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') !== 'false',
-  preloadPlaybackSources: localStorage.getItem('aurales_preload_playback_sources') !== 'false',
+  playbackPreloadMode: (() => {
+    const saved = localStorage.getItem('aurales_playback_preload_mode')
+    if (saved === 'off' || saved === 'smart' || saved === 'aggressive') return saved
+    const migrated: PlaybackPreloadMode = localStorage.getItem('aurales_preload_playback_sources') === 'false' ? 'off' : 'smart'
+    localStorage.setItem('aurales_playback_preload_mode', migrated)
+    return migrated
+  })(),
   subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
@@ -935,7 +942,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
   setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
-  setPreloadPlaybackSources: (val) => { localStorage.setItem('aurales_preload_playback_sources', String(val)); set({ preloadPlaybackSources: val }) },
+  setPlaybackPreloadMode: (mode) => {
+    localStorage.setItem('aurales_playback_preload_mode', mode)
+    localStorage.removeItem('aurales_preload_playback_sources')
+    set({ playbackPreloadMode: mode })
+  },
   setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
   setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
   setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
@@ -1095,14 +1106,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_mpv_cache_secs', '60')
     localStorage.setItem('aurales_mpv_network_timeout', '60')
     localStorage.setItem('aurales_mpv_custom_args', '')
-    localStorage.setItem('aurales_preload_playback_sources', 'true')
+    localStorage.setItem('aurales_playback_preload_mode', 'smart')
+    localStorage.removeItem('aurales_preload_playback_sources')
     set({
       hwdecMode: 'auto',
       cacheBufferSize: 'default',
       mpvCacheSecs: 60,
       mpvNetworkTimeout: 60,
       mpvCustomArgs: '',
-      preloadPlaybackSources: true,
+      playbackPreloadMode: 'smart',
     })
   },
 

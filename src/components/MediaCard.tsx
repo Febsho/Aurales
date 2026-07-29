@@ -276,6 +276,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             displayItem.type,
             { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId: resolvedImdbId },
             displayItem.isAnime,
+            layout === 'landscape' ? 'backdrop' : 'poster',
           )
           // Provider art takes priority over TMDB metadata art
           if (providerArt.poster) finalPoster = providerArt.poster

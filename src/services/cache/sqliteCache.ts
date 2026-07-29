@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { scheduleTask, startupTaskQueue, taskQueue, type TaskPriority } from './backgroundTaskQueue'
+import { requestCoordinator } from '../network/requestCoordinator'
 
 // [PERF] logs are dev-only — they add noise and cost in production builds
 const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
@@ -46,19 +47,27 @@ function ageMs(entry: RawCacheEntry): number {
 
 export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
   const memory = sessionCache.get(key)
-  if (memory) return memory as CacheResult<T>
+  if (memory) {
+    requestCoordinator.recordCacheHit()
+    return memory as CacheResult<T>
+  }
   try {
     const entry = await Promise.race([
       invoke<RawCacheEntry | null>('cache_entry_get', { key }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), CACHE_READ_TIMEOUT_MS)),
     ])
-    if (!entry) return null
+    if (!entry) {
+      requestCoordinator.recordCacheMiss()
+      return null
+    }
     const data = JSON.parse(entry.value) as T
     const result = { data, stale: isExpired(entry), age: ageMs(entry) }
     sessionCache.set(key, result)
     sessionCategories.set(key, entry.category)
+    requestCoordinator.recordCacheHit()
     return result
   } catch (_) {
+    requestCoordinator.recordCacheMiss()
     return null
   }
 }
@@ -93,8 +102,11 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
       sessionCache.set(entry.key, map.get(entry.key)!)
       sessionCategories.set(entry.key, entry.category)
     }
+    for (let index = 0; index < entries.length; index += 1) requestCoordinator.recordCacheHit()
+    for (let index = entries.length; index < keys.length; index += 1) requestCoordinator.recordCacheMiss()
     return map
   } catch (_) {
+    for (let index = 0; index < keys.length; index += 1) requestCoordinator.recordCacheMiss()
     return new Map()
   }
 }
@@ -168,7 +180,7 @@ export function cacheRuntimeStats() {
 
 export async function cachedFetch<T>(
   key: string,
-  fetcher: () => Promise<T>,
+  fetcher: (context?: { background: boolean }) => Promise<T>,
   options: CacheOptions & {
     onStaleRefreshed?: (fresh: T) => void
     skipRefreshIf?: (stale: T) => boolean
@@ -198,7 +210,7 @@ export async function cachedFetch<T>(
         execute: async () => {
         const t0 = performance.now()
         try {
-          const fresh = await fetcher()
+          const fresh = await fetcher({ background: true })
           if (Array.isArray(fresh) && fresh.length === 0 && Array.isArray(cached.data) && (cached.data as unknown[]).length > 0) {
             perfLog(`[PERF] stale-kept category=${options.category} reason=empty-refresh`)
             return
@@ -228,7 +240,7 @@ export async function cachedFetch<T>(
   const request = (async () => {
     const t0 = performance.now()
     try {
-      const fresh = await fetcher()
+      const fresh = await fetcher({ background: false })
       perfLog(`[PERF] cache-miss category=${options.category} fetchTime=${Math.round(performance.now() - t0)}ms`)
       // Empty cold catalog results are not durable screen data. They may be a
       // legitimate empty response, but persisting them forever also turns a

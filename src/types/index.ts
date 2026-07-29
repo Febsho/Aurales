@@ -173,7 +173,7 @@ export interface Video {
 export interface MetadataProvider {
   id: string
   name: string
-  search(query: string): Promise<SearchResult[]>
+  search(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]>
   recommendationsForText?: (query: string, type: 'movie' | 'series') => Promise<SearchResult[]>
   getMovie(id: string): Promise<MovieDetails>
   getShow(id: string): Promise<ShowDetails>

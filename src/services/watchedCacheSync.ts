@@ -8,7 +8,20 @@ import { getPMDBWatched } from './pmdb'
 import { getMdblistWatched } from './mdblist'
 import type { WatchedSource } from './watchedStatus'
 
-let refreshTimer: ReturnType<typeof setTimeout> | null = null
+const providerSnapshots = new Map<WatchedSource, WatchedKey[]>()
+
+function rebuildFromSnapshots(sources: WatchedSource[]): void {
+  const keys = new Set<WatchedKey>()
+  for (const source of sources) {
+    for (const key of providerSnapshots.get(source) || []) keys.add(key)
+  }
+  useWatchedCacheStore.getState().setWatchedKeys(keys)
+}
+
+export function setWatchedProviderSnapshot(source: WatchedSource, keys: WatchedKey[], activeSources: WatchedSource[]): void {
+  providerSnapshots.set(source, keys)
+  rebuildFromSnapshots(activeSources)
+}
 
 function extractTraktKeys(movies: TraktWatchedItem[], shows: TraktWatchedItem[]): WatchedKey[] {
   const keys: WatchedKey[] = []
@@ -106,6 +119,9 @@ export async function forceRefreshProviderWatched(source: SyncableWatchedSource)
   const refresh = (async () => {
     const fresh = await def.fetch()
     await cacheSet(def.key, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+    providerSnapshots.set(source, def.extract(fresh))
+    const { useAppStore } = await import('../stores/appStore')
+    rebuildFromSnapshots(useAppStore.getState().watchedCheckmarkSources as WatchedSource[])
   })().finally(() => providerRefreshes.delete(source))
   providerRefreshes.set(source, refresh)
   return refresh
@@ -123,7 +139,9 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
           category: CACHE_CATEGORIES.WATCHED_STATUS,
           ttlSeconds: CACHE_TTLS.WATCHED_STATUS,
         })
-        return def.extract(data)
+        const keys = def.extract(data)
+        providerSnapshots.set(source, keys)
+        return keys
       } catch (e) {
         console.warn(`[WatchedCache] failed to fetch ${source}:`, e)
       }
@@ -135,7 +153,9 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
     tasks.push((async () => {
       try {
         const { getAniListWatchedTitleKeys } = await import('./anilist')
-        return await getAniListWatchedTitleKeys()
+        const keys = await getAniListWatchedTitleKeys()
+        providerSnapshots.set('anilist', keys)
+        return keys
       } catch (e) {
         console.warn('[WatchedCache] failed to fetch anilist:', e)
         return [] as WatchedKey[]
@@ -152,8 +172,8 @@ export async function refreshWatchedCache(sources: WatchedSource[]): Promise<voi
   const store = useWatchedCacheStore.getState()
   store.setLoading(true)
   try {
-    const keys = await fetchProviderKeys(sources)
-    store.setWatchedKeys(new Set(keys))
+    await fetchProviderKeys(sources)
+    rebuildFromSnapshots(sources)
   } catch (e) {
     console.warn('[WatchedCache] refresh failed:', e)
   } finally {
@@ -172,14 +192,12 @@ export async function invalidateWatchedStatusCache(sources?: WatchedSource[]): P
 }
 
 export function startWatchedCacheSync(sources: WatchedSource[], intervalMs = 5 * 60 * 1000): void {
-  stopWatchedCacheSync()
-  refreshWatchedCache(sources)
-  refreshTimer = setInterval(() => refreshWatchedCache(sources), intervalMs)
+  void intervalMs
+  // Compatibility entry point: hydrate once. Periodic refresh belongs solely
+  // to providerSync and follows each provider's configured frequency.
+  void refreshWatchedCache(sources)
 }
 
 export function stopWatchedCacheSync(): void {
-  if (refreshTimer) {
-    clearInterval(refreshTimer)
-    refreshTimer = null
-  }
+  // No independent watched-status polling timer remains.
 }

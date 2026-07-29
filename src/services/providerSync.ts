@@ -2,7 +2,7 @@ import { useAppStore } from '../stores/appStore'
 import { hasMdblistOAuth } from './mdblist'
 import {
   forceRefreshProviderWatched,
-  refreshWatchedCache,
+  setWatchedProviderSnapshot,
   type SyncableWatchedSource,
 } from './watchedCacheSync'
 import type { WatchedSource } from './watchedStatus'
@@ -23,9 +23,13 @@ const FREQ_MS: Record<string, number | undefined> = {
   // 'manual' → no timer
 }
 
-const timers = new Map<SyncProvider, ReturnType<typeof setInterval>>()
-const syncing = new Set<SyncProvider>()
+const PROVIDERS: SyncProvider[] = ['trakt', 'simkl', 'pmdb', 'mdblist', 'anilist']
+const syncing = new Map<SyncProvider, Promise<void>>()
+const lastRunAt = new Map<SyncProvider, number>()
+const lastRecoveryAt = new Map<SyncProvider, number>()
+let schedulerTimer: ReturnType<typeof setInterval> | null = null
 let unsubscribe: (() => void) | null = null
+let recoveryHandler: (() => void) | null = null
 
 function providerConnected(provider: SyncProvider): boolean {
   const s = useAppStore.getState()
@@ -50,18 +54,19 @@ function providerFrequency(provider: SyncProvider): string {
 }
 
 export async function syncProviderNow(provider: SyncProvider): Promise<void> {
-  if (syncing.has(provider)) return
-  syncing.add(provider)
-  try {
+  const pending = syncing.get(provider)
+  if (pending) return pending
+  const task = (async () => {
     const store = useAppStore.getState()
 
     if (provider === 'anilist') {
       // Warms the AniList continue-watching/list caches and refreshes the
       // title-level watched snapshot so completed anime shows as watched.
-      const { getAniListContinueWatching, clearAniListProgressCaches } = await import('./anilist')
+      const { getAniListContinueWatching, getAniListWatchedTitleKeys, clearAniListProgressCaches } = await import('./anilist')
       clearAniListProgressCaches()
       await getAniListContinueWatching().catch((e) => console.warn('[ProviderSync] anilist continue warm failed:', e))
-      await refreshWatchedCache(store.watchedCheckmarkSources as WatchedSource[])
+      const keys = await getAniListWatchedTitleKeys()
+      setWatchedProviderSnapshot('anilist', keys, store.watchedCheckmarkSources as WatchedSource[])
       return
     }
 
@@ -73,43 +78,62 @@ export async function syncProviderNow(provider: SyncProvider): Promise<void> {
 
     await forceRefreshProviderWatched(provider)
 
-    // Rebuild the in-memory watched-key set from the (now fresh) caches.
-    await refreshWatchedCache(store.watchedCheckmarkSources as WatchedSource[])
-
     const stamp = new Date().toLocaleString()
     if (provider === 'pmdb') store.setPmdBLastSyncTime(stamp)
     if (provider === 'mdblist') store.setMdblistLastSyncTime(stamp)
-  } catch (e) {
+  })().catch((e) => {
     console.warn(`[ProviderSync] ${provider} sync failed:`, e)
-  } finally {
+  }).finally(() => {
     syncing.delete(provider)
-  }
+    lastRunAt.set(provider, Date.now())
+  })
+  syncing.set(provider, task)
+  return task
 }
 
-function rebuildTimers(): void {
-  for (const timer of timers.values()) clearInterval(timer)
-  timers.clear()
+function appCanSync(): boolean {
+  return (typeof navigator === 'undefined' || navigator.onLine)
+    && (typeof document === 'undefined' || document.visibilityState === 'visible')
+}
 
-  const providers: SyncProvider[] = ['trakt', 'simkl', 'pmdb', 'mdblist', 'anilist']
-  for (const provider of providers) {
+function runDueProviders(recovery = false): void {
+  if (!appCanSync()) return
+  const now = Date.now()
+  for (const provider of PROVIDERS) {
     if (!providerConnected(provider)) continue
-    const ms = FREQ_MS[providerFrequency(provider)]
-    if (!ms) continue // manual (or unknown) → no background timer
-    timers.set(provider, setInterval(() => { syncProviderNow(provider) }, ms))
+    const frequency = FREQ_MS[providerFrequency(provider)]
+    if (!frequency) continue
+    const last = lastRunAt.get(provider) ?? now
+    if (!lastRunAt.has(provider)) lastRunAt.set(provider, now)
+    if (now - last < frequency) continue
+    if (recovery && now - (lastRecoveryAt.get(provider) || 0) < 30_000) continue
+    if (recovery) lastRecoveryAt.set(provider, now)
+    // Stamp before dispatch so repeated focus/online events coalesce while the
+    // shared in-flight promise is active.
+    lastRunAt.set(provider, now)
+    void syncProviderNow(provider)
   }
 }
 
 export function startProviderSyncScheduler(): void {
   stopProviderSyncScheduler()
-  rebuildTimers()
+  const now = Date.now()
+  for (const provider of PROVIDERS) if (providerConnected(provider)) lastRunAt.set(provider, now)
+  schedulerTimer = setInterval(() => runDueProviders(false), 30_000)
+  recoveryHandler = () => runDueProviders(true)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', recoveryHandler)
+    window.addEventListener('focus', recoveryHandler)
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', recoveryHandler)
 
-  // Rebuild timers when a frequency or connection state changes.
   let prev = snapshot()
   unsubscribe = useAppStore.subscribe(() => {
     const next = snapshot()
     if (next !== prev) {
       prev = next
-      rebuildTimers()
+      const changedAt = Date.now()
+      for (const provider of PROVIDERS) if (providerConnected(provider) && !lastRunAt.has(provider)) lastRunAt.set(provider, changedAt)
     }
   })
 }
@@ -126,8 +150,14 @@ function snapshot(): string {
 }
 
 export function stopProviderSyncScheduler(): void {
-  for (const timer of timers.values()) clearInterval(timer)
-  timers.clear()
+  if (schedulerTimer) clearInterval(schedulerTimer)
+  schedulerTimer = null
+  if (recoveryHandler && typeof window !== 'undefined') {
+    window.removeEventListener('online', recoveryHandler)
+    window.removeEventListener('focus', recoveryHandler)
+  }
+  if (recoveryHandler && typeof document !== 'undefined') document.removeEventListener('visibilitychange', recoveryHandler)
+  recoveryHandler = null
   if (unsubscribe) {
     unsubscribe()
     unsubscribe = null

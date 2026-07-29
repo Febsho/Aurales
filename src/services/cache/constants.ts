@@ -13,6 +13,7 @@ export const CACHE_CATEGORIES = {
   TVDB_SEASON: 'tvdb_season',
   ANIME_MAPPING: 'anime_mapping',
   STREAM_PRELOAD: 'stream_preload',
+  ADDON_SUBTITLE: 'addon_subtitle',
   LIBRARY_CALENDAR: 'library_calendar',
   TMDB_RUNTIME: 'tmdb_runtime',
   CONNECTED_HISTORY: 'connected_history',
@@ -36,4 +37,5 @@ export const CACHE_TTLS = {
   LIBRARY_CALENDAR: 15 * 60,
   TMDB_RUNTIME: 30 * 24 * 60 * 60,
   CONNECTED_HISTORY: 365 * 24 * 60 * 60,
+  ADDON_SUBTITLE: 6 * 60 * 60,
 } as const

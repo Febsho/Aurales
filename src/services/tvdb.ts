@@ -2,11 +2,13 @@ import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonD
 import { getTvdbApiKey } from './apiKeys'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 
 const BASE_URL = 'https://api4.thetvdb.com/v4'
 
 let cachedToken: string | null = null
 let cachedTokenApiKey = ''
+let tokenPromise: Promise<string> | null = null
 
 const seriesDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
 const movieDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
@@ -25,34 +27,55 @@ async function getToken(): Promise<string> {
   const apiKey = getTvdbApiKey()
   if (cachedToken && cachedTokenApiKey === apiKey) return cachedToken
   cachedToken = null
-  const res = await fetch(`${BASE_URL}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ apikey: apiKey }),
-  })
-  if (!res.ok) throw new Error(`TVDB auth error: ${res.status}`)
-  const data = await res.json()
-  cachedToken = data.data.token
-  cachedTokenApiKey = apiKey
-  return cachedToken!
+  if (tokenPromise) return tokenPromise
+  tokenPromise = coordinatedJson<{ data: { token: string } }>(`${BASE_URL}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apikey: apiKey }),
+    }, {
+      label: 'TVDB',
+      kind: 'metadata',
+      dedupeKey: 'auth',
+      priority: 'interactive',
+      timeoutMs: 12_000,
+      retry: 'interactive-once',
+    })
+    .then((data) => {
+      cachedToken = data.data.token
+      cachedTokenApiKey = apiKey
+      return cachedToken
+    })
+    .finally(() => { tokenPromise = null })
+  return tokenPromise
 }
 
-async function tvdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
+async function tvdbFetch(
+  path: string,
+  params: Record<string, string> = {},
+  request: { priority?: RequestPriority; cancelGroup?: string } = {},
+): Promise<unknown> {
   const token = await getToken()
   const url = new URL(`${BASE_URL}${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString(), {
+  try {
+    return await coordinatedJson<unknown>(url.toString(), {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'eng' },
-  })
-  if (!res.ok) {
-    if (res.status === 401) {
+    }, {
+      label: 'TVDB',
+      kind: 'metadata',
+      dedupeKey: `${path}:${new URLSearchParams(params).toString()}`,
+      priority: request.priority || 'visible',
+      cancelGroup: request.cancelGroup,
+      timeoutMs: 12_000,
+      retry: request.priority === 'background' ? 'none' : 'interactive-once',
+    })
+  } catch (error) {
+    if (error instanceof Error && /HTTP 401/.test(error.message)) {
       cachedToken = null
       cachedTokenApiKey = ''
-      return tvdbFetch(path, params)
     }
-    throw new Error(`TVDB error: ${res.status}`)
+    throw error
   }
-  return res.json()
 }
 
 async function getSeriesExtended(tvdbId: string): Promise<Record<string, unknown>> {
@@ -93,8 +116,8 @@ export const tvdbProvider: MetadataProvider = {
   id: 'tvdb',
   name: 'TVDB',
 
-  async search(query: string): Promise<SearchResult[]> {
-    const data = await tvdbFetch('/search', { query, type: 'series' }) as Record<string, unknown>
+  async search(query: string, _type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
+    const data = await tvdbFetch('/search', { query, type: 'series' }, { priority: 'interactive', cancelGroup: context?.cancelGroup }) as Record<string, unknown>
     const results = (data.data as Record<string, unknown>[]) || []
     return results.map((r) => ({
       id: `tvdb-${r.tvdb_id || r.id}`,

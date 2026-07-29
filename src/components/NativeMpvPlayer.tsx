@@ -6,6 +6,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
+import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 import { getTmdbApiKey } from '../services/apiKeys'
 import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
@@ -759,6 +760,10 @@ function FullNativeMpvPlayer({
   onPlaybackError,
   onPlaybackStarted,
 }: NativeMpvPlayerProps) {
+  useEffect(() => {
+    setRequestPlaybackActive(true)
+    return () => setRequestPlaybackActive(false)
+  }, [])
 
   // ─ Refs ───────────────────────────────────────────────────────────────────
   const activeSessionRef = useRef<PlayerSession | null>(null)
