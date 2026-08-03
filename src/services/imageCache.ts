@@ -7,6 +7,23 @@ import { invoke } from '@tauri-apps/api/core'
 
 const isTauri = () => !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 
+const LEGACY_POSTER_PROXY_PREFIX = 'https://poster-cache.febsho.me/poster/'
+
+/**
+ * Older addon responses wrapped a complete artwork URL after `/poster/`.
+ * That endpoint rejects both raw and percent-encoded nested URLs with HTTP
+ * 400. Recover the embedded source so already-persisted catalogs self-heal
+ * without a cache reset or another addon request.
+ */
+export function recoverArtworkSource(url: string): string {
+  if (!url.toLowerCase().startsWith(LEGACY_POSTER_PROXY_PREFIX)) return url
+  let candidate = url.slice(LEGACY_POSTER_PROXY_PREFIX.length)
+  try {
+    candidate = decodeURIComponent(candidate)
+  } catch (_) { /* keep the original candidate */ }
+  return /^https?:\/\//i.test(candidate) ? candidate : url
+}
+
 export function cachedImage(url: string): string
 export function cachedImage(url: string | undefined): string | undefined
 export function cachedImage(url: string | undefined): string | undefined {
@@ -14,7 +31,7 @@ export function cachedImage(url: string | undefined): string | undefined {
   // image and cannot reliably redirect failures back to HTTPS. Under a normal
   // Home load that starves artwork and leaves Heroes black. Use WebView's HTTP
   // cache until the disk proxy has bounded concurrency and in-flight dedupe.
-  return url
+  return url ? recoverArtworkSource(url) : url
 }
 
 const imageWarmups = new Map<string, Promise<void>>()

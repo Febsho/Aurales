@@ -3,9 +3,10 @@ import {
   canSelfUpdate,
   checkForUpdate,
   downloadAndInstall,
-  FLATPAK_UPDATE_COMMAND,
   getAppVersion,
+  getFlatpakInstallCommand,
   getLatestReleaseNotes,
+  openFlatpakRelease,
   type UpdateInfo,
 } from '../services/updater'
 
@@ -187,10 +188,13 @@ export default function UpdatePrompt() {
 
           {!selfUpdates && (
             <div className="mb-4 rounded-xl border border-white/[0.10] bg-black/25 px-4 py-3 text-xs text-white/60">
-              <p>This is a Flatpak install, so the update is installed outside the app. Run:</p>
+              <p>This is a standalone Flatpak bundle. Download the new bundle, then reinstall it:</p>
               <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
-                {FLATPAK_UPDATE_COMMAND}
+                {getFlatpakInstallCommand(update.version)}
               </code>
+              <p className="mt-2 text-[10px] text-white/35">
+                “flatpak update” cannot update standalone bundles because they have no repository remote.
+              </p>
             </div>
           )}
 
@@ -222,6 +226,17 @@ export default function UpdatePrompt() {
               >
                 {selfUpdates ? 'Later' : 'Close'}
               </button>
+              {!selfUpdates && (
+                <button
+                  onClick={() => openFlatpakRelease(update.version).catch((e) => {
+                    setError(String(e))
+                    setPhase('error')
+                  })}
+                  className="rounded-full border border-white/25 bg-white/90 px-6 py-2.5 text-sm font-black text-black shadow-[0_8px_28px_rgba(255,255,255,0.18),inset_0_1px_0_rgba(255,255,255,0.9)] transition-all hover:bg-white cursor-pointer"
+                >
+                  Download Flatpak
+                </button>
+              )}
               {selfUpdates && (
                 <button
                   onClick={startUpdate}

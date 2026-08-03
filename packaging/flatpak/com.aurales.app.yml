@@ -11,7 +11,11 @@ finish-args:
   - --share=network
   - --share=ipc
   - --socket=wayland
-  - --socket=fallback-x11
+  # Aurales prefers XWayland when it is available because WebKitGTK cannot
+  # reliably composite its transparent controls over GtkGLArea on native
+  # Wayland/NVIDIA. `fallback-x11` hides DISPLAY whenever Wayland is present,
+  # preventing the runtime safeguard in src-tauri/src/lib.rs from activating.
+  - --socket=x11
   - --socket=pulseaudio
   - --device=dri
   # Discord Rich Presence IPC socket (harmless if Discord is absent)

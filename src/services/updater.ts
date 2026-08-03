@@ -13,8 +13,20 @@ export interface UpdateProgress {
   total: number | null
 }
 
-/** Command a Flatpak user runs to get the new version. */
-export const FLATPAK_UPDATE_COMMAND = 'flatpak update com.aurales.app'
+const RELEASE_BASE_URL = 'https://github.com/Febsho/Aurales/releases'
+
+/**
+ * CI currently publishes a standalone Flatpak bundle, not an OSTree
+ * repository. Installing that bundle creates a disabled `app-origin`, so
+ * `flatpak update com.aurales.app` can never discover a newer release.
+ */
+export function getFlatpakInstallCommand(version: string): string {
+  return `flatpak install --reinstall ~/Downloads/Aurales_${version}_amd64.flatpak`
+}
+
+export async function openFlatpakRelease(version: string): Promise<void> {
+  await invoke('open_simkl_auth', { url: `${RELEASE_BASE_URL}/tag/v${encodeURIComponent(version)}` })
+}
 
 let installKind: Promise<string> | null = null
 
@@ -48,7 +60,7 @@ export async function downloadAndInstall(
   onProgress?: (progress: UpdateProgress) => void
 ): Promise<void> {
   if (!(await canSelfUpdate())) {
-    throw new Error(`Flatpak installs update outside the app. Run: ${FLATPAK_UPDATE_COMMAND}`)
+    throw new Error('Standalone Flatpak bundles are updated by downloading and reinstalling the newer bundle.')
   }
 
   const update = await check()

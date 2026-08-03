@@ -20,6 +20,27 @@ enum RenderNodeChoice {
     None,
 }
 
+#[cfg(target_os = "linux")]
+fn is_enabled(value: Option<&str>) -> bool {
+    value
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn should_clear_legacy_packaged_renderer_override(
+    flatpak_id: Option<&str>,
+    is_appimage: bool,
+    explicit_software_renderer: bool,
+    webkit_disable_dmabuf: bool,
+    webkit_force_compositing: bool,
+) -> bool {
+    (flatpak_id == Some("com.aurales.app") || is_appimage)
+        && !explicit_software_renderer
+        && webkit_disable_dmabuf
+        && webkit_force_compositing
+}
+
 /// Select the render node belonging to the boot/display GPU. On hybrid systems
 /// this is more reliable than choosing a vendor: a secondary iGPU may expose a
 /// valid render node but still be unable to create an EGL display.
@@ -69,6 +90,30 @@ fn classify_render_nodes() -> RenderNodeChoice {
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
+        // Earlier Linux troubleshooting used environment overrides for both
+        // of these WebKit variables. Flatpak overrides survive application
+        // updates, while an AppImage can inherit them from its launcher, and
+        // force the software renderer, which cannot correctly composite the
+        // transparent WebView above GtkGLArea: controls leave stale copies and
+        // the video layer appears black while audio continues.  The supported
+        // escape hatch is AURALES_DISABLE_DMABUF_RENDERER; clear only this
+        // obsolete combination in packaged Aurales builds so installs self-heal.
+        let aurales_renderer_setting = std::env::var("AURALES_DISABLE_DMABUF_RENDERER").ok();
+        let explicit_software_renderer = is_enabled(aurales_renderer_setting.as_deref());
+        let flatpak_id = std::env::var("FLATPAK_ID").ok();
+        let webkit_disable_dmabuf = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+        let webkit_force_compositing = std::env::var("WEBKIT_FORCE_COMPOSITING_MODE").ok();
+        if should_clear_legacy_packaged_renderer_override(
+            flatpak_id.as_deref(),
+            std::env::var_os("APPIMAGE").is_some(),
+            explicit_software_renderer,
+            is_enabled(webkit_disable_dmabuf.as_deref()),
+            is_enabled(webkit_force_compositing.as_deref()),
+        ) {
+            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+            std::env::remove_var("WEBKIT_FORCE_COMPOSITING_MODE");
+        }
+
         // WebKit's GPU (DMA-BUF) renderer is required for correct rendering of
         // the transparent player window: the software fallback repaints only
         // damaged regions (closed menus ghost over the video) and drops CSS
@@ -78,9 +123,7 @@ pub fn run() {
         // create GBM EGL display"; disabling DMA-BUF avoids that crash but
         // forces expensive software rendering. Prefer the boot/display GPU and
         // retain AURALES_DISABLE_DMABUF_RENDERER=1 as an explicit safe fallback.
-        let disable_dmabuf = std::env::var("AURALES_DISABLE_DMABUF_RENDERER")
-            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false);
+        let disable_dmabuf = explicit_software_renderer;
         let webkit_env_untouched = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
             && std::env::var_os("WEBKIT_WEB_RENDER_DEVICE_FILE").is_none()
             && std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none();
@@ -257,4 +300,54 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_renderer_tests {
+    use super::{is_enabled, should_clear_legacy_packaged_renderer_override};
+
+    #[test]
+    fn recognizes_explicit_renderer_fallback_values() {
+        for value in ["1", "true", "TRUE", "yes", "YeS"] {
+            assert!(is_enabled(Some(value)));
+        }
+        assert!(!is_enabled(None));
+        assert!(!is_enabled(Some("0")));
+        assert!(!is_enabled(Some("false")));
+    }
+
+    #[test]
+    fn clears_only_the_obsolete_packaged_renderer_pair() {
+        assert!(should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            false,
+            true,
+            true,
+        ));
+        assert!(should_clear_legacy_packaged_renderer_override(
+            None, true, false, true, true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            true,
+            true,
+            true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.example.other"),
+            false,
+            false,
+            true,
+            true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            false,
+            true,
+            false,
+        ));
+    }
 }

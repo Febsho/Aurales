@@ -50,7 +50,7 @@ import type { TraktDeviceCode } from '../types'
 const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
 import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
-import { canSelfUpdate, checkForUpdate, downloadAndInstall, FLATPAK_UPDATE_COMMAND, getAppVersion } from '../services/updater'
+import { canSelfUpdate, checkForUpdate, downloadAndInstall, getAppVersion, getFlatpakInstallCommand, openFlatpakRelease } from '../services/updater'
 import type { UpdateInfo, UpdateProgress } from '../services/updater'
 import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
@@ -413,10 +413,21 @@ function AppUpdateSection() {
         {/* Flatpak installs cannot be updated from inside the sandbox */}
         {updateInfo && !selfUpdates && (
           <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-            <p className="text-xs text-white/60">This is a Flatpak install, so the update is installed outside the app. Run:</p>
+            <p className="text-xs text-white/60">
+              This app was installed from a standalone Flatpak bundle. Download the new bundle, then reinstall it:
+            </p>
             <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
-              {FLATPAK_UPDATE_COMMAND}
+              {getFlatpakInstallCommand(updateInfo.version)}
             </code>
+            <button
+              onClick={() => openFlatpakRelease(updateInfo.version).catch((e) => setUpdateError(String(e)))}
+              className="mt-3 rounded-full bg-white px-4 py-2 text-xs font-bold text-black transition-colors hover:bg-white/85 cursor-pointer"
+            >
+              Open v{updateInfo.version} Downloads
+            </button>
+            <p className="mt-2 text-[10px] text-white/35">
+              The normal flatpak update command only works with an installed Flatpak repository.
+            </p>
           </div>
         )}
 
