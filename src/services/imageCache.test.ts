@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }))
 
-import { cachedImage } from './imageCache'
+import { cachedImage, recoverArtworkSource } from './imageCache'
 
 describe('cachedImage', () => {
   beforeEach(() => {
@@ -27,5 +27,17 @@ describe('cachedImage', () => {
   it('does not route data URLs through the cache', () => {
     expect(cachedImage('data:image/png;base64,abc')).toBe('data:image/png;base64,abc')
     expect(convertFileSrc).not.toHaveBeenCalled()
+  })
+
+  it('recovers direct artwork from obsolete poster proxy URLs', () => {
+    const source = 'https://btttr.cc/poster/auto/tt22084616/auto.png'
+    expect(recoverArtworkSource(`https://poster-cache.febsho.me/poster/${source}`)).toBe(source)
+    expect(recoverArtworkSource(`https://poster-cache.febsho.me/poster/${encodeURIComponent(source)}`)).toBe(source)
+    expect(cachedImage(`https://poster-cache.febsho.me/poster/${source}`)).toBe(source)
+  })
+
+  it('leaves non-URL poster proxy keys unchanged', () => {
+    const source = 'https://poster-cache.febsho.me/poster/known-poster-key'
+    expect(recoverArtworkSource(source)).toBe(source)
   })
 })

@@ -5,6 +5,7 @@ import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
+import { recoverArtworkSource } from './imageCache'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -91,7 +92,7 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
   if (!trimmed || ['poster', 'landscape', 'square'].includes(trimmed)) return undefined
 
   if (trimmed.startsWith('//')) return `https:${trimmed}`
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return recoverArtworkSource(trimmed)
   if (trimmed.startsWith('/')) {
     try {
       return new URL(trimmed, `${baseUrl(addonUrl)}/`).toString()
