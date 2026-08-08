@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { cachedImage } from '../../services/imageCache'
+import { cachedImage, retryImageFromSource } from '../../services/imageCache'
 
 interface DetailLoadingStateProps {
   logo?: string
@@ -21,6 +21,7 @@ export default function DetailLoadingState({ logo, title, backdrop, poster }: De
           className="absolute inset-0 h-full w-full object-cover opacity-15"
           decoding="async"
           draggable={false}
+          onError={(event) => { retryImageFromSource(event.currentTarget, background) }}
         />
       )}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04),transparent_42%),linear-gradient(to_bottom,rgba(0,0,0,0.45),#000)]" />
@@ -31,7 +32,9 @@ export default function DetailLoadingState({ logo, title, backdrop, poster }: De
             src={cachedImage(logo)}
             alt={title || ''}
             className="max-h-36 max-w-full object-contain drop-shadow-[0_8px_30px_rgba(0,0,0,0.8)]"
-            onError={() => setLogoFailed(true)}
+            onError={(event) => {
+              if (!retryImageFromSource(event.currentTarget, logo)) setLogoFailed(true)
+            }}
             decoding="async"
             draggable={false}
           />

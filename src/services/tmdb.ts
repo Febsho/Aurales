@@ -550,11 +550,50 @@ export async function getTmdbWatchProviders(type: 'movie' | 'tv', region: string
   }
 }
 
-export async function searchTmdbPeople(query: string): Promise<{ id: number; name: string; profile_path?: string }[]> {
+export interface TmdbPersonSearchResult {
+  id: number
+  name: string
+  profile_path?: string
+  profile?: string
+  knownForDepartment?: string
+  popularity?: number
+  knownFor: Array<{
+    id: number
+    title: string
+    type: 'movie' | 'series'
+    year?: number
+  }>
+}
+
+export async function searchTmdbPeople(query: string, context?: { cancelGroup?: string }): Promise<TmdbPersonSearchResult[]> {
   if (!query.trim()) return []
   try {
-    const data = await tmdbFetch('/search/person', { query }) as { results: { id: number; name: string; profile_path?: string }[] }
-    return data.results || []
+    const data = await tmdbFetch('/search/person', { query, include_adult: 'false' }, {
+      priority: 'interactive',
+      cancelGroup: context?.cancelGroup,
+    }) as { results: Record<string, unknown>[] }
+    return (data.results || []).map((person) => ({
+      id: Number(person.id),
+      name: String(person.name || ''),
+      profile_path: person.profile_path as string | undefined,
+      profile: person.profile_path ? `${IMG_BASE}/w342${person.profile_path}` : undefined,
+      knownForDepartment: person.known_for_department as string | undefined,
+      popularity: Number(person.popularity) || undefined,
+      knownFor: ((person.known_for as Record<string, unknown>[]) || []).flatMap((item) => {
+        const mediaType = item.media_type
+        if (mediaType !== 'movie' && mediaType !== 'tv') return []
+        const title = String(mediaType === 'movie' ? item.title || '' : item.name || '')
+        if (!title) return []
+        const rawDate = String(mediaType === 'movie' ? item.release_date || '' : item.first_air_date || '')
+        const year = /^\d{4}/.test(rawDate) ? Number(rawDate.slice(0, 4)) : undefined
+        return [{
+          id: Number(item.id),
+          title,
+          type: mediaType === 'movie' ? 'movie' as const : 'series' as const,
+          year,
+        }]
+      }).slice(0, 3),
+    })).filter((person) => Number.isFinite(person.id) && person.name)
   } catch (_) {
     return []
   }

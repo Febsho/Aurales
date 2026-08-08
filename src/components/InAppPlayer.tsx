@@ -447,7 +447,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     resetDriftState()
 
     const onSyncRequest = (e: Event) => {
-      const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
+      const { time, isPlaying, sequence } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number; sequence?: number }
       const video = videoRef.current
       if (!video) return
 
@@ -472,6 +472,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         suppressNextWatchTogetherEvent()
         video.pause()
       }
+      if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
     }
 
     window.addEventListener('wt:sync_request', onSyncRequest)

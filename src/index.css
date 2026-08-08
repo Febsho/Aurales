@@ -190,6 +190,23 @@ html[data-platform="linux"] .row-contain {
   contain: layout style paint;
 }
 
+/* Cards are independent compositing units. Containing their paint prevents a
+   hover lift or image fade from invalidating the rest of an image-heavy row. */
+.media-row [data-hero-viewport] {
+  contain: layout paint style;
+}
+
+.media-row [data-hero-viewport] > img {
+  pointer-events: none;
+  backface-visibility: hidden;
+}
+
+/* WebKitGTK pays a noticeable cost when large shadows are animated while a
+   shelf scrolls. Keep the interaction but limit it to transform/border. */
+html[data-platform="linux"] .media-row [data-hero-viewport] {
+  transition-property: transform, border-color, opacity !important;
+}
+
 /* Blurred hero backdrop visible behind home page content */
 html.hero-bg-active::before {
   content: '';
@@ -501,6 +518,456 @@ html[data-theme-background="oled"] .app-theme-shell,
 html[data-theme-background="oled"] .cinematic-tv-shell {
   background: #000000 !important;
 }
+
+/* Search uses opaque, theme-owned surfaces instead of generic glass. */
+.global-search__input {
+  background: rgba(8, 10, 9, .92);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .32);
+}
+.global-search__input:hover {
+  background: rgba(12, 15, 13, .96);
+  border-color: rgba(255, 255, 255, .18);
+}
+.global-search__input:focus {
+  background: #0e110f;
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent), 0 16px 42px rgba(0, 0, 0, .4);
+}
+html[data-interface-theme="cinematic"] .global-search__input {
+  min-height: 3.25rem;
+  padding-left: 2.85rem;
+  border-radius: 999px;
+  background: rgba(25, 22, 18, .96);
+  border-color: rgba(232, 204, 166, .2);
+  font-size: .95rem;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .42);
+}
+html[data-interface-theme="cinematic"] .global-search__input:focus {
+  background: #201b16;
+  border-color: rgba(244, 221, 187, .42);
+}
+
+.search-page {
+  --search-surface: rgba(13, 17, 14, .94);
+  --search-surface-raised: rgba(19, 24, 20, .96);
+  --search-border: rgba(255, 255, 255, .085);
+  --search-muted: rgba(255, 255, 255, .46);
+  min-height: 100%;
+}
+.search-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.5rem 1.65rem;
+  border: 1px solid var(--search-border);
+  border-radius: 1.25rem;
+  background: var(--search-surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .2);
+}
+.search-eyebrow {
+  margin-bottom: .38rem;
+  color: var(--color-accent);
+  font-size: .67rem;
+  font-weight: 800;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+}
+.search-title {
+  color: rgba(255, 255, 255, .94);
+  font-size: clamp(1.65rem, 3vw, 2.5rem);
+  font-weight: 780;
+  letter-spacing: -.035em;
+  line-height: 1.08;
+}
+.search-title span { color: #fff; }
+.search-summary {
+  margin-top: .62rem;
+  color: var(--search-muted);
+  font-size: .86rem;
+}
+.search-spinner {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, .14);
+  border-top-color: var(--color-accent);
+  border-radius: 999px;
+  animation: spin .75s linear infinite;
+}
+.search-filters {
+  display: flex;
+  gap: .45rem;
+  overflow-x: auto;
+  padding-bottom: .15rem;
+  scrollbar-width: none;
+}
+.search-filters::-webkit-scrollbar { display: none; }
+.search-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: .6rem;
+  min-height: 2.35rem;
+  padding: 0 .85rem;
+  flex: 0 0 auto;
+  border: 1px solid var(--search-border);
+  border-radius: .75rem;
+  background: rgba(255, 255, 255, .025);
+  color: rgba(255, 255, 255, .52);
+  font-size: .76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .18s, background .18s, color .18s, transform .18s;
+}
+.search-filter:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, .17);
+  background: rgba(255, 255, 255, .065);
+  color: rgba(255, 255, 255, .88);
+}
+.search-filter--active {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  color: var(--color-accent);
+}
+.search-filter:disabled { opacity: .3; cursor: default; }
+.search-filter__count {
+  display: inline-grid;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  place-items: center;
+  padding: 0 .28rem;
+  border-radius: .4rem;
+  background: rgba(255, 255, 255, .065);
+  font-size: .66rem;
+}
+.people-results { padding: 0 1.25rem; }
+.people-results__heading,
+.search-section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 .75rem 1rem;
+}
+.people-results__heading h2,
+.search-section-heading h2 {
+  color: rgba(255, 255, 255, .93);
+  font-size: 1.25rem;
+  font-weight: 750;
+}
+.people-results__heading > span {
+  color: rgba(255, 255, 255, .3);
+  font-size: .72rem;
+}
+.people-results__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  gap: .7rem;
+}
+.person-search-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .9rem;
+  min-width: 0;
+  padding: .62rem .8rem .62rem .62rem;
+  border: 1px solid var(--search-border);
+  border-radius: 1rem;
+  background: var(--search-surface);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform .22s, border-color .22s, background .22s, box-shadow .22s;
+}
+.person-search-card:hover,
+.person-search-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, .18);
+  background: var(--search-surface-raised);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .24);
+}
+.person-search-card__photo {
+  width: 4.6rem;
+  height: 5.6rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: .72rem;
+  background: rgba(255, 255, 255, .055);
+  color: rgba(255, 255, 255, .2);
+  font-size: 1.65rem;
+  font-weight: 850;
+}
+.person-search-card__photo img { width: 100%; height: 100%; object-fit: cover; }
+.person-search-card__body { min-width: 0; }
+.person-search-card__role {
+  display: block;
+  margin-bottom: .25rem;
+  color: var(--color-accent);
+  font-size: .59rem;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.person-search-card h3 {
+  overflow: hidden;
+  color: rgba(255, 255, 255, .92);
+  font-size: .95rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.person-search-card p {
+  display: -webkit-box;
+  margin-top: .3rem;
+  overflow: hidden;
+  color: rgba(255, 255, 255, .38);
+  font-size: .7rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.person-search-card__arrow {
+  color: rgba(255, 255, 255, .2);
+  font-size: 1rem;
+  transition: color .2s, transform .2s;
+}
+.person-search-card:hover .person-search-card__arrow { color: var(--color-accent); transform: translateX(2px); }
+.search-empty,
+.search-start {
+  border: 1px solid var(--search-border);
+  border-radius: 1.25rem;
+  background: var(--search-surface);
+}
+.search-start { padding: 1.5rem; }
+.search-section-heading { margin: 0 0 1.1rem; }
+.search-section-heading > button {
+  color: rgba(255, 255, 255, .36);
+  font-size: .72rem;
+  cursor: pointer;
+}
+.search-section-heading > button:hover { color: rgba(255, 255, 255, .72); }
+.search-history { display: flex; flex-wrap: wrap; gap: .55rem; }
+.search-history__item {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--search-border);
+  border-radius: .75rem;
+  background: rgba(255, 255, 255, .03);
+  overflow: hidden;
+}
+.search-history__item > button { display: flex; align-items: center; color: rgba(255, 255, 255, .57); cursor: pointer; }
+.search-history__item > button:first-child { gap: .5rem; padding: .62rem .25rem .62rem .75rem; }
+.search-history__item > button:last-child { padding: .62rem .65rem; color: rgba(255, 255, 255, .2); }
+.search-history__item button:hover { color: rgba(255, 255, 255, .92); }
+.search-history__item svg { width: .9rem; height: .9rem; flex: 0 0 auto; }
+.search-start__empty { display: grid; justify-items: center; padding: 2.4rem 1rem; text-align: center; }
+.search-start__empty > svg { width: 2rem; height: 2rem; color: var(--color-accent); }
+.search-start__empty h2 { margin-top: 1rem; color: rgba(255, 255, 255, .9); font-size: 1.15rem; font-weight: 750; }
+.search-start__empty p { margin-top: .4rem; color: var(--search-muted); font-size: .82rem; }
+.search-start__examples { display: flex; flex-wrap: wrap; justify-content: center; gap: .45rem; margin-top: 1.2rem; }
+.search-start__examples span { padding: .42rem .65rem; border-radius: .6rem; background: rgba(255, 255, 255, .045); color: rgba(255, 255, 255, .38); font-size: .68rem; }
+.search-ai {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.2rem 1.35rem;
+  border: 1px solid rgba(168, 85, 247, .16);
+  border-radius: 1rem;
+  background: rgba(28, 18, 35, .82);
+}
+.search-ai__label { color: rgb(216, 180, 254); font-size: .62rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.search-ai h2 { margin-top: .15rem; color: rgba(255, 255, 255, .9); font-size: .93rem; font-weight: 750; }
+.search-ai p:not(.search-ai__label) { margin-top: .25rem; color: rgba(255, 255, 255, .38); font-size: .7rem; }
+.search-ai .search-ai__warning { color: rgba(253, 230, 138, .7); }
+.search-ai > button { flex: 0 0 auto; padding: .62rem .9rem; border: 1px solid rgba(216, 180, 254, .2); border-radius: .7rem; background: rgba(168, 85, 247, .15); color: rgb(233, 213, 255); font-size: .75rem; font-weight: 700; cursor: pointer; }
+.search-ai > button:disabled { opacity: .35; cursor: default; }
+.search-loading { padding-top: .5rem; }
+
+html[data-interface-theme="cinematic"] .search-page {
+  --search-surface: rgba(28, 24, 19, .96);
+  --search-surface-raised: rgba(38, 31, 24, .98);
+  --search-border: rgba(232, 204, 166, .14);
+  --search-muted: rgba(238, 220, 196, .48);
+}
+html[data-interface-theme="cinematic"] .search-overview {
+  padding: 1.35rem .25rem 1.75rem;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html[data-interface-theme="cinematic"] .search-title { font-size: clamp(2rem, 4.3vw, 3.5rem); font-weight: 650; letter-spacing: -.045em; }
+html[data-interface-theme="cinematic"] .search-eyebrow { color: rgba(235, 200, 157, .75); letter-spacing: .2em; }
+html[data-interface-theme="cinematic"] .search-filter { border-radius: 999px; background: rgba(24, 20, 16, .82); }
+html[data-interface-theme="cinematic"] .search-filter--active { border-color: rgba(241, 214, 180, .32); background: rgba(232, 204, 166, .14); color: rgb(244, 222, 194); }
+html[data-interface-theme="cinematic"] .people-results { padding-inline: 2rem; }
+html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: .85rem; }
+html[data-interface-theme="cinematic"] .person-search-card { border-radius: .7rem; }
+html[data-interface-theme="cinematic"] .person-search-card__photo { border-radius: .4rem; }
+html[data-interface-theme="cinematic"] .search-start,
+html[data-interface-theme="cinematic"] .search-empty { background: rgba(25, 21, 17, .92); }
+
+html[data-theme-background="oled"] .search-page {
+  --search-surface: #050505;
+  --search-surface-raised: #0a0a0a;
+  --search-border: rgba(255, 255, 255, .11);
+}
+html[data-theme-background="oled"] .global-search__input { background: #080808; }
+
+@media (max-width: 640px) {
+  .search-overview { padding: 1.2rem; }
+  .people-results { padding-inline: 1.25rem; }
+  .people-results__grid,
+  html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: 1fr; }
+  .search-ai { align-items: flex-start; flex-direction: column; }
+}
+
+/* Watch Together follows the selected interface instead of rendering as an
+   unrelated black drawer. Components consume these semantic surface tokens so
+   room states, chat, controls, and dialogs stay visually in sync. */
+html[data-interface-theme="default"] {
+  --watch-panel-bg:
+    radial-gradient(circle at 12% 8%, rgba(50, 88, 60, .18), transparent 34%),
+    linear-gradient(180deg, rgba(13, 17, 14, .98), rgba(7, 9, 8, .99));
+  --watch-panel-border: rgba(171, 205, 178, .13);
+  --watch-panel-divider: rgba(255, 255, 255, .07);
+  --watch-panel-surface: rgba(255, 255, 255, .045);
+  --watch-panel-surface-subtle: rgba(255, 255, 255, .022);
+  --watch-panel-control: rgba(255, 255, 255, .06);
+  --watch-panel-control-hover: rgba(255, 255, 255, .105);
+  --watch-panel-input: rgba(255, 255, 255, .055);
+  --watch-panel-input-focus: rgba(255, 255, 255, .095);
+  --watch-panel-shadow: -20px 0 60px rgba(0, 0, 0, .44);
+  --watch-panel-radius: 0;
+}
+
+html[data-interface-theme="cinematic"] {
+  --watch-panel-bg:
+    radial-gradient(circle at 85% 3%, rgba(155, 79, 34, .24), transparent 38%),
+    radial-gradient(circle at 8% 76%, rgba(54, 91, 61, .2), transparent 42%),
+    linear-gradient(155deg, rgba(34, 27, 20, .985), rgba(15, 19, 14, .99));
+  --watch-panel-border: rgba(229, 198, 155, .18);
+  --watch-panel-divider: rgba(237, 213, 180, .105);
+  --watch-panel-surface: rgba(232, 204, 166, .065);
+  --watch-panel-surface-subtle: rgba(232, 204, 166, .032);
+  --watch-panel-control: rgba(232, 204, 166, .075);
+  --watch-panel-control-hover: rgba(232, 204, 166, .14);
+  --watch-panel-input: rgba(10, 13, 10, .38);
+  --watch-panel-input-focus: rgba(232, 204, 166, .09);
+  --watch-panel-shadow: -24px 0 80px rgba(0, 0, 0, .58), inset 1px 0 rgba(255, 255, 255, .035);
+  --watch-panel-radius: 1.6rem 0 0 1.6rem;
+}
+
+html[data-theme-background="oled"] {
+  --watch-panel-bg: #000;
+  --watch-panel-border: rgba(255, 255, 255, .12);
+  --watch-panel-surface: rgba(255, 255, 255, .05);
+  --watch-panel-surface-subtle: rgba(255, 255, 255, .025);
+  --watch-panel-control: rgba(255, 255, 255, .065);
+  --watch-panel-control-hover: rgba(255, 255, 255, .12);
+  --watch-panel-input: rgba(255, 255, 255, .055);
+  --watch-panel-input-focus: rgba(255, 255, 255, .1);
+}
+
+.watch-together-panel {
+  overflow: hidden;
+  border-color: var(--watch-panel-border);
+  border-radius: var(--watch-panel-radius);
+  background: var(--watch-panel-bg);
+  box-shadow: var(--watch-panel-shadow);
+}
+
+.watch-together-panel__header,
+.watch-together-panel__footer,
+.watch-together-divider {
+  border-color: var(--watch-panel-divider);
+}
+
+.watch-together-panel__header {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .025), transparent);
+}
+
+.watch-together-panel__body {
+  scrollbar-color: var(--watch-panel-divider) transparent;
+}
+
+.watch-together-surface {
+  border-color: var(--watch-panel-divider);
+  background: var(--watch-panel-surface);
+}
+
+.watch-together-surface--subtle {
+  background: var(--watch-panel-surface-subtle);
+}
+
+.watch-together-control,
+.watch-together-avatar {
+  border-color: var(--watch-panel-divider);
+  background: var(--watch-panel-control);
+}
+
+.watch-together-control:hover {
+  background: var(--watch-panel-control-hover);
+}
+
+.watch-together-input {
+  border-color: var(--watch-panel-border);
+  background: var(--watch-panel-input);
+}
+
+.watch-together-input:hover,
+.watch-together-input:focus {
+  border-color: var(--watch-panel-border);
+  background: var(--watch-panel-input-focus);
+}
+
+.watch-together-popover,
+.watch-together-modal {
+  border-color: var(--watch-panel-border);
+  background: var(--watch-panel-bg);
+  box-shadow: var(--watch-panel-shadow);
+}
+
+.watch-together-modal input {
+  border-color: var(--watch-panel-border);
+  background: var(--watch-panel-input);
+}
+
+.watch-together-modal input:hover,
+.watch-together-modal input:focus {
+  background: var(--watch-panel-input-focus);
+}
+
+.watch-together-panel .watch-together-launcher:not(.bg-accent\/10) {
+  border: 1px solid var(--watch-panel-border);
+  background: var(--watch-panel-control);
+  color: rgba(255, 255, 255, .72);
+}
+
+.watch-together-panel .watch-together-launcher:not(.bg-accent\/10):hover {
+  background: var(--watch-panel-control-hover);
+  color: #fff;
+}
+
+html[data-interface-theme="cinematic"] .watch-together-panel__header {
+  padding-block: 1.15rem;
+}
+
+html[data-interface-theme="cinematic"] .watch-together-panel__icon {
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .24);
+}
+
+html[data-interface-theme="cinematic"] .watch-together-section > div,
+html[data-interface-theme="cinematic"] .watch-together-empty > div {
+  animation: cinematic-panel-in 180ms cubic-bezier(.16,1,.3,1);
+}
+
 .cinematic-main {
   scroll-padding-top: 7rem;
 }

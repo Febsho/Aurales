@@ -4,6 +4,8 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
+import { recordReliabilityEvent, streamFingerprint } from '../../services/streams/reliabilityHistory'
+import { estimateRoomPosition, serverTimestampToLocal } from '../../services/watch-together/clockSync'
 import { useNativePlayerSupported } from '../../hooks/useNativePlayerSupported'
 import NativeMpvPlayer from '../NativeMpvPlayer'
 
@@ -17,6 +19,10 @@ export default function WatchTogetherAutoPlayer() {
   const nativePlayerAvailable = useNativePlayerSupported()
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
+  const localSourceCandidates = useWatchTogetherStore((s) => s.localSourceCandidates)
+  const activeSourceIndex = useWatchTogetherStore((s) => s.activeSourceIndex)
+  const pendingSync = useWatchTogetherStore((s) => s.pendingSync)
+  const serverClockOffsetMs = useWatchTogetherStore((s) => s.serverClockOffsetMs)
   const [active, setActive] = useState(false)
   // Set when the user closes the player while the room is still playing, so a
   // pause/resume status change doesn't instantly remount it in their face.
@@ -24,6 +30,7 @@ export default function WatchTogetherAutoPlayer() {
   // Freeze the start time at activation — playback.currentTime updates on every
   // sync event and must not feed a live prop into the player.
   const startTimeRef = useRef(0)
+  const failedCandidateRef = useRef<string | null>(null)
 
   const media = currentRoom?.selectedMedia
   const episode = currentRoom?.selectedEpisode
@@ -51,15 +58,20 @@ export default function WatchTogetherAutoPlayer() {
       setActive((prev) => {
         if (!prev) {
           const pb = playback!
-          const elapsed = pb.isPlaying && Number.isFinite(pb.lastUpdatedAt)
-            ? Math.max(0, (Date.now() - pb.lastUpdatedAt) / 1000)
-            : 0
-          startTimeRef.current = Math.max(0, (pb.currentTime ?? 0) + elapsed)
+          const anchorTime = pendingSync?.time ?? pb.currentTime ?? 0
+          const anchorServerTime = pendingSync?.serverTime ?? pb.serverTime ?? pb.lastUpdatedAt
+          startTimeRef.current = estimateRoomPosition(
+            anchorTime,
+            pendingSync?.isPlaying ?? pb.isPlaying,
+            anchorServerTime,
+            serverClockOffsetMs,
+          )
+          wsClient.sendLocalSourceStatus('starting')
         }
         return true
       })
     }
-  }, [media, selectedLocalStream, playback?.status])
+  }, [media, selectedLocalStream, playback, pendingSync, serverClockOffsetMs])
 
   useEffect(() => {
     if (!currentRoom) {
@@ -91,7 +103,8 @@ export default function WatchTogetherAutoPlayer() {
   if (!active || !media || !selectedLocalStream || !playbackItem || nativePlayerAvailable === undefined) return null
 
   const stream = selectedLocalStream.stream
-  const url = getPlayableStreamUrl(stream)
+  const activeCandidate = localSourceCandidates[activeSourceIndex]
+  const url = activeCandidate?.playableUrl || getPlayableStreamUrl(stream)
   if (!url) return null
 
   const PlayerComponent = nativePlayerAvailable ? NativeMpvPlayer : InAppPlayer
@@ -106,11 +119,46 @@ export default function WatchTogetherAutoPlayer() {
     setActive(false)
     // The host leaving playback stops the room; a guest just steps out.
     if (wt.isHost) wsClient.stop()
+    else wsClient.sendLocalSourceStatus('ready')
+  }
+
+  const handlePlaybackStarted = () => {
+    failedCandidateRef.current = null
+    recordReliabilityEvent(stream, 'success')
+    wsClient.sendLocalSourceStatus('playing')
+    const sync = useWatchTogetherStore.getState().pendingSync
+    if (sync) {
+      const timing = useWatchTogetherStore.getState()
+      window.dispatchEvent(new CustomEvent('wt:sync_request', {
+        detail: {
+          time: sync.time,
+          isPlaying: sync.isPlaying,
+          sentAt: serverTimestampToLocal(sync.serverTime, timing.serverClockOffsetMs),
+          sequence: sync.sequence,
+        },
+      }))
+    }
+  }
+
+  const handlePlaybackError = (message: string) => {
+    const candidateKey = `${activeSourceIndex}:${streamFingerprint(stream)}`
+    if (failedCandidateRef.current === candidateKey) return
+    failedCandidateRef.current = candidateKey
+    recordReliabilityEvent(stream, 'failed_start')
+    const next = useWatchTogetherStore.getState().advanceLocalSource()
+    if (next) {
+      wsClient.sendLocalSourceStatus('starting')
+      startTimeRef.current = wsClient.getBestKnownTime()
+    } else {
+      wsClient.sendLocalSourceStatus('failed', 'ALL_SOURCES_FAILED')
+      console.warn('[WatchTogether] Local playback sources exhausted:', message)
+    }
   }
 
   return createPortal(
     <Suspense fallback={null}>
       <PlayerComponent
+        key={`${mediaKey}:${activeSourceIndex}:${url}`}
         url={url}
         title={media.title}
         subtitle={subtitle}
@@ -120,7 +168,9 @@ export default function WatchTogetherAutoPlayer() {
         poster={media.poster}
         backdrop={media.backdrop}
         onClose={handleClose}
-        onPickAnother={handleClose}
+        onPickAnother={() => handlePlaybackError('User requested another source')}
+        onPlaybackStarted={handlePlaybackStarted}
+        onPlaybackError={handlePlaybackError}
       />
     </Suspense>,
     document.body,

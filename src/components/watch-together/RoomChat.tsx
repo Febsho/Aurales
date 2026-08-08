@@ -51,7 +51,7 @@ export default function RoomChat() {
       {/* Messages */}
       <div
         ref={containerRef}
-        className="h-48 overflow-y-auto rounded-xl bg-white/[0.02] border border-white/[0.06] p-2 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-white/10"
+        className="watch-together-surface watch-together-surface--subtle h-48 overflow-y-auto rounded-xl border p-2 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-white/10"
       >
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
@@ -65,7 +65,7 @@ export default function RoomChat() {
                 key={msg.id}
                 className={[
                   'flex flex-col px-2.5 py-1.5 rounded-lg max-w-[85%]',
-                  isMe ? 'self-end bg-accent/10' : 'self-start bg-white/[0.04]',
+                  isMe ? 'self-end bg-accent/10' : 'watch-together-surface self-start',
                 ].join(' ')}
               >
                 <div className="flex items-center gap-1.5">
@@ -95,7 +95,7 @@ export default function RoomChat() {
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           className={[
-            'flex-1 bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] rounded-lg',
+            'watch-together-input flex-1 border rounded-lg',
             'text-xs text-white placeholder-white/30 px-3 py-2',
             'transition-all duration-200',
             'focus:outline-none focus:bg-white/[0.1] focus:border-white/20',
@@ -108,7 +108,7 @@ export default function RoomChat() {
             'w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-200 cursor-pointer',
             message.trim()
               ? 'bg-accent text-black hover:bg-accent-hover'
-              : 'bg-white/[0.06] text-white/20 pointer-events-none',
+              : 'watch-together-control text-white/20 pointer-events-none',
           ].join(' ')}
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">

@@ -54,6 +54,7 @@ import { canSelfUpdate, checkForUpdate, downloadAndInstall, getAppVersion, getFl
 import type { UpdateInfo, UpdateProgress } from '../services/updater'
 import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
+import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -1122,7 +1123,7 @@ function ManualHeroPicker() {
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'>('accounts')
   
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
@@ -1843,6 +1844,17 @@ export default function SettingsPage() {
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+            </svg>
+          )
+        },
+        {
+          id: 'shortcuts',
+          label: 'Keyboard Shortcuts',
+          description: 'View every app, navigation, and player hotkey.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+              <path strokeLinecap="round" d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h4M7 16h10" />
             </svg>
           )
         },
@@ -2988,40 +3000,6 @@ export default function SettingsPage() {
                   </select>
                 </SettingRow>
 
-                <div className="px-6 py-4">
-                  <div className="mb-3">
-                    <span className="text-sm text-white">Watched Checkmarks</span>
-                    <p className="text-[12px] text-white/35 mt-0.5">Choose which providers mark movies and episodes as watched.</p>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'mdblist', 'anilist'] as const).map((src) => {
-                      const enabled = store.watchedCheckmarkSources.includes(src)
-                      return (
-                        <button
-                          key={src}
-                          onClick={() => {
-                            const next = enabled
-                              ? store.watchedCheckmarkSources.filter((s) => s !== src)
-                              : [...store.watchedCheckmarkSources, src]
-                            store.setWatchedCheckmarkSources(next.length ? next : ['local'])
-                          }}
-                          className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                            enabled ? 'bg-accent/15 border-accent/25 text-accent' : 'bg-white/5 border-white/5 text-white/40 hover:text-white'
-                          }`}
-                        >
-                          {enabled && (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          )}
-                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'mdblist' ? 'MDBList' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-
               </SettingSection>
 
               {/* ─── Play Button Resume Priority ─── */}
@@ -3987,6 +3965,8 @@ export default function SettingsPage() {
             </>
           )}
 
+          {activeTab === 'shortcuts' && <KeyboardShortcutsSettings />}
+
           {/* ═══════════════════════════════════════════════
               WATCH TOGETHER TAB
               ═══════════════════════════════════════════════ */}
@@ -4045,9 +4025,6 @@ export default function SettingsPage() {
                 </SettingRow>
                 <SettingRow label="Auto-copy invite link" description="Copy the room invite link when creating a room.">
                   <SettingToggle checked={wtStore.autoCopyInvite} onChange={(v) => wtStore.setAutoCopyInvite(v)} />
-                </SettingRow>
-                <SettingRow label="Allow different streams" description="Let guests use a different stream source than the host.">
-                  <SettingToggle checked={wtStore.allowGuestDifferentStream} onChange={(v) => wtStore.setAllowGuestDifferentStream(v)} />
                 </SettingRow>
               </SettingSection>
 

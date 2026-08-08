@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { tmdbProvider } from '../services/tmdb'
+import { searchTmdbPeople, tmdbProvider, type TmdbPersonSearchResult } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import { useAppStore } from '../stores/appStore'
 import { EmptyState } from '../components/ui'
@@ -186,12 +186,13 @@ export default function SearchPage() {
   const query = searchParams.get('q')?.trim() || ''
   const [results, setResults] = useState<SearchResult[]>([])
   const [aiResults, setAiResults] = useState<SearchResult[]>([])
+  const [people, setPeople] = useState<TmdbPersonSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [searched, setSearched] = useState(false)
   const [aiRequested, setAiRequested] = useState(false)
   const [searchHistory, setSearchHistory] = useState(loadSearchHistory)
-  const [typeFilter, setTypeFilter] = useState<'all' | 'movies' | 'series' | 'anime'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'movies' | 'series' | 'anime' | 'people'>('all')
   const apiKey = useAppStore((state) => state.openrouterApiKey)
   const model = useAppStore((state) => state.openrouterModel)
   const addons = useAppStore((state) => state.addons)
@@ -204,6 +205,7 @@ export default function SearchPage() {
   const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
   const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const requestIdRef = useRef(0)
   const activeRequestGroupRef = useRef<string | null>(null)
 
@@ -221,16 +223,20 @@ export default function SearchPage() {
     activeRequestGroupRef.current = requestGroup
     if (!text) {
       setResults([])
+      setPeople([])
       setSearched(false)
+      setLoading(false)
       return
     }
     setLoading(true)
     setSearched(true)
     setAiResults([])
+    setPeople([])
     setAiRequested(false)
 
     const allResults: SearchResult[] = []
     const pending: Promise<void>[] = []
+    let foundPeople: TmdbPersonSearchResult[] = []
 
     const mergeAndShow = (newItems: SearchResult[]) => {
       if (requestId !== requestIdRef.current) return
@@ -247,6 +253,15 @@ export default function SearchPage() {
     }
 
     const usedEngines = new Set<string>()
+
+    const peopleSearch = searchTmdbPeople(text, { cancelGroup: requestGroup })
+      .then((matches) => {
+        if (requestId !== requestIdRef.current) return
+        foundPeople = matches
+        setPeople(matches)
+      })
+      .catch(() => {})
+    pending.push(peopleSearch)
 
     if (movieSearchEnabled) {
       fireEngine(movieSearchEngine, 'movie')
@@ -292,7 +307,7 @@ export default function SearchPage() {
 
     // Only remember searches that finished and found something â€” recording on
     // keystroke fills the history with partial queries.
-    if (allResults.length > 0) {
+    if (allResults.length > 0 || foundPeople.length > 0) {
       addToSearchHistory(text)
       setSearchHistory(loadSearchHistory())
     }
@@ -372,142 +387,218 @@ export default function SearchPage() {
 
   const totalMovies = movies.length + animeMovies.length
   const totalSeries = series.length + animeSeries.length
-  const noResults = searched && !loading && totalMovies === 0 && totalSeries === 0
+  const totalResults = totalMovies + totalSeries + people.length
+  const noResults = searched && !loading && totalResults === 0
+
+  const filters = [
+    { id: 'all' as const, label: 'All', count: totalResults },
+    { id: 'movies' as const, label: 'Movies', count: movies.length },
+    { id: 'series' as const, label: 'Series', count: series.length },
+    { id: 'anime' as const, label: 'Anime', count: animeMovies.length + animeSeries.length },
+    { id: 'people' as const, label: 'People', count: people.length },
+  ]
 
   return (
-    <div className={`${usesTopNav ? 'pt-44' : 'pt-8'} pb-8 space-y-4`}>
-      {searched && (
-        <div className="px-6 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
-              Results for &ldquo;{query}&rdquo;
-              {loading && results.length > 0 && (
-                <span className="inline-block w-4 h-4 border-2 border-white/25 border-t-white/70 rounded-full animate-spin" aria-label="Refining results" />
-              )}
-            </h1>
-            <p className="text-sm text-white/35 mt-1">{totalMovies} movies Â· {totalSeries} series</p>
-          </div>
-          {(totalMovies > 0 || totalSeries > 0) && (
-            <div className="flex items-center gap-2">
-              {([
-                { id: 'all', label: 'All', count: totalMovies + totalSeries },
-                { id: 'movies', label: 'Movies', count: movies.length },
-                { id: 'series', label: 'Series', count: series.length },
-                { id: 'anime', label: 'Anime', count: animeMovies.length + animeSeries.length },
-              ] as const).map(({ id, label, count }) => (
-                <button
-                  key={id}
-                  onClick={() => setTypeFilter(id)}
-                  disabled={count === 0 && id !== 'all'}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer border disabled:opacity-30 disabled:cursor-default ${
-                    typeFilter === id
-                      ? 'bg-accent/15 text-accent border-accent/25'
-                      : 'text-white/45 hover:text-white/75 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
-                  }`}
-                >
-                  {label}{count > 0 ? ` Â· ${count}` : ''}
-                </button>
-              ))}
-            </div>
+    <div className={`search-page ${cinematic ? 'search-page--cinematic' : 'search-page--default'} ${usesTopNav ? 'pt-44' : 'pt-20'} pb-12`}>
+      <section className="search-overview mx-5 sm:mx-8 mb-7" aria-live="polite">
+        <div className="min-w-0">
+          <p className="search-eyebrow">Explore Aurales</p>
+          <h1 className="search-title">
+            {searched ? <>Results for <span>&ldquo;{query}&rdquo;</span></> : 'Find your next story'}
+          </h1>
+          <p className="search-summary">
+            {searched
+              ? loading
+                ? 'Searching across your enabled sources…'
+                : `${totalResults} ${totalResults === 1 ? 'match' : 'matches'} across titles and people`
+              : 'Search movies, series, anime, actors, directors, and creators.'}
+          </p>
+        </div>
+        {loading && (
+          <span className="search-spinner" aria-label="Refining results" />
+        )}
+      </section>
+
+      {searched && totalResults > 0 && (
+        <nav className="search-filters mx-5 sm:mx-8 mb-8" aria-label="Search result types">
+          {filters.map(({ id, label, count }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTypeFilter(id)}
+              disabled={count === 0 && id !== 'all'}
+              className={`search-filter ${typeFilter === id ? 'search-filter--active' : ''}`}
+              aria-pressed={typeFilter === id}
+            >
+              <span>{label}</span>
+              <span className="search-filter__count">{count}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {loading && totalResults === 0 && (
+        <div className="search-loading">
+          <PeopleSkeleton />
+          <MediaRowSkeleton title="Movies and shows" />
+        </div>
+      )}
+
+      {!loading || totalResults > 0 ? (
+        <div className="search-results space-y-7">
+          {(typeFilter === 'all' || typeFilter === 'people') && people.length > 0 && (
+            <PeopleResults people={typeFilter === 'people' ? people : people.slice(0, 10)} />
           )}
+          {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
         </div>
-      )}
-
-      {loading && results.length === 0 && (
-        <div className="pt-2">
-          <MediaRowSkeleton title="Movies" />
-          <MediaRowSkeleton title="Series" />
-        </div>
-      )}
-
-      {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-      {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-      {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-      {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      ) : null}
 
       {noResults && (
-        <EmptyState
-          icon={<svg fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>}
-          title="No strong matches found"
-          description="Try the exact title, original title, or fewer words."
-        />
+        <div className="search-empty mx-5 sm:mx-8">
+          <EmptyState
+            icon={<SearchIcon />}
+            title="No strong matches found"
+            description="Try a full actor name, an original title, or fewer words."
+          />
+        </div>
       )}
 
       {searched && !loading && (
-        <section className="mx-6 mt-4 rounded-2xl border border-purple-500/15 bg-purple-500/[0.05] p-5">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="font-bold text-white">AI suggestions</h2>
-              <p className="text-xs text-white/40 mt-1">Optional. Uses OpenRouter credits only when you press Ask AI.</p>
-            </div>
-            <button
-              onClick={askAi}
-              disabled={!apiKey || aiLoading}
-              className="px-4 py-2 rounded-xl bg-purple-500/20 border border-purple-400/20 text-sm font-semibold text-purple-200 disabled:opacity-40"
-            >
-              {aiLoading ? 'Searchingâ€¦' : aiRequested ? 'Search again' : 'Ask AI'}
-            </button>
+        <section className="search-ai mx-5 sm:mx-8 mt-9">
+          <div>
+            <p className="search-ai__label">Need a broader idea?</p>
+            <h2>Ask AI for title suggestions</h2>
+            <p>Optional and only runs when you ask. Uses your configured OpenRouter account.</p>
+            {!apiKey && <p className="search-ai__warning">Add an OpenRouter API key in Settings to enable this.</p>}
           </div>
-          {!apiKey && <p className="mt-3 text-xs text-amber-300/70">Add an OpenRouter API key in Settings to enable optional AI search.</p>}
+          <button type="button" onClick={askAi} disabled={!apiKey || aiLoading}>
+            {aiLoading ? 'Searching…' : aiRequested ? 'Search again' : 'Ask AI'}
+          </button>
         </section>
       )}
 
-      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI Â· Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI Â· Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
 
       {!searched && !loading && (
-        searchHistory.length > 0 ? (
-          <div className="px-6 py-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-white/80">Recent Searches</h2>
-              <button
-                onClick={() => {
-                  saveSearchHistory([])
-                  setSearchHistory([])
-                }}
-                className="text-xs text-white/30 hover:text-white/60 transition-colors cursor-pointer"
-              >
-                Clear all
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {searchHistory.map((q) => (
-                <div key={q} className="group flex items-center gap-1 bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.06] rounded-xl transition-colors">
-                  <button
-                    onClick={() => navigate(`/search?q=${encodeURIComponent(q)}`)}
-                    className="flex items-center gap-2 px-3.5 py-2 cursor-pointer"
-                  >
-                    <svg className="w-3.5 h-3.5 text-white/25 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path d="M12 8v4l3 3" strokeLinecap="round" strokeLinejoin="round" />
-                      <circle cx="12" cy="12" r="10" />
-                    </svg>
-                    <span className="text-sm text-white/65 group-hover:text-white transition-colors">{q}</span>
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeFromSearchHistory(q)
-                      setSearchHistory(loadSearchHistory())
-                    }}
-                    className="pr-2.5 py-2 text-white/15 hover:text-white/50 transition-colors cursor-pointer"
-                    title="Remove"
-                  >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
+        <section className="search-start mx-5 sm:mx-8">
+          {searchHistory.length > 0 ? (
+            <>
+              <div className="search-section-heading">
+                <div>
+                  <p className="search-eyebrow">Pick up where you left off</p>
+                  <h2>Recent searches</h2>
                 </div>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveSearchHistory([])
+                    setSearchHistory([])
+                  }}
+                >
+                  Clear history
+                </button>
+              </div>
+              <div className="search-history">
+                {searchHistory.map((historyQuery) => (
+                  <div key={historyQuery} className="search-history__item">
+                    <button type="button" onClick={() => navigate(`/search?q=${encodeURIComponent(historyQuery)}`)}>
+                      <HistoryIcon />
+                      <span>{historyQuery}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        removeFromSearchHistory(historyQuery)
+                        setSearchHistory(loadSearchHistory())
+                      }}
+                      aria-label={`Remove ${historyQuery} from search history`}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="search-start__empty">
+              <SearchIcon />
+              <h2>Movies, shows, and the people behind them</h2>
+              <p>Start typing above. You can search an actor, director, creator, or title.</p>
+              <div className="search-start__examples">
+                <span>Try &ldquo;Florence Pugh&rdquo;</span>
+                <span>Try &ldquo;Dune&rdquo;</span>
+                <span>Try &ldquo;Hayao Miyazaki&rdquo;</span>
+              </div>
             </div>
-          </div>
-        ) : (
-          <EmptyState
-            icon={<svg fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>}
-            title="Search your media"
-            description="Type a title above to search movies and shows."
-          />
-        )
+          )}
+        </section>
       )}
     </div>
   )
+}
+
+function PeopleResults({ people }: { people: TmdbPersonSearchResult[] }) {
+  const navigate = useNavigate()
+  return (
+    <section className="people-results" aria-labelledby="people-results-title">
+      <div className="people-results__heading">
+        <div>
+          <p className="search-eyebrow">Cast &amp; crew</p>
+          <h2 id="people-results-title">People</h2>
+        </div>
+        <span>{people.length} shown</span>
+      </div>
+      <div className="people-results__grid">
+        {people.map((person) => (
+          <button
+            key={person.id}
+            type="button"
+            onClick={() => navigate(`/person/${person.id}`)}
+            className="person-search-card focus-ring"
+          >
+            <div className="person-search-card__photo">
+              {person.profile ? (
+                <img src={person.profile} alt="" loading="lazy" />
+              ) : (
+                <span>{person.name.slice(0, 1)}</span>
+              )}
+            </div>
+            <div className="person-search-card__body">
+              <span className="person-search-card__role">{person.knownForDepartment || 'Cast & crew'}</span>
+              <h3>{person.name}</h3>
+              <p>{person.knownFor.map((credit) => credit.title).join(' · ') || 'View filmography'}</p>
+            </div>
+            <span className="person-search-card__arrow" aria-hidden="true">→</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function PeopleSkeleton() {
+  return (
+    <div className="people-results people-results--loading" aria-hidden="true">
+      <div className="h-6 w-28 rounded bg-white/[0.06] animate-pulse" />
+      <div className="people-results__grid mt-4">
+        {[0, 1, 2, 3].map((item) => <div key={item} className="person-search-card h-28 animate-pulse" />)}
+      </div>
+    </div>
+  )
+}
+
+function SearchIcon() {
+  return <svg fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" strokeLinecap="round" /></svg>
+}
+
+function HistoryIcon() {
+  return <svg fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 3v5h5M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+}
+
+function CloseIcon() {
+  return <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" strokeLinecap="round" /></svg>
 }

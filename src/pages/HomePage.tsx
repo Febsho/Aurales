@@ -920,7 +920,13 @@ const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
 
 export default function HomePage() {
   const homeRootRef = useRef<HTMLDivElement>(null)
-  const { homeRows, reorderHomeRows, removeHomeRow, resetHomeRows } = useAppStore();
+  // Do not subscribe Home to the entire app store. Playback progress, player
+  // state and background sync update frequently; subscribing here used to
+  // re-render every shelf and card for each unrelated store change.
+  const homeRows = useAppStore((state) => state.homeRows)
+  const reorderHomeRows = useAppStore((state) => state.reorderHomeRows)
+  const removeHomeRow = useAppStore((state) => state.removeHomeRow)
+  const resetHomeRows = useAppStore((state) => state.resetHomeRows)
   const cinematic = useAppStore((state) => state.interfaceTheme === 'cinematic')
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();

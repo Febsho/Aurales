@@ -6,14 +6,14 @@
 // enforce the Settings → Image Cache size cap and max age — the WebView's own
 // HTTP cache offers no such control.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use tauri::Manager;
 
@@ -31,6 +31,27 @@ static CONFIG: Mutex<CacheConfig> = Mutex::new(CacheConfig {
 static WRITES_SINCE_SWEEP: AtomicU32 = AtomicU32::new(0);
 const SWEEP_EVERY_WRITES: u32 = 25;
 const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024;
+const MAX_CONCURRENT_DOWNLOADS: usize = 6;
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+
+struct DownloadState {
+    active: usize,
+    in_flight: HashSet<PathBuf>,
+    recent_failures: HashMap<PathBuf, Instant>,
+}
+
+static DOWNLOAD_STATE: OnceLock<Mutex<DownloadState>> = OnceLock::new();
+static DOWNLOAD_READY: Condvar = Condvar::new();
+
+fn download_state() -> &'static Mutex<DownloadState> {
+    DOWNLOAD_STATE.get_or_init(|| {
+        Mutex::new(DownloadState {
+            active: 0,
+            in_flight: HashSet::new(),
+            recent_failures: HashMap::new(),
+        })
+    })
+}
 
 fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -94,8 +115,12 @@ fn cache_path(dir: &PathBuf, url: &str) -> PathBuf {
 }
 
 fn is_expired(path: &PathBuf, keep_secs: u64) -> bool {
-    let Ok(meta) = fs::metadata(path) else { return true };
-    let Ok(modified) = meta.modified() else { return false };
+    let Ok(meta) = fs::metadata(path) else {
+        return true;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
     SystemTime::now()
         .duration_since(modified)
         .map(|age| age.as_secs() > keep_secs)
@@ -104,7 +129,9 @@ fn is_expired(path: &PathBuf, keep_secs: u64) -> bool {
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
     let response = ureq::get(url)
-        .timeout(Duration::from_secs(20))
+        // A failed artwork origin must not occupy one of the small bounded
+        // worker pool slots long enough to starve the visible Home row.
+        .timeout(Duration::from_secs(12))
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes: Vec<u8> = Vec::new();
@@ -119,13 +146,66 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Download a missing entry with bounded concurrency and per-path in-flight
+/// deduplication. Requests waiting for the same poster read the file written by
+/// the first request instead of opening duplicate HTTP connections.
+fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
+    loop {
+        let mut state = download_state().lock().unwrap();
+
+        // Another request may have completed while this one waited.
+        if path.exists() {
+            drop(state);
+            return fs::read(path).map_err(|error| error.to_string());
+        }
+
+        state
+            .recent_failures
+            .retain(|_, failed_at| failed_at.elapsed() < FAILURE_COOLDOWN);
+        if state.recent_failures.contains_key(path) {
+            return Err("image origin is in retry cooldown".into());
+        }
+
+        if state.in_flight.contains(path) || state.active >= MAX_CONCURRENT_DOWNLOADS {
+            state = DOWNLOAD_READY.wait(state).unwrap();
+            drop(state);
+            continue;
+        }
+
+        state.active += 1;
+        state.in_flight.insert(path.clone());
+        drop(state);
+        break;
+    }
+
+    let result = download(url).and_then(|bytes| {
+        let tmp = path.with_extension(format!("{}.part", file_extension(url)));
+        fs::write(&tmp, &bytes).map_err(|error| error.to_string())?;
+        fs::rename(&tmp, path).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    });
+
+    let mut state = download_state().lock().unwrap();
+    state.active = state.active.saturating_sub(1);
+    state.in_flight.remove(path);
+    if result.is_err() {
+        state.recent_failures.insert(path.clone(), Instant::now());
+    } else {
+        state.recent_failures.remove(path);
+    }
+    DOWNLOAD_READY.notify_all();
+    result
+}
+
 /// Delete expired entries, then oldest-first until under the size cap.
 fn enforce_limits(dir: &PathBuf) {
     let (max_bytes, keep_secs) = {
         let config = CONFIG.lock().unwrap();
         (config.max_bytes, config.keep_secs)
     };
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<(PathBuf, SystemTime, u64)> = entries
         .flatten()
         .filter_map(|entry| {
@@ -186,7 +266,9 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
             .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()));
     }
 
-    let Ok(dir) = cache_dir(app) else { return respond_redirect(&url) };
+    let Ok(dir) = cache_dir(app) else {
+        return respond_redirect(&url);
+    };
     let path = cache_path(&dir, &url);
     let keep_secs = CONFIG.lock().unwrap().keep_secs;
 
@@ -196,12 +278,13 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
             Err(_) => return respond_redirect(&url),
         }
     } else {
-        match download(&url) {
+        // Expired files must be removed before entering download_cached;
+        // otherwise its post-wait existence check would serve stale bytes.
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        match download_cached(&url, &path) {
             Ok(bytes) => {
-                let tmp = path.with_extension("part");
-                if fs::write(&tmp, &bytes).is_ok() {
-                    let _ = fs::rename(&tmp, &path);
-                }
                 if WRITES_SINCE_SWEEP.fetch_add(1, Ordering::Relaxed) >= SWEEP_EVERY_WRITES {
                     WRITES_SINCE_SWEEP.store(0, Ordering::Relaxed);
                     enforce_limits(&dir);

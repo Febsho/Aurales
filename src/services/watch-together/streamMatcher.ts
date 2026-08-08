@@ -1,7 +1,12 @@
 import type { StreamResult } from '../../types'
 import type { RoomMedia, RoomEpisode, RoomStream } from './types'
 import { getAddonStreams, getStreamAddons } from '../addons'
-import { isPlayableStream } from '../streams/playableUrl'
+import { getPlayableStreamUrl, isPlayableStream } from '../streams/playableUrl'
+import { streamPreloadManager, StreamPreloadPriority } from '../streams/preloadManager'
+import { buildSmartContext } from '../streams/preparedStreams'
+import { rankStreams, type SmartStream } from '../streams/smartScoring'
+import { probeStreamUrl } from '../streams/streamProbe'
+import type { LocalSourceCandidate } from '../../stores/watchTogetherStore'
 
 // ── Fingerprinting ──────────────────────────────────────────────────────────
 
@@ -16,6 +21,69 @@ export function createStreamFingerprint(stream: StreamResult & { addonId?: strin
     hash = ((hash << 5) - hash + label.charCodeAt(i)) | 0
   }
   return `${stream.addonId ?? 'unknown'}:label:${hash}`
+}
+
+function preferredMediaId(media: RoomMedia): string {
+  if (media.imdbId) return media.imdbId
+  if (media.tmdbId) return `tmdb:${media.tmdbId}`
+  if (media.tvdbId) return `tvdb:${media.tvdbId}`
+  return media.localMediaId
+}
+
+/**
+ * Resolve private, client-local playback candidates. Room peers never receive
+ * the selected addon or URL; they only coordinate media identity and time.
+ */
+export async function resolveLocalSourceCandidates(
+  media: RoomMedia,
+  episode?: RoomEpisode,
+  signal?: AbortSignal,
+): Promise<LocalSourceCandidate[]> {
+  const mediaType = media.type === 'movie' ? 'movie' : 'series'
+  const streams = await streamPreloadManager.request({
+    mediaType,
+    mediaId: preferredMediaId(media),
+    imdbId: media.imdbId,
+    tmdbId: media.tmdbId,
+    seasonEpisode: episode ? { season: episode.seasonNumber, episode: episode.episodeNumber } : undefined,
+    sourceAddonId: media.sourceAddonId,
+    sourceAddonItemId: media.sourceAddonItemId,
+  }, { priority: StreamPreloadPriority.PLAYBACK })
+  if (signal?.aborted) return []
+
+  const ranked = rankStreams(streams as SmartStream[], buildSmartContext({
+    title: media.title,
+    season: episode?.seasonNumber,
+    episode: episode?.episodeNumber,
+  })).filter(({ stream, score }) => score > -500 && Boolean(getPlayableStreamUrl(stream)))
+
+  // Probe the leading candidates. Remaining ranked sources stay available as
+  // runtime fallbacks because some providers reject lightweight HTTP probes.
+  const measured = await Promise.all(ranked.slice(0, 3).map(async (candidate) => {
+    const url = getPlayableStreamUrl(candidate.stream)!
+    const probe = await probeStreamUrl(url, 4_000)
+    return { candidate, probe, playableUrl: probe?.finalUrl || url }
+  }))
+  if (signal?.aborted) return []
+
+  // A status of 0 means the lightweight probe itself timed out or could not
+  // reach the source. It is not proof that the full player cannot open it, so
+  // keep that candidate as a runtime fallback. Only reject an actual HTTP
+  // response that definitively failed the probe's playability checks.
+  const rejected = new Set(measured
+    .filter(({ probe }) => probe && probe.status > 0 && !probe.ok)
+    .map(({ candidate }) => candidate.stream))
+  const probedUrls = new Map(measured.map(({ candidate, playableUrl }) => [candidate.stream, playableUrl]))
+  return ranked
+    .filter(({ stream }) => !rejected.has(stream))
+    .map(({ stream, score, reasons }) => ({
+      stream,
+      addonId: stream.addonId,
+      addonName: stream.addonName,
+      playableUrl: probedUrls.get(stream) || getPlayableStreamUrl(stream)!,
+      score,
+      reasons,
+    }))
 }
 
 // ── Build stremio media ID ──────────────────────────────────────────────────

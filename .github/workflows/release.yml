@@ -68,6 +68,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Run release tests
+        run: npm test
+
       - name: Prepare bundled Linux media runtime
         if: matrix.platform == 'ubuntu-22.04'
         run: |

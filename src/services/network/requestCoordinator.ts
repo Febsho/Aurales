@@ -108,6 +108,7 @@ class RequestCoordinator {
   private playbackActive = false
   private queue: QueueEntry<unknown>[] = []
   private requests = new Map<string, QueueEntry<unknown>>()
+  private groupCancellations = new Map<string, Set<(reason: DOMException) => void>>()
   private originActive = new Map<string, number>()
   private originStates = new Map<string, OriginState>()
   private wakeTimer: ReturnType<typeof setTimeout> | null = null
@@ -143,7 +144,7 @@ class RequestCoordinator {
         existing.options.priority = normalized.priority
         this.sortQueue()
       }
-      return existing.promise
+      return this.consumerPromise(existing.promise, normalized.cancelGroup)
     }
 
     let resolve!: (value: T) => void
@@ -167,19 +168,24 @@ class RequestCoordinator {
     this.queue.push(entry as QueueEntry<unknown>)
     this.sortQueue()
     this.pump()
-    return promise
+    return this.consumerPromise(promise, normalized.cancelGroup)
   }
 
   cancelGroup(group: string): void {
+    const reason = abortError()
+    const cancellations = this.groupCancellations.get(group)
+    this.groupCancellations.delete(group)
+    for (const cancel of cancellations || []) cancel(reason)
+
     for (const entry of this.requests.values()) {
       if (!entry.groups.delete(group)) continue
       if (entry.groups.size > 0) continue
       this.diagnostics.cancelled += 1
-      if (entry.started) entry.controller.abort(abortError())
+      if (entry.started) entry.controller.abort(reason)
       else {
         this.queue = this.queue.filter((candidate) => candidate !== entry)
         this.deleteEntry(entry)
-        entry.reject(abortError())
+        entry.reject(reason)
       }
     }
     this.pump()
@@ -223,6 +229,7 @@ class RequestCoordinator {
     for (const entry of this.requests.values()) entry.controller.abort()
     this.queue = []
     this.requests.clear()
+    this.groupCancellations.clear()
     this.originActive.clear()
     this.originStates.clear()
     this.active = 0
@@ -243,6 +250,29 @@ class RequestCoordinator {
     if (this.playbackActive) return true
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return true
     return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  }
+
+  private consumerPromise<T>(promise: Promise<T>, group?: string): Promise<T> {
+    if (!group) return promise
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false
+      const cancellations = this.groupCancellations.get(group) || new Set<(reason: DOMException) => void>()
+      const finish = (callback: () => void) => {
+        if (settled) return
+        settled = true
+        cancellations.delete(cancel)
+        if (cancellations.size === 0) this.groupCancellations.delete(group)
+        callback()
+      }
+      const cancel = (reason: DOMException) => finish(() => reject(reason))
+      cancellations.add(cancel)
+      this.groupCancellations.set(group, cancellations)
+      promise.then(
+        (value) => finish(() => resolve(value)),
+        (error) => finish(() => reject(error)),
+      )
+    })
   }
 
   private originLimit(entry: QueueEntry<unknown>): number {
@@ -363,7 +393,8 @@ export async function coordinatedJson<T>(
   options: Omit<CoordinatedRequestOptions, 'origin'> & { origin?: string },
 ): Promise<T> {
   const origin = normalizedOrigin(options.origin || url)
-  return requestCoordinator.run({ ...options, origin }, async (signal) => {
+  const dedupeKey = `${options.dedupeKey}|url:${url}`
+  return requestCoordinator.run({ ...options, origin, dedupeKey }, async (signal) => {
     const maxAttempts = options.retry === 'interactive-once'
       && (options.priority === 'interactive' || options.priority === 'playback')
       ? 2

@@ -19,6 +19,15 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.7" date="2026-08-08">
+      <description>
+        <p>
+          Adds local watchlists, multi-provider watched-state checks, themed
+          Watch Together improvements, player diagnostics, keyboard shortcuts,
+          and a redesigned search experience with cast and crew results.
+        </p>
+      </description>
+    </release>
     <release version="0.2.6" date="2026-07-29">
       <description>
         <p>

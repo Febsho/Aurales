@@ -749,7 +749,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               <>
                 <Button variant="white" size="lg" onClick={() => nav(true)}>Play</Button>
                 <Button variant="secondary" size="lg" onClick={() => nav(false)}>More Info</Button>
-                <WatchlistButton mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', isAnime: item.isAnime, contentType: type === 'series' ? 'series' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} isAnime={item.isAnime} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
+                <WatchlistButton item={item} mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', isAnime: item.isAnime, contentType: type === 'series' ? 'series' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} isAnime={item.isAnime} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
               </>
             ) : (
               <Button variant="white" size={isSmall ? 'md' : 'lg'} onClick={() => nav(false)}>

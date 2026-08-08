@@ -41,6 +41,7 @@ import { getHomeShelfRows, getSmartCollections, newSmartCollectionDefaults, SMAR
 import { Modal } from '../components/ui'
 import LibraryCalendar from '../components/LibraryCalendar'
 import LibraryActivity from '../components/LibraryActivity'
+import LocalWatchlist from '../components/LocalWatchlist'
 import { v4 as uuid } from 'uuid'
 import { getPosterStackItems, inferCatalogContentType, isCatalogUsedByHomeShelf, normalizeShelfDraft, shelfDraftKey, type CatalogContentType, type CatalogPickerItem, type CatalogPickerSource, type PendingShelfSelection, type ShelfDraft } from '../services/homeShelves'
 import {
@@ -3475,7 +3476,7 @@ export default function CollectionsPage() {
 
   const [addOverlay, setAddOverlay] = useState(false)
   const [overlayStartMode, setOverlayStartMode] = useState<'preset' | 'discover'>('preset')
-  const activeTab: 'collections' | 'shelves' | 'calendar' | 'activity' = searchParams.get('tab') === 'calendar' ? 'calendar' : searchParams.get('tab') === 'activity' ? 'activity' : searchParams.get('tab') === 'collections' ? 'collections' : 'shelves'
+  const activeTab: 'collections' | 'shelves' | 'watchlist' | 'calendar' | 'activity' = searchParams.get('tab') === 'watchlist' ? 'watchlist' : searchParams.get('tab') === 'calendar' ? 'calendar' : searchParams.get('tab') === 'activity' ? 'activity' : searchParams.get('tab') === 'collections' ? 'collections' : 'shelves'
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
   const [deleteCandidate, setDeleteCandidate] = useState<HomeRowConfig | null>(null)
   const [shelfQuery, setShelfQuery] = useState('')
@@ -3553,9 +3554,9 @@ export default function CollectionsPage() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Library</h1>
-            <p className="text-sm text-white/35">Build dynamic collections and curate your home screen</p>
+            <p className="text-sm text-white/35">Save titles locally, build collections, and curate your home screen</p>
           </div>
-          {activeTab !== 'calendar' && activeTab !== 'activity' && <button
+          {activeTab !== 'watchlist' && activeTab !== 'calendar' && activeTab !== 'activity' && <button
             onClick={() => { setEditingRow(null); setOverlayStartMode(activeTab === 'collections' ? 'discover' : 'preset'); setAddOverlay(true) }}
             className="flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent/80 text-black text-sm font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-accent/20"
           >
@@ -3569,7 +3570,7 @@ export default function CollectionsPage() {
 
       <div className="px-8 space-y-6">
         <div className="inline-flex rounded-xl border border-white/[0.07] bg-white/[0.03] p-1">
-          {([['shelves', 'Home Shelves'], ['collections', 'Smart Collections'], ['calendar', 'Calendar'], ['activity', 'Activity']] as const).map(([id, label]) => (
+          {([['watchlist', 'Watchlist'], ['shelves', 'Home Shelves'], ['collections', 'Smart Collections'], ['calendar', 'Calendar'], ['activity', 'Activity']] as const).map(([id, label]) => (
             <button
               key={id}
               onClick={() => { setSearchParams(id === 'shelves' ? {} : { tab: id }); setShelfQuery(''); setSourceFilter('All') }}
@@ -3579,7 +3580,7 @@ export default function CollectionsPage() {
             </button>
           ))}
         </div>
-        {activeTab === 'calendar' ? <LibraryCalendar /> : activeTab === 'activity' ? <LibraryActivity /> : <>
+        {activeTab === 'watchlist' ? <LocalWatchlist /> : activeTab === 'calendar' ? <LibraryCalendar /> : activeTab === 'activity' ? <LibraryActivity /> : <>
         {/* Hero banner config */}
         {activeTab === 'shelves' && (
           <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5">

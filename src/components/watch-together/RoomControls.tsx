@@ -105,7 +105,7 @@ export default function RoomControls() {
                 onClick={() => setTransferOpen(!transferOpen)}
                 className={[
                   'w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs',
-                  'bg-white/[0.04] hover:bg-white/[0.06] border border-white/[0.06]',
+                  'watch-together-control border',
                   'text-white/60 hover:text-white transition-all duration-200 cursor-pointer',
                 ].join(' ')}
               >
@@ -130,14 +130,14 @@ export default function RoomControls() {
               </button>
 
               {transferOpen && (
-                <div className="mt-1 rounded-xl bg-surface-elevated/95 backdrop-blur-xl border border-white/[0.08] overflow-hidden animate-[fadeIn_150ms_ease-out]">
+                <div className="watch-together-popover mt-1 rounded-xl backdrop-blur-xl border overflow-hidden animate-[fadeIn_150ms_ease-out]">
                   {otherParticipants.map((p) => (
                     <button
                       key={p.id}
                       onClick={() => handleTransferHost(p.id)}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/60 hover:text-white hover:bg-white/[0.06] transition-colors duration-150 cursor-pointer"
+                      className="watch-together-control w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors duration-150 cursor-pointer"
                     >
-                      <div className="w-5 h-5 rounded-md bg-white/[0.08] flex items-center justify-center text-[10px] font-bold text-white/50">
+                      <div className="watch-together-avatar w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white/50">
                         {p.name.charAt(0).toUpperCase()}
                       </div>
                       <span>{p.name}</span>

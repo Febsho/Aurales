@@ -7,6 +7,7 @@ import type {
   RoomMedia,
   RoomEpisode,
   RoomStream,
+  LocalSourceStatus,
 } from '../services/watch-together/types'
 import type { StreamResult } from '../types'
 
@@ -40,6 +41,22 @@ interface DebugLogEntry {
   data?: any
 }
 
+export interface LocalSourceCandidate {
+  stream: StreamResult
+  addonId: string
+  addonName: string
+  playableUrl: string
+  score: number
+  reasons: string[]
+}
+
+export interface PendingRoomSync {
+  time: number
+  isPlaying: boolean
+  serverTime: number
+  sequence: number
+}
+
 export interface WatchTogetherState {
   // Room
   currentRoom: WatchRoom | null
@@ -49,6 +66,15 @@ export interface WatchTogetherState {
 
   // Local state
   selectedLocalStream: { stream: StreamResult; addonId: string; addonName: string } | null
+  localSourceCandidates: LocalSourceCandidate[]
+  activeSourceIndex: number
+  sourceResolutionGeneration: number
+  localSourceStatus: LocalSourceStatus
+  localSourceError: string | null
+  pendingSync: PendingRoomSync | null
+  lastAppliedSyncSequence: number
+  serverClockOffsetMs: number
+  roundTripTimeMs: number
   isHost: boolean
   drawModeActive: boolean
   errors: string[]
@@ -72,6 +98,15 @@ export interface WatchTogetherState {
   setRoomPanelOpen: (open: boolean) => void
   toggleRoomPanel: () => void
   setSelectedLocalStream: (stream: WatchTogetherState['selectedLocalStream']) => void
+  beginSourceResolution: () => number
+  setLocalSourceCandidates: (generation: number, candidates: LocalSourceCandidate[]) => boolean
+  setManualLocalSource: (candidate: LocalSourceCandidate) => void
+  advanceLocalSource: () => LocalSourceCandidate | null
+  setLocalSourceStatus: (status: LocalSourceStatus, error?: string | null) => void
+  clearLocalSource: () => void
+  queuePendingSync: (sync: PendingRoomSync) => boolean
+  markPendingSyncApplied: (sequence: number) => void
+  updateServerTiming: (offsetMs: number, roundTripTimeMs: number) => void
   setIsHost: (host: boolean) => void
   setDrawModeActive: (active: boolean) => void
   addError: (error: string) => void
@@ -111,6 +146,15 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
 
   // Local state
   selectedLocalStream: null,
+  localSourceCandidates: [],
+  activeSourceIndex: -1,
+  sourceResolutionGeneration: 0,
+  localSourceStatus: 'idle',
+  localSourceError: null,
+  pendingSync: null,
+  lastAppliedSyncSequence: -1,
+  serverClockOffsetMs: 0,
+  roundTripTimeMs: 0,
   isHost: false,
   drawModeActive: false,
   errors: [],
@@ -134,6 +178,77 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   setRoomPanelOpen: (open) => set({ roomPanelOpen: open }),
   toggleRoomPanel: () => set((s) => ({ roomPanelOpen: !s.roomPanelOpen })),
   setSelectedLocalStream: (stream) => set({ selectedLocalStream: stream }),
+  beginSourceResolution: () => {
+    const generation = get().sourceResolutionGeneration + 1
+    set({
+      sourceResolutionGeneration: generation,
+      localSourceCandidates: [],
+      activeSourceIndex: -1,
+      selectedLocalStream: null,
+      localSourceStatus: 'resolving',
+      localSourceError: null,
+    })
+    return generation
+  },
+  setLocalSourceCandidates: (generation, candidates) => {
+    if (get().sourceResolutionGeneration !== generation) return false
+    const first = candidates[0]
+    set({
+      localSourceCandidates: candidates,
+      activeSourceIndex: first ? 0 : -1,
+      selectedLocalStream: first ? { stream: first.stream, addonId: first.addonId, addonName: first.addonName } : null,
+      localSourceStatus: first ? 'ready' : 'failed',
+      localSourceError: first ? null : 'SOURCE_UNAVAILABLE',
+    })
+    return true
+  },
+  setManualLocalSource: (candidate) => set({
+    sourceResolutionGeneration: get().sourceResolutionGeneration + 1,
+    localSourceCandidates: [candidate],
+    activeSourceIndex: 0,
+    selectedLocalStream: { stream: candidate.stream, addonId: candidate.addonId, addonName: candidate.addonName },
+    localSourceStatus: 'ready',
+    localSourceError: null,
+  }),
+  advanceLocalSource: () => {
+    const state = get()
+    const nextIndex = state.activeSourceIndex + 1
+    const next = state.localSourceCandidates[nextIndex]
+    if (!next) {
+      set({ selectedLocalStream: null, localSourceStatus: 'failed', localSourceError: 'ALL_SOURCES_FAILED' })
+      return null
+    }
+    set({
+      activeSourceIndex: nextIndex,
+      selectedLocalStream: { stream: next.stream, addonId: next.addonId, addonName: next.addonName },
+      localSourceStatus: 'starting',
+      localSourceError: null,
+    })
+    return next
+  },
+  setLocalSourceStatus: (status, error = null) => set({ localSourceStatus: status, localSourceError: error }),
+  clearLocalSource: () => set((state) => ({
+    sourceResolutionGeneration: state.sourceResolutionGeneration + 1,
+    localSourceCandidates: [],
+    activeSourceIndex: -1,
+    selectedLocalStream: null,
+    localSourceStatus: 'idle',
+    localSourceError: null,
+    pendingSync: null,
+    lastAppliedSyncSequence: -1,
+  })),
+  queuePendingSync: (sync) => {
+    const state = get()
+    const newest = Math.max(state.lastAppliedSyncSequence, state.pendingSync?.sequence ?? -1)
+    if (sync.sequence <= newest) return false
+    set({ pendingSync: sync })
+    return true
+  },
+  markPendingSyncApplied: (sequence) => set((state) => ({
+    lastAppliedSyncSequence: Math.max(state.lastAppliedSyncSequence, sequence),
+    pendingSync: state.pendingSync?.sequence === sequence ? null : state.pendingSync,
+  })),
+  updateServerTiming: (serverClockOffsetMs, roundTripTimeMs) => set({ serverClockOffsetMs, roundTripTimeMs }),
   setIsHost: (host) => set({ isHost: host }),
   setDrawModeActive: (active) => set({ drawModeActive: active }),
 
@@ -233,8 +348,8 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
         currentRoom: {
           ...s.currentRoom,
           selectedMedia: media ?? s.currentRoom.selectedMedia,
-          selectedEpisode: episode ?? s.currentRoom.selectedEpisode,
-          selectedStream: stream ?? s.currentRoom.selectedStream,
+          selectedEpisode: media ? episode : s.currentRoom.selectedEpisode,
+          selectedStream: media ? stream : (stream ?? s.currentRoom.selectedStream),
         },
       }
     }),

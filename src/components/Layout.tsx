@@ -6,6 +6,7 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import TitleBar from './TitleBar'
 import CinematicTopNav from './CinematicTopNav'
+import { isEditableKeyboardTarget, isWatchTogetherShortcut } from '../services/keyboardShortcuts'
 
 // Statically importing this pulls NativeMpvPlayer (and its scrobbler/discord
 // dependency tree) into the eager startup bundle. Lazy keeps it off the
@@ -136,15 +137,12 @@ export default function Layout() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        document.activeElement?.tagName === 'INPUT' ||
-        document.activeElement?.tagName === 'TEXTAREA' ||
-        (document.activeElement as HTMLElement)?.isContentEditable
-      ) {
-        return
-      }
+      if (isEditableKeyboardTarget(document.activeElement)) return
 
-      if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
+      if (isWatchTogetherShortcut(e)) {
+        e.preventDefault()
+        setRoomPanelOpen(!useWatchTogetherStore.getState().roomPanelOpen)
+      } else if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
         // In cinematic the search input only exists on the search page.
         if (usesTopNav && location.pathname !== '/search') {
@@ -163,7 +161,7 @@ export default function Layout() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goBack, usesTopNav, location.pathname, navigate])
+  }, [goBack, usesTopNav, location.pathname, navigate, setRoomPanelOpen])
 
   useEffect(() => {
     if (!cinematic) return
@@ -229,7 +227,7 @@ export default function Layout() {
 
   const topControlLeft = !sidebarPinned && sidebarOverlayVisible ? 'left-[14.75rem]' : 'left-4'
   const searchInput = (
-    <div className="relative w-full max-w-lg">
+    <div className="global-search relative w-full max-w-lg">
       <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
         <svg className="w-4 h-4 text-white/35" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8" />
@@ -246,9 +244,8 @@ export default function Layout() {
         onBlur={handleSearchBlur}
         placeholder="Search movies, shows, people..."
         className={[
-          'w-full pl-10 pr-12 py-2.5',
-          'bg-black/40 hover:bg-black/50 focus:bg-black/55',
-          'border border-white/[0.08] focus:border-white/[0.18]',
+          'global-search__input w-full pl-10 pr-12 py-2.5',
+          'border',
           'rounded-xl text-sm font-medium tracking-wide',
           'text-white placeholder-white/30',
           'focus:outline-none',
@@ -335,7 +332,7 @@ export default function Layout() {
           onMouseLeave={usesTopNav ? undefined : scheduleHideSearchBar}
           className={[
             'absolute left-1/2 z-[9998]',
-            'w-[min(32rem,calc(100vw-20rem))]',
+            'w-[min(38rem,calc(100vw-2rem))]',
             'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
             usesTopNav || searchBarVisible || searchFocused || isSearchPage
               ? `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
