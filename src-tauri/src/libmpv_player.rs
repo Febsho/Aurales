@@ -617,9 +617,22 @@ pub(crate) fn libmpv_candidates() -> Vec<PathBuf> {
 }
 
 pub(crate) fn find_libmpv() -> Option<PathBuf> {
-    libmpv_candidates()
+    select_first_loadable_libmpv(libmpv_candidates(), |candidate| {
+        // A file can exist while still being unusable because one of its
+        // dynamically linked FFmpeg libraries is absent. Probe the complete
+        // loader chain here so a stale bundled libmpv does not hide a working
+        // distro-provided installation later in the candidate list.
+        unsafe { Library::new(candidate) }.is_ok()
+    })
+}
+
+fn select_first_loadable_libmpv<F>(candidates: Vec<PathBuf>, mut can_load: F) -> Option<PathBuf>
+where
+    F: FnMut(&Path) -> bool,
+{
+    candidates
         .into_iter()
-        .find(|candidate| candidate.exists())
+        .find(|candidate| candidate.exists() && can_load(candidate))
 }
 
 fn load_api(dll_path: &Path) -> Result<LibMpvApi, String> {
@@ -669,6 +682,39 @@ fn load_api(dll_path: &Path) -> Result<LibMpvApi, String> {
                 .map_err(|e| e.to_string())?,
             _library: library,
         })
+    }
+}
+
+#[cfg(test)]
+mod libmpv_candidate_tests {
+    use super::select_first_loadable_libmpv;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn skips_an_existing_but_unloadable_bundled_library() {
+        let temp =
+            std::env::temp_dir().join(format!("aurales-libmpv-candidates-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).expect("create candidate test directory");
+        let bundled = temp.join("bundled-libmpv.so.2");
+        let system = temp.join("system-libmpv.so.2");
+        std::fs::write(&bundled, b"broken").expect("write bundled candidate");
+        std::fs::write(&system, b"loadable").expect("write system candidate");
+
+        let selected = select_first_loadable_libmpv(
+            vec![bundled.clone(), system.clone()],
+            |candidate: &Path| candidate == system,
+        );
+
+        assert_eq!(selected, Some(system));
+        let _ = std::fs::remove_file(bundled);
+        let _ = std::fs::remove_file(temp.join("system-libmpv.so.2"));
+        let _ = std::fs::remove_dir(temp);
+    }
+
+    #[test]
+    fn returns_none_when_no_candidate_can_be_loaded() {
+        let missing = PathBuf::from("definitely-missing-libmpv.so.2");
+        assert_eq!(select_first_loadable_libmpv(vec![missing], |_| true), None);
     }
 }
 

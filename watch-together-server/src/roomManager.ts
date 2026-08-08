@@ -8,6 +8,7 @@ import type {
   RoomEpisode,
   RoomStream,
   RoomSettings,
+  LocalSourceStatus,
   ServerConfig,
 } from './types.js'
 
@@ -51,6 +52,7 @@ export function createRoom(hostName: string, config: ServerConfig, settings?: Ro
     hasSelectedStream: false,
     hasMediaAvailable: false,
     status: 'connected',
+    sourceStatus: 'idle',
     joinedAt: ts,
     lastSeenAt: ts,
   }
@@ -64,6 +66,8 @@ export function createRoom(hostName: string, config: ServerConfig, settings?: Ro
       currentTime: 0,
       isPlaying: false,
       lastUpdatedAt: Date.now(),
+      sequence: 0,
+      serverTime: Date.now(),
     },
     participants: [host],
     chat: [],
@@ -157,6 +161,7 @@ function joinRoomById(
     hasSelectedStream: false,
     hasMediaAvailable: false,
     status: 'connected',
+    sourceStatus: 'idle',
     joinedAt: ts,
     lastSeenAt: ts,
   }
@@ -240,18 +245,21 @@ export function updateMedia(
   room.selectedMedia = media
   room.selectedEpisode = episode
   room.selectedStream = stream
+  const serverTime = Date.now()
   room.playback = {
     status: 'selecting',
     currentTime: 0,
     isPlaying: false,
-    lastUpdatedAt: Date.now(),
+    lastUpdatedAt: serverTime,
+    serverTime,
+    sequence: (room.playback.sequence ?? 0) + 1,
   }
-  // Reset all participant ready states
+  // Every participant resolves a private source from their own addons.
   for (const p of room.participants) {
-    if (!p.isHost) {
-      p.isReady = false
-      p.hasSelectedStream = false
-    }
+    p.isReady = false
+    p.hasSelectedStream = false
+    p.sourceStatus = 'resolving'
+    p.sourceErrorCode = undefined
   }
   room.lastActivityAt = now()
   room.updatedAt = now()
@@ -302,9 +310,34 @@ export function setReady(roomId: string, userId: string, ready: boolean): RoomPa
 export function updatePlayback(roomId: string, playback: Partial<RoomPlaybackState>): RoomPlaybackState | null {
   const room = rooms.get(roomId)
   if (!room) return null
-  Object.assign(room.playback, playback, { lastUpdatedAt: Date.now() })
+  const serverTime = Date.now()
+  Object.assign(room.playback, playback, {
+    lastUpdatedAt: serverTime,
+    serverTime,
+    sequence: (room.playback.sequence ?? 0) + 1,
+  })
   room.lastActivityAt = now()
   return room.playback
+}
+
+export function updateParticipantSourceStatus(
+  roomId: string,
+  userId: string,
+  status: LocalSourceStatus,
+  errorCode?: string,
+): RoomParticipant | null {
+  const room = rooms.get(roomId)
+  if (!room) return null
+  const participant = room.participants.find(p => p.id === userId)
+  if (!participant) return null
+  participant.sourceStatus = status
+  participant.sourceErrorCode = status === 'failed' ? sanitize(errorCode || 'SOURCE_UNAVAILABLE', 64) : undefined
+  participant.hasSelectedStream = status === 'ready' || status === 'starting' || status === 'playing'
+  participant.isReady = participant.hasSelectedStream
+  participant.status = status === 'resolving' ? 'choosing_stream' : status === 'playing' ? 'watching' : 'connected'
+  participant.lastSeenAt = now()
+  room.lastActivityAt = now()
+  return participant
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────

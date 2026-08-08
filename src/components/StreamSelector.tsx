@@ -11,9 +11,7 @@ import NativeMpvPlayer from './NativeMpvPlayer'
 const InAppPlayer = lazy(() => import('./InAppPlayer'))
 import type { PlaybackItem } from '../services/simkl/playback'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
-import { selectStream as wtSelectStream, play as wtPlay } from '../services/watch-together/wsClient'
-import { createStreamFingerprint } from '../services/watch-together/streamMatcher'
-import type { RoomStream } from '../services/watch-together/types'
+import { getBestKnownTime as wtBestKnownTime, play as wtPlay, useManualLocalSource as wtUseManualLocalSource } from '../services/watch-together/wsClient'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { stopEmbeddedPlayer } from '../services/player'
 import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
@@ -511,26 +509,31 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       return
     }
 
+    const wtState = useWatchTogetherStore.getState()
+    if (wtState.currentRoom) {
+      if (!wtState.isHost || !wtState.currentRoom.selectedMedia) {
+        setPlayError(wtState.isHost
+          ? 'Choose “Watch in Room” for this title before selecting a room source.'
+          : 'Only the host can replace the local room source manually.')
+        return
+      }
+      wtUseManualLocalSource({
+        stream,
+        addonId: stream.addonId,
+        addonName: stream.addonName,
+        playableUrl: url,
+        score: Number.MAX_SAFE_INTEGER,
+        reasons: ['manual selection'],
+      })
+      onClose()
+      wtPlay(Math.max(startTime ?? 0, wtBestKnownTime()))
+      return
+    }
+
     setPlayingIndex(index)
     setPlayError('')
     setPlayback({ url, stream })
     setPlayingIndex(null)
-
-    const wtState = useWatchTogetherStore.getState()
-    if (wtState.isHost && wtState.currentRoom) {
-      const quality = stream.name?.match(/\b(4k|2160p|1080p|720p|480p)\b/i)?.[0] ?? undefined
-      const roomStream: RoomStream = {
-        addonId: stream.addonId,
-        name: stream.addonName,
-        title: stream.title,
-        quality,
-        infoHash: stream.infoHash,
-        fileIdx: stream.fileIdx,
-        streamFingerprint: createStreamFingerprint(stream),
-      }
-      wtSelectStream(roomStream)
-      wtPlay(startTime ?? 0)
-    }
   }
 
   const warmManualStream = (stream: AddonStream) => {

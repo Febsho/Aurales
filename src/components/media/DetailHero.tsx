@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Award } from 'lucide-react'
 import type { CastMember, CrewMember } from '../../types'
-import { cachedImage } from '../../services/imageCache'
+import { cachedImage, retryImageFromSource } from '../../services/imageCache'
 import type { StreamFeature } from '../../services/streams/streamFeatures'
 import { editorialAccolade, fetchTitleAccolade, isGenericAwardAccolade } from '../../services/accolades'
 
@@ -232,7 +232,9 @@ export default function DetailHero({
             setLoadedBackdropUrl(backdrop)
             setFailedBackdropUrl((failed) => failed === backdrop ? null : failed)
           }}
-          onError={() => setFailedBackdropUrl(backdrop)}
+          onError={(event) => {
+            if (!retryImageFromSource(event.currentTarget, backdrop)) setFailedBackdropUrl(backdrop)
+          }}
         />
       ) : poster ? (
         <img
@@ -240,6 +242,7 @@ export default function DetailHero({
           alt=""
           className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-50"
           draggable={false}
+          onError={(event) => { retryImageFromSource(event.currentTarget, poster) }}
         />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
@@ -275,7 +278,9 @@ export default function DetailHero({
               src={cachedImage(logo)}
               alt={title}
               className="max-h-[150px] md:max-h-[190px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
-              onError={() => setFailedLogoUrl(logo)}
+              onError={(event) => {
+                if (!retryImageFromSource(event.currentTarget, logo)) setFailedLogoUrl(logo)
+              }}
               draggable={false}
             />
           ) : (

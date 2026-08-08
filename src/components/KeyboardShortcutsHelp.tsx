@@ -1,47 +1,19 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-
-const SECTIONS = [
-  {
-    title: 'Navigation',
-    shortcuts: [
-      { keys: ['/', 'Ctrl+K'], label: 'Focus search' },
-      { keys: ['Alt+←'], label: 'Go back' },
-      { keys: ['?'], label: 'Show keyboard shortcuts' },
-    ],
-  },
-  {
-    title: 'Player — Playback',
-    shortcuts: [
-      { keys: ['Space'], label: 'Play / Pause' },
-      { keys: ['F'], label: 'Toggle fullscreen' },
-      { keys: ['M'], label: 'Mute / Unmute' },
-      { keys: ['↑ / ↓'], label: 'Volume up / down' },
-    ],
-  },
-  {
-    title: 'Player — Seeking',
-    shortcuts: [
-      { keys: ['← / →'], label: 'Seek back / forward 10s' },
-      { keys: ['Hold ← / →'], label: 'Fast seek (accelerating)' },
-    ],
-  },
-]
+import { isEditableKeyboardTarget, KEYBOARD_SHORTCUT_SECTIONS } from '../services/keyboardShortcuts'
 
 export default function KeyboardShortcutsHelp() {
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (
-        document.activeElement?.tagName === 'INPUT' ||
-        document.activeElement?.tagName === 'TEXTAREA' ||
-        (document.activeElement as HTMLElement)?.isContentEditable
-      ) return
+      if (isEditableKeyboardTarget(document.activeElement)) return
 
       if (e.key === '?' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault()
         setOpen((v) => !v)
+      } else if (e.key === 'Escape') {
+        setOpen(false)
       }
     }
     window.addEventListener('keydown', handler)
@@ -72,7 +44,7 @@ export default function KeyboardShortcutsHelp() {
         </div>
 
         <div className="px-6 py-5 max-h-[70vh] overflow-y-auto space-y-6">
-          {SECTIONS.map((section) => (
+          {KEYBOARD_SHORTCUT_SECTIONS.map((section) => (
             <div key={section.title}>
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-white/30 mb-3">{section.title}</h3>
               <div className="space-y-2">

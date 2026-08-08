@@ -18,6 +18,7 @@ import {
   addChatMessage,
   transferHost,
   updateParticipantStatus,
+  updateParticipantSourceStatus,
   getRoom,
 } from './roomManager.js'
 import { checkRateLimit } from './rateLimit.js'
@@ -82,7 +83,7 @@ export function setupWebSocket(server: Server, config: ServerConfig): WebSocketS
 function handleEvent(ws: WebSocket, client: ConnectedClient, event: ClientEvent, config: ServerConfig): void {
   switch (event.type) {
     case 'PING':
-      sendTo(ws, { type: 'PONG', serverTime: event.sentAt })
+      sendTo(ws, { type: 'PONG', clientSentAt: event.sentAt, serverTime: Date.now() })
       return
 
     case 'ROOM_JOIN':
@@ -98,27 +99,31 @@ function handleEvent(ws: WebSocket, client: ConnectedClient, event: ClientEvent,
       return
 
     case 'MEDIA_SELECTED':
-      handleMediaSelected(ws, client, event, config)
+      handleMediaSelected(ws, client, event)
       return
 
     case 'STREAM_SELECTED':
       handleStreamSelected(ws, client, event)
       return
 
+    case 'LOCAL_SOURCE_STATUS':
+      handleLocalSourceStatus(ws, client, event)
+      return
+
     case 'PLAY':
-      handlePlayback(ws, client, event, config)
+      handlePlayback(ws, client, event)
       return
 
     case 'PAUSE':
-      handlePlayback(ws, client, event, config)
+      handlePlayback(ws, client, event)
       return
 
     case 'SEEK':
-      handlePlayback(ws, client, event, config)
+      handlePlayback(ws, client, event)
       return
 
     case 'STOP':
-      handlePlayback(ws, client, event, config)
+      handlePlayback(ws, client, event)
       return
 
     case 'SYNC_STATE':
@@ -206,6 +211,7 @@ function handleLeave(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'ROOM_LEAVE' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.userId)) return unauthorized(ws)
   const room = leaveRoom(event.roomId, event.userId)
   client.roomId = null
   client.userId = ''
@@ -223,6 +229,7 @@ function handleReady(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'READY' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.userId)) return unauthorized(ws)
   const participant = setReady(event.roomId, event.userId, event.ready)
   if (participant) {
     broadcastToRoom(event.roomId, { type: 'PARTICIPANT_UPDATED', participant })
@@ -233,23 +240,24 @@ function handleMediaSelected(
   ws: WebSocket,
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'MEDIA_SELECTED' }>,
-  config: ServerConfig,
 ): void {
   const room = getRoom(event.roomId)
   if (!room) return
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
 
   if (!canChangeMedia(room, event.senderUserId)) {
     sendTo(ws, { type: 'ERROR', code: 'HOST_ONLY_CONTROL', message: 'Only the host can select media' })
     return
   }
 
-  updateMedia(event.roomId, event.media, event.episode, event.stream)
+  const updated = updateMedia(event.roomId, event.media, event.episode, event.stream)
   broadcastToRoom(event.roomId, {
     type: 'MEDIA_UPDATED',
     media: event.media,
     episode: event.episode,
     stream: event.stream,
   })
+  if (updated) broadcastToRoom(event.roomId, { type: 'PLAYBACK_UPDATED', playback: updated.playback })
 }
 
 function handleStreamSelected(
@@ -257,6 +265,7 @@ function handleStreamSelected(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'STREAM_SELECTED' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
   const room = updateStream(event.roomId, event.senderUserId, event.stream)
   const participant = room?.participants.find(p => p.id === event.senderUserId)
   if (participant) {
@@ -274,6 +283,16 @@ function handleStreamSelected(
   }
 }
 
+function handleLocalSourceStatus(
+  ws: WebSocket,
+  client: ConnectedClient,
+  event: Extract<ClientEvent, { type: 'LOCAL_SOURCE_STATUS' }>,
+): void {
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
+  const participant = updateParticipantSourceStatus(event.roomId, event.senderUserId, event.status, event.errorCode)
+  if (participant) broadcastToRoom(event.roomId, { type: 'PARTICIPANT_UPDATED', participant })
+}
+
 function handleRoomSettings(
   ws: WebSocket,
   client: ConnectedClient,
@@ -281,6 +300,7 @@ function handleRoomSettings(
 ): void {
   const room = getRoom(event.roomId)
   if (!room) return
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
 
   if (room.hostUserId !== event.senderUserId) {
     sendTo(ws, { type: 'ERROR', code: 'HOST_ONLY_CONTROL', message: 'Only the host can change room settings' })
@@ -297,10 +317,10 @@ function handlePlayback(
   ws: WebSocket,
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'PLAY' | 'PAUSE' | 'SEEK' | 'STOP' }>,
-  config: ServerConfig,
 ): void {
   const room = getRoom(event.roomId)
   if (!room) return
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
 
   if (!canControlPlayback(room, event.senderUserId)) {
     sendTo(ws, { type: 'ERROR', code: 'HOST_ONLY_CONTROL', message: 'Only the host can control playback' })
@@ -346,16 +366,9 @@ function handlePlayback(
   }
 
   if (playback) {
+    // Discrete controls use one authoritative event. Periodic host position
+    // updates use SYNC_REQUEST below, avoiding duplicate corrections.
     broadcastToRoom(event.roomId, { type: 'PLAYBACK_UPDATED', playback })
-    // Also send SYNC_REQUEST to non-host participants for immediate sync
-    if (event.type !== 'STOP') {
-      broadcastToRoom(event.roomId, {
-        type: 'SYNC_REQUEST',
-        time: 'time' in event ? event.time : 0,
-        isPlaying: playback.isPlaying,
-        sentAt: playback.lastUpdatedAt,
-      }, event.senderUserId)
-    }
   }
 }
 
@@ -366,18 +379,22 @@ function handleSyncState(
 ): void {
   const room = getRoom(event.roomId)
   if (!room) return
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
+  if (!canControlPlayback(room, event.senderUserId)) return unauthorized(ws, 'Only an authorized controller can synchronize playback')
 
-  updatePlayback(event.roomId, {
+  const playback = updatePlayback(event.roomId, {
     currentTime: event.time,
     isPlaying: event.isPlaying,
   })
+  if (!playback) return
 
   // Forward sync to all other participants
   broadcastToRoom(event.roomId, {
     type: 'SYNC_REQUEST',
     time: event.time,
     isPlaying: event.isPlaying,
-    sentAt: event.sentAt,
+    serverTime: playback.serverTime,
+    sequence: playback.sequence,
   }, event.senderUserId)
 }
 
@@ -386,6 +403,7 @@ function handleBuffering(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'BUFFERING' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
   const participant = updateParticipantStatus(event.roomId, event.senderUserId, {
     status: event.buffering ? 'buffering' : 'watching',
     playbackTime: event.time,
@@ -401,6 +419,7 @@ function handleChat(
   event: Extract<ClientEvent, { type: 'CHAT_MESSAGE' }>,
   config: ServerConfig,
 ): void {
+  if (!matchesClient(client, event.roomId, event.userId)) return unauthorized(ws)
   if (!checkRateLimit(`chat:${client.userId}`, config.rateLimitMessagesPerMinute)) {
     sendTo(ws, { type: 'ERROR', code: 'RATE_LIMITED', message: 'Too many messages. Slow down.' })
     return
@@ -419,6 +438,7 @@ function handleTransferHost(
 ): void {
   const room = getRoom(event.roomId)
   if (!room) return
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
 
   if (room.hostUserId !== event.senderUserId) {
     sendTo(ws, { type: 'ERROR', code: 'HOST_ONLY_CONTROL', message: 'Only the host can transfer host' })
@@ -437,6 +457,7 @@ function handleDrawStroke(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'DRAW_STROKE' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
   const room = getRoom(event.roomId)
   if (!room || !isParticipant(room, event.senderUserId)) return
 
@@ -454,6 +475,7 @@ function handleDrawClear(
   client: ConnectedClient,
   event: Extract<ClientEvent, { type: 'DRAW_CLEAR' }>,
 ): void {
+  if (!matchesClient(client, event.roomId, event.senderUserId)) return unauthorized(ws)
   const room = getRoom(event.roomId)
   if (!room || !isParticipant(room, event.senderUserId)) return
 
@@ -493,6 +515,14 @@ function sendTo(ws: WebSocket, event: ServerEvent): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(event))
   }
+}
+
+function matchesClient(client: ConnectedClient, roomId: string, userId: string): boolean {
+  return client.roomId === roomId && client.userId === userId
+}
+
+function unauthorized(ws: WebSocket, message = 'Event identity does not match this connection'): void {
+  sendTo(ws, { type: 'ERROR', code: 'UNAUTHORIZED_EVENT', message })
 }
 
 export function getConnectedClientCount(): number {

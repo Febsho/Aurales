@@ -24,6 +24,7 @@ import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { useAppStore } from '../stores/appStore'
 import type { MediaRef } from '../services/simkl/mappings'
+import { isWatchedFromProviderFresh, isWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 
 interface MarkWatchedButtonProps {
   mediaRef: MediaRef
@@ -47,6 +48,7 @@ interface ServiceState {
   loading: boolean
   done: boolean
   error: boolean
+  checking?: boolean
 }
 
 const SERVICE_LABELS: Record<Service, string> = {
@@ -90,8 +92,68 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   if (pmdbConnected && Number.isFinite(tmdbId)) connectedServices.push('pmdb')
   if (mdblistConnected && (Number.isFinite(tmdbId) || imdbId)) connectedServices.push('mdblist')
   if (anilistConnected && isAnime && (anilistId || malId)) connectedServices.push('anilist')
+  const connectedServicesKey = connectedServices.join(',')
+  const episodesSnapshot = JSON.stringify(episodes)
 
   useEffect(() => setAllDone(watched), [watched])
+
+  // The menu reflects each provider's real history instead of assuming every
+  // connected service is unwatched. Refresh once when the menu opens, then use
+  // the refreshed snapshot for the remaining episodes in a whole-show check.
+  useEffect(() => {
+    if (!open || compact || connectedServicesKey.length === 0) return
+    let cancelled = false
+    const services = connectedServicesKey.split(',') as Service[]
+    const episodeItems = JSON.parse(episodesSnapshot) as { season: number; episode: number; absoluteEpisode?: number }[]
+    const baseLookup: WatchedLookupItem = {
+      id: mediaRef.localId,
+      type: mediaType,
+      title: mediaRef.title,
+      year: mediaRef.year,
+      imdbId: imdbId || mediaRef.imdbId,
+      tmdbId: mediaRef.tmdbId,
+      tvdbId: mediaRef.tvdbId,
+      malId: malId || mediaRef.malId,
+      anilistId: anilistId || mediaRef.anilistId,
+      isAnime,
+      appSeasonEpCounts: appSeasonCounts,
+    }
+    const lookups = mediaType === 'movie'
+      ? [baseLookup]
+      : episode
+        ? [{ ...baseLookup, season: episode.season, episode: episode.episode, absoluteEpisode: episode.absoluteEpisode }]
+        : episodeItems.map((item) => ({ ...baseLookup, season: item.season, episode: item.episode, absoluteEpisode: item.absoluteEpisode }))
+
+    services.forEach((service) => {
+      setStates((previous) => ({
+        ...previous,
+        [service]: { ...previous[service], checking: true, error: false },
+      }))
+      ;(async () => {
+        if (lookups.length === 0) return false
+        const firstWatched = await isWatchedFromProviderFresh(lookups[0], service)
+        if (!firstWatched || lookups.length === 1) return firstWatched
+        const remaining = await Promise.all(lookups.slice(1).map((lookup) =>
+          isWatchedFromProviders(lookup, [service], new Map()).catch(() => false)
+        ))
+        return remaining.every(Boolean)
+      })().then((done) => {
+        if (cancelled) return
+        setStates((previous) => ({
+          ...previous,
+          [service]: { loading: false, done, error: false, checking: false },
+        }))
+      }).catch(() => {
+        if (cancelled) return
+        setStates((previous) => ({
+          ...previous,
+          [service]: { ...previous[service], loading: false, error: true, checking: false },
+        }))
+      })
+    })
+
+    return () => { cancelled = true }
+  }, [anilistId, appSeasonCounts, compact, connectedServicesKey, episode, episodesSnapshot, imdbId, isAnime, malId, mediaRef, mediaType, open])
 
   useEffect(() => {
     if (!open) return
@@ -208,7 +270,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
-      setStates((prev) => ({ ...prev, [service]: { loading: false, done: true, error: false } }))
+      setStates((prev) => ({ ...prev, [service]: { loading: false, done: true, error: false, checking: false } }))
       return true
     } catch (_) {
       setStates((prev) => ({ ...prev, [service]: { loading: false, done: false, error: true } }))
@@ -326,7 +388,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
-      setStates((prev) => ({ ...prev, [service]: { loading: false, done: true, error: false } }))
+      setStates((prev) => ({ ...prev, [service]: { loading: false, done: false, error: false, checking: false } }))
       return true
     } catch (_) {
       setStates((prev) => ({ ...prev, [service]: { loading: false, done: false, error: true } }))
@@ -354,10 +416,17 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   }
 
   async function markSingle(service: Service) {
-    const success = await (allDone ? unmarkOn(service) : markOn(service))
+    const wasWatched = states[service].done
+    const success = await (wasWatched ? unmarkOn(service) : markOn(service))
     if (success) {
-      if (allDone) onUnmarked?.()
-      else onMarked?.()
+      if (wasWatched) {
+        const anotherProviderStillWatched = connectedServices.some((candidate) => candidate !== service && states[candidate].done)
+        setAllDone(anotherProviderStillWatched)
+        if (!anotherProviderStillWatched) onUnmarked?.()
+      } else {
+        setAllDone(true)
+        onMarked?.()
+      }
     }
   }
 
@@ -383,17 +452,19 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         onClick={() => connectedServices.length > 0 ? setOpen(!open) : void markAll()}
         title={allDone ? 'Mark as unwatched' : 'Mark as watched'}
         className={[
-          'min-w-13 h-13 px-4 rounded-full flex items-center justify-center gap-2 transition-all duration-200 cursor-pointer',
-          'border backdrop-blur-xl shadow-2xl',
+          'h-12 px-3.5 rounded-full flex items-center justify-center gap-2 transition-[transform,background-color,border-color,color] duration-200 cursor-pointer active:scale-[0.97]',
+          'border',
           allDone
-            ? 'bg-accent/20 border-accent/35 text-accent hover:bg-accent/30'
-            : 'bg-black/30 border-white/10 text-white/70 hover:text-white hover:bg-white/10 hover:border-white/20',
+            ? 'border-white/16 bg-white/10 text-white hover:bg-white/14'
+            : 'border-white/10 bg-[#171717] text-white/62 hover:border-white/20 hover:bg-[#222] hover:text-white',
         ].join(' ')}
       >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-          <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <span className="text-sm font-semibold whitespace-nowrap">{allDone ? 'Watched' : 'Mark watched'}</span>
+        <span className={`grid h-5 w-5 place-items-center rounded-full ${allDone ? 'bg-white text-black' : 'border border-white/25 text-white/65'}`}>
+          <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.7" viewBox="0 0 24 24">
+            <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+        <span className="whitespace-nowrap text-[13px] font-semibold">{allDone ? 'Watched' : 'Mark watched'}</span>
       </button>
       {open && connectedServices.length > 0 && <DropdownMenu connectedServices={connectedServices} states={states} markAll={markAll} markSingle={markSingle} watched={allDone} above />}
     </div>
@@ -410,12 +481,12 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
 }) {
   return (
     <div className={[
-      'absolute left-0 z-50 min-w-[200px] rounded-xl bg-neutral-900/95 backdrop-blur-2xl border border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden',
+      'absolute left-0 z-50 min-w-[210px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] shadow-[0_18px_44px_rgba(0,0,0,0.55)]',
       above ? 'bottom-full mb-2' : 'top-full mt-2',
     ].join(' ')}>
       <button
         onClick={(e) => { e.stopPropagation(); markAll() }}
-        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] font-semibold text-white hover:bg-white/[0.08] transition-colors cursor-pointer border-b border-white/[0.06]"
+        className="flex w-full items-center gap-2.5 border-b border-white/[0.06] px-3.5 py-3 text-[12px] font-semibold text-white/85 transition-colors cursor-pointer hover:bg-white/[0.07]"
       >
         <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
@@ -428,10 +499,10 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
           <button
             key={service}
             onClick={(e) => { e.stopPropagation(); markSingle(service) }}
-            disabled={st.loading}
-            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[13px] font-medium text-white/70 hover:bg-white/[0.06] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+            disabled={st.loading || st.checking}
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-[12px] font-medium text-white/60 transition-colors cursor-pointer hover:bg-white/[0.05] hover:text-white disabled:cursor-default disabled:opacity-40"
           >
-            {st.loading ? (
+            {st.loading || st.checking ? (
               <svg className="w-3.5 h-3.5 animate-spin text-white/50" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -447,7 +518,8 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
             ) : (
               <div className="w-3.5 h-3.5 rounded-full border border-white/20" />
             )}
-            {SERVICE_LABELS[service]}
+            <span className="flex-1 text-left">{SERVICE_LABELS[service]}</span>
+            {!st.loading && !st.checking && st.done && <span className="text-[9px] font-semibold uppercase tracking-wider text-white/30">Watched</span>}
           </button>
         )
       })}

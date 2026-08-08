@@ -2481,11 +2481,12 @@ export default function SeriesDetailPage() {
           </div>
         }
         actions={
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex flex-wrap items-center gap-2">
             {defaultEpisode && (
               <Button
                 variant="white"
-                size="xl"
+                size="lg"
+                className="h-12 rounded-full px-6 shadow-none"
                 loading={streamResolving && streamEpisode?.season === defaultEpisode.season && streamEpisode?.episode === defaultEpisode.episode}
                 icon={
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -2502,6 +2503,25 @@ export default function SeriesDetailPage() {
               </Button>
             )}
             <WatchlistButton
+              item={{
+                id: show.id,
+                title: show.title,
+                type: 'series',
+                year: show.year,
+                poster: show.poster,
+                backdrop: show.backdrop,
+                logo: show.logo,
+                overview: show.overview,
+                rating: show.rating,
+                genres: show.genres,
+                provider: show.provider || 'local',
+                imdbId: show.imdbId,
+                tmdbId: show.tmdbId,
+                tvdbId: show.tvdbId,
+                malId: show.malId,
+                anilistId: show.anilistId,
+                isAnime,
+              }}
               mediaRef={{
                 localId: show.id,
                 title: show.title,
@@ -2517,7 +2537,7 @@ export default function SeriesDetailPage() {
               anilistId={show.anilistId}
               malId={show.malId}
               tvdbId={show.tvdbId}
-              className="!h-13 !min-w-13"
+              detailSize
             />
             <MarkWatchedButton
               mediaRef={{

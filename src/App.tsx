@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import UpdatePrompt from './components/UpdatePrompt'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
+import type { ProgressProvider } from './stores/appStore'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -71,6 +72,26 @@ export default function App() {
 
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  const setWatchedCheckmarkSources = useAppStore((s) => s.setWatchedCheckmarkSources)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const automaticWatchedSources: ProgressProvider[] = [
+    'local',
+    ...(traktConnected ? ['trakt' as const] : []),
+    ...(simklConnected ? ['simkl' as const] : []),
+    ...(pmdbApiKey ? ['pmdb' as const] : []),
+    ...(mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens') ? ['mdblist' as const] : []),
+    ...(anilistConnected ? ['anilist' as const] : []),
+  ]
+  const automaticWatchedSourcesKey = automaticWatchedSources.join(',')
+
+  useEffect(() => {
+    if (watchedCheckmarkSources.join(',') === automaticWatchedSourcesKey) return
+    setWatchedCheckmarkSources(automaticWatchedSourcesKey.split(',') as ProgressProvider[])
+  }, [automaticWatchedSourcesKey, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
     let cancelled = false

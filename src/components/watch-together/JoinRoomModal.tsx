@@ -81,6 +81,7 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
       title="Join Watch Room"
       description="Enter a room code to watch with friends"
       size="sm"
+      className="watch-together-modal"
     >
       <div className="flex flex-col gap-4">
         <Input

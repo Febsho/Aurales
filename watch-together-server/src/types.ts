@@ -82,6 +82,8 @@ export interface RoomPlaybackState {
   lastUpdatedAt: number
   startedAt?: number
   lastActionBy?: string
+  sequence?: number
+  serverTime?: number
 }
 
 export type ParticipantStatus =
@@ -90,6 +92,14 @@ export type ParticipantStatus =
   | 'watching'
   | 'buffering'
   | 'choosing_stream'
+
+export type LocalSourceStatus =
+  | 'idle'
+  | 'resolving'
+  | 'ready'
+  | 'starting'
+  | 'playing'
+  | 'failed'
 
 export interface RoomParticipant {
   id: string
@@ -102,6 +112,8 @@ export interface RoomParticipant {
   playbackTime?: number
   latencyMs?: number
   status: ParticipantStatus
+  sourceStatus?: LocalSourceStatus
+  sourceErrorCode?: string
   joinedAt: string
   lastSeenAt: string
 }
@@ -134,6 +146,7 @@ export type ClientEvent =
   | { type: 'READY'; roomId: string; userId: string; ready: boolean }
   | { type: 'MEDIA_SELECTED'; roomId: string; senderUserId: string; media: RoomMedia; episode?: RoomEpisode; stream?: RoomStream; sentAt: number }
   | { type: 'STREAM_SELECTED'; roomId: string; senderUserId: string; stream: RoomStream; sentAt: number }
+  | { type: 'LOCAL_SOURCE_STATUS'; roomId: string; senderUserId: string; status: LocalSourceStatus; errorCode?: string; sentAt: number }
   | { type: 'PLAY'; roomId: string; senderUserId: string; time: number; sentAt: number }
   | { type: 'PAUSE'; roomId: string; senderUserId: string; time: number; sentAt: number }
   | { type: 'SEEK'; roomId: string; senderUserId: string; time: number; sentAt: number }
@@ -162,9 +175,9 @@ export type ServerEvent =
   | { type: 'DRAW_RECEIVED'; stroke: DrawStroke; senderUserId: string; senderName: string }
   | { type: 'DRAW_CLEARED'; senderUserId: string }
   | { type: 'HOST_TRANSFERRED'; newHostUserId: string }
-  | { type: 'SYNC_REQUEST'; time: number; isPlaying: boolean; sentAt: number }
+  | { type: 'SYNC_REQUEST'; time: number; isPlaying: boolean; sentAt?: number; serverTime?: number; sequence?: number }
   | { type: 'ERROR'; code: string; message: string }
-  | { type: 'PONG'; serverTime: number }
+  | { type: 'PONG'; clientSentAt: number; serverTime: number }
 
 // ── Connection tracking ────────────────────────────────────────────────────
 

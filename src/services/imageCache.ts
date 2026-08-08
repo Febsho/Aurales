@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 
 // Frontend side of the disk image cache (src-tauri/src/image_cache.rs).
 // cachedImage() rewrites a remote artwork URL to the imgcache:// protocol so
@@ -27,11 +27,30 @@ export function recoverArtworkSource(url: string): string {
 export function cachedImage(url: string): string
 export function cachedImage(url: string | undefined): string | undefined
 export function cachedImage(url: string | undefined): string | undefined {
-  // The custom protocol currently starts one blocking 20-second download per
-  // image and cannot reliably redirect failures back to HTTPS. Under a normal
-  // Home load that starves artwork and leaves Heroes black. Use WebView's HTTP
-  // cache until the disk proxy has bounded concurrency and in-flight dedupe.
-  return url ? recoverArtworkSource(url) : url
+  if (!url) return url
+  const source = recoverArtworkSource(url)
+  if (!isTauri() || !/^https?:\/\//i.test(source)) return source
+  try {
+    // The native handler bounds concurrent misses and deduplicates requests
+    // for the same URL. convertFileSrc also emits the platform-correct custom
+    // protocol URL (imgcache:// on Linux, http://imgcache.localhost on Windows).
+    return convertFileSrc(source, 'imgcache')
+  } catch (_) {
+    return source
+  }
+}
+
+/** Retry a failed custom-protocol request once with its original HTTPS URL.
+ * Some WebViews do not follow redirects returned by custom image protocols;
+ * this keeps a transient cache/origin error from turning a card black. */
+export function retryImageFromSource(image: HTMLImageElement, url: string | undefined): boolean {
+  if (!url) return false
+  const source = recoverArtworkSource(url)
+  if (!/^https?:\/\//i.test(source) || image.dataset.cacheSourceRetry === source) return false
+  if (image.currentSrc === source || image.src === source) return false
+  image.dataset.cacheSourceRetry = source
+  image.src = source
+  return true
 }
 
 const imageWarmups = new Map<string, Promise<void>>()

@@ -6,9 +6,12 @@ import type {
   RoomStream,
   RoomSettings,
   DrawStroke,
+  LocalSourceStatus,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
-import { findMatchingLocalStream, createStreamFingerprint } from './streamMatcher'
+import { resolveLocalSourceCandidates } from './streamMatcher'
+import type { LocalSourceCandidate, PendingRoomSync } from '../../stores/watchTogetherStore'
+import { estimateRoomPosition, estimateServerTiming, serverTimestampToLocal } from './clockSync'
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -16,6 +19,7 @@ let syncTimer: ReturnType<typeof setInterval> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let reconnectAttempt = 0
 let lastServerUrl = ''
+let sourceResolveController: AbortController | null = null
 
 // Live playback position reported by whichever player component is active.
 // The room's stored playback state only changes on discrete events (play,
@@ -39,12 +43,15 @@ export function getBestKnownTime(): number {
     const elapsed = localPlayback.isPlaying ? (Date.now() - localPlayback.updatedAt) / 1000 : 0
     return localPlayback.time + elapsed
   }
-  const pb = getStore().currentRoom?.playback
+  const store = getStore()
+  const pb = store.currentRoom?.playback
   if (!pb) return 0
-  const elapsed = pb.isPlaying && Number.isFinite(pb.lastUpdatedAt)
-    ? Math.max(0, (Date.now() - pb.lastUpdatedAt) / 1000)
-    : 0
-  return (pb.currentTime ?? 0) + elapsed
+  return estimateRoomPosition(
+    pb.currentTime ?? 0,
+    pb.isPlaying,
+    pb.serverTime ?? pb.lastUpdatedAt,
+    pb.serverTime == null ? 0 : store.serverClockOffsetMs,
+  )
 }
 
 function getStore() {
@@ -101,6 +108,7 @@ export function connect(serverUrl: string): Promise<void> {
       reconnectAttempt = 0
       getStore().setConnectionStatus('connected')
       startPingLoop()
+      ping()
       logDebug('in', 'CONNECTED')
       resolve()
     }
@@ -258,12 +266,14 @@ export function leaveRoom(): void {
     })
   }
   stopSyncLoop()
+  sourceResolveController?.abort()
+  sourceResolveController = null
   clearLocalPlayback()
   store.setCurrentRoom(null)
   store.setCurrentUserId(null)
   store.setIsHost(false)
   store.setDrawModeActive(false)
-  store.setSelectedLocalStream(null)
+  store.clearLocalSource()
   store.setRoomPanelOpen(false)
 }
 
@@ -293,6 +303,28 @@ export function selectStream(stream: RoomStream): void {
     stream,
     sentAt: Date.now(),
   })
+}
+
+export function sendLocalSourceStatus(status: LocalSourceStatus, errorCode?: string): void {
+  const store = getStore()
+  if (!store.currentRoom || !store.currentUserId) return
+  store.setLocalSourceStatus(status, errorCode ?? null)
+  send({
+    type: 'LOCAL_SOURCE_STATUS',
+    roomId: store.currentRoom.id,
+    senderUserId: store.currentUserId,
+    status,
+    errorCode,
+    sentAt: Date.now(),
+  })
+}
+
+export function useManualLocalSource(candidate: LocalSourceCandidate): void {
+  sourceResolveController?.abort()
+  sourceResolveController = null
+  getStore().setManualLocalSource(candidate)
+  sendLocalSourceStatus('ready')
+  setReady(true)
 }
 
 export function setReady(ready: boolean): void {
@@ -501,39 +533,57 @@ export function stopPingLoop(): void {
 export async function autoResolveStream(
   media?: RoomMedia,
   episode?: RoomEpisode,
-  hostStream?: RoomStream,
+  _hostStream?: RoomStream,
 ): Promise<boolean> {
   const store = getStore()
   const m = media ?? store.currentRoom?.selectedMedia
   const ep = episode ?? store.currentRoom?.selectedEpisode
   if (!m) return false
-  store.setSelectedLocalStream(null)
+  sourceResolveController?.abort()
+  sourceResolveController = new AbortController()
+  const signal = sourceResolveController.signal
+  const generation = store.beginSourceResolution()
+  sendLocalSourceStatus('resolving')
   try {
-    logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, hostStream: !!hostStream })
-    const match = await findMatchingLocalStream(m, ep, hostStream, store.allowGuestDifferentStream)
+    logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, generation })
+    const candidates = await resolveLocalSourceCandidates(m, ep, signal)
+    if (signal.aborted) return false
+    if (!getStore().setLocalSourceCandidates(generation, candidates)) return false
+    const match = candidates[0]
     if (match) {
-      store.setSelectedLocalStream(match)
-      selectStream({
-        addonId: match.addonId,
-        name: match.addonName,
-        title: match.stream.title,
-        quality: match.stream.name?.match(/\b(4k|2160p|1080p|720p|480p)\b/i)?.[0] ?? undefined,
-        infoHash: match.stream.infoHash,
-        fileIdx: match.stream.fileIdx,
-        streamFingerprint: createStreamFingerprint(match.stream as any),
-      })
+      sendLocalSourceStatus('ready')
       setReady(true)
-      logDebug('in', 'AUTO_RESOLVE_OK', { addon: match.addonName, stream: match.stream.name ?? match.stream.title })
+      logDebug('in', 'AUTO_RESOLVE_OK', { addon: match.addonName, count: candidates.length, stream: match.stream.name ?? match.stream.title })
       return true
     } else {
+      sendLocalSourceStatus('failed', 'SOURCE_UNAVAILABLE')
+      setReady(false)
       logDebug('in', 'AUTO_RESOLVE_NONE', { media: m.title })
       return false
     }
   } catch (_) {
-    store.setSelectedLocalStream(null)
+    if (signal.aborted) return false
+    if (getStore().sourceResolutionGeneration !== generation) return false
+    store.setLocalSourceCandidates(generation, [])
+    sendLocalSourceStatus('failed', 'SOURCE_RESOLUTION_FAILED')
+    setReady(false)
     logDebug('in', 'AUTO_RESOLVE_ERROR', { media: m.title })
     return false
   }
+}
+
+function publishSync(sync: PendingRoomSync): void {
+  const store = getStore()
+  if (!store.queuePendingSync(sync)) return
+  const localServerTimestamp = serverTimestampToLocal(sync.serverTime, store.serverClockOffsetMs)
+  window.dispatchEvent(new CustomEvent('wt:sync_request', {
+    detail: {
+      time: sync.time,
+      isPlaying: sync.isPlaying,
+      sentAt: localServerTimestamp,
+      sequence: sync.sequence,
+    },
+  }))
 }
 
 // ── Server message handler ──────────────────────────────────────────────────
@@ -575,17 +625,16 @@ function handleServerMessage(msg: ServerMessage): void {
       break
 
     case 'MEDIA_UPDATED': {
-      store.updateMedia(msg.media, msg.episode, msg.stream)
-      // Skip re-resolving when our current stream already matches the host's
-      // (the server re-broadcasts media whenever the host picks a stream).
-      const current = store.selectedLocalStream
-      const alreadyMatched = !!(
-        current &&
-        msg.stream?.streamFingerprint &&
-        createStreamFingerprint({ ...current.stream, addonId: current.addonId } as any) === msg.stream.streamFingerprint
+      const previousMedia = store.currentRoom?.selectedMedia
+      const previousEpisode = store.currentRoom?.selectedEpisode
+      const mediaChanged = Boolean(msg.media) && (
+        previousMedia?.localMediaId !== msg.media?.localMediaId ||
+        previousEpisode?.seasonNumber !== msg.episode?.seasonNumber ||
+        previousEpisode?.episodeNumber !== msg.episode?.episodeNumber
       )
-      if (msg.media && !alreadyMatched) {
-        autoResolveStream(msg.media, msg.episode, msg.stream)
+      store.updateMedia(msg.media, msg.episode, msg.stream)
+      if (msg.media && mediaChanged) {
+        autoResolveStream(msg.media, msg.episode)
       }
       break
     }
@@ -593,15 +642,12 @@ function handleServerMessage(msg: ServerMessage): void {
     case 'PLAYBACK_UPDATED':
       store.updatePlayback(msg.playback)
       if (!store.isHost && msg.playback.status !== 'stopped' && msg.playback.status !== 'idle') {
-        window.dispatchEvent(
-          new CustomEvent('wt:sync_request', {
-            detail: {
-              time: msg.playback.currentTime,
-              isPlaying: msg.playback.isPlaying,
-              sentAt: msg.playback.lastUpdatedAt,
-            },
-          }),
-        )
+        publishSync({
+          time: msg.playback.currentTime,
+          isPlaying: msg.playback.isPlaying,
+          serverTime: msg.playback.serverTime ?? msg.playback.lastUpdatedAt,
+          sequence: msg.playback.sequence ?? msg.playback.lastUpdatedAt,
+        })
       }
       break
 
@@ -633,11 +679,12 @@ function handleServerMessage(msg: ServerMessage): void {
     }
 
     case 'SYNC_REQUEST':
-      window.dispatchEvent(
-        new CustomEvent('wt:sync_request', {
-          detail: { time: msg.time, isPlaying: msg.isPlaying, sentAt: msg.sentAt },
-        }),
-      )
+      publishSync({
+        time: msg.time,
+        isPlaying: msg.isPlaying,
+        serverTime: msg.serverTime ?? msg.sentAt ?? Date.now(),
+        sequence: msg.sequence ?? msg.serverTime ?? msg.sentAt ?? Date.now(),
+      })
       break
 
     case 'ERROR':
@@ -645,8 +692,16 @@ function handleServerMessage(msg: ServerMessage): void {
       break
 
     case 'PONG': {
-      const latency = Date.now() - msg.serverTime
-      logDebug('in', 'LATENCY', { latencyMs: Math.abs(latency) })
+      const receivedAt = Date.now()
+      if (typeof msg.clientSentAt !== 'number') {
+        const legacyLatency = Math.max(0, receivedAt - msg.serverTime)
+        store.updateServerTiming(0, legacyLatency)
+        logDebug('in', 'LATENCY', { latencyMs: legacyLatency, legacyServer: true })
+        break
+      }
+      const timing = estimateServerTiming(msg.clientSentAt, msg.serverTime, receivedAt)
+      store.updateServerTiming(timing.serverClockOffsetMs, timing.roundTripTimeMs)
+      logDebug('in', 'LATENCY', { latencyMs: timing.roundTripTimeMs, serverClockOffsetMs: timing.serverClockOffsetMs })
       break
     }
   }

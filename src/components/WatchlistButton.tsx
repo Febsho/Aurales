@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAppStore } from '../stores/appStore'
+import type { SearchResult } from '../types'
+import { useLocalWatchlist } from '../hooks/useLocalWatchlist'
+import { localWatchlistKey, toggleLocalWatchlist } from '../services/localWatchlist'
 import {
   addToSimklWatchlist,
   removeFromSimklWatchlist,
@@ -34,7 +37,7 @@ import {
 import { resolveAnimeIds } from '../services/animeLists'
 import type { MediaRef } from '../services/simkl/mappings'
 
-type Provider = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+type Provider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 interface ProviderState {
   inList: boolean
@@ -44,6 +47,7 @@ interface ProviderState {
 }
 
 const PROVIDER_LABELS: Record<Provider, string> = {
+  local: 'Local',
   trakt: 'Trakt',
   simkl: 'Simkl',
   pmdb: 'PMDB',
@@ -75,19 +79,37 @@ function statusLabel(provider: Provider, status?: string | null): string | null 
 
 interface WatchlistButtonProps {
   mediaRef: MediaRef
+  item?: SearchResult
   mediaType?: 'movie' | 'series'
   anilistId?: number | string
   malId?: number | string
   tvdbId?: number | string
   isAnime?: boolean
   className?: string
+  detailSize?: boolean
 }
 
-export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime = false, anilistId, malId, tvdbId, className = '' }: WatchlistButtonProps) {
+export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', isAnime = false, anilistId, malId, tvdbId, className = '', detailSize = false }: WatchlistButtonProps) {
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
+  const localItems = useLocalWatchlist()
+  const localItem = useMemo<SearchResult>(() => item ?? ({
+    id: mediaRef.localId,
+    title: mediaRef.title,
+    type: mediaType,
+    year: mediaRef.year,
+    provider: 'local',
+    imdbId: mediaRef.imdbId,
+    tmdbId: mediaRef.tmdbId,
+    tvdbId,
+    malId,
+    anilistId,
+    isAnime: isAnime || mediaRef.type === 'anime',
+  }), [anilistId, isAnime, item, malId, mediaRef, mediaType, tvdbId])
+  const localKey = localWatchlistKey(localItem)
+  const localInList = localItems.some((entry) => localWatchlistKey(entry) === localKey)
 
   const [animeIds, setAnimeIds] = useState<{ anilistId?: number; malId?: number }>({
     anilistId: anilistId ? Number(anilistId) : undefined,
@@ -103,6 +125,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
   const [open, setOpen] = useState(false)
   const [expandedProvider, setExpandedProvider] = useState<'simkl' | 'anilist' | null>(null)
   const [states, setStates] = useState<Record<Provider, ProviderState>>({
+    local: { inList: localInList, loading: false, checking: false },
     trakt: { inList: false, loading: false, checking: true },
     simkl: { inList: false, loading: false, checking: true },
     pmdb: { inList: false, loading: false, checking: true },
@@ -111,7 +134,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
   })
   const menuRef = useRef<HTMLDivElement>(null)
 
-  const connectedProviders: Provider[] = []
+  const connectedProviders: Provider[] = ['local']
   if (traktConnected) connectedProviders.push('trakt')
   if (simklConnected) connectedProviders.push('simkl')
   if (pmdbApiKey) connectedProviders.push('pmdb')
@@ -119,6 +142,13 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
   if (anilistActive) connectedProviders.push('anilist')
 
   const anyInList = connectedProviders.some((p) => states[p].inList)
+
+  useEffect(() => {
+    setStates((previous) => ({
+      ...previous,
+      local: { inList: localInList, loading: false, checking: false },
+    }))
+  }, [localInList])
 
   useEffect(() => {
     setAnimeIds({
@@ -262,7 +292,9 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
     setStates((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }))
 
     try {
-      if (provider === 'trakt') {
+      if (provider === 'local') {
+        toggleLocalWatchlist(localItem)
+      } else if (provider === 'trakt') {
         const key = mediaType === 'series' ? 'shows' : 'movies'
         const ids: Record<string, string | number> = {}
         if (mediaRef.imdbId) ids.imdb = mediaRef.imdbId
@@ -289,7 +321,7 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
       console.error(`[WatchlistButton] toggle ${provider} failed:`, err)
       setStates((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }))
     }
-  }, [states, mediaRef, mediaType, animeIds.anilistId, animeIds.malId])
+  }, [states, localItem, mediaRef, mediaType, animeIds.anilistId, animeIds.malId])
 
   const setProviderStatus = useCallback(async (provider: 'simkl' | 'anilist', status: SimklWatchStatus | AniListStatus | null) => {
     setStates((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }))
@@ -309,58 +341,54 @@ export default function WatchlistButton({ mediaRef, mediaType = 'movie', isAnime
     }
   }, [mediaRef, animeIds.anilistId, animeIds.malId])
 
-  if (connectedProviders.length === 0) return null
-
   const anyLoading = connectedProviders.some((p) => states[p].loading)
 
   const label = anyInList ? 'In Watchlist' : 'Add to Watchlist'
 
   return (
-    <div className="relative" ref={menuRef}>
+    <div className={`relative flex items-center gap-1.5 ${className}`} ref={menuRef}>
       <button
-        onClick={() => setOpen(!open)}
-        disabled={anyLoading}
+        type="button"
+        onClick={() => toggleProvider('local')}
+        disabled={states.local.loading}
+        aria-label={localInList ? 'Remove from local watchlist' : 'Add to local watchlist'}
+        aria-pressed={localInList}
         className={[
-          'group/wb h-11 rounded-full flex items-center justify-center transition-all duration-300 ease-out cursor-pointer overflow-hidden',
-          'border backdrop-blur-xl shadow-2xl',
-          'w-11 hover:w-auto hover:px-5 hover:gap-2',
-          anyInList
-            ? 'bg-white/20 border-white/30 text-white'
-            : 'bg-black/30 border-white/10 text-white/70 hover:text-white hover:bg-white/10 hover:border-white/20',
-          anyLoading && 'opacity-50 pointer-events-none',
-          className,
+          `grid ${detailSize ? 'h-12 w-12' : 'h-11 w-11'} flex-shrink-0 place-items-center rounded-full border transition-[transform,background-color,border-color,color] duration-200 cursor-pointer`,
+          'active:scale-95 disabled:pointer-events-none disabled:opacity-55',
+          localInList
+            ? 'border-accent/45 bg-accent text-black shadow-[0_6px_18px_rgba(0,0,0,0.28)]'
+            : 'border-white/15 bg-[#171717] text-white/70 hover:border-white/30 hover:bg-[#242424] hover:text-white',
         ].join(' ')}
       >
-        {anyLoading ? (
-          <svg className="w-5 h-5 flex-shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
+        {states.local.loading ? (
+          <svg className="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-        ) : anyInList ? (
-          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-            <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
         ) : (
-          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-            <path d="M12 5v14M5 12h14" strokeLinecap="round" strokeLinejoin="round" />
+          <svg className="h-5 w-5" fill={localInList ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 21s-7.2-4.35-9.55-8.4C.4 9.05 2.02 4.5 6.15 3.56A5.15 5.15 0 0 1 12 6.18a5.15 5.15 0 0 1 5.85-2.62c4.13.94 5.75 5.49 3.7 9.04C19.2 16.65 12 21 12 21Z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         )}
-        <span className="text-sm font-semibold whitespace-nowrap max-w-0 opacity-0 group-hover/wb:max-w-[150px] group-hover/wb:opacity-100 transition-all duration-300 ease-out overflow-hidden">
-          {label}
-        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        disabled={anyLoading}
+        aria-label="Manage watchlists"
+        aria-expanded={open}
+        title={label}
+        className={`grid ${detailSize ? 'h-10 w-8' : 'h-9 w-8'} place-items-center rounded-full border border-white/10 bg-[#171717] text-white/55 transition-colors hover:border-white/25 hover:bg-[#242424] hover:text-white disabled:opacity-45 ${open ? 'border-white/25 bg-[#242424] text-white' : ''}`}
+      >
+        <svg className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
       </button>
 
       {open && (
         <div
-          className="absolute left-0 bottom-full mb-2 z-50 min-w-[200px] overflow-hidden rounded-2xl border border-white/[0.10]"
-          style={{
-            background: 'rgba(10, 10, 12, 0.45)',
-            backdropFilter: 'blur(40px) saturate(220%)',
-            WebkitBackdropFilter: 'blur(40px) saturate(220%)',
-            boxShadow: '0 24px 56px rgba(0,0,0,0.62), inset 0 1px 1px rgba(255,255,255,0.12)',
-          }}
+          className="absolute left-0 bottom-full mb-2 z-50 min-w-[220px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
         >
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.09] to-white/[0.02]" />
           {connectedProviders.map((provider) => {
             const st = states[provider]
             const hasStatuses = provider === 'simkl' || provider === 'anilist'

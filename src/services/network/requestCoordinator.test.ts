@@ -26,6 +26,28 @@ describe('request coordinator', () => {
     expect(requestCoordinator.snapshot().deduplicated).toBe(1)
   })
 
+  it('does not deduplicate different URL paths on the same origin', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => new Response(JSON.stringify({
+      path: new URL(String(input)).pathname,
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    const options = {
+      label: 'Configured addon',
+      kind: 'metadata' as const,
+      dedupeKey: 'catalog:movie:popular',
+      priority: 'visible' as const,
+    }
+
+    const [first, second] = await Promise.all([
+      coordinatedJson<{ path: string }>('https://addon.example/user-a/catalog/movie/popular.json', {}, options),
+      coordinatedJson<{ path: string }>('https://addon.example/user-b/catalog/movie/popular.json', {}, options),
+    ])
+
+    expect(first.path).toBe('/user-a/catalog/movie/popular.json')
+    expect(second.path).toBe('/user-b/catalog/movie/popular.json')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('limits addon work to one request per origin', async () => {
     const gates = [deferred<string>(), deferred<string>()]
     const started: number[] = []
@@ -106,6 +128,23 @@ describe('request coordinator', () => {
     await expect(queued).rejects.toMatchObject({ name: 'AbortError' })
     blocker.resolve('done')
     await expect(first).resolves.toBe('done')
+  })
+
+  it('rejects only the cancelled consumer of deduplicated work', async () => {
+    const gate = deferred<string>()
+    const execute = vi.fn(() => gate.promise)
+    const options = {
+      origin: 'https://api.example', label: 'Example', kind: 'metadata' as const,
+      dedupeKey: 'shared', priority: 'visible' as const,
+    }
+    const cancelled = requestCoordinator.run({ ...options, cancelGroup: 'search:old' }, execute)
+    const retained = requestCoordinator.run({ ...options, cancelGroup: 'search:current' }, execute)
+
+    requestCoordinator.cancelGroup('search:old')
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    gate.resolve('done')
+    await expect(retained).resolves.toBe('done')
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 
   it('pauses background work during playback and coalesces it afterward', async () => {

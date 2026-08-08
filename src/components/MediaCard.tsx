@@ -4,7 +4,7 @@ import type { SearchResult } from '../types'
 import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
-import { cachedImage, warmCachedImage } from '../services/imageCache'
+import { cachedImage, retryImageFromSource, warmCachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
@@ -319,6 +319,9 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       return next
     })
   }
+  const handleImageError = (event: React.SyntheticEvent<HTMLImageElement>, url?: string) => {
+    if (!retryImageFromSource(event.currentTarget, url)) markImageFailed(url)
+  }
   const warmDetailArtwork = useCallback(() => {
     void warmCachedImage(backdropUrl)
     void warmCachedImage(logoUrl)
@@ -467,8 +470,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
       >
         <div data-hero-viewport className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
-          {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
-          {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(focusMedia)} />}
+          {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, posterUrl)} />}
+          {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, focusMedia)} />}
           {cinematicTrailer && (useNativeTrailerPlayer ? (
             <HeroMpvTrailer
               trailer={cinematicTrailer}
@@ -520,7 +523,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicWidth}`}
       >
-        <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
+        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
           {landscapeBackdrop ? (
             <img
               src={cachedImage(landscapeBackdrop)}
@@ -528,7 +531,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
               decoding="async"
-              onError={() => markImageFailed(landscapeBackdrop)}
+              onError={(event) => handleImageError(event, landscapeBackdrop)}
             />
           ) : posterUrl ? (
             <img
@@ -537,7 +540,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
               decoding="async"
-              onError={() => markImageFailed(posterUrl)}
+              onError={(event) => handleImageError(event, posterUrl)}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
@@ -656,7 +659,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             className={`w-full h-full object-cover transition-transform duration-500 ease-out ${posterImageHoverClass}`}
             loading="lazy"
             decoding="async"
-            onError={() => markImageFailed(posterUrl)}
+            onError={(event) => handleImageError(event, posterUrl)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">

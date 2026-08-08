@@ -835,10 +835,11 @@ export default function MovieDetailPage() {
           />
         }
         actions={
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="white"
-              size="xl"
+              size="lg"
+              className="h-12 rounded-full px-6 shadow-none"
               loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -856,6 +857,25 @@ export default function MovieDetailPage() {
               })()}
             </Button>
             <WatchlistButton
+              item={{
+                id: movie.id,
+                title: movie.title,
+                type: 'movie',
+                year: movie.year,
+                poster: movie.poster,
+                backdrop: movie.backdrop,
+                logo: movie.logo,
+                overview: movie.overview,
+                rating: movie.rating,
+                genres: movie.genres,
+                provider: movie.provider || 'local',
+                imdbId: movie.imdbId,
+                tmdbId: movie.tmdbId,
+                tvdbId: movie.tvdbId,
+                malId: movie.malId,
+                anilistId: movie.anilistId,
+                isAnime: movie.isAnime,
+              }}
               mediaRef={{
                 localId: movie.id,
                 title: movie.title,
@@ -867,7 +887,7 @@ export default function MovieDetailPage() {
               mediaType="movie"
               anilistId={movie.anilistId}
               malId={movie.malId}
-              className="!h-13 !min-w-13"
+              detailSize
             />
             <MarkWatchedButton
               mediaRef={{

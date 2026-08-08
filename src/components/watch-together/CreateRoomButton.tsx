@@ -5,7 +5,7 @@ import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
 
-export default function CreateRoomButton() {
+export default function CreateRoomButton({ label }: { label?: string }) {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const connectionStatus = useWatchTogetherStore((s) => s.connectionStatus)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
@@ -69,6 +69,7 @@ export default function CreateRoomButton() {
       <button
         onClick={handleClick}
         className={[
+          'watch-together-launcher',
           'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5 w-full',
           currentRoom
             ? 'bg-accent/10 text-accent hover:bg-accent/15'
@@ -99,7 +100,7 @@ export default function CreateRoomButton() {
           )}
         </div>
         <span className={`text-[13px] tracking-wide whitespace-nowrap ${currentRoom ? 'font-semibold' : 'font-medium'}`}>
-          {currentRoom ? 'Watch Together' : 'Watch Together'}
+          {currentRoom ? 'Watch Together' : (label || 'Watch Together')}
         </span>
         {currentRoom && (
           <span className="ml-auto text-[10px] font-bold text-accent bg-accent/15 px-1.5 py-0.5 rounded-md">
@@ -114,6 +115,7 @@ export default function CreateRoomButton() {
         title="Create Watch Room"
         description="Start a room and invite friends to watch together"
         size="sm"
+        className="watch-together-modal"
       >
         <div className="flex flex-col gap-4">
           <Input

@@ -42,11 +42,11 @@ export default function RoomParticipants() {
             key={p.id}
             className={[
               'flex items-center gap-3 px-3 py-2 rounded-xl transition-colors duration-150',
-              p.id === currentUserId ? 'bg-accent/5 border border-accent/10' : 'bg-white/[0.02] hover:bg-white/[0.04]',
+              p.id === currentUserId ? 'bg-accent/5 border border-accent/10' : 'watch-together-surface--subtle',
             ].join(' ')}
           >
             {/* Avatar / initial */}
-            <div className="w-7 h-7 rounded-lg bg-white/[0.08] flex items-center justify-center flex-shrink-0 text-xs font-bold text-white/60">
+            <div className="watch-together-avatar w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold text-white/60">
               {p.avatar ? (
                 <img src={p.avatar} alt="" className="w-full h-full rounded-lg object-cover" />
               ) : (
@@ -92,7 +92,7 @@ export default function RoomParticipants() {
             {isHost && p.id !== currentUserId && (
               <button
                 onClick={() => wsClient.transferHost(p.id)}
-                className="p-1.5 rounded-lg text-white/20 hover:text-white/60 hover:bg-white/[0.06] transition-all duration-200 cursor-pointer"
+                className="watch-together-control p-1.5 rounded-lg text-white/20 hover:text-white/60 transition-all duration-200 cursor-pointer"
                 title="Transfer host to this user"
               >
                 <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">

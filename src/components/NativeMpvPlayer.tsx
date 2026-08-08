@@ -54,6 +54,8 @@ import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../s
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
+import PlayerDebugPanel from './PlayerDebugPanel'
+import { collectNativePlayerDebugSnapshot, type NativePlayerDebugSnapshot } from '../services/playerDebug'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -907,6 +909,10 @@ function FullNativeMpvPlayer({
   const chapterStripRef = useRef<HTMLDivElement | null>(null)
   const chapterPanscanRef = useRef(0)
   const [showMediaInfo, setShowMediaInfo] = useState(false)
+  const [showPlayerDebug, setShowPlayerDebug] = useState(false)
+  const [playerDebugSnapshot, setPlayerDebugSnapshot] = useState<NativePlayerDebugSnapshot | null>(null)
+  const [playerDebugLoading, setPlayerDebugLoading] = useState(false)
+  const [playerDebugError, setPlayerDebugError] = useState('')
   const isDraggingRef = useRef(false)
   const thumbnailRequestRef = useRef(0)
   const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -984,7 +990,27 @@ function FullNativeMpvPlayer({
     setShowSpeedMenu(false)
     setShowMediaInfo(false)
     setShowChapters(false)
+    setShowPlayerDebug(false)
   }, [])
+  const refreshPlayerDebug = useCallback(async () => {
+    if (!import.meta.env.DEV) return
+    setPlayerDebugLoading(true)
+    try {
+      const snapshot = await collectNativePlayerDebugSnapshot()
+      setPlayerDebugSnapshot(snapshot)
+      setPlayerDebugError('')
+    } catch (cause) {
+      setPlayerDebugError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setPlayerDebugLoading(false)
+    }
+  }, [])
+  useEffect(() => {
+    if (!import.meta.env.DEV || !showPlayerDebug || !playerReady) return
+    refreshPlayerDebug().catch(() => {})
+    const interval = window.setInterval(() => refreshPlayerDebug().catch(() => {}), 2000)
+    return () => window.clearInterval(interval)
+  }, [playerReady, refreshPlayerDebug, showPlayerDebug, url])
   // Store
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const simklSaveResumePosition = useAppStore((s) => s.simklSaveResumePosition)
@@ -1127,7 +1153,7 @@ function FullNativeMpvPlayer({
       // Don't correct until mpv has actually loaded the file — seeking a
       // not-yet-loaded stream errors out or lands at the wrong position.
       if (progressRef.current.duration <= 0) return
-      const { time, isPlaying, sentAt } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
+      const { time, isPlaying, sentAt, sequence } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number; sequence?: number }
 
       const { driftThreshold } = useWatchTogetherStore.getState()
       const { shouldSeek, targetTime } = shouldCorrectDrift(
@@ -1150,6 +1176,7 @@ function FullNativeMpvPlayer({
         suppressNextWatchTogetherEvent()
         sendPlayerCommand('set_property', ['pause', true]).catch(() => {})
       }
+      if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
     }
 
     window.addEventListener('wt:sync_request', onSyncRequest)
@@ -2010,7 +2037,7 @@ function FullNativeMpvPlayer({
       }
 
       if (key === 'Escape') {
-        if (trackMenu || showSpeedMenu || showMediaInfo || showChapters) {
+        if (trackMenu || showSpeedMenu || showMediaInfo || showChapters || showPlayerDebug) {
           e.preventDefault()
           e.stopPropagation()
           dismissPlayerOptions()
@@ -2081,7 +2108,7 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, dismissPlayerOptions])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, showPlayerDebug, dismissPlayerOptions])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -3966,8 +3993,17 @@ function FullNativeMpvPlayer({
           {/* Timestamps row */}
           <div className="relative flex items-center justify-between text-[11px] text-white/50" data-player-popover>
             <div className="flex items-center gap-5">
-              <button onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${showMediaInfo ? 'bg-white text-black' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Info</button>
-              <button disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Chapters</button>
+              <button onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${showMediaInfo ? 'bg-white text-black' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Info</button>
+              <button disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Chapters</button>
+              {import.meta.env.DEV && (
+                <button
+                  type="button"
+                  onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo(false); setShowChapters(false); setShowPlayerDebug((value) => !value) }}
+                  className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors ${showPlayerDebug ? 'border-amber-300 bg-amber-300 text-black' : 'border-amber-300/25 text-amber-200/70 hover:bg-amber-300/10 hover:text-amber-100'}`}
+                >
+                  Debug
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-3 tabular-nums">
               <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
@@ -4006,6 +4042,18 @@ function FullNativeMpvPlayer({
                   {mediaBadges.map((badge) => <span key={badge} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-semibold text-white/45">{badge}</span>)}
                 </div>
               </div>
+            )}
+
+            {import.meta.env.DEV && showPlayerDebug && (
+              <PlayerDebugPanel
+                snapshot={playerDebugSnapshot}
+                sourceHint={currentStreamUrlRef.current || url}
+                passthroughConfigured={useAppStore.getState().audioPassthrough}
+                loading={playerDebugLoading}
+                error={playerDebugError}
+                onRefresh={() => refreshPlayerDebug().catch(() => {})}
+                onClose={() => setShowPlayerDebug(false)}
+              />
             )}
           </div>
 

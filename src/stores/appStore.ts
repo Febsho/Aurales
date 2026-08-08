@@ -18,7 +18,17 @@ function invalidateCatalogData(): void {
   ].forEach((category) => { cacheClearCategory(category).catch(() => {}) })
 }
 
-type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+
+function loadAutomaticWatchedCheckmarkSources(): ProgressProvider[] {
+  const sources: ProgressProvider[] = ['local']
+  if (localStorage.getItem('trakt_tokens')) sources.push('trakt')
+  if (localStorage.getItem('simkl_token')) sources.push('simkl')
+  if (localStorage.getItem('pmdb_api_key')) sources.push('pmdb')
+  if (localStorage.getItem('mdblist_api_key') || localStorage.getItem('mdblist_oauth_tokens')) sources.push('mdblist')
+  if (localStorage.getItem('anilist_token')) sources.push('anilist')
+  return sources
+}
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
@@ -743,13 +753,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
-  watchedCheckmarkSources: (() => {
-    try {
-      const raw = localStorage.getItem('aurales_watched_checkmark_sources')
-      if (raw) return JSON.parse(raw) as ProgressProvider[]
-    } catch (_) { /* ignore */ }
-    return ['local'] as ProgressProvider[]
-  })(),
+  watchedCheckmarkSources: loadAutomaticWatchedCheckmarkSources(),
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',

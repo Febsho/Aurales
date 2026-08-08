@@ -16,8 +16,8 @@ export default function RoomMediaPreview() {
 
   if (!media) {
     return (
-      <div className="flex flex-col items-center py-6 px-4 rounded-xl bg-white/[0.02] border border-dashed border-white/[0.06] text-center">
-        <div className="w-10 h-10 rounded-xl bg-white/[0.04] flex items-center justify-center mb-3">
+      <div className="watch-together-surface watch-together-surface--subtle flex flex-col items-center py-6 px-4 rounded-xl border border-dashed text-center">
+        <div className="watch-together-control w-10 h-10 rounded-xl flex items-center justify-center mb-3">
           <svg className="w-5 h-5 text-white/20" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
             <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
             <line x1="7" y1="2" x2="7" y2="22" />
@@ -43,7 +43,7 @@ export default function RoomMediaPreview() {
   return (
     <div className="flex flex-col gap-2.5">
       <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Now Watching</h3>
-      <div className="rounded-xl overflow-hidden bg-white/[0.04] border border-white/[0.06]">
+      <div className="watch-together-surface rounded-xl overflow-hidden border">
         {/* Thumbnail */}
         {thumb && (
           <div className="relative aspect-video bg-black/40">
