@@ -837,7 +837,7 @@ function AddWidgetOverlay({
   const [search, setSearch] = useState('')
   const [newMdblistName, setNewMdblistName] = useState('')
   const [creatingMdblistList, setCreatingMdblistList] = useState(false)
-  const [editLayout, setEditLayout] = useState<'poster' | 'landscape' | 'list' | 'continue' | 'hero'>('poster')
+  const [editLayout, setEditLayout] = useState<HomeRowConfig['layout']>('poster')
   const [selectedSourceFilter, setSelectedSourceFilter] = useState<'all' | 'builtin' | 'smart' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks' | 'mdblist'>('all')
   const [selectedShelves, setSelectedShelves] = useState<PendingShelfSelection[]>([])
   const [pickerSource, setPickerSource] = useState<CatalogPickerSource | null>(null)
@@ -1977,9 +1977,11 @@ function AddWidgetOverlay({
                 </div>
                 <div>
                   <label className="block text-[11px] text-white/40 mb-2 font-medium uppercase tracking-wider">Layout Style</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {([
                       { value: 'poster', label: 'Poster', icon: 'M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z' },
+                      { value: 'ranked', label: 'Ranked', icon: 'M5 5h3v14M4 19h6M14 7a3 3 0 016 0c0 4-6 5-6 10h7' },
+                      { value: 'feature', label: 'Feature', icon: 'M4 3h16v18H4zM7 15h10M7 18h7' },
                       { value: 'landscape', label: 'Landscape', icon: 'M2 6h20v12H2z' },
                       { value: 'list', label: 'Compact', icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
                     ] as const).map((opt) => (
@@ -3878,6 +3880,8 @@ function CompactShelfRow({
           aria-label={`Layout for ${row.title}`}
         >
           <option value="poster" className="bg-[#111318]">Poster</option>
+          <option value="ranked" className="bg-[#111318]">Ranked posters</option>
+          <option value="feature" className="bg-[#111318]">Feature posters</option>
           <option value="landscape" className="bg-[#111318]">Landscape</option>
           <option value="list" className="bg-[#111318]">Compact list</option>
         </select>
@@ -3910,6 +3914,8 @@ function CompactShelfRow({
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.07] bg-white/[0.04] px-3 text-xs font-semibold text-white/60 outline-none"
           >
             <option value="poster" className="bg-[#111318]">Poster</option>
+            <option value="ranked" className="bg-[#111318]">Ranked posters</option>
+            <option value="feature" className="bg-[#111318]">Feature posters</option>
             <option value="landscape" className="bg-[#111318]">Landscape</option>
             <option value="list" className="bg-[#111318]">Compact list</option>
           </select>

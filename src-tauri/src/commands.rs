@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::AtomicIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 // ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
 
@@ -1187,7 +1187,11 @@ const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp.exe", "yt-dlp-x86_64-pc-windows-ms
 #[cfg(target_os = "linux")]
 const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp", "yt-dlp-x86_64-unknown-linux-gnu"];
 #[cfg(target_os = "macos")]
-const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp", "yt-dlp-aarch64-apple-darwin", "yt-dlp-x86_64-apple-darwin"];
+const YTDLP_BINARY_NAMES: &[&str] = &[
+    "yt-dlp",
+    "yt-dlp-aarch64-apple-darwin",
+    "yt-dlp-x86_64-apple-darwin",
+];
 
 fn binary_candidates(names: &[&str]) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -1218,7 +1222,10 @@ fn mpv_candidates() -> Vec<PathBuf> {
 }
 
 fn find_mpv() -> Option<PathBuf> {
-    if let Some(found) = mpv_candidates().into_iter().find(|candidate| candidate.exists()) {
+    if let Some(found) = mpv_candidates()
+        .into_iter()
+        .find(|candidate| candidate.exists())
+    {
         return Some(found);
     }
     // Linux/macOS installs commonly rely on a system mpv rather than a bundled one.
@@ -1249,9 +1256,14 @@ fn find_ytdlp() -> Option<PathBuf> {
 // (1080p video + audio; yt-dlp handles YouTube's anti-bot measures and keeps
 // itself current). Returns the printed URLs: [video] or [video, audio].
 #[tauri::command]
-pub async fn ytdlp_resolve(video_id: String, max_height: Option<u32>) -> Result<Vec<String>, String> {
+pub async fn ytdlp_resolve(
+    video_id: String,
+    max_height: Option<u32>,
+) -> Result<Vec<String>, String> {
     if video_id.len() != 11
-        || !video_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !video_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid YouTube video id.".to_string());
     }
@@ -1330,8 +1342,7 @@ fn try_reuse_libmpv_player(
         match state.as_ref() {
             Some(current) => match &current.backend {
                 NativePlayerBackend::LibMpv { player }
-                    if !player.is_destroyed()
-                        && current.launch_config.as_ref() == Some(config) =>
+                    if !player.is_destroyed() && current.launch_config.as_ref() == Some(config) =>
                 {
                     (
                         Arc::clone(player),
@@ -1356,14 +1367,10 @@ fn try_reuse_libmpv_player(
     // Per-file options: `start` only applies to the next loadfile; the rest
     // are plain runtime properties.
     let set = |name: &str, value: serde_json::Value| {
-        if let Err(error) = player.command(
-            "set",
-            &[serde_json::Value::String(name.to_string()), value],
-        ) {
-            player_debug_log(format!(
-                "[PLAYER REUSE] set {} failed: {}",
-                name, error
-            ));
+        if let Err(error) =
+            player.command("set", &[serde_json::Value::String(name.to_string()), value])
+        {
+            player_debug_log(format!("[PLAYER REUSE] set {} failed: {}", name, error));
         }
     };
     set(
@@ -1397,13 +1404,7 @@ fn try_reuse_libmpv_player(
                 h,
             );
             #[cfg(target_os = "linux")]
-            crate::linux_render_surface::resize(
-                app,
-                x.unwrap_or(0),
-                y.unwrap_or(0),
-                w,
-                h,
-            )?;
+            crate::linux_render_surface::resize(app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
         }
     }
 
@@ -1969,8 +1970,7 @@ pub fn get_embedded_player_supported(app: tauri::AppHandle) -> bool {
 
     #[cfg(target_os = "linux")]
     {
-        return app.get_webview_window("main").is_some()
-            && libmpv_player::find_libmpv().is_some();
+        return app.get_webview_window("main").is_some() && libmpv_player::find_libmpv().is_some();
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -2133,7 +2133,10 @@ fn launch_mpv_with_window(
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("Failed to launch embedded mpv: libmpv was not found. Expected one of: {}", candidates)
+            format!(
+                "Failed to launch embedded mpv: libmpv was not found. Expected one of: {}",
+                candidates
+            )
         })?;
 
         let session_id = format!(
@@ -3311,6 +3314,63 @@ pub async fn pmdb_request(
     .map_err(|e| format!("PMDB request task panicked: {e}"))?
 }
 
+// ─── TorBox proxy (bypasses WebView CORS) ───────────────────────────────────
+
+#[tauri::command]
+pub async fn torbox_request(
+    method: String,
+    path: String,
+    token: Option<String>,
+    body: Option<String>,
+    content_type: Option<String>,
+) -> Result<PmdbProxyResponse, String> {
+    let method = method.to_uppercase();
+    if method != "GET" && method != "POST" {
+        return Err("Unsupported TorBox request method".to_string());
+    }
+    if !path.starts_with('/') || path.contains("..") || path.contains("//") {
+        return Err("Invalid TorBox API path".to_string());
+    }
+    let url = format!("https://api.torbox.app/v1/api{}", path);
+    let token = token.unwrap_or_default().trim().to_string();
+    let content_type = content_type.unwrap_or_else(|| "application/json".to_string());
+
+    tokio::task::spawn_blocking(move || -> Result<PmdbProxyResponse, String> {
+        let mut req = ureq::request(&method, &url)
+            .set("Accept", "application/json")
+            .set("Content-Type", &content_type);
+        if !token.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {}", token));
+        }
+        let response = match &body {
+            Some(value) => req.send_string(value),
+            None => req.call(),
+        };
+        match response {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                Ok(PmdbProxyResponse {
+                    status,
+                    ok: true,
+                    body: text,
+                })
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                Ok(PmdbProxyResponse {
+                    status,
+                    ok: false,
+                    body: text,
+                })
+            }
+            Err(other) => Err(format!("Network error contacting TorBox: {other}")),
+        }
+    })
+    .await
+    .map_err(|error| format!("TorBox request task failed: {error}"))?
+}
+
 fn validate_http_url(url: &str) -> Result<(), String> {
     if url.starts_with("https://") || url.starts_with("http://") {
         Ok(())
@@ -3334,6 +3394,172 @@ pub fn install_kind() -> &'static str {
         return "flatpak";
     }
     "self-updating"
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlatpakUpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+    stage: &'static str,
+}
+
+fn flatpak_release_asset_url(version: &str) -> Result<String, String> {
+    let valid = !version.is_empty()
+        && version.len() <= 64
+        && version.starts_with(|character: char| character.is_ascii_digit())
+        && version.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+')
+        });
+    if !valid {
+        return Err("The update version returned by the server is invalid.".to_string());
+    }
+    Ok(format!(
+        "https://github.com/Febsho/Aurales/releases/download/v{version}/Aurales_{version}_amd64.flatpak"
+    ))
+}
+
+/// Downloads and reinstalls a standalone Flatpak bundle without blocking the
+/// WebView. The sandbox cannot modify /app, so installation is delegated to
+/// the host through flatpak-spawn after the bundle has been downloaded into
+/// the app cache (which is host-visible below ~/.var/app).
+#[tauri::command]
+pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
+    if install_kind() != "flatpak" {
+        return Err("The Flatpak update path is only available inside Flatpak.".to_string());
+    }
+
+    let url = flatpak_release_asset_url(&version)?;
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve the update cache: {error}"))?
+        .join("updates");
+    let bundle_path = cache_dir.join(format!("Aurales_{version}_amd64.flatpak"));
+    let worker_app = app.clone();
+    let worker_bundle = bundle_path.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        use std::io::{Read, Write};
+
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|error| format!("Failed to prepare the update cache: {error}"))?;
+        let _ = worker_app.emit(
+            "flatpak-update-progress",
+            FlatpakUpdateProgress {
+                downloaded: 0,
+                total: None,
+                stage: "downloading",
+            },
+        );
+
+        let response = ureq::get(&url)
+            .set("Accept", "application/octet-stream")
+            .set("User-Agent", "Aurales-Updater")
+            .call()
+            .map_err(|error| format!("Failed to download the Flatpak update: {error}"))?;
+        let total = response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok());
+        let mut reader = response.into_reader();
+        let mut output = std::fs::File::create(&worker_bundle)
+            .map_err(|error| format!("Failed to create the update bundle: {error}"))?;
+        let mut buffer = [0_u8; 128 * 1024];
+        let mut downloaded = 0_u64;
+        loop {
+            let count = reader
+                .read(&mut buffer)
+                .map_err(|error| format!("Failed while downloading the update: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|error| format!("Failed to save the update bundle: {error}"))?;
+            downloaded += count as u64;
+            let _ = worker_app.emit(
+                "flatpak-update-progress",
+                FlatpakUpdateProgress {
+                    downloaded,
+                    total,
+                    stage: "downloading",
+                },
+            );
+        }
+        output
+            .sync_all()
+            .map_err(|error| format!("Failed to finish the update download: {error}"))?;
+        if downloaded == 0 {
+            return Err("The downloaded Flatpak bundle was empty.".to_string());
+        }
+
+        let _ = worker_app.emit(
+            "flatpak-update-progress",
+            FlatpakUpdateProgress {
+                downloaded,
+                total: Some(downloaded),
+                stage: "installing",
+            },
+        );
+        let install = Command::new("flatpak-spawn")
+            .args([
+                "--host",
+                "flatpak",
+                "install",
+                "--user",
+                "-y",
+                "--reinstall",
+            ])
+            .arg(&worker_bundle)
+            .output()
+            .map_err(|error| format!("Failed to start the host Flatpak installer: {error}"))?;
+        let _ = std::fs::remove_file(&worker_bundle);
+        if !install.status.success() {
+            let stderr = String::from_utf8_lossy(&install.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                format!("Flatpak installation failed with {}.", install.status)
+            } else {
+                format!("Flatpak installation failed: {stderr}")
+            });
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Flatpak update task failed: {error}"))??;
+
+    // Start the newly installed deployment after this sandbox has exited.
+    Command::new("flatpak-spawn")
+        .args([
+            "--host",
+            "sh",
+            "-c",
+            "sleep 1; flatpak run com.aurales.app >/dev/null 2>&1 &",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("The update was installed, but restart failed: {error}"))?;
+    app.exit(0);
+    Ok(())
+}
+
+#[cfg(test)]
+mod flatpak_update_tests {
+    use super::flatpak_release_asset_url;
+
+    #[test]
+    fn builds_a_fixed_github_asset_url() {
+        assert_eq!(
+            flatpak_release_asset_url("0.2.8").unwrap(),
+            "https://github.com/Febsho/Aurales/releases/download/v0.2.8/Aurales_0.2.8_amd64.flatpak"
+        );
+    }
+
+    #[test]
+    fn rejects_version_path_injection() {
+        assert!(flatpak_release_asset_url("../../latest").is_err());
+        assert!(flatpak_release_asset_url("0.2.8;rm").is_err());
+    }
 }
 
 // Fetches the latest GitHub release (tag, name, body markdown) so the update

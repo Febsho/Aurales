@@ -7,6 +7,7 @@ import { buildSmartContext } from '../streams/preparedStreams'
 import { rankStreams, type SmartStream } from '../streams/smartScoring'
 import { probeStreamUrl } from '../streams/streamProbe'
 import type { LocalSourceCandidate } from '../../stores/watchTogetherStore'
+import { annotateTorBoxStreams, resolveTorBoxStream } from '../torbox'
 
 // ── Fingerprinting ──────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ export async function resolveLocalSourceCandidates(
   signal?: AbortSignal,
 ): Promise<LocalSourceCandidate[]> {
   const mediaType = media.type === 'movie' ? 'movie' : 'series'
-  const streams = await streamPreloadManager.request({
+  const rawStreams = await streamPreloadManager.request({
     mediaType,
     mediaId: preferredMediaId(media),
     imdbId: media.imdbId,
@@ -50,19 +51,28 @@ export async function resolveLocalSourceCandidates(
     sourceAddonItemId: media.sourceAddonItemId,
   }, { priority: StreamPreloadPriority.PLAYBACK })
   if (signal?.aborted) return []
+  const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
 
   const ranked = rankStreams(streams as SmartStream[], buildSmartContext({
     title: media.title,
     season: episode?.seasonNumber,
     episode: episode?.episodeNumber,
-  })).filter(({ stream, score }) => score > -500 && Boolean(getPlayableStreamUrl(stream)))
+  })).filter(({ score }) => score > -500)
 
   // Probe the leading candidates. Remaining ranked sources stay available as
   // runtime fallbacks because some providers reject lightweight HTTP probes.
   const measured = await Promise.all(ranked.slice(0, 3).map(async (candidate) => {
-    const url = getPlayableStreamUrl(candidate.stream)!
-    const probe = await probeStreamUrl(url, 4_000)
-    return { candidate, probe, playableUrl: probe?.finalUrl || url }
+    try {
+      const url = getPlayableStreamUrl(candidate.stream) || await resolveTorBoxStream(candidate.stream, {
+        title: media.title,
+        season: episode?.seasonNumber,
+        episode: episode?.episodeNumber,
+      })
+      const probe = await probeStreamUrl(url, 4_000)
+      return { candidate, probe, playableUrl: probe?.finalUrl || url }
+    } catch (_) {
+      return { candidate, probe: null, playableUrl: '' }
+    }
   }))
   if (signal?.aborted) return []
 
@@ -75,7 +85,7 @@ export async function resolveLocalSourceCandidates(
     .map(({ candidate }) => candidate.stream))
   const probedUrls = new Map(measured.map(({ candidate, playableUrl }) => [candidate.stream, playableUrl]))
   return ranked
-    .filter(({ stream }) => !rejected.has(stream))
+    .filter(({ stream }) => !rejected.has(stream) && Boolean(probedUrls.get(stream) || getPlayableStreamUrl(stream)))
     .map(({ stream, score, reasons }) => ({
       stream,
       addonId: stream.addonId,
@@ -127,26 +137,24 @@ export async function findMatchingLocalStream(
   for (const addon of streamAddons) {
     try {
       const results = await getAddonStreams(addon.url, stremioType, stremioId)
-      for (const s of results) {
-        if (isPlayableStream(s)) {
-          allStreams.push({ ...s, addonId: addon.manifest.id, addonName: addon.manifest.name })
-        }
-      }
+      for (const s of results) allStreams.push({ ...s, addonId: addon.manifest.id, addonName: addon.manifest.name })
     } catch (_) {
       // addon unavailable, skip
     }
   }
 
-  if (allStreams.length === 0) return null
+  const annotated = await annotateTorBoxStreams(allStreams).catch(() => allStreams)
+  const playableStreams = annotated.filter((stream) => isPlayableStream(stream) || stream.behaviorHints?.torboxCached === true)
+  if (playableStreams.length === 0) return null
 
   if (hostStream) {
-    const matched = matchStreamToHost(allStreams, hostStream)
+    const matched = matchStreamToHost(playableStreams, hostStream)
     if (matched) return matched
     if (!allowDifferentStream) return null
   }
 
   // No host stream, or the room allows guests to use a different stream.
-  const first = allStreams[0]
+  const first = playableStreams[0]
   return { stream: first, addonId: first.addonId, addonName: first.addonName }
 }
 

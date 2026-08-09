@@ -22,4 +22,17 @@ describe('smart stream scoring', () => {
     const german = scoreStream(stream('Example Movie 1080p German'), { ...context, preferredAudio: ['en'] })
     expect(english.score).toBeGreaterThan(german.score)
   })
+
+  it('treats a TorBox-cached torrent as playable without a direct addon URL', () => {
+    const cached: SmartStream = {
+      title: 'Example Movie 1080p WEB-DL',
+      infoHash: 'abc123',
+      addonId: 'torrent-addon',
+      addonName: 'Torrent Addon',
+      behaviorHints: { torboxCached: true },
+    }
+    const result = scoreStream(cached, context)
+    expect(result.score).toBeGreaterThan(-500)
+    expect(result.reasons).toContain('TorBox cached')
+  })
 })

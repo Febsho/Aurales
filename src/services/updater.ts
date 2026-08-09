@@ -1,6 +1,7 @@
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 export interface UpdateInfo {
   version: string
@@ -11,6 +12,7 @@ export interface UpdateInfo {
 export interface UpdateProgress {
   downloaded: number
   total: number | null
+  stage?: 'downloading' | 'installing'
 }
 
 const RELEASE_BASE_URL = 'https://github.com/Febsho/Aurales/releases'
@@ -30,15 +32,18 @@ export async function openFlatpakRelease(version: string): Promise<void> {
 
 let installKind: Promise<string> | null = null
 
+function getInstallKind(): Promise<string> {
+  installKind ??= invoke<string>('install_kind').catch(() => 'self-updating')
+  return installKind
+}
+
 /**
- * Whether the built-in updater can install an update itself. Flatpak installs
- * cannot: the sandbox is read-only, and the bundled binary is marked as a
- * Debian package, so the updater rejects the downloaded AppImage with
- * "invalid updater binary format". They update via `flatpak update`.
+ * Both supported Linux packages can update in-app. AppImage uses Tauri's
+ * signed updater; standalone Flatpak bundles use the native host installer.
  */
 export async function canSelfUpdate(): Promise<boolean> {
-  installKind ??= invoke<string>('install_kind').catch(() => 'self-updating')
-  return (await installKind) !== 'flatpak'
+  await getInstallKind()
+  return true
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
@@ -59,23 +64,35 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 export async function downloadAndInstall(
   onProgress?: (progress: UpdateProgress) => void
 ): Promise<void> {
-  if (!(await canSelfUpdate())) {
-    throw new Error('Standalone Flatpak bundles are updated by downloading and reinstalling the newer bundle.')
-  }
-
   const update = await check()
   if (!update) throw new Error('No update available')
+
+  if ((await getInstallKind()) === 'flatpak') {
+    const unlisten = await listen<{
+      downloaded: number
+      total: number | null
+      stage: 'downloading' | 'installing'
+    }>('flatpak-update-progress', ({ payload }) => {
+      onProgress?.({ downloaded: payload.downloaded, total: payload.total, stage: payload.stage })
+    })
+    try {
+      await invoke('install_flatpak_update', { version: update.version })
+    } finally {
+      unlisten()
+    }
+    return
+  }
 
   let downloaded = 0
   await update.downloadAndInstall((event) => {
     if (event.event === 'Started') {
       const total = event.data.contentLength ?? null
-      onProgress?.({ downloaded: 0, total })
+      onProgress?.({ downloaded: 0, total, stage: 'downloading' })
     } else if (event.event === 'Progress') {
       downloaded += event.data.chunkLength
-      onProgress?.({ downloaded, total: null })
+      onProgress?.({ downloaded, total: null, stage: 'downloading' })
     } else if (event.event === 'Finished') {
-      onProgress?.({ downloaded, total: downloaded })
+      onProgress?.({ downloaded, total: downloaded, stage: 'installing' })
     }
   })
 

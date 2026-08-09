@@ -89,7 +89,7 @@ interface WatchlistButtonProps {
   detailSize?: boolean
 }
 
-export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', isAnime = false, anilistId, malId, tvdbId, className = '', detailSize = false }: WatchlistButtonProps) {
+export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', isAnime, anilistId, malId, tvdbId, className = '', detailSize = false }: WatchlistButtonProps) {
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
@@ -120,7 +120,38 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
     anilistId || malId ? [{ anilistId: anilistId ? Number(anilistId) : undefined, malId: malId ? Number(malId) : undefined }] : [],
   )
   const anilistActive = animeDetected && isAniListConnected() && (animeCandidates.length > 0 || !!(animeIds.anilistId || animeIds.malId))
-  const simklMediaRef = useMemo(() => ({ ...mediaRef, simklIds: animeCandidates.map((candidate) => candidate.simklId).filter((id): id is number => id != null) }), [mediaRef, animeCandidates])
+  // Callers commonly construct mediaRef inline. Depending on that object by
+  // identity makes the provider-check effect run after every state update and
+  // can create an infinite render loop (notably in the rotating Discover hero).
+  const simklMediaRef = useMemo<MediaRef>(() => ({
+    localId: mediaRef.localId,
+    title: mediaRef.title,
+    year: mediaRef.year,
+    type: mediaRef.type,
+    contentType: mediaRef.contentType,
+    isAnime: mediaRef.isAnime,
+    imdbId: mediaRef.imdbId,
+    tmdbId: mediaRef.tmdbId,
+    tvdbId: mediaRef.tvdbId,
+    malId: mediaRef.malId,
+    anilistId: mediaRef.anilistId,
+    simklId: mediaRef.simklId,
+    simklIds: animeCandidates.map((candidate) => candidate.simklId).filter((id): id is number => id != null),
+  }), [
+    animeCandidates,
+    mediaRef.anilistId,
+    mediaRef.contentType,
+    mediaRef.imdbId,
+    mediaRef.isAnime,
+    mediaRef.localId,
+    mediaRef.malId,
+    mediaRef.simklId,
+    mediaRef.title,
+    mediaRef.tmdbId,
+    mediaRef.tvdbId,
+    mediaRef.type,
+    mediaRef.year,
+  ])
 
   const [open, setOpen] = useState(false)
   const [expandedProvider, setExpandedProvider] = useState<'simkl' | 'anilist' | null>(null)
@@ -158,6 +189,10 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
     setAnimeDetected(isAnime || Boolean(anilistId || malId))
     if (anilistId || malId) {
       setAnimeCandidates([{ anilistId: anilistId ? Number(anilistId) : undefined, malId: malId ? Number(malId) : undefined }])
+      return
+    }
+    if (isAnime === false) {
+      setAnimeCandidates([])
       return
     }
     let cancelled = false
@@ -268,7 +303,9 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
           }
         })())
       } else if (!cancelled) {
-        setStates((prev) => ({ ...prev, anilist: { ...prev.anilist, checking: false } }))
+        setStates((prev) => prev.anilist.checking
+          ? { ...prev, anilist: { ...prev.anilist, checking: false } }
+          : prev)
       }
 
       await Promise.allSettled(checks)

@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.8" date="2026-08-09">
+      <description>
+        <p>
+          Adds ranked and feature poster rows, inline trailer previews, TorBox
+          debrid support, Stremio library synchronization, a redesigned Watch
+          Together experience, resilient personalized Discovery, and in-app
+          update installation for AppImage and standalone Flatpak packages.
+        </p>
+      </description>
+    </release>
     <release version="0.2.7" date="2026-08-08">
       <description>
         <p>

@@ -10,7 +10,7 @@ const CATALOG_PREVIEW_LIMIT = 25
 interface MediaRowProps {
   title: string
   items: SearchResult[]
-  layout?: 'poster' | 'landscape' | 'list'
+  layout?: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list'
   showAllPath?: string
   forceShowAll?: boolean
   disableArtOverride?: boolean
@@ -22,13 +22,17 @@ interface MediaRowProps {
   cinematicExpand?: boolean
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, showRank = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
   const posterSize = useAppStore((s) => s.posterSize)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
+  // Layout is authoritative. Older shelf records may still carry showRank=true;
+  // that must never turn a user-selected Poster shelf back into Ranked.
+  const effectiveLayout = layout
+  const specialLayout = effectiveLayout === 'ranked' || effectiveLayout === 'feature'
   // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
   // legitimately contain duplicate/canonicalized entries with the same ID.
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
@@ -41,7 +45,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     }
   }, [])
   const showAllWidthClass = useMemo(() => {
-    if (layout === 'landscape') {
+    if (layout === 'landscape' || layout === 'feature') {
       switch (posterSize) {
         case 'compact': return 'w-[240px]'
         case 'large': return 'w-[320px]'
@@ -164,24 +168,21 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
-        className={`flex items-start gap-4 overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${cinematic ? 'cinematic-row-track gap-5 px-8 pb-8' : ''}`}
+        className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {rowItems.map((item, idx) => (
           <MediaCard
             key={`${mediaIdentity(item)}:${idx}`}
             item={item}
-            layout={(cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
+            layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
-            // In fixed Hero mode the focused card drives the banner. Keep the
-            // trailer in that large Hero surface instead of starting a second
-            // preview inside the poster itself.
-            disableTrailerPreview={disableTrailerPreview || fixedHome}
-            rank={showRank ? idx + 1 : undefined}
+            disableTrailerPreview={disableTrailerPreview}
+            rank={effectiveLayout === 'ranked' ? idx + 1 : undefined}
             cardIndex={idx}
             onFocusItem={cinematic ? handleCardFocus : undefined}
             onUnfocusItem={cinematic ? handleCardUnfocus : undefined}
-            cinematicMode={cinematic}
+            cinematicMode={cinematic && !specialLayout}
             cinematicFocused={cinematic && focusedCardIndex === idx}
             cinematicExpand={cinematicExpand && !fixedHome}
           />

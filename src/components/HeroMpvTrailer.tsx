@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { TrailerSource } from '../services/trailers'
 import { resolveHeroStreams } from '../services/heroTrailerStreams'
@@ -56,6 +56,7 @@ export default function HeroMpvTrailer({
   onUnavailable,
   onPlayingChange,
 }: HeroMpvTrailerProps) {
+  const ownerId = `hero-trailer-${useId().replace(/:/g, '')}` as `hero-trailer-${string}`
   const containerRef = useRef<HTMLDivElement>(null)
   const trailerVolume = useAppStore((s) => s.trailerVolume)
   const [mode, setMode] = useState<'pending' | 'mpv' | 'fallback'>('pending')
@@ -114,10 +115,10 @@ export default function HeroMpvTrailer({
             viewport: physicalViewport(viewportEl),
             mpvCustomArgs: args,
           },
-          'hero-trailer',
+          ownerId,
         )
         if (cancelled) {
-          stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+          stopEmbeddedPlayerIfOwner(ownerId).catch(() => undefined)
           return
         }
         launchedRef.current = true
@@ -131,7 +132,7 @@ export default function HeroMpvTrailer({
     return () => {
       cancelled = true
       if (launchedRef.current) {
-        stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+        stopEmbeddedPlayerIfOwner(ownerId).catch(() => undefined)
       }
       onPlayingChange?.(false)
     }
@@ -147,7 +148,7 @@ export default function HeroMpvTrailer({
   useEffect(() => {
     if (mode !== 'mpv') return
     const interval = window.setInterval(async () => {
-      if (getEmbeddedPlayerOwner() !== 'hero-trailer') {
+      if (getEmbeddedPlayerOwner() !== ownerId) {
         launchedRef.current = false
         setVideoVisible(false)
         onPlayingChange?.(false)
@@ -164,7 +165,7 @@ export default function HeroMpvTrailer({
             endedRef.current = true
             setVideoVisible(false)
             onPlayingChange?.(false)
-            stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+            stopEmbeddedPlayerIfOwner(ownerId).catch(() => undefined)
             launchedRef.current = false
             onEnded?.()
           }
@@ -186,8 +187,8 @@ export default function HeroMpvTrailer({
   useEffect(() => {
     if (mode !== 'mpv' || videoVisible) return
     const timeout = window.setTimeout(() => {
-      if (videoVisible || getEmbeddedPlayerOwner() !== 'hero-trailer') return
-      stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+      if (videoVisible || getEmbeddedPlayerOwner() !== ownerId) return
+      stopEmbeddedPlayerIfOwner(ownerId).catch(() => undefined)
       launchedRef.current = false
       if (!trailer.directUrl && maxHeight > 1080) {
         // Some YouTube 1440p/4K streams require delivery features that direct
@@ -222,7 +223,7 @@ export default function HeroMpvTrailer({
         endedRef.current = true
         setVideoVisible(false)
         onPlayingChange?.(false)
-        stopEmbeddedPlayerIfOwner('hero-trailer').catch(() => undefined)
+        stopEmbeddedPlayerIfOwner(ownerId).catch(() => undefined)
         launchedRef.current = false
         onEnded?.()
       }, 750)
@@ -249,7 +250,7 @@ export default function HeroMpvTrailer({
       if (frame) return
       frame = window.requestAnimationFrame(() => {
         frame = 0
-        if (getEmbeddedPlayerOwner() !== 'hero-trailer') return
+        if (getEmbeddedPlayerOwner() !== ownerId) return
         setHeroViewport(cssViewport(viewportEl))
         resizeEmbeddedPlayer(physicalViewport(viewportEl)).catch(() => undefined)
       })
@@ -270,7 +271,7 @@ export default function HeroMpvTrailer({
   // Mute / volume live updates
   useEffect(() => {
     if (mode !== 'mpv' || !launchedRef.current) return
-    if (getEmbeddedPlayerOwner() !== 'hero-trailer') return
+    if (getEmbeddedPlayerOwner() !== ownerId) return
     sendPlayerCommand('set_property', ['mute', muted ? 'yes' : 'no']).catch(() => undefined)
     sendPlayerCommand('set_property', ['volume', muted ? trailerVolume : Math.max(30, trailerVolume)]).catch(() => undefined)
   }, [mode, muted, trailerVolume])

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
-import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { getTmdbCardMetadata, getTmdbCleanPoster, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { cachedImage, retryImageFromSource, warmCachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
@@ -25,7 +25,7 @@ const TMDB_GENRES: Record<number, string> = {
 interface MediaCardProps {
   item: SearchResult
   cardIndex?: number
-  layout?: 'poster' | 'landscape'
+  layout?: 'poster' | 'ranked' | 'feature' | 'landscape'
   disableArtOverride?: boolean
   disableTrailerPreview?: boolean
   rank?: number
@@ -74,6 +74,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
   const [resolvedLogo, setResolvedLogo] = useState<string | undefined>(undefined)
+  const [cleanTmdbPoster, setCleanTmdbPoster] = useState<string | undefined>(undefined)
+  const [cleanTmdbLogo, setCleanTmdbLogo] = useState<string | undefined>(undefined)
   const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
   const providerWatched = useWatchedCacheStore((s) => {
@@ -149,6 +151,26 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   }
 
   const widthClass = useMemo(() => {
+    if (layout === 'feature') {
+      switch (posterSize) {
+        case 'compact': return 'w-[260px]'
+        case 'large': return 'w-[360px]'
+        case 'huge': return 'w-[420px]'
+        case 'default':
+        default:
+          return 'w-[320px]'
+      }
+    }
+    if (layout === 'ranked') {
+      switch (posterSize) {
+        case 'compact': return 'w-[255px]'
+        case 'large': return 'w-[380px]'
+        case 'huge': return 'w-[435px]'
+        case 'default':
+        default:
+          return 'w-[320px]'
+      }
+    }
     if (layout === 'landscape') {
       switch (posterSize) {
         case 'compact': return 'w-[240px]'
@@ -203,7 +225,45 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     }
   }, [posterSize])
 
+  const expandedTrailerSlotHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[292px]'
+      case 'large': return 'h-[390px]'
+      case 'huge': return 'h-[438px]'
+      case 'default':
+      default:
+        return 'h-[342px]'
+    }
+  }, [posterSize])
+
   const isCompleted = localCompleted || providerWatched
+
+  useEffect(() => {
+    if (!isVisible || layout !== 'feature') return
+    let cancelled = false
+    setCleanTmdbPoster(undefined)
+    setCleanTmdbLogo(undefined)
+    ;(async () => {
+      try {
+        let tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
+        if (!tmdbId && displayItem.imdbId) {
+          const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+          const found = await tmdbFindByExternalId(displayItem.imdbId, 'imdb_id')
+          tmdbId = found.tmdbId ? String(found.tmdbId) : undefined
+        }
+        if (!tmdbId) return
+        const [poster, metadata] = await Promise.all([
+          getTmdbCleanPoster(displayItem.type, tmdbId),
+          getTmdbCardMetadata(displayItem.type, tmdbId, displayItem.imdbId),
+        ])
+        if (!cancelled) {
+          if (poster) setCleanTmdbPoster(poster)
+          if (metadata.englishLogo || metadata.logo) setCleanTmdbLogo(metadata.englishLogo || metadata.logo)
+        }
+      } catch (_) { /* keep the catalog poster as a last-resort fallback */ }
+    })()
+    return () => { cancelled = true }
+  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
 
   useEffect(() => {
     if (!isVisible) return
@@ -426,7 +486,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
   const openHoverPreview = useCallback(() => {
     setSuppressPosterHover(false)
-    if (disableTrailerPreview || (layout !== 'poster' && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
+    if (disableTrailerPreview || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
     if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
 
@@ -504,6 +564,70 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
             </div>
           </div>
+        </div>
+      </button>
+    )
+  }
+
+  if (layout === 'feature') {
+    // This row is poster-led even though the cards are wider than the regular
+    // poster layout. Respect configured/custom poster artwork before falling
+    // back to a backdrop.
+    const featureArt = cleanTmdbPoster || posterUrl || landscapeBackdrop
+    const featureTrailer = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
+    const featureUsesNativeTrailer = Boolean(featureTrailer && useNativeTrailerPlayer)
+    const featureTrailerVisible = featureUsesNativeTrailer ? nativeTrailerVisible : Boolean(featureTrailer)
+    const rawFeatureGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+      || resolvedGenre
+    const featureGenre = typeof rawFeatureGenre === 'object' && rawFeatureGenre
+      ? (rawFeatureGenre as any).name || (rawFeatureGenre as any).title
+      : rawFeatureGenre
+    return (
+      <button
+        ref={cardRef}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+        onBlur={closeHoverPreview}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+        onMouseLeave={closeHoverPreview}
+        className={`group relative flex-shrink-0 cursor-pointer text-left focus-ring ${widthClass}`}
+      >
+        <div data-hero-viewport className={`relative aspect-[4/5] overflow-hidden rounded-[1.6rem] border border-white/10 shadow-[0_16px_45px_rgba(0,0,0,.28)] transition-[border-color,box-shadow,transform] duration-300 group-hover:border-white/25 group-hover:shadow-[0_24px_60px_rgba(0,0,0,.45)] ${featureTrailer ? '' : 'group-hover:-translate-y-1.5'} ${nativeTrailerVisible ? 'native-trailer-hole bg-transparent' : 'bg-surface-elevated'}`}>
+          {!nativeTrailerVisible && (featureArt ? <img src={cachedImage(featureArt)} alt={displayItem.title} className={`h-full w-full object-cover transition-[transform,opacity] duration-500 group-hover:scale-[1.04] ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, featureArt)} /> : <div className={`grid h-full place-items-center bg-gradient-to-br from-surface-elevated to-surface text-5xl font-black text-white/20 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`}>{displayItem.title?.charAt(0) || '?'}</div>)}
+          {featureTrailer && (featureUsesNativeTrailer ? (
+            <HeroMpvTrailer
+              trailer={featureTrailer}
+              muted={!posterTrailerSound}
+              className="absolute inset-0 z-20"
+              onEnded={closeHoverPreview}
+              onUnavailable={closeHoverPreview}
+              onPlayingChange={setNativeTrailerVisible}
+            />
+          ) : (
+            <TrailerPreview
+              trailer={featureTrailer}
+              title={displayItem.title}
+              muted={!posterTrailerSound}
+              eager
+              showShade={false}
+              placeholderUrl={featureArt}
+              allowIframeFallback={false}
+              className="absolute inset-0 z-20"
+              onUnavailable={closeHoverPreview}
+            />
+          ))}
+          {!nativeTrailerVisible && <div className={`absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent transition-opacity duration-200 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`} />}
+          {!nativeTrailerVisible && <div className={`absolute inset-x-0 bottom-0 p-5 transition-opacity duration-200 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`}>
+            {cleanTmdbLogo ? <img src={cachedImage(cleanTmdbLogo)} alt={displayItem.title} className="mb-3 max-h-16 max-w-[72%] object-contain object-left drop-shadow-xl" /> : <h3 className="mb-2 line-clamp-2 text-xl font-black leading-tight text-white drop-shadow-xl">{displayItem.title}</h3>}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white/75">
+              <span>{displayItem.type === 'series' ? 'Series' : 'Movie'}</span>
+              {featureGenre && <><span className="text-white/35">·</span><span>{String(featureGenre)}</span></>}
+              {displayItem.year && <><span className="text-white/35">·</span><span>{displayItem.year}</span></>}
+            </div>
+          </div>}
+          {!nativeTrailerVisible && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
         </div>
       </button>
     )
@@ -612,7 +736,26 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     ? (rawGenre as any).name || (rawGenre as any).title || JSON.stringify(rawGenre)
     : rawGenre
   const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
-  const cardWidthClass = inlineTrailerPreview ? expandedPosterWidthClass : widthClass
+  const ranked = layout === 'ranked'
+  // Native mpv needs to mount before it can report the first decoded frame.
+  // Keep the real poster layout visible while it starts, then expand only
+  // after playback is confirmed so a failed trailer never leaves a frozen
+  // landscape/black card behind.
+  const trailerExpanded = Boolean(inlineTrailerPreview && (!useNativeTrailerPlayer || nativeTrailerVisible))
+  // Ranked cards reserve a fixed number column. Keeping the poster's left edge
+  // and height identical in both states prevents the rank and artwork from
+  // jumping when the portrait smoothly widens into a trailer.
+  const rankedTrailerWidthClass = posterSize === 'compact' ? 'w-[540px]' : posterSize === 'large' ? 'w-[809px]' : posterSize === 'huge' ? 'w-[924px]' : 'w-[686px]'
+  const rankedTrailerHeightClass = posterSize === 'compact' ? 'h-[260px]' : posterSize === 'large' ? 'h-[390px]' : posterSize === 'huge' ? 'h-[445px]' : 'h-[330px]'
+  const rankedSlotHeightClass = posterSize === 'compact' ? 'h-[315px]' : posterSize === 'large' ? 'h-[445px]' : posterSize === 'huge' ? 'h-[500px]' : 'h-[385px]'
+  const rankedNumberSlotClass = posterSize === 'compact' ? 'ml-[78px]' : posterSize === 'large' ? 'ml-[116px]' : posterSize === 'huge' ? 'ml-[133px]' : 'ml-[99px]'
+  const rankedPosterWidthClass = posterSize === 'compact' ? 'w-[173px]' : posterSize === 'large' ? 'w-[260px]' : posterSize === 'huge' ? 'w-[297px]' : 'w-[220px]'
+  const rankedExpandedContentWidthClass = posterSize === 'compact' ? 'w-[462px]' : posterSize === 'large' ? 'w-[693px]' : posterSize === 'huge' ? 'w-[791px]' : 'w-[587px]'
+  const rankedContentClass = `${rankedNumberSlotClass} ${trailerExpanded ? rankedExpandedContentWidthClass : rankedPosterWidthClass}`
+  const cardWidthClass = trailerExpanded && ranked ? rankedTrailerWidthClass : trailerExpanded ? expandedPosterWidthClass : widthClass
+  // A ranked row must not change its block height when preview details appear;
+  // otherwise every catalog below it gets reflowed on hover.
+  const cardSlotHeightClass = ranked ? rankedSlotHeightClass : trailerExpanded ? expandedTrailerSlotHeightClass : posterSlotHeightClass
   const posterHoverClass = suppressPosterHover ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
   const posterImageHoverClass = suppressPosterHover ? '' : 'group-hover:scale-105'
 
@@ -625,9 +768,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       onMouseLeave={closeHoverPreview}
       onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
-      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cardWidthClass} ${posterSlotHeightClass}`}
+      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cardWidthClass} ${cardSlotHeightClass}`}
     >
-      <div data-hero-viewport className={`relative rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${inlineTrailerPreview ? expandedPosterHeightClass : `aspect-[2/3] rounded-2xl ${posterHoverClass}`}`}>
+      {ranked && <span aria-hidden="true" className={`pointer-events-none absolute -left-1 top-0 z-0 flex items-center font-black leading-none text-white/[.13] ${rankedTrailerHeightClass}`} style={{ fontSize: 'clamp(11rem, 17vw, 16rem)', WebkitTextStroke: '1px rgba(255,255,255,.15)' }}>{rank || cardIndex! + 1}</span>}
+      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
         {inlineTrailerPreview ? (
           <div className="relative h-full w-full">
             {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
@@ -701,11 +845,11 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           </div>
         )}
       </div>
-      <h3 className="text-xs font-semibold text-gray-300 truncate group-hover:text-white transition-colors pl-1">
+      {!ranked && <h3 className="text-xs font-semibold text-gray-300 truncate group-hover:text-white transition-colors pl-1">
         {displayItem.title}
-      </h3>
+      </h3>}
       {inlineTrailerPreview ? (
-        <>
+        ranked && trailerExpanded ? null : <>
           {(genre || displayItem.year) && (
             <p className="text-[10px] text-muted/80 pl-1 mt-0.5 truncate">
               {[genre, displayItem.year].filter(Boolean).join(' · ')}
@@ -713,7 +857,18 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           )}
         </>
       ) : displayItem.year && (
-        <p className="text-[11px] text-muted/80 pl-1 mt-0.5">{displayItem.year}</p>
+        <p className={`text-[11px] text-muted/80 pl-1 mt-0.5 ${ranked ? rankedNumberSlotClass : ''}`}>{displayItem.year}</p>
+      )}
+      {ranked && trailerExpanded && (
+        <div className={`px-1 pt-2 text-left ${rankedNumberSlotClass} ${rankedExpandedContentWidthClass}`}>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-white/75">
+            {genre && <span>{String(genre)}</span>}
+            {displayItem.year && <><span className="text-white/25">•</span><span>{displayItem.year}</span></>}
+            {ratingStr && <><span className="text-white/25">•</span><span>★ {ratingStr}</span></>}
+            {getDisplayProvider(displayItem) && <><span className="text-white/25">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+          </div>
+          {displayItem.overview && <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-white/45">{displayItem.overview}</p>}
+        </div>
       )}
     </button>
   )

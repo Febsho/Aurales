@@ -76,7 +76,6 @@ export interface WatchTogetherState {
   serverClockOffsetMs: number
   roundTripTimeMs: number
   isHost: boolean
-  drawModeActive: boolean
   errors: string[]
   debugLog: DebugLogEntry[]
 
@@ -108,7 +107,6 @@ export interface WatchTogetherState {
   markPendingSyncApplied: (sequence: number) => void
   updateServerTiming: (offsetMs: number, roundTripTimeMs: number) => void
   setIsHost: (host: boolean) => void
-  setDrawModeActive: (active: boolean) => void
   addError: (error: string) => void
   clearErrors: () => void
   addDebugLog: (entry: DebugLogEntry) => void
@@ -156,7 +154,6 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   serverClockOffsetMs: 0,
   roundTripTimeMs: 0,
   isHost: false,
-  drawModeActive: false,
   errors: [],
   debugLog: [],
 
@@ -250,7 +247,6 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   })),
   updateServerTiming: (serverClockOffsetMs, roundTripTimeMs) => set({ serverClockOffsetMs, roundTripTimeMs }),
   setIsHost: (host) => set({ isHost: host }),
-  setDrawModeActive: (active) => set({ drawModeActive: active }),
 
   addError: (error) =>
     set((s) => ({ errors: [...s.errors, error] })),

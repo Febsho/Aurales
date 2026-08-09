@@ -53,14 +53,10 @@ type MpvRequestLogMessages = unsafe extern "C" fn(*mut MpvHandle, *const c_char)
 #[cfg(target_os = "linux")]
 type MpvRenderContext = c_void;
 #[cfg(target_os = "linux")]
-type MpvRenderContextCreate = unsafe extern "C" fn(
-    *mut *mut MpvRenderContext,
-    *mut MpvHandle,
-    *mut MpvRenderParam,
-) -> c_int;
+type MpvRenderContextCreate =
+    unsafe extern "C" fn(*mut *mut MpvRenderContext, *mut MpvHandle, *mut MpvRenderParam) -> c_int;
 #[cfg(target_os = "linux")]
-type MpvRenderContextUpdate =
-    unsafe extern "C" fn(*mut MpvRenderContext) -> c_ulonglong;
+type MpvRenderContextUpdate = unsafe extern "C" fn(*mut MpvRenderContext) -> c_ulonglong;
 #[cfg(target_os = "linux")]
 type MpvRenderContextRender =
     unsafe extern "C" fn(*mut MpvRenderContext, *mut MpvRenderParam) -> c_int;
@@ -88,8 +84,7 @@ struct MpvRenderParam {
 #[cfg(target_os = "linux")]
 #[repr(C)]
 struct MpvOpenGlInitParams {
-    get_proc_address:
-        Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>,
+    get_proc_address: Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>,
     get_proc_address_ctx: *mut c_void,
 }
 
@@ -448,10 +443,7 @@ impl LibMpvPlayer {
     #[cfg(target_os = "linux")]
     pub(crate) unsafe fn create_opengl_render_context(
         &self,
-        get_proc_address: unsafe extern "C" fn(
-            *mut c_void,
-            *const c_char,
-        ) -> *mut c_void,
+        get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
     ) -> Result<(), String> {
         let mut slot = self.render_context.lock().map_err(|e| e.to_string())?;
         if slot.is_some() {
@@ -478,11 +470,7 @@ impl LibMpvPlayer {
             },
         ];
         let mut context = std::ptr::null_mut();
-        let rc = (self.api.render_context_create)(
-            &mut context,
-            self.handle,
-            params.as_mut_ptr(),
-        );
+        let rc = (self.api.render_context_create)(&mut context, self.handle, params.as_mut_ptr());
         self.check(rc)?;
         if context.is_null() {
             return Err("libmpv created a null OpenGL render context".to_string());
@@ -1396,12 +1384,7 @@ mod linux_x11 {
             sibling: webview,
             stack_mode: BELOW,
         };
-        XConfigureWindow(
-            display,
-            video,
-            CW_SIBLING | CW_STACK_MODE,
-            &mut changes,
-        );
+        XConfigureWindow(display, video, CW_SIBLING | CW_STACK_MODE, &mut changes);
         // KWin/XWayland can ignore the ConfigureWindow sibling hint for an
         // override-redirect video surface after mpv maps its first frame.
         // Restack the pair explicitly (first entry is topmost), then force the
@@ -1430,10 +1413,8 @@ mod linux_x11 {
 
         let state_name = b"_NET_WM_STATE\0";
         let fullscreen_name = b"_NET_WM_STATE_FULLSCREEN\0";
-        let state_atom =
-            unsafe { XInternAtom(display, state_name.as_ptr().cast(), 0) };
-        let fullscreen_atom =
-            unsafe { XInternAtom(display, fullscreen_name.as_ptr().cast(), 0) };
+        let state_atom = unsafe { XInternAtom(display, state_name.as_ptr().cast(), 0) };
+        let fullscreen_atom = unsafe { XInternAtom(display, fullscreen_name.as_ptr().cast(), 0) };
         let mut event = XEvent {
             client_message: XClientMessageEvent {
                 event_type: CLIENT_MESSAGE,

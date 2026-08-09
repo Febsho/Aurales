@@ -285,8 +285,8 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     <MediaRow
       title={getRowDisplayTitle(row)}
       items={items}
-      layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
-      showRank={row.showRank ?? /trending/i.test(row.title)}
+      layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
+      showRank={row.layout === 'ranked'}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={items.length >= 20}
       headerLeftControls={headerLeftControls}
@@ -350,9 +350,9 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
     <MediaRow
       title={getRowDisplayTitle(row)}
       items={items}
-      layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
+      layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
       disableArtOverride={false}
-      showRank={row.showRank ?? /trending/i.test(row.title)}
+      showRank={row.layout === 'ranked'}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
@@ -475,8 +475,8 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     <MediaRow
       title={getRowDisplayTitle(row)}
       items={sortedItems}
-      layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
-      showRank={row.showRank ?? /trending/i.test(row.title)}
+      layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
+      showRank={row.layout === 'ranked'}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
@@ -583,8 +583,8 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     <MediaRow
       title={getRowDisplayTitle(row)}
       items={sortedItems}
-      layout={row.layout === 'landscape' ? 'landscape' : row.layout === 'list' ? 'list' : 'poster'}
-      showRank={row.showRank ?? /trending/i.test(row.title)}
+      layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
+      showRank={row.layout === 'ranked'}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
       forceShowAll={sortedItems.length >= 20}
       headerLeftControls={headerLeftControls}
@@ -913,6 +913,8 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
 // ── Main Home Page Component ────────────────────────────────────────────────
 const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
   { value: 'poster', label: 'Poster Carousel' },
+  { value: 'ranked', label: 'Ranked Posters' },
+  { value: 'feature', label: 'Feature Posters' },
   { value: 'landscape', label: 'Landscape Carousel' },
   { value: 'list', label: 'Compact List' },
   { value: 'continue', label: 'Continue Watching' },

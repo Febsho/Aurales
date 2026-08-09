@@ -18,6 +18,9 @@ interface TrailerPreviewProps {
   highQuality?: boolean
   onEnded?: () => void
   allowIframeFallback?: boolean
+  /** Skip direct WebKit video playback and use the YouTube embed. Useful on
+   * transformed card surfaces where WebKitGTK can output audio with black video. */
+  forceIframe?: boolean
   onUnavailable?: () => void
   /** Artwork to keep visible while playback starts instead of a trailer thumbnail. */
   placeholderUrl?: string
@@ -37,12 +40,14 @@ export default function TrailerPreview({
   onUnavailable,
   placeholderUrl,
   highQuality = false,
+  forceIframe = false,
 }: TrailerPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const trailerVolume = useAppStore((s) => s.trailerVolume)
   const [embedLoadedKey, setEmbedLoadedKey] = useState<string | null>(null)
+  const [embedPlaying, setEmbedPlaying] = useState(false)
   const [thumbnailFailedKey, setThumbnailFailedKey] = useState<string | null>(null)
   const [placeholderFailedKey, setPlaceholderFailedKey] = useState<string | null>(null)
   // undefined = resolving, null = no direct stream (use iframe fallback)
@@ -67,6 +72,11 @@ export default function TrailerPreview({
     let cancelled = false
     setDirectStream(undefined)
     setVideoPlaying(false)
+    setEmbedPlaying(false)
+    if (forceIframe && !trailer.directUrl) {
+      setDirectStream(null)
+      return () => { cancelled = true }
+    }
     if (trailer.directUrl) {
       setDirectStream({ videoUrl: trailer.directUrl, expiresAt: Date.now() + 60 * 60 * 1000 })
       return () => { cancelled = true }
@@ -91,7 +101,7 @@ export default function TrailerPreview({
     return () => {
       cancelled = true
     }
-  }, [trailer.key, trailer.directUrl, highQuality])
+  }, [trailer.key, trailer.directUrl, highQuality, forceIframe])
 
   useEffect(() => {
     if (directStream === null && !allowIframeFallback) onUnavailable?.()
@@ -166,7 +176,8 @@ export default function TrailerPreview({
       if (event.source !== player) return
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-        if (data?.event === 'onStateChange' && data.info === 0) onEnded?.()
+        if (data?.event === 'onStateChange' && data.info === 1) setEmbedPlaying(true)
+        if (data?.event === 'onStateChange' && data.info === 0) { setEmbedPlaying(false); onEnded?.() }
         if (data?.event === 'onError') onUnavailable?.()
       } catch { /* Ignore unrelated iframe messages. */ }
     }
@@ -175,10 +186,15 @@ export default function TrailerPreview({
     return () => window.removeEventListener('message', handleMessage)
   }, [embedLoaded, trailer.key, onEnded, onUnavailable])
 
-  const showMedia = directStream ? videoPlaying : embedLoaded
+  const showMedia = directStream ? videoPlaying : embedPlaying
+  // Callers that place the preview over artwork pass an explicit position
+  // class. Do not also emit `relative`: Tailwind orders `.relative` after
+  // `.absolute`, which moved the playing preview below the poster where the
+  // card's overflow clipping hid its video while audio kept running.
+  const hasExplicitPosition = /(?:^|\s)(?:absolute|fixed|sticky|relative)(?:\s|$)/.test(className)
 
   return (
-    <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
+    <div className={`${hasExplicitPosition ? '' : 'relative'} h-full w-full overflow-hidden bg-black ${className}`}>
       {thumbnailSrc && <img
           src={thumbnailSrc}
           alt=""
@@ -230,7 +246,7 @@ export default function TrailerPreview({
           )}
         </>
       ) : directStream === null && allowIframeFallback ? (
-        <div className={`absolute inset-0 overflow-hidden bg-black transition-opacity duration-200 ${embedLoaded ? 'opacity-100' : 'opacity-0'}`}>
+        <div className={`absolute inset-0 overflow-hidden bg-black transition-opacity duration-200 ${embedPlaying ? 'opacity-100' : 'opacity-0'}`}>
           <iframe
             ref={iframeRef}
             src={embedUrl}

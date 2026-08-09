@@ -449,10 +449,10 @@ export default function SearchPage() {
           {(typeFilter === 'all' || typeFilter === 'people') && people.length > 0 && (
             <PeopleResults people={typeFilter === 'people' ? people : people.slice(0, 10)} />
           )}
-          {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
         </div>
       ) : null}
 
@@ -480,8 +480,8 @@ export default function SearchPage() {
         </section>
       )}
 
-      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
-      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="poster" disableArtOverride={false} disableTrailerPreview cinematicExpand={false} />}
+      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
+      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
 
       {!searched && !loading && (
         <section className="search-start mx-5 sm:mx-8">

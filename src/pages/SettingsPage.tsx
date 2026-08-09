@@ -39,7 +39,8 @@ import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
 import { syncProviderNow } from '../services/providerSync'
 import { getAddonConfigureUrl, loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
-import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
+import { stremioLogin, getStremioAddons, getStremioLibrary, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
+import { addToLocalWatchlist, isInLocalWatchlist } from '../services/localWatchlist'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
@@ -55,6 +56,7 @@ import type { UpdateInfo, UpdateProgress } from '../services/updater'
 import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
+import { clearTorBoxToken, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -114,6 +116,7 @@ const BACKUP_KEYS = [
   'anilist_account',
   'openrouter_api_key',
   'openrouter_model',
+  'torbox_api_token',
   'orynt_sub_translation_enabled',
   'orynt_sub_translation_lang',
   'orynt_translation_cues_ahead',
@@ -355,7 +358,7 @@ function AppUpdateSection() {
               </span>
               <p className="text-[11px] text-white/35">
                 {checking ? 'Checking for updates...'
-                  : installing ? 'Downloading and installing...'
+                  : installing ? progress?.stage === 'installing' ? 'Installing update...' : 'Downloading update...'
                   : updateInfo ? 'A new version is ready to install'
                   : noUpdate ? 'You are running the latest version'
                   : 'Check for the latest version'}
@@ -1176,6 +1179,12 @@ export default function SettingsPage() {
   const [stremioLoading, setStremioLoading] = useState(false)
   const [stremioError, setStremioError] = useState('')
   const [stremioAuth, setStremioAuth] = useState(getStremioAuth)
+  const [torBoxUser, setTorBoxUser] = useState<TorBoxUser | null>(null)
+  const [torBoxDevice, setTorBoxDevice] = useState<TorBoxDeviceCode | null>(null)
+  const [torBoxLoading, setTorBoxLoading] = useState(false)
+  const [torBoxMessage, setTorBoxMessage] = useState('')
+  const [torBoxTokenInput, setTorBoxTokenInput] = useState(getTorBoxToken)
+  const torBoxPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [backdropCacheMessage, setBackdropCacheMessage] = useState('')
 
   const [pmdbConnStatus, setPmdbConnStatus] = useState<PMDBConnectionStatus | null>(null)
@@ -1352,7 +1361,13 @@ export default function SettingsPage() {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
       if (simklPollRef.current) clearInterval(simklPollRef.current)
       if (simklTimeoutRef.current) clearTimeout(simklTimeoutRef.current)
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
     }
+  }, [])
+
+  useEffect(() => {
+    if (!getTorBoxToken()) return
+    getTorBoxUser().then(setTorBoxUser).catch(() => setTorBoxUser(null))
   }, [])
 
   useEffect(() => {
@@ -1403,6 +1418,88 @@ export default function SettingsPage() {
     store.setAddons(Array.from(byId.values()))
     return { imported, updated }
   }
+
+  const importStremioActivity = async (authKey: string) => {
+    const entries = await getStremioLibrary(authKey, true)
+    let watchlistImported = 0
+    let watchedImported = 0
+    let continueImported = 0
+    const completedKeys = new Set<string>()
+
+    const shouldApplyRemote = (key: string, remoteUpdatedAt?: string) => {
+      const existing = useAppStore.getState().watchProgress.get(key)
+      if (!existing) return true
+      if (!remoteUpdatedAt) return false
+      return !existing.updatedAt || Date.parse(remoteUpdatedAt) >= Date.parse(existing.updatedAt)
+    }
+
+    const saveProgress = (key: string, entry: (typeof entries)[number], completed: boolean, season?: number, episode?: number) => {
+      if (!shouldApplyRemote(key, entry.lastWatched)) return false
+      const duration = Math.max(entry.durationSeconds, completed ? 1 : 7)
+      const progress = completed ? duration : Math.max(6, Math.min(entry.progressSeconds, duration - 1))
+      store.setWatchProgress(key, {
+        id: key,
+        mediaType: entry.type,
+        mediaId: entry.id,
+        season,
+        episode,
+        progressSeconds: progress,
+        durationSeconds: duration,
+        completed,
+        title: entry.title,
+        poster: entry.poster,
+        imdbId: entry.imdbId,
+        updatedAt: entry.lastWatched || new Date().toISOString(),
+      })
+      return true
+    }
+
+    for (const entry of entries) {
+      const watchlistItem: SearchResult = {
+        id: entry.id,
+        imdbId: entry.imdbId,
+        title: entry.title,
+        type: entry.type,
+        year: entry.year,
+        poster: entry.poster,
+        provider: 'stremio',
+      }
+      if (entry.inLibrary && !isInLocalWatchlist(watchlistItem)) {
+        addToLocalWatchlist(watchlistItem)
+        watchlistImported++
+      }
+
+      if (entry.type === 'movie' && entry.watched) {
+        if (saveProgress(entry.id, entry, true)) watchedImported++
+        completedKeys.add(entry.id)
+      }
+      for (const videoId of entry.watchedEpisodeIds || []) {
+        const parts = videoId.split(':')
+        const season = Number(parts.at(-2))
+        const episode = Number(parts.at(-1))
+        if (!Number.isFinite(season) || !Number.isFinite(episode)) continue
+        const key = `${entry.id}:${season}:${episode}`
+        if (saveProgress(key, entry, true, season, episode)) watchedImported++
+        completedKeys.add(key)
+      }
+    }
+
+    for (const entry of entries) {
+      if (!entry.continueWatching) continue
+      const key = entry.type === 'series' && entry.season != null && entry.episode != null
+        ? `${entry.id}:${entry.season}:${entry.episode}`
+        : entry.id
+      if (completedKeys.has(key)) continue
+      if (saveProgress(key, entry, false, entry.season, entry.episode)) continueImported++
+    }
+
+    return { watchlistImported, watchedImported, continueImported }
+  }
+
+  const formatStremioSyncResult = (
+    addons: { imported: number; updated: number },
+    activity: { watchlistImported: number; watchedImported: number; continueImported: number },
+  ) => `Synced ${addons.imported} new addons, ${addons.updated} updated · ${activity.watchedImported} watched · ${activity.continueImported} continue watching · ${activity.watchlistImported} watchlist`
 
   const handleTraktConnect = async () => {
     if (!hasTraktClientCredentials()) {
@@ -1472,9 +1569,10 @@ export default function SettingsPage() {
       saveStremioAuth(result.authKey, stremioEmail)
       setStremioAuth({ authKey: result.authKey, email: stremioEmail })
 
-      const { imported, updated } = await importStremioAddons(result.authKey)
+      const addons = await importStremioAddons(result.authKey)
+      const activity = await importStremioActivity(result.authKey)
       setStremioPassword('')
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setStremioError(
@@ -1498,9 +1596,10 @@ export default function SettingsPage() {
     try {
       saveStremioAuth(authKey, 'AuthKey login')
       setStremioAuth({ authKey, email: 'AuthKey login' })
-      const { imported, updated } = await importStremioAddons(authKey)
+      const addons = await importStremioAddons(authKey)
+      const activity = await importStremioActivity(authKey)
       setStremioAuthKey('')
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
       clearStremioAuth()
       setStremioAuth(null)
@@ -1515,8 +1614,9 @@ export default function SettingsPage() {
     setStremioLoading(true)
     setStremioError('')
     try {
-      const { imported, updated } = await importStremioAddons(stremioAuth.authKey)
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      const addons = await importStremioAddons(stremioAuth.authKey)
+      const activity = await importStremioActivity(stremioAuth.authKey)
+      setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
       setStremioError(`Sync failed: ${e instanceof Error ? e.message : e}`)
     } finally {
@@ -1528,6 +1628,83 @@ export default function SettingsPage() {
     clearStremioAuth()
     setStremioAuth(null)
     setStremioError('')
+  }
+
+  const finishTorBoxConnection = async (token: string) => {
+    setTorBoxToken(token)
+    setTorBoxTokenInput(token)
+    const user = await getTorBoxUser()
+    setTorBoxUser(user)
+    setTorBoxDevice(null)
+    setTorBoxMessage(`Connected as ${user.email}`)
+    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+    torBoxPollRef.current = null
+  }
+
+  const handleTorBoxConnect = async () => {
+    setTorBoxLoading(true)
+    setTorBoxMessage('')
+    try {
+      const device = await startTorBoxDeviceAuth()
+      setTorBoxDevice(device)
+      const authUrl = device.verification_url || device.friendly_verification_url
+      if ((window as any).__TAURI_INTERNALS__) await invoke('open_simkl_auth', { url: authUrl })
+      else window.open(authUrl, '_blank', 'noopener,noreferrer')
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      const poll = async () => {
+        if (Date.now() >= new Date(device.expires_at).getTime()) {
+          if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+          torBoxPollRef.current = null
+          setTorBoxLoading(false)
+          setTorBoxMessage('TorBox authorization expired. Try again.')
+          return
+        }
+        try {
+          const token = await pollTorBoxDeviceToken(device.device_code)
+          if (token) {
+            await finishTorBoxConnection(token)
+            setTorBoxLoading(false)
+          }
+        } catch (error) {
+          if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+          torBoxPollRef.current = null
+          setTorBoxLoading(false)
+          setTorBoxMessage(error instanceof Error ? error.message : String(error))
+        }
+      }
+      torBoxPollRef.current = setInterval(poll, Math.max(2, device.interval || 5) * 1000)
+      setTorBoxMessage('Waiting for TorBox authorization…')
+      void poll()
+    } catch (error) {
+      setTorBoxLoading(false)
+      setTorBoxMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleTorBoxManualConnect = async () => {
+    if (!torBoxTokenInput.trim()) return
+    setTorBoxLoading(true)
+    setTorBoxMessage('')
+    try {
+      await finishTorBoxConnection(torBoxTokenInput)
+    } catch (error) {
+      clearTorBoxToken()
+      setTorBoxUser(null)
+      setTorBoxMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTorBoxLoading(false)
+    }
+  }
+
+  const handleTorBoxDisconnect = () => {
+    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+    torBoxPollRef.current = null
+    clearTorBoxToken()
+    setTorBoxTokenInput('')
+    setTorBoxUser(null)
+    setTorBoxDevice(null)
+    setTorBoxLoading(false)
+    setTorBoxMessage('Disconnected from TorBox.')
   }
 
   const handleExportConfig = () => {
@@ -2213,8 +2390,51 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
+              {/* TorBox */}
+              <SettingSection title="TorBox" description="Turn cached torrent results into fast, directly playable streams.">
+                <div className="px-6 py-4 space-y-4">
+                  {torBoxUser ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-3.5 w-3.5 rounded-full bg-accent" />
+                        <div>
+                          <p className="text-sm font-semibold text-white">{torBoxUser.email}</p>
+                          <p className="mt-0.5 text-xs text-white/40">Connected · {['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`}</p>
+                        </div>
+                      </div>
+                      <button onClick={handleTorBoxDisconnect} className="rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/20">
+                        Disconnect
+                      </button>
+                    </div>
+                  ) : torBoxDevice ? (
+                    <div className="space-y-3 rounded-xl border border-accent/20 bg-accent/[0.05] p-4">
+                      <p className="text-sm font-semibold text-white">Authorize Aurales in TorBox</p>
+                      <p className="text-xs leading-relaxed text-white/45">The TorBox page opened in your browser. Enter this code if requested:</p>
+                      <div className="font-mono text-2xl font-black tracking-[0.3em] text-accent">{torBoxDevice.code}</div>
+                      <a href={torBoxDevice.friendly_verification_url} target="_blank" rel="noreferrer" className="block text-xs text-accent hover:underline">{torBoxDevice.friendly_verification_url}</a>
+                      <button onClick={handleTorBoxDisconnect} className="text-xs text-white/40 hover:text-white">Cancel</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-sm leading-relaxed text-white/45">Aurales checks torrent hashes in the TorBox cache and only prepares cached files. Uncached downloads are never started automatically.</p>
+                      <button onClick={handleTorBoxConnect} disabled={torBoxLoading} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent/80 disabled:opacity-50">
+                        {torBoxLoading ? 'Connecting…' : 'Connect TorBox'}
+                      </button>
+                      <details className="border-t border-white/[0.06] pt-3">
+                        <summary className="cursor-pointer select-none text-xs font-semibold text-white/30 hover:text-white/50">Advanced: Manual API Token</summary>
+                        <div className="mt-3 flex gap-2">
+                          <input type="password" value={torBoxTokenInput} onChange={(event) => setTorBoxTokenInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && handleTorBoxManualConnect()} placeholder="Paste TorBox API token" className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" />
+                          <button onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-40">Save</button>
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                  {torBoxMessage && <p className={`text-xs ${/error|failed|expired|invalid/i.test(torBoxMessage) ? 'text-red-400' : 'text-white/40'}`}>{torBoxMessage}</p>}
+                </div>
+              </SettingSection>
+
               {/* Stremio */}
-              <SettingSection title="Stremio Account" description="Import your addon collection from Stremio.">
+              <SettingSection title="Stremio Account" description="Import addons, watched history, Continue Watching, and your Stremio Library into Aurales.">
                 <div className="px-6 py-4">
                   {stremioAuth ? (
                     <div className="space-y-3">
@@ -2232,7 +2452,7 @@ export default function SettingsPage() {
                             disabled={stremioLoading}
                             className="px-3.5 py-2 bg-accent/10 hover:bg-accent/20 text-accent rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
                           >
-                            {stremioLoading ? 'Syncing...' : 'Sync Addons'}
+                            {stremioLoading ? 'Syncing...' : 'Sync Stremio'}
                           </button>
                           <button
                             onClick={handleStremioDisconnect}

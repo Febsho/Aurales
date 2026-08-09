@@ -162,6 +162,41 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
   return undefined
 }
 
+function pickCleanPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
+  const cleanPosters = ((images.posters as Record<string, unknown>[]) || [])
+    .filter((image) => typeof image.file_path === 'string' && image.iso_639_1 == null)
+    .sort((a, b) => {
+      const aVotes = Number(a.vote_count || 0)
+      const bVotes = Number(b.vote_count || 0)
+      if (aVotes !== bVotes) return bVotes - aVotes
+      return Number(b.vote_average || 0) - Number(a.vote_average || 0)
+    })
+  const selected = cleanPosters[0]
+  if (selected) return `${IMG_BASE}/${posterSize()}${selected.file_path}`
+  return pickBestPoster(images, defaultPosterPath)
+}
+
+/** Textless TMDB poster for artwork-led cards. Ignores custom/provider art. */
+export async function getTmdbCleanPoster(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
+  const mediaType = type === 'movie' ? 'movie' : 'tv'
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
+  if (!id) return undefined
+  const result = await cachedFetch<string | null>(`tmdb_clean_poster_v1:${mediaType}:${id}`, async (cacheContext) => {
+    const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
+    try {
+      const [details, images] = await Promise.all([
+        tmdbFetch(`/${mediaType}/${id}`, {}, { priority }) as Promise<Record<string, unknown>>,
+        tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'null,en' }, { priority }) as Promise<Record<string, unknown>>,
+      ])
+      return pickCleanPoster(images, details.poster_path as string) || null
+    } catch (_) {
+      return null
+    }
+  }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
+  return result ?? undefined
+}
+
 export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const mediaType = type === 'movie' ? 'movie' : 'tv'

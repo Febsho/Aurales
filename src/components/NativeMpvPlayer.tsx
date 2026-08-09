@@ -52,10 +52,10 @@ import {
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
-import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
 import PlayerDebugPanel from './PlayerDebugPanel'
 import { collectNativePlayerDebugSnapshot, type NativePlayerDebugSnapshot } from '../services/playerDebug'
+import { annotateTorBoxStreams, resolveTorBoxStream } from '../services/torbox'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1169,12 +1169,16 @@ function FullNativeMpvPlayer({
         markCorrectionApplied()
       }
 
-      if (isPlaying && pausedRef.current) {
+      const targetPaused = !isPlaying
+      if (targetPaused !== pausedRef.current) {
         suppressNextWatchTogetherEvent()
-        sendPlayerCommand('set_property', ['pause', false]).catch(() => {})
-      } else if (!isPlaying && !pausedRef.current) {
-        suppressNextWatchTogetherEvent()
-        sendPlayerCommand('set_property', ['pause', true]).catch(() => {})
+        // Apply the authoritative room state locally before the next mpv poll.
+        // Otherwise the sender can keep rendering the old play state briefly
+        // and report that stale state back into the room sync loop.
+        pausedRef.current = targetPaused
+        setPaused(targetPaused)
+        wtReportLocalPlayback(progressRef.current.currentTime, isPlaying)
+        sendPlayerCommand('set_property', ['pause', targetPaused]).catch(() => {})
       }
       if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
     }
@@ -1983,8 +1987,6 @@ function FullNativeMpvPlayer({
       ) {
         return
       }
-
-      if (useWatchTogetherStore.getState().drawModeActive) return
 
       const key = e.key
       if (key === ' ' || key === 'Spacebar') {
@@ -2955,12 +2957,17 @@ function FullNativeMpvPlayer({
     //    selector uses.
     if (!foundUrl) {
       try {
-        const results = await streamPreloadManager.request(nextRequest, { priority: StreamPreloadPriority.PLAYBACK })
+        const rawResults = await streamPreloadManager.request(nextRequest, { priority: StreamPreloadPriority.PLAYBACK })
         if (!ownsSession()) return
+        const results = await annotateTorBoxStreams(rawResults).catch(() => rawResults)
         const top = rankStreams(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }))
-          .find((candidate) => candidate.score > -500 && getPlayableStreamUrl(candidate.stream))
+          .find((candidate) => candidate.score > -500)
         if (top) {
-          foundUrl = getPlayableStreamUrl(top.stream)
+          foundUrl = getPlayableStreamUrl(top.stream) || await resolveTorBoxStream(top.stream, {
+            title,
+            season: nextEp.season,
+            episode: nextEp.episode,
+          }).catch(() => null)
           chosenStream = top.stream as PreloadedStream
           logEvent('PLAYER DEBUG', `Up Next: smart-ranked stream from ${chosenStream.addonName} (score ${top.score})`)
         }
@@ -2972,10 +2979,18 @@ function FullNativeMpvPlayer({
       const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
       for (const addon of getStreamAddons('series')) {
         try {
-          const streams = await getAddonStreams(addon.url, 'series', streamId)
+          const rawStreams = await getAddonStreams(addon.url, 'series', streamId)
           if (!ownsSession()) return
-          const valid = streams.find((s) => s.url)
-          if (valid?.url) { foundUrl = valid.url; break }
+          const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
+          const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+          if (valid) {
+            foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
+              title,
+              season: nextEp.season,
+              episode: nextEp.episode,
+            }).catch(() => null)
+            if (foundUrl) break
+          }
         } catch (_) {}
       }
     }
@@ -3471,8 +3486,8 @@ function FullNativeMpvPlayer({
       {/* Video click area (sit below controls) */}
       <div
         className="absolute inset-0 z-[1]"
-        onClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) { showControls(); togglePlay() } }}
-        onDoubleClick={() => { if (!useWatchTogetherStore.getState().drawModeActive) toggleFullscreen() }}
+        onClick={() => { showControls(); togglePlay() }}
+        onDoubleClick={toggleFullscreen}
       />
 
       {/* Window drag strip — the player overlay covers the TitleBar, so give back a
@@ -3588,10 +3603,7 @@ function FullNativeMpvPlayer({
 
       {/* Watch Together overlays */}
       {isInWatchTogether && (
-        <>
-          <PlayerDrawOverlay />
-          <PlayerChatOverlay />
-        </>
+        <PlayerChatOverlay visible={controlsVisible} onInteraction={showControls} />
       )}
 
       {/* ── Bottom controls bar ── */}

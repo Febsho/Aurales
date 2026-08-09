@@ -16,6 +16,7 @@ const CatalogPage = lazy(() => import('./pages/CatalogPage'))
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'))
 const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 const PersonPage = lazy(() => import('./pages/PersonPage'))
+const WatchTogetherPage = lazy(() => import('./pages/WatchTogetherPage'))
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
@@ -266,6 +267,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/discover" element={<DiscoverPage />} />
+            <Route path="/watch-together" element={<WatchTogetherPage />} />
             <Route path="/catalog/:rowId" element={<CatalogPage />} />
             <Route path="/home-editor" element={<Navigate to="/collections?tab=shelves" replace />} />
             <Route path="/collections" element={<CollectionsPage />} />

@@ -134,7 +134,7 @@ export async function launchPlayer(request: PlaybackRequest): Promise<void> {
 
 // Which feature currently owns the (singleton) embedded mpv instance. The
 // hero trailer must not stop a player the real playback UI has claimed.
-type EmbeddedPlayerOwner = 'player' | 'hero-trailer'
+type EmbeddedPlayerOwner = 'player' | 'hero-trailer' | `hero-trailer-${string}`
 let embeddedPlayerOwner: EmbeddedPlayerOwner | null = null
 
 export function getEmbeddedPlayerOwner(): EmbeddedPlayerOwner | null {
