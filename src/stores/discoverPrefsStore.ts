@@ -87,10 +87,40 @@ export const DEFAULT_DISCOVER_PREFS: DiscoverPrefs = {
 
 const STORAGE_KEY = 'aurales_discover_prefs_v1'
 
+function normalizePrefs(value: unknown): DiscoverPrefs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return DEFAULT_DISCOVER_PREFS
+  const raw = value as Record<string, unknown>
+  const strings = (key: string) => Array.isArray(raw[key]) ? raw[key].filter((entry): entry is string => typeof entry === 'string') : []
+  const namedIds = (key: string) => Array.isArray(raw[key])
+    ? raw[key].filter((entry): entry is { id: number; name: string } => Boolean(entry) && typeof entry === 'object' && Number.isFinite((entry as { id?: unknown }).id) && typeof (entry as { name?: unknown }).name === 'string')
+    : []
+  const nullableNumber = (key: string) => typeof raw[key] === 'number' && Number.isFinite(raw[key]) ? raw[key] as number : null
+  const weight = (key: string) => typeof raw[key] === 'number' && Number.isFinite(raw[key]) ? Math.max(-1, Math.min(1, raw[key] as number)) : 0
+  const audienceMode = raw.audienceMode === 'grown-up' || raw.audienceMode === 'kid-safe' ? raw.audienceMode : 'auto'
+  const sortOrder = raw.sortOrder === 'popularity.desc' || raw.sortOrder === 'vote_average.desc' || raw.sortOrder === 'release_date.desc' ? raw.sortOrder : 'taste-ranked'
+  return {
+    audienceMode,
+    onlyGenres: strings('onlyGenres'), excludeGenres: strings('excludeGenres'),
+    onlyLanguages: strings('onlyLanguages'), excludeLanguages: strings('excludeLanguages'),
+    minVoteAverage: nullableNumber('minVoteAverage'), minVoteCount: nullableNumber('minVoteCount'),
+    yearFrom: nullableNumber('yearFrom'), yearTo: nullableNumber('yearTo'),
+    runtimeMin: nullableNumber('runtimeMin'), runtimeMax: nullableNumber('runtimeMax'),
+    mustIncludeKeywords: namedIds('mustIncludeKeywords'), excludeKeywords: namedIds('excludeKeywords'),
+    includeCompanies: namedIds('includeCompanies'), selectedProviders: strings('selectedProviders'),
+    contentRating: typeof raw.contentRating === 'string' ? raw.contentRating : null,
+    sortOrder,
+    weightGenre: weight('weightGenre'), weightKeyword: weight('weightKeyword'),
+    weightPeople: weight('weightPeople'), weightQuality: weight('weightQuality'),
+    weightPopularity: weight('weightPopularity'), weightNovelty: weight('weightNovelty'),
+    weightRecency: weight('weightRecency'), weightEra: weight('weightEra'),
+    weightLanguage: weight('weightLanguage'),
+  }
+}
+
 function loadPrefs(): DiscoverPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
-    return raw && typeof raw === 'object' ? { ...DEFAULT_DISCOVER_PREFS, ...raw } : DEFAULT_DISCOVER_PREFS
+    return normalizePrefs(raw)
   } catch { return DEFAULT_DISCOVER_PREFS }
 }
 
@@ -104,10 +134,10 @@ export const useDiscoverPrefsStore = create<DiscoverPrefsStore>((set) => ({
   prefs: loadPrefs(),
   setPrefs: (patch) => set((state) => {
     const prefs = { ...state.prefs, ...patch }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs))
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)) } catch { /* keep live preferences when storage is full */ }
     return { prefs }
   }),
-  resetPrefs: () => { localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_DISCOVER_PREFS)); set({ prefs: DEFAULT_DISCOVER_PREFS }) },
+  resetPrefs: () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_DISCOVER_PREFS)) } catch { /* keep live preferences */ } set({ prefs: DEFAULT_DISCOVER_PREFS }) },
 }))
 
 /** Read prefs outside React (e.g. inside makeConfig during render). */

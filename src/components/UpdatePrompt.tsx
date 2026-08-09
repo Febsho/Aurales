@@ -87,7 +87,7 @@ export default function UpdatePrompt() {
   const [phase, setPhase] = useState<Phase>('hidden')
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [notes, setNotes] = useState<string>('')
-  const [progress, setProgress] = useState<{ downloaded: number; total: number | null }>({ downloaded: 0, total: null })
+  const [progress, setProgress] = useState<{ downloaded: number; total: number | null; stage?: 'downloading' | 'installing' }>({ downloaded: 0, total: null })
   const [error, setError] = useState<string>('')
   const [selfUpdates, setSelfUpdates] = useState(true)
 
@@ -207,7 +207,7 @@ export default function UpdatePrompt() {
           {phase === 'downloading' ? (
             <div>
               <div className="mb-2 flex items-center justify-between text-xs font-semibold text-white/55">
-                <span>Downloading update…</span>
+                <span>{progress.stage === 'installing' ? 'Installing update…' : 'Downloading update…'}</span>
                 <span>{percent != null ? `${percent}%` : formatBytes(progress.downloaded)}</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-white/10">

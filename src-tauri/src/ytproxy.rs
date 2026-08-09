@@ -24,11 +24,15 @@ pub fn agent() -> &'static ureq::Agent {
             .to_socket_addrs()
             .map(|addrs| {
                 addrs.filter(SocketAddr::is_ipv6).any(|addr| {
-                    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)).is_ok()
+                    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
+                        .is_ok()
                 })
             })
             .unwrap_or(false);
-        log::info!("[ytproxy] pinned to {}", if prefer_v6 { "IPv6" } else { "IPv4" });
+        log::info!(
+            "[ytproxy] pinned to {}",
+            if prefer_v6 { "IPv6" } else { "IPv4" }
+        );
         ureq::AgentBuilder::new()
             .resolver(move |netloc: &str| -> std::io::Result<Vec<SocketAddr>> {
                 let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
@@ -124,12 +128,11 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
         }
     };
 
-    let range_header = lines
-        .take_while(|l| !l.is_empty())
-        .find_map(|l| {
-            let (name, value) = l.split_once(':')?;
-            name.eq_ignore_ascii_case("range").then(|| value.trim().to_string())
-        });
+    let range_header = lines.take_while(|l| !l.is_empty()).find_map(|l| {
+        let (name, value) = l.split_once(':')?;
+        name.eq_ignore_ascii_case("range")
+            .then(|| value.trim().to_string())
+    });
     let (start, requested_end) = parse_range(range_header.as_deref(), clen);
     if start >= clen {
         return write_simple(&mut stream, "416 Range Not Satisfiable").await;
@@ -173,7 +176,8 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
     stream.flush().await
 }
 
-static CLEN_CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> = OnceLock::new();
+static CLEN_CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+    OnceLock::new();
 
 async fn resolve_total_length(upstream: &str) -> Option<u64> {
     let cache = CLEN_CACHE.get_or_init(Default::default);

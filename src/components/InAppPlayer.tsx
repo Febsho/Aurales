@@ -27,7 +27,6 @@ import {
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
-import PlayerDrawOverlay from './watch-together/PlayerDrawOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 
@@ -300,7 +299,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     hideTimerRef.current = setTimeout(() => {
-      if (!videoRef.current?.paused) setControlsVisible(false)
+      setControlsVisible(false)
     }, 2600)
   }
 
@@ -467,9 +466,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
       if (isPlaying && video.paused) {
         suppressNextWatchTogetherEvent()
+        setPaused(false)
+        wtReportLocalPlayback(video.currentTime, true)
         video.play().catch(() => {})
       } else if (!isPlaying && !video.paused) {
         suppressNextWatchTogetherEvent()
+        setPaused(true)
+        wtReportLocalPlayback(video.currentTime, false)
         video.pause()
       }
       if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
@@ -754,12 +757,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         playsInline
         autoPlay
         onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
-        onPause={() => { setPaused(true); setControlsVisible(true); wtSendPause() }}
+        onPause={() => { setPaused(true); showControlsTemporarily(); wtSendPause() }}
         onWaiting={() => { setLoading(true); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
           setLoading(false)
-          const video = videoRef.current
-          if (video?.paused) video.play().catch(() => setPaused(true))
         }}
         onPlaying={() => {
           setLoading(false)
@@ -801,10 +802,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
       {/* Watch Together overlays */}
       {isInWatchTogether && (
-        <>
-          <PlayerDrawOverlay />
-          <PlayerChatOverlay />
-        </>
+        <PlayerChatOverlay visible={controlsVisible} onInteraction={showControlsTemporarily} />
       )}
 
       {loading && (

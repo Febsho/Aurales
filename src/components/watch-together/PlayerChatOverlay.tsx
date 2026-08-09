@@ -2,15 +2,22 @@ import { useState, useRef, useEffect } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 
-export default function PlayerChatOverlay() {
+interface PlayerChatOverlayProps {
+  visible: boolean
+  onInteraction?: () => void
+}
+
+export default function PlayerChatOverlay({ visible, onInteraction }: PlayerChatOverlayProps) {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const currentUserId = useWatchTogetherStore((s) => s.currentUserId)
   const [message, setMessage] = useState('')
   const [collapsed, setCollapsed] = useState(false)
+  const [inputFocused, setInputFocused] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const messages = currentRoom?.chat ?? []
+  const shown = visible || inputFocused
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -35,14 +42,17 @@ export default function PlayerChatOverlay() {
 
   return (
     <div
-      className="absolute right-4 bottom-28 z-[65] flex flex-col"
+      className={[
+        'absolute right-4 bottom-28 z-[65] flex flex-col transition-[opacity,transform] duration-300',
+        shown ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none',
+      ].join(' ')}
       style={{ width: 320 }}
       onClick={(e) => e.stopPropagation()}
-      onMouseMove={(e) => e.stopPropagation()}
+      onMouseMove={(e) => { e.stopPropagation(); onInteraction?.() }}
     >
       {/* Toggle button */}
       <button
-        onClick={() => setCollapsed((v) => !v)}
+        onClick={() => { onInteraction?.(); setCollapsed((v) => !v) }}
         className="self-end mb-1 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-white/70 hover:text-white text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5"
       >
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
@@ -96,13 +106,14 @@ export default function PlayerChatOverlay() {
               type="text"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              onFocus={(e) => e.stopPropagation()}
+              onKeyDown={(e) => { onInteraction?.(); handleKeyDown(e) }}
+              onFocus={(e) => { e.stopPropagation(); setInputFocused(true); onInteraction?.() }}
+              onBlur={() => { setInputFocused(false); onInteraction?.() }}
               placeholder="Type a message..."
               className="flex-1 bg-white/[0.06] border border-white/[0.08] rounded-lg text-xs text-white placeholder-white/30 px-3 py-2 focus:outline-none focus:bg-white/[0.1] focus:border-white/20 transition-all"
             />
             <button
-              onClick={handleSend}
+              onClick={() => { onInteraction?.(); handleSend() }}
               disabled={!message.trim()}
               className={[
                 'w-8 h-8 rounded-lg flex items-center justify-center transition-all cursor-pointer',

@@ -6,6 +6,7 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { launchEmbeddedPlayer } from '../services/player'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 import { requestDiagnostics, type RequestDiagnostics } from '../services/network/requestCoordinator'
+import { getAppVersion } from '../services/updater'
 
 function hashUrl(value: string): string {
   let hash = 2166136261
@@ -197,7 +198,7 @@ export default function DeveloperPage() {
     const report = {
       os: mpvInfo?.os || 'unknown',
       arch: mpvInfo?.arch || 'unknown',
-      appVersion: 'v0.2.7',
+      appVersion: `v${getAppVersion()}`,
       mpvPath: mpvInfo?.path || 'Not Found',
       mpvArgs: {
         hwdecMode: store.hwdecMode,
@@ -380,7 +381,7 @@ Last file: ${thumbnailDebug?.lastOutputPath || '-'}`}
               <div className="space-y-3.5 text-sm">
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">App Version</span>
-                  <span className="font-semibold">v0.2.7</span>
+                  <span className="font-semibold">v{getAppVersion()}</span>
                 </div>
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">OS Platform</span>

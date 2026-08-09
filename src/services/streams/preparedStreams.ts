@@ -6,6 +6,7 @@ import { rankStreams, type SmartPlayMode, type SmartScoreContext, type SmartStre
 import { getPlayableStreamUrl } from './playableUrl'
 import { loadReliabilityHistory } from './reliabilityHistory'
 import { probeStreamUrl, type StreamProbeResult } from './streamProbe'
+import { annotateTorBoxStreams, resolveTorBoxStream } from '../torbox'
 
 export type PreparedStreamState = 'resolving' | 'ready' | 'failed'
 
@@ -113,28 +114,37 @@ class PreparedStreamRegistry {
     this.insert(entry)
 
     try {
-      const streams = opts.streams ?? await streamPreloadManager.request(request, { priority: opts.priority ?? StreamPreloadPriority.DETAILS_OPEN })
+      const rawStreams = opts.streams ?? await streamPreloadManager.request(request, { priority: opts.priority ?? StreamPreloadPriority.DETAILS_OPEN })
+      const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
       if (opts.signal?.aborted) { this.drop(entry); return null }
 
       const ranked = rankStreams(streams as SmartStream[], buildSmartContext({
         title: opts.title,
         season: request.seasonEpisode?.season,
         episode: request.seasonEpisode?.episode,
-      })).filter((candidate) => candidate.score > -500 && getPlayableStreamUrl(candidate.stream))
+      })).filter((candidate) => candidate.score > -500)
       const candidates = ranked.slice(0, 2)
       if (candidates.length === 0) {
         this.drop(entry)
         return null
       }
       const measured = await Promise.all(candidates.map(async (candidate) => {
-        const url = getPlayableStreamUrl(candidate.stream)!
-        const probe = await probeStreamUrl(url, PROBE_TIMEOUT_MS)
-        return { candidate, url, probe, total: candidate.score + warmupScore(probe) }
+        try {
+          const url = getPlayableStreamUrl(candidate.stream) || await resolveTorBoxStream(candidate.stream, {
+            title: opts.title,
+            season: request.seasonEpisode?.season,
+            episode: request.seasonEpisode?.episode,
+          })
+          const probe = await probeStreamUrl(url, PROBE_TIMEOUT_MS)
+          return { candidate, url, probe, total: candidate.score + warmupScore(probe) }
+        } catch (_) {
+          return { candidate, url: '', probe: { ok: false, status: 0 } as StreamProbeResult, total: -Infinity }
+        }
       }))
       if (opts.signal?.aborted) { this.drop(entry); return null }
 
       const playable = measured
-        .filter((item) => item.probe == null || item.probe.ok)
+        .filter((item) => item.url && (item.probe == null || item.probe.ok))
         .sort((a, b) => b.total - a.total)
       const winner = playable[0]
       if (!winner) {

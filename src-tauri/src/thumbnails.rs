@@ -168,7 +168,8 @@ impl ThumbnailJobController {
             Ok(state) => state,
             Err(_) => return false,
         };
-        if state.shutdown || state.generated.contains(&index) || state.in_progress.contains(&index) {
+        if state.shutdown || state.generated.contains(&index) || state.in_progress.contains(&index)
+        {
             state.cache_hits += 1;
             return false;
         }
@@ -249,7 +250,15 @@ impl ThumbnailJobController {
     fn generated_count(&self) -> u32 {
         self.state
             .lock()
-            .map(|state| state.generated.iter().copied().max().map(|index| index + 1).unwrap_or(0))
+            .map(|state| {
+                state
+                    .generated
+                    .iter()
+                    .copied()
+                    .max()
+                    .map(|index| index + 1)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
     }
 
@@ -261,7 +270,13 @@ impl ThumbnailJobController {
                 }
                 if state.queue.is_empty() && state.in_progress.is_empty() {
                     state = match self.cv.wait_timeout(state, Duration::from_millis(750)) {
-                        Ok((state, timeout)) if timeout.timed_out() && state.queue.is_empty() && state.in_progress.is_empty() => break,
+                        Ok((state, timeout))
+                            if timeout.timed_out()
+                                && state.queue.is_empty()
+                                && state.in_progress.is_empty() =>
+                        {
+                            break
+                        }
                         Ok((state, _)) => state,
                         Err(_) => return,
                     };
@@ -528,7 +543,9 @@ pub fn get_or_queue_scrub_thumbnail(
         rows: Some(DEFAULT_ROWS),
         quality: request.quality,
         thumbnail_interval: request.thumbnail_interval,
-        max_concurrent_ffmpeg_workers: request.max_concurrent_ffmpeg_workers.map(|value| value.clamp(1, 2)),
+        max_concurrent_ffmpeg_workers: request
+            .max_concurrent_ffmpeg_workers
+            .map(|value| value.clamp(1, 2)),
     };
     let config = thumbnail_config(&job_request);
     let (_pass_dir, frame_dir, sprite_dir) = pass_paths(&cache_dir, config.interval);
@@ -538,9 +555,18 @@ pub fn get_or_queue_scrub_thumbnail(
     let requested_index = index_for_time(&config, request.time);
     let exact_path = frame_dir.join(format!("frame_{requested_index:05}.webp"));
     let exact = valid_thumbnail_path(&exact_path, config.width, config.height);
-    let nearest = exact.clone().map(|path| (requested_index, path)).or_else(|| {
-        find_nearest_thumbnail(&frame_dir, requested_index, config.max_count, config.width, config.height)
-    });
+    let nearest = exact
+        .clone()
+        .map(|path| (requested_index, path))
+        .or_else(|| {
+            find_nearest_thumbnail(
+                &frame_dir,
+                requested_index,
+                config.max_count,
+                config.width,
+                config.height,
+            )
+        });
 
     if exact.is_none() {
         let (controller, should_spawn) = {
@@ -610,7 +636,9 @@ pub fn get_or_queue_scrub_thumbnail(
         requested_time: request.time,
         requested_index,
         exact_path: exact.map(|path| path.to_string_lossy().to_string()),
-        nearest_path: nearest.as_ref().map(|(_, path)| path.to_string_lossy().to_string()),
+        nearest_path: nearest
+            .as_ref()
+            .map(|(_, path)| path.to_string_lossy().to_string()),
         nearest_index: nearest.map(|(index, _)| index),
         metadata,
     })
@@ -650,12 +678,16 @@ pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
         cache.bytes = cache.bytes.saturating_sub(entry.bytes);
         cache.order.retain(|item| item != &key);
     }
-    cache.entries.insert(key.clone(), SpriteMemoryEntry { bytes, _data: data });
+    cache
+        .entries
+        .insert(key.clone(), SpriteMemoryEntry { bytes, _data: data });
     cache.order.push_back(key);
     cache.bytes += bytes;
 
     while cache.bytes > SPRITE_CACHE_BUDGET_BYTES {
-        let Some(old_key) = cache.order.pop_front() else { break };
+        let Some(old_key) = cache.order.pop_front() else {
+            break;
+        };
         if let Some(entry) = cache.entries.remove(&old_key) {
             cache.bytes = cache.bytes.saturating_sub(entry.bytes);
         }
@@ -672,15 +704,25 @@ fn thumbnail_config(request: &ThumbnailStartRequest) -> ThumbnailJobConfig {
             .or(request.fast_interval)
             .unwrap_or(DEFAULT_REFINED_INTERVAL),
     );
-    let duration = request.duration.filter(|value| value.is_finite() && *value > 0.0);
+    let duration = request
+        .duration
+        .filter(|value| value.is_finite() && *value > 0.0);
     let max_count = duration
         .map(|duration| ((duration / interval as f64).floor() as u32).saturating_add(1))
         .unwrap_or(10_000)
         .min(10_000);
     ThumbnailJobConfig {
         interval,
-        width: request.thumbnail_width.unwrap_or(DEFAULT_WIDTH).clamp(120, 640),
-        height: even_dimension(request.thumbnail_height.unwrap_or(DEFAULT_HEIGHT).clamp(68, 360)),
+        width: request
+            .thumbnail_width
+            .unwrap_or(DEFAULT_WIDTH)
+            .clamp(120, 640),
+        height: even_dimension(
+            request
+                .thumbnail_height
+                .unwrap_or(DEFAULT_HEIGHT)
+                .clamp(68, 360),
+        ),
         columns: request.columns.unwrap_or(DEFAULT_COLUMNS).clamp(1, 20),
         rows: request.rows.unwrap_or(DEFAULT_ROWS).clamp(1, 20),
         quality: request.quality.unwrap_or(DEFAULT_QUALITY).clamp(1, 100),
@@ -793,7 +835,10 @@ fn spawn_thumbnail_job(
                 config.rows,
             );
             write_metadata(&cache_dir, &metadata);
-            let _ = app.emit("thumbnail-cache-updated", ThumbnailCacheUpdated { metadata });
+            let _ = app.emit(
+                "thumbnail-cache-updated",
+                ThumbnailCacheUpdated { metadata },
+            );
         }
         if let Ok(mut jobs) = active_jobs().lock() {
             jobs.remove(&job_request.cache_key);
@@ -1065,18 +1110,17 @@ fn extract_frame(
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
-    let output = run_ffmpeg_logged(
-        command,
-        "frame-extract",
-        Some(output_path),
-        Some(timestamp),
-    )?;
+    let output = run_ffmpeg_logged(command, "frame-extract", Some(output_path), Some(timestamp))?;
     if !output.status.success() {
         let stderr = output.stderr.trim().to_string();
         return Err(format!(
             "ffmpeg frame seek exit={} stderr={}",
             output.status,
-            if stderr.is_empty() { "<empty>" } else { &stderr }
+            if stderr.is_empty() {
+                "<empty>"
+            } else {
+                &stderr
+            }
         ));
     }
     inspect_image(output_path, width, height)
@@ -1117,9 +1161,12 @@ fn run_ffmpeg_logged(
         ),
     );
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("spawn ffmpeg stage={} command={} error={}", stage, command_line, e))?;
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "spawn ffmpeg stage={} command={} error={}",
+            stage, command_line, e
+        )
+    })?;
 
     let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_reader = child.stderr.take().map(|mut stderr_pipe| {
@@ -1248,7 +1295,11 @@ fn command_to_string(command: &Command) -> String {
 fn trim_debug_text(value: &str) -> String {
     let value = value.trim();
     if value.len() > 2000 {
-        format!("{}...<truncated {} chars>", &value[..2000], value.len() - 2000)
+        format!(
+            "{}...<truncated {} chars>",
+            &value[..2000],
+            value.len() - 2000
+        )
     } else {
         value.to_string()
     }
@@ -1282,7 +1333,8 @@ fn infer_waiting_reason(stderr: &str, output_path: Option<&Path>) -> String {
         return "likely waiting on network I/O or remote stream probe".to_string();
     }
     if output_path.map(Path::exists).unwrap_or(false) {
-        return "ffmpeg still running after output file appeared; likely encoder/finalization wait".to_string();
+        return "ffmpeg still running after output file appeared; likely encoder/finalization wait"
+            .to_string();
     }
     if stderr.trim().is_empty() {
         return "no stderr and no output yet; likely waiting on network probe, demuxer open, or first keyframe decode".to_string();
@@ -1315,7 +1367,18 @@ fn publish_sprites(
     for sprite_index in 0..sprite_count {
         let start = sprite_index * cells_per_sprite;
         let count = (thumbnail_count - start).min(cells_per_sprite);
-        build_sprite(frame_dir, sprite_dir, sprite_index, start, count, columns, rows, width, height, quality)?;
+        build_sprite(
+            frame_dir,
+            sprite_dir,
+            sprite_index,
+            start,
+            count,
+            columns,
+            rows,
+            width,
+            height,
+            quality,
+        )?;
     }
 
     publish_metadata(
@@ -1363,7 +1426,10 @@ fn publish_metadata(
     );
     write_metadata(cache_dir, &metadata);
     prefetch_first_sprites(&metadata);
-    let _ = app.emit("thumbnail-cache-updated", ThumbnailCacheUpdated { metadata });
+    let _ = app.emit(
+        "thumbnail-cache-updated",
+        ThumbnailCacheUpdated { metadata },
+    );
 }
 
 fn build_sprite(
@@ -1394,7 +1460,8 @@ fn build_sprite(
         ),
     );
     let mut command = Command::new(&ffmpeg);
-    command.arg("-y")
+    command
+        .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -1422,11 +1489,16 @@ fn build_sprite(
             "ffmpeg sprite build index={} exit={} stderr={}",
             sprite_index,
             output.status,
-            if stderr.is_empty() { "<empty>" } else { &stderr }
+            if stderr.is_empty() {
+                "<empty>"
+            } else {
+                &stderr
+            }
         ));
     }
 
-    fs::rename(&tmp_sprite, &sprite).map_err(|e| format!("publish sprite {}: {e}", sprite.display()))?;
+    fs::rename(&tmp_sprite, &sprite)
+        .map_err(|e| format!("publish sprite {}: {e}", sprite.display()))?;
     let stats = inspect_image(&sprite, width * columns, height * rows)?;
     debug_update(|state| {
         state.sprite_count = state.sprite_count.max(sprite_index + 1);
@@ -1503,7 +1575,9 @@ fn build_metadata(
         thumbnail_height: height,
         columns,
         rows,
-        duration: request.duration.filter(|value| value.is_finite() && *value > 0.0),
+        duration: request
+            .duration
+            .filter(|value| value.is_finite() && *value > 0.0),
         thumbnail_paths,
         sprite_thumbnail_counts: sprite_counts(thumbnail_count, columns * rows),
         thumbnail_count: sparse_thumbnail_count,
@@ -1548,10 +1622,18 @@ struct ImageStats {
     near_black: bool,
 }
 
-fn inspect_image(path: &Path, expected_width: u32, expected_height: u32) -> Result<ImageStats, String> {
+fn inspect_image(
+    path: &Path,
+    expected_width: u32,
+    expected_height: u32,
+) -> Result<ImageStats, String> {
     let metadata = fs::metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
     if metadata.len() < 64 {
-        return Err(format!("{} is too small to be a valid WebP ({})", path.display(), metadata.len()));
+        return Err(format!(
+            "{} is too small to be a valid WebP ({})",
+            path.display(),
+            metadata.len()
+        ));
     }
     let bytes = fs::read(path).map_err(|e| format!("read image header {}: {e}", path.display()))?;
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
@@ -1673,7 +1755,10 @@ fn write_metadata(cache_dir: &Path, metadata: &ThumbnailMetadata) {
             }
         }
     } else {
-        debug_event("metadata-serialize-error", "failed to serialize thumbnail metadata");
+        debug_event(
+            "metadata-serialize-error",
+            "failed to serialize thumbnail metadata",
+        );
     }
 }
 

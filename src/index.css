@@ -241,6 +241,22 @@ html.hero-mpv-active #root {
   position: relative;
   z-index: 1;
 }
+/* Poster trailers can live inside two paint-containment layers. WebKitGTK
+   composites those layers as opaque black even when the card itself is
+   transparent, hiding the native mpv child window while its audio continues.
+   Drop containment only for the short lifetime of a native trailer hole. */
+html.hero-mpv-active .cinematic-row-track,
+html.hero-mpv-active .media-row [data-hero-viewport],
+html.hero-mpv-active .native-trailer-hole {
+  contain: none !important;
+  isolation: auto !important;
+  will-change: auto !important;
+}
+html.hero-mpv-active .native-trailer-hole {
+  overflow: visible !important;
+  background: transparent !important;
+  transform: none !important;
+}
 .hero-mpv-shell-backdrop {
   position: fixed;
   inset: 0;

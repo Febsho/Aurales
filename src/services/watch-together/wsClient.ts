@@ -5,7 +5,6 @@ import type {
   RoomEpisode,
   RoomStream,
   RoomSettings,
-  DrawStroke,
   LocalSourceStatus,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
@@ -272,7 +271,6 @@ export function leaveRoom(): void {
   store.setCurrentRoom(null)
   store.setCurrentUserId(null)
   store.setIsHost(false)
-  store.setDrawModeActive(false)
   store.clearLocalSource()
   store.setRoomPanelOpen(false)
 }
@@ -397,31 +395,6 @@ export function sendChatMessage(message: string): void {
     roomId: store.currentRoom.id,
     userId: store.currentUserId,
     message,
-    sentAt: Date.now(),
-  })
-}
-
-// ── Drawing ────────────────────────────────────────────────────────────
-
-export function sendDrawStroke(stroke: DrawStroke): void {
-  const store = getStore()
-  if (!store.currentRoom || !store.currentUserId) return
-  send({
-    type: 'DRAW_STROKE',
-    roomId: store.currentRoom.id,
-    senderUserId: store.currentUserId,
-    stroke,
-    sentAt: Date.now(),
-  })
-}
-
-export function sendDrawClear(): void {
-  const store = getStore()
-  if (!store.currentRoom || !store.currentUserId) return
-  send({
-    type: 'DRAW_CLEAR',
-    roomId: store.currentRoom.id,
-    senderUserId: store.currentUserId,
     sentAt: Date.now(),
   })
 }
@@ -641,7 +614,10 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'PLAYBACK_UPDATED':
       store.updatePlayback(msg.playback)
-      if (!store.isHost && msg.playback.status !== 'stopped' && msg.playback.status !== 'idle') {
+      // A discrete control may originate from any authorized participant.
+      // Apply the authoritative echo on hosts and guests alike; the sender's
+      // player already has the same state, so processing its echo is harmless.
+      if (msg.playback.status !== 'stopped' && msg.playback.status !== 'idle') {
         publishSync({
           time: msg.playback.currentTime,
           isPlaying: msg.playback.isPlaying,
@@ -653,18 +629,6 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'CHAT_RECEIVED':
       store.addChatMessage(msg.message)
-      break
-
-    case 'DRAW_RECEIVED':
-      window.dispatchEvent(
-        new CustomEvent('wt:draw_received', {
-          detail: { stroke: msg.stroke, senderUserId: msg.senderUserId, senderName: msg.senderName },
-        }),
-      )
-      break
-
-    case 'DRAW_CLEARED':
-      window.dispatchEvent(new CustomEvent('wt:draw_cleared', { detail: { senderUserId: msg.senderUserId } }))
       break
 
     case 'HOST_TRANSFERRED': {

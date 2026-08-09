@@ -54,7 +54,7 @@ export function buildDefaultHomeRows(): HomeRowConfig[] {
     {
       id: 'default-trending-movies',
       title: 'Trending Movies',
-      layout: 'poster',
+      layout: 'ranked',
       enabled: true,
       order: 2,
       sourceType: 'discover',
@@ -64,7 +64,7 @@ export function buildDefaultHomeRows(): HomeRowConfig[] {
     {
       id: 'default-trending-series',
       title: 'Trending Series',
-      layout: 'poster',
+      layout: 'ranked',
       enabled: true,
       order: 3,
       sourceType: 'discover',
@@ -74,7 +74,7 @@ export function buildDefaultHomeRows(): HomeRowConfig[] {
     {
       id: 'default-new-releases',
       title: 'New Releases',
-      layout: 'landscape',
+      layout: 'feature',
       enabled: true,
       order: 4,
       sourceType: 'discover',

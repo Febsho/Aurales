@@ -1,43 +1,15 @@
 import { useState } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
-import Button from '../ui/Button'
 import Toggle from '../ui/Toggle'
 
 export default function RoomControls() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const isHost = useWatchTogetherStore((s) => s.isHost)
   const currentUserId = useWatchTogetherStore((s) => s.currentUserId)
-  const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
   const [transferOpen, setTransferOpen] = useState(false)
-  const [resolving, setResolving] = useState(false)
 
-  if (!currentRoom || !currentRoom.selectedMedia) return null
-
-  const canControl = isHost || currentRoom.everyoneCanControl
-  if (!canControl) return null
-
-  const playback = currentRoom.playback
-  const isPlaying = playback.isPlaying
-
-  const handlePlayPause = async () => {
-    const time = wsClient.getBestKnownTime()
-    if (isPlaying) {
-      wsClient.pause(time)
-    } else {
-      if (!selectedLocalStream) {
-        setResolving(true)
-        const found = await wsClient.autoResolveStream()
-        setResolving(false)
-        if (!found) return
-      }
-      wsClient.play(time)
-    }
-  }
-
-  const handleStop = () => {
-    wsClient.stop()
-  }
+  if (!currentRoom || !currentRoom.selectedMedia || !isHost) return null
 
   const handleTransferHost = (newHostUserId: string) => {
     wsClient.transferHost(newHostUserId)
@@ -49,57 +21,11 @@ export default function RoomControls() {
   return (
     <div className="flex flex-col gap-3">
       <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">
-        {isHost ? 'Host Controls' : 'Playback Controls'}
+        Room Settings
       </h3>
 
-      {/* Playback buttons */}
-      <div className="flex items-center gap-2">
-        <Button
-          variant="glass"
-          size="sm"
-          onClick={handlePlayPause}
-          disabled={resolving}
-          className="flex-1"
-          icon={
-            resolving ? (
-              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : isPlaying ? (
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <rect x="6" y="4" width="4" height="16" rx="1" />
-                <rect x="14" y="4" width="4" height="16" rx="1" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-            )
-          }
-        >
-          {resolving ? 'Finding...' : isPlaying ? 'Pause' : 'Play'}
-        </Button>
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleStop}
-          icon={
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <rect x="4" y="4" width="16" height="16" rx="2" />
-            </svg>
-          }
-        >
-          Stop
-        </Button>
-      </div>
-
-      {/* Host-only options */}
-      {isHost && (
-        <>
-          {/* Transfer host */}
-          {otherParticipants.length > 0 && (
+      {/* Transfer host */}
+      {otherParticipants.length > 0 && (
             <div className="relative">
               <button
                 onClick={() => setTransferOpen(!transferOpen)}
@@ -146,27 +72,25 @@ export default function RoomControls() {
                 </div>
               )}
             </div>
-          )}
-
-          {/* Everyone can control toggle */}
-          <Toggle
-            checked={currentRoom.everyoneCanControl}
-            onChange={(checked) => wsClient.setRoomSettings({ everyoneCanControl: checked })}
-            label="Everyone can control"
-            description="Let anyone play, pause, and seek"
-            size="sm"
-          />
-
-          {/* Require ready check toggle */}
-          <Toggle
-            checked={currentRoom.requireReadyCheck}
-            onChange={(checked) => wsClient.setRoomSettings({ requireReadyCheck: checked })}
-            label="Require ready check"
-            description="Wait for everyone before starting playback"
-            size="sm"
-          />
-        </>
       )}
+
+      {/* Everyone can control toggle */}
+      <Toggle
+        checked={currentRoom.everyoneCanControl}
+        onChange={(checked) => wsClient.setRoomSettings({ everyoneCanControl: checked })}
+        label="Everyone can control"
+        description="Let anyone play, pause, and seek"
+        size="sm"
+      />
+
+      {/* Require ready check toggle */}
+      <Toggle
+        checked={currentRoom.requireReadyCheck}
+        onChange={(checked) => wsClient.setRoomSettings({ requireReadyCheck: checked })}
+        label="Require ready check"
+        description="Wait for everyone before starting playback"
+        size="sm"
+      />
 
       <style>{`
         @keyframes fadeIn {

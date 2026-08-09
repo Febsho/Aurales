@@ -116,13 +116,7 @@ fn install_overlay_resize_handler(webview: &webkit2gtk::WebView) {
             _ => None,
         };
         if let Some(edge) = edge {
-            surface.begin_resize_drag(
-                edge,
-                1,
-                root_x as i32,
-                root_y as i32,
-                event.time(),
-            );
+            surface.begin_resize_drag(edge, 1, root_x as i32, root_y as i32, event.time());
         }
         glib::Propagation::Proceed
     });
@@ -144,12 +138,8 @@ fn render_frame(area: &gtk::GLArea) -> glib::Propagation {
         let scale = area.scale_factor().max(1);
         let width = area.allocated_width().max(1) * scale;
         let height = area.allocated_height().max(1) * scale;
-        if let Err(error) =
-            unsafe { player.render_opengl_frame(framebuffer, width, height) }
-        {
-            crate::commands::player_debug_log(format!(
-                "[LINUX RENDER] frame failed: {error}"
-            ));
+        if let Err(error) = unsafe { player.render_opengl_frame(framebuffer, width, height) } {
+            crate::commands::player_debug_log(format!("[LINUX RENDER] frame failed: {error}"));
         }
     });
     glib::Propagation::Stop
@@ -306,8 +296,7 @@ pub(crate) fn attach(
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     window
         .with_webview(move |platform| {
-            let result =
-                attach_on_main_thread(platform.inner(), player, x, y, width, height);
+            let result = attach_on_main_thread(platform.inner(), player, x, y, width, height);
             let _ = tx.send(result);
         })
         .map_err(|error| format!("Failed to access Linux WebKit view: {error}"))?;

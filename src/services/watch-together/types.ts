@@ -125,13 +125,6 @@ export interface RoomChatMessage {
   sentAt: number
 }
 
-export interface DrawStroke {
-  id: string
-  points: { x: number; y: number }[]
-  color: string
-  width: number
-}
-
 // ── Events ───────────────────────────────────────────────────────────────────
 
 export interface RoomSettings {
@@ -153,8 +146,6 @@ export type WatchTogetherEvent =
   | { type: 'SYNC_STATE'; roomId: string; senderUserId: string; time: number; isPlaying: boolean; sentAt: number }
   | { type: 'BUFFERING'; roomId: string; senderUserId: string; buffering: boolean; time: number; sentAt: number }
   | { type: 'CHAT_MESSAGE'; roomId: string; userId: string; message: string; sentAt: number }
-  | { type: 'DRAW_STROKE'; roomId: string; senderUserId: string; stroke: DrawStroke; sentAt: number }
-  | { type: 'DRAW_CLEAR'; roomId: string; senderUserId: string; sentAt: number }
   | { type: 'TRANSFER_HOST'; roomId: string; senderUserId: string; newHostUserId: string }
   | { type: 'ROOM_SETTINGS'; roomId: string; senderUserId: string; settings: RoomSettings }
   | { type: 'PING'; sentAt: number }
@@ -171,8 +162,6 @@ export type ServerMessage =
   | { type: 'MEDIA_UPDATED'; media?: RoomMedia; episode?: RoomEpisode; stream?: RoomStream }
   | { type: 'PLAYBACK_UPDATED'; playback: RoomPlaybackState }
   | { type: 'CHAT_RECEIVED'; message: RoomChatMessage }
-  | { type: 'DRAW_RECEIVED'; stroke: DrawStroke; senderUserId: string; senderName: string }
-  | { type: 'DRAW_CLEARED'; senderUserId: string }
   | { type: 'HOST_TRANSFERRED'; newHostUserId: string }
   | { type: 'SYNC_REQUEST'; time: number; isPlaying: boolean; sentAt?: number; serverTime?: number; sequence?: number }
   | { type: 'ERROR'; code: string; message: string }

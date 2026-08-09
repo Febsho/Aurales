@@ -11,5 +11,10 @@ describe('Discovery startup snapshot', () => {
 
   it('normalizes missing or malformed persisted fields to empty maps', () => {
     expect(retainDiscoverySnapshot(null)).toEqual({ cachedRows: {}, rankedSnapshots: {} })
+    expect(retainDiscoverySnapshot({
+      version: 2,
+      cachedRows: { broken: { items: 'not-an-array', timestamp: 'yesterday' } },
+      rankedSnapshots: { broken: [{ item: null }] },
+    } as never)).toEqual({ cachedRows: {}, rankedSnapshots: {} })
   })
 })

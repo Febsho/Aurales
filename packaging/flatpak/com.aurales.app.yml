@@ -18,6 +18,10 @@ finish-args:
   - --socket=x11
   - --socket=pulseaudio
   - --device=dri
+  # Required for the in-app updater to reinstall a standalone Flatpak bundle
+  # through `flatpak-spawn --host`. No unrestricted host filesystem access is
+  # granted; the downloaded bundle stays in this app's own cache directory.
+  - --talk-name=org.freedesktop.Flatpak
   # Discord Rich Presence IPC socket (harmless if Discord is absent)
   - --filesystem=xdg-run/discord-ipc-0
   - --filesystem=xdg-run/discord-ipc-1

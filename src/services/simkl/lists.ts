@@ -288,10 +288,10 @@ async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
       const params = new URLSearchParams({
         client_id: clientId || 'aurales',
         'app-name': 'Aurales',
-        'app-version': '0.2.7',
+        'app-version': '0.2.8',
       })
       const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
-        headers: { 'User-Agent': 'Aurales/0.2.7' },
+        headers: { 'User-Agent': 'Aurales/0.2.8' },
       })
       if (!res.ok) return []
       const data = await res.json()

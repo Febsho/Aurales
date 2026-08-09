@@ -22,6 +22,7 @@ import { buildSmartContext, preparedStreamRegistry, type PreparedStream } from '
 import { canonicalStreamKey } from '../services/streams/preloadUtils'
 import { probeStreamUrl } from '../services/streams/streamProbe'
 import { cachedImage } from '../services/imageCache'
+import { annotateTorBoxStreams, isTorBoxCachedStream, isTorBoxConnected, resolveTorBoxStream } from '../services/torbox'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -270,6 +271,21 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     })
   }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, playback])
 
+  useEffect(() => {
+    const unchecked = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
+    if (!unchecked) return
+    let cancelled = false
+    annotateTorBoxStreams(streams).then((annotated) => {
+      if (!cancelled) setStreams(annotated as AddonStream[])
+    }).catch(() => {
+      if (!cancelled) setStreams((current) => current.map((stream) => stream.infoHash ? {
+        ...stream,
+        behaviorHints: { ...stream.behaviorHints, torboxChecked: true, torboxCached: false },
+      } : stream))
+    })
+    return () => { cancelled = true }
+  }, [streams])
+
   const getPlayableUrl = (stream: AddonStream): string | null => {
     return getPlayableStreamUrl(stream)
   }
@@ -389,6 +405,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (stream.externalUrl) badges.push('External')
     if (stream.ytId) badges.push('YouTube')
     if (stream.infoHash) badges.push('Torrent')
+    if (isTorBoxCachedStream(stream)) badges.push('TorBox Cached')
     if (typeof stream.fileIdx === 'number') badges.push(`File ${stream.fileIdx + 1}`)
     return badges
   }
@@ -403,9 +420,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
 
   const filteredStreams = useMemo(
-    () => streams.filter((stream) => Boolean(getPlayableStreamUrl(stream)) && !isDiagnosticStream(stream)),
+    () => streams.filter((stream) => (Boolean(getPlayableStreamUrl(stream)) || isTorBoxCachedStream(stream)) && !isDiagnosticStream(stream)),
     [streams],
   )
+  const torBoxChecking = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
 
   const providerOptions = useMemo(() => Array.from(new Map(
     filteredStreams.map((stream) => [stream.addonId, stream.addonName] as const)
@@ -470,10 +488,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }, [open, playback, autoPlayFirstStream, mediaId, mediaType, seasonEpisode, tmdbId])
 
   useEffect(() => {
-    if (!open || loading || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || filteredStreams.length === 0 || autoSmartStartedRef.current) return
+    if (!open || loading || torBoxChecking || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || filteredStreams.length === 0 || autoSmartStartedRef.current) return
     autoSmartStartedRef.current = true
     startSmartPlayRef.current()
-  }, [open, loading, playback, autoPlayFirstStream, filteredStreams.length])
+  }, [open, loading, torBoxChecking, playback, autoPlayFirstStream, filteredStreams.length])
 
   // A fast-path stream failed before the addon results had arrived: resume the
   // smart fallback as soon as there is something to fall back to.
@@ -485,10 +503,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }, [filteredStreams.length])
 
   useEffect(() => {
-    const resolving = open && autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)
+    const resolving = open && autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || torBoxChecking || streams.length > 0)
     onResolvingChange?.(resolving)
     return () => onResolvingChange?.(false)
-  }, [open, autoPlayFirstStream, playback, loading, streams.length, onResolvingChange])
+  }, [open, autoPlayFirstStream, playback, loading, torBoxChecking, streams.length, onResolvingChange])
 
   useEffect(() => {
     if (!open) return
@@ -503,15 +521,29 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   const handlePlay = async (stream: AddonStream, index: number, urlOverride?: string) => {
     const originalUrl = getPlayableUrl(stream)
-    const url = urlOverride || (originalUrl ? warmedStreamUrlsRef.current.get(originalUrl) : undefined) || originalUrl
+    setPlayingIndex(index)
+    setPlayError('')
+    let url = urlOverride || (originalUrl ? warmedStreamUrlsRef.current.get(originalUrl) : undefined) || originalUrl
+    try {
+      if (!url && stream.infoHash) {
+        setSmartStatus('Preparing cached TorBox stream…')
+        url = await resolveTorBoxStream(stream, { title, season: seasonEpisode?.season, episode: seasonEpisode?.episode })
+      }
+    } catch (error) {
+      setPlayingIndex(null)
+      setPlayError(error instanceof Error ? error.message : String(error))
+      return
+    }
     if (!url) {
-      setPlayError('This stream is not a direct playable video URL. Pick a direct HTTP/HLS/DASH stream instead.')
+      setPlayingIndex(null)
+      setPlayError('This stream is not a direct playable video URL. Connect TorBox for cached torrent streams or pick a direct source.')
       return
     }
 
     const wtState = useWatchTogetherStore.getState()
     if (wtState.currentRoom) {
       if (!wtState.isHost || !wtState.currentRoom.selectedMedia) {
+        setPlayingIndex(null)
         setPlayError(wtState.isHost
           ? 'Choose “Watch in Room” for this title before selecting a room source.'
           : 'Only the host can replace the local room source manually.')
@@ -530,8 +562,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       return
     }
 
-    setPlayingIndex(index)
-    setPlayError('')
     setPlayback({ url, stream })
     setPlayingIndex(null)
   }
@@ -798,7 +828,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           )}
 
           {!loading && visibleStreams.map((stream, i) => {
-            const playable = !!getPlayableUrl(stream)
+            const playable = Boolean(getPlayableUrl(stream) || isTorBoxCachedStream(stream))
             const description = getStreamDescription(stream)
             const filterBadges = matchedFilterLabels(stream)
             return (

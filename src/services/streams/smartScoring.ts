@@ -30,7 +30,10 @@ const resolution = (value: string) => /\b(4k|2160p|uhd)\b/i.test(value) ? 2160 :
 const normalized = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
 export function scoreStream(stream: SmartStream, context: SmartScoreContext): ScoredStream {
-  const value = text(stream); const reasons: string[] = []; let score = getPlayableStreamUrl(stream) ? 20 : -1000
+  const value = text(stream); const reasons: string[] = []
+  const torBoxCached = stream.behaviorHints?.torboxCached === true
+  let score = getPlayableStreamUrl(stream) ? 20 : torBoxCached ? 30 : -1000
+  if (torBoxCached) reasons.push('TorBox cached')
   const res = resolution(value); const size = parseSizeGb(value)
   const qualityPoints = res === 2160 ? 30 : res === 1080 ? 24 : res === 720 ? 14 : res === 480 ? 5 : 8
   score += context.mode === 'highest-quality' ? qualityPoints * 2 : qualityPoints
@@ -69,4 +72,3 @@ export function scoreStream(stream: SmartStream, context: SmartScoreContext): Sc
 export function rankStreams(streams: SmartStream[], context: SmartScoreContext): ScoredStream[] {
   return streams.map((stream) => scoreStream(stream, context)).sort((a, b) => b.score - a.score || streamFingerprint(a.stream).localeCompare(streamFingerprint(b.stream)))
 }
-

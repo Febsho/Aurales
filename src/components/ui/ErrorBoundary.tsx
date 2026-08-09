@@ -31,6 +31,18 @@ export default class ErrorBoundary extends Component<Props, State> {
             <p className="text-xs text-red-400/70">
               {this.props.label ? `"${this.props.label}" failed to load` : 'Something went wrong'}
             </p>
+            {this.state.error?.message && (
+              <p className="mx-auto mt-2 max-w-3xl break-words text-[11px] text-red-300/55">
+                {this.state.error.message}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-3 rounded-full border border-red-400/20 bg-red-400/10 px-3 py-1.5 text-xs font-semibold text-red-200/80 hover:bg-red-400/15"
+            >
+              Reload
+            </button>
           </div>
         </div>
       )
