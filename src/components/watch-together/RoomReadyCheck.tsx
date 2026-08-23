@@ -47,7 +47,7 @@ export default function RoomReadyCheck() {
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Ready Check</h3>
+        <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Ready Check</h3>
         <span className={[
           'text-xs font-semibold px-2 py-0.5 rounded-md',
           allReady ? 'bg-success/15 text-success' : 'watch-together-control text-white/50',
@@ -68,10 +68,10 @@ export default function RoomReadyCheck() {
               {p.id === currentUserId && <span className="text-white/25"> (you)</span>}
             </span>
             <div className="flex items-center gap-1.5">
-              {p.sourceStatus === 'resolving' && <span className="text-[10px] text-warning">Finding source…</span>}
-              {p.sourceStatus === 'starting' && <span className="text-[10px] text-warning">Starting…</span>}
+              {p.sourceStatus === 'resolving' && <span className="text-meta text-warning">Finding source…</span>}
+              {p.sourceStatus === 'starting' && <span className="text-meta text-warning">Starting…</span>}
               {p.sourceStatus === 'failed' && (
-                <span className="text-[10px] text-danger" title={p.sourceErrorCode || 'No playable local source'}>Source failed</span>
+                <span className="text-meta text-danger" title={p.sourceErrorCode || 'No playable local source'}>Source failed</span>
               )}
               {p.isReady ? (
                 <svg className="w-4 h-4 text-success" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -118,7 +118,7 @@ export default function RoomReadyCheck() {
                 size="sm"
                 disabled={resolving}
                 onClick={handleForceStart}
-                className="flex-shrink-0 text-white/40"
+                className="flex-shrink-0 text-white/60"
               >
                 Force Start
               </Button>

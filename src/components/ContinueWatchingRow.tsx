@@ -521,10 +521,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         <button
           key={opt.value}
           onClick={() => changeSource(opt.value)}
-          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${
+          className={`px-2.5 py-1 rounded-md text-label font-semibold transition-all ${
             source === opt.value
               ? 'bg-white/15 text-white'
-              : 'text-white/40 hover:text-white/70'
+              : 'text-white/60 hover:text-white/70'
           }`}
         >
           {opt.label}
@@ -617,7 +617,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
-                <span className="text-[11px] text-white/15 select-none">Nothing in progress</span>
+                <span className="text-label text-white/60 select-none">Nothing in progress</span>
               </div>
             ))}
           </div>
@@ -631,7 +631,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       <div className="flex items-center justify-between px-6 mb-4 relative z-[60]">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className={cinematic ? 'text-sm font-light tracking-wider uppercase text-white/40' : 'text-xl font-bold tracking-tight text-white/95'}>{displayTitle}</h2>
+          <h2 className={cinematic ? 'text-sm font-light tracking-wider uppercase text-white/60' : 'text-xl font-bold tracking-tight text-white/95'}>{displayTitle}</h2>
         </div>
         <div className="flex items-center gap-3">
           {sourceSelector}
@@ -660,7 +660,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
-        className={`flex overflow-x-auto overflow-y-visible overscroll-x-contain scrollbar-none scroll-gpu ${cinematic ? 'items-center h-[212px] pt-4 -mt-4 pb-4 px-8 gap-5 snap-x snap-mandatory scroll-px-8 relative z-50' : 'pt-4 -mt-4 pb-6 px-6 gap-4'}`}
+        className={`flex overflow-x-auto overflow-y-visible overscroll-x-contain scrollbar-none scroll-gpu ${cinematic ? 'cw-track items-center pt-4 -mt-4 pb-4 px-8 gap-5 snap-x snap-mandatory scroll-px-8 relative z-50' : 'pt-4 -mt-4 pb-6 px-6 gap-4'}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {/* ── Cinematic: Resume Spotlight layout ────────────────────── */}
@@ -681,9 +681,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 e.preventDefault()
                 setCwMenu({ x: e.clientX, y: e.clientY, item })
               }}
-              className="snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out w-[320px]"
+              className="cw-card snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring"
             >
-              <div className="relative overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out h-[180px] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
+              <div className="cw-card__frame relative overflow-hidden bg-surface-elevated border border-white/[0.08] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
                 {/* 16:9 backdrop */}
                 {item.backdrop ? (
                   <img 
@@ -710,20 +710,22 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
                 {/* Info overlay */}
                 <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
-                  <h3 className="text-[14px] font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
                   <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
                     {item.subtitle ? (
-                      <span className="text-[9px] bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
+                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
                     ) : (
-                      <span className="text-[9px] bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
+                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
                     )}
-                    <span className="text-[11px] text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                    <span className="text-label text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
                   </div>
                 </div>
 
-                {/* Progress bar */}
-                <div className="absolute bottom-0 inset-x-0 h-[3px] bg-white/10 transition-all duration-300 group-hover:h-[4px]">
-                  <div className="h-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
+                {/* Progress bar. Scaled rather than resized on hover: animating
+                    height re-lays out the bar every frame, whereas a transform
+                    stays on the compositor. */}
+                <div className="cw-progress absolute bottom-0 inset-x-0 bg-white/10">
+                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -771,20 +773,22 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
                 {/* Info overlay */}
                 <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
-                  <h3 className="text-[13px] font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
                   <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
                     {item.subtitle ? (
-                      <span className="text-[9px] bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
+                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
                     ) : (
-                      <span className="text-[9px] bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
+                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
                     )}
-                    <span className="text-[10px] text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                    <span className="text-meta text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
                   </div>
                 </div>
 
-                {/* Progress bar */}
-                <div className="absolute bottom-0 inset-x-0 h-[3px] bg-white/10 transition-all duration-300 group-hover:h-[4px]">
-                  <div className="h-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
+                {/* Progress bar. Scaled rather than resized on hover: animating
+                    height re-lays out the bar every frame, whereas a transform
+                    stays on the compositor. */}
+                <div className="cw-progress absolute bottom-0 inset-x-0 bg-white/10">
+                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -942,8 +946,8 @@ const ContinueWatchingMenu = forwardRef<
                 <img src={item.backdrop || item.poster} alt="" className="w-12 h-8 rounded-md object-cover flex-shrink-0" />
               )}
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-semibold text-white truncate">{item.title}</p>
-                <p className="text-[11px] text-white/40 mt-0.5">
+                <p className="text-sm font-semibold text-white truncate">{item.title}</p>
+                <p className="text-label text-white/60 mt-0.5">
                   {item.subtitle || (item.mediaType === 'movie' ? 'Movie' : 'Series')}
                   {source !== 'local' ? ` · ${source.charAt(0).toUpperCase() + source.slice(1)}` : ''}
                 </p>
@@ -955,20 +959,20 @@ const ContinueWatchingMenu = forwardRef<
               <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z" />
               </svg>
-              <span className="text-[13px] text-white/70">Resume Playing</span>
+              <span className="text-sm text-white/70">Resume Playing</span>
             </button>
             <button onClick={() => onGoTo(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
               <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <span className="text-[13px] text-white/70">Go to {item.mediaType === 'movie' ? 'Movie' : 'Series'}</span>
+              <span className="text-sm text-white/70">Go to {item.mediaType === 'movie' ? 'Movie' : 'Series'}</span>
             </button>
             <div className="my-1 border-t border-white/[0.06]" />
             <button onClick={() => onRemove(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer">
               <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
-              <span className="text-[13px] text-red-400">Remove from Continue Watching</span>
+              <span className="text-sm text-red-400">Remove from Continue Watching</span>
             </button>
           </div>
         </div>

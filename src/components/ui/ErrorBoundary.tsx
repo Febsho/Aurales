@@ -32,7 +32,7 @@ export default class ErrorBoundary extends Component<Props, State> {
               {this.props.label ? `"${this.props.label}" failed to load` : 'Something went wrong'}
             </p>
             {this.state.error?.message && (
-              <p className="mx-auto mt-2 max-w-3xl break-words text-[11px] text-red-300/55">
+              <p className="mx-auto mt-2 max-w-3xl break-words text-label text-red-300/55">
                 {this.state.error.message}
               </p>
             )}

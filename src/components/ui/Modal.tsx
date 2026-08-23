@@ -80,7 +80,7 @@ export default function Modal({
         <button
           onClick={onClose}
           className="absolute top-4 right-4 w-8 h-8 rounded-lg flex items-center justify-center
-            bg-white/5 hover:bg-white/10 text-white/40 hover:text-white
+            bg-white/5 hover:bg-white/10 text-white/60 hover:text-white
             transition-all duration-200 cursor-pointer"
           aria-label="Close"
         >

@@ -69,7 +69,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
           'app-sidebar flex flex-col',
-          'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'transition-all duration-300 ease-expo',
           pinned
             ? 'relative z-30 w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
             : [
@@ -91,11 +91,11 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
             className="w-8 h-8 object-contain flex-shrink-0"
             draggable={false}
           />
-          <span className="app-sidebar__label text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
+          <span className="app-sidebar__label text-sm font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
         </div>
         <button
           onClick={toggle}
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-white/60 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
           title={pinned ? 'Auto-hide sidebar' : 'Pin sidebar'}
         >
           {pinned ? (
@@ -135,7 +135,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
                 ].join(' ')}
                 filled={isActive}
               />
-              <span className={`app-sidebar__label text-[13px] tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
+              <span className={`app-sidebar__label text-sm tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
                 {item.label}
               </span>
             </NavLink>
@@ -145,7 +145,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
 
       {/* Footer */}
       <div className="app-sidebar__footer p-3 border-t border-white/[0.04]">
-        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
+        <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>
 
     </aside>

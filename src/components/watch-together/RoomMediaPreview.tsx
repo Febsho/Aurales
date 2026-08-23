@@ -29,7 +29,7 @@ export default function RoomMediaPreview() {
             <line x1="17" y1="17" x2="22" y2="17" />
           </svg>
         </div>
-        <p className="text-xs text-white/30 leading-relaxed">
+        <p className="text-xs text-white/50 leading-relaxed">
           {isHost
             ? 'Browse and pick something to watch. It will appear here for everyone.'
             : 'Waiting for host to select something to watch...'}
@@ -42,7 +42,7 @@ export default function RoomMediaPreview() {
 
   return (
     <div className="flex flex-col gap-2.5">
-      <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Now Watching</h3>
+      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Now Watching</h3>
       <div className="watch-together-surface rounded-xl overflow-hidden border">
         {/* Thumbnail */}
         {thumb && (
@@ -70,13 +70,13 @@ export default function RoomMediaPreview() {
               />
             )}
             <div className="flex-1 min-w-0">
-              <p className="text-[13px] font-semibold text-white truncate">{media.title}</p>
+              <p className="text-sm font-semibold text-white truncate">{media.title}</p>
               <div className="flex items-center gap-1.5 mt-0.5">
-                {media.year && <span className="text-[11px] text-white/40">{media.year}</span>}
-                <span className="text-[11px] text-white/20 capitalize">{media.type}</span>
+                {media.year && <span className="text-label text-white/60">{media.year}</span>}
+                <span className="text-label text-white/20 capitalize">{media.type}</span>
               </div>
               {episode && (
-                <p className="text-[11px] text-white/50 mt-1 truncate">
+                <p className="text-label text-white/50 mt-1 truncate">
                   S{String(episode.seasonNumber).padStart(2, '0')}E{String(episode.episodeNumber).padStart(2, '0')} - {episode.title}
                 </p>
               )}

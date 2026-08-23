@@ -1,4 +1,6 @@
-import { lazy, Suspense, useState, useRef, useEffect } from 'react'
+import BaseSelectMenu from '../components/ui/SelectMenu'
+import Switch from '../components/ui/Switch'
+import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
 import { tmdbProvider } from '../services/tmdb'
@@ -129,8 +131,8 @@ function SettingSection({ title, description, children }: { title?: string; desc
     <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
       {title && (
         <div className="px-6 pt-5 pb-1">
-          <h3 className="text-[15px] font-semibold text-white">{title}</h3>
-          {description && <p className="text-[13px] text-white/40 mt-0.5">{description}</p>}
+          <h3 className="text-sm font-semibold text-white">{title}</h3>
+          {description && <p className="text-sm text-white/60 mt-0.5">{description}</p>}
         </div>
       )}
       <div className="divide-y divide-white/[0.04]">{children}</div>
@@ -138,32 +140,42 @@ function SettingSection({ title, description, children }: { title?: string; desc
   )
 }
 
+// A setting row already renders the human-readable name of the control it
+// contains, but that text was only ever a sibling <p>, never associated with
+// the control. Most switches in this file are therefore announced as a bare
+// "switch, on" with nothing identifying what they toggle. Publishing the row's
+// label through context lets every control inside it adopt that name as a
+// fallback, without having to repeat the string at 39 call sites.
+const SettingRowLabelContext = createContext<string | undefined>(undefined)
+
+// Wraps the shared menu so selects inside a SettingRow inherit that row's
+// label as their accessible name, matching SettingToggle. None of the 23 call
+// sites in this file supplied one.
+function SelectMenu(props: React.ComponentProps<typeof BaseSelectMenu>) {
+  const rowLabel = useContext(SettingRowLabelContext)
+  return <BaseSelectMenu {...props} aria-label={props['aria-label'] ?? rowLabel} />
+}
+
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 px-6 py-4">
       <div className="min-w-0">
-        <p className="text-[14px] text-white">{label}</p>
-        {description && <p className="text-[12px] text-white/35 mt-0.5 leading-relaxed">{description}</p>}
+        <p className="text-sm text-white">{label}</p>
+        {description && <p className="text-xs text-white/60 mt-0.5 leading-relaxed">{description}</p>}
       </div>
-      <div className="flex-shrink-0">{children}</div>
+      <div className="flex-shrink-0">
+        <SettingRowLabelContext.Provider value={label}>{children}</SettingRowLabelContext.Provider>
+      </div>
     </div>
   )
 }
 
+// Delegates to the shared switch so Settings and Watch Together cannot drift
+// apart again. Kept as a named wrapper because it is referenced throughout
+// this file's setting rows.
 function SettingToggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border transition-[background-color,border-color,box-shadow,opacity] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a1916] ${disabled ? 'cursor-not-allowed opacity-35' : 'cursor-pointer'} ${checked ? 'border-accent bg-accent' : `border-white/10 bg-white/10 ${disabled ? '' : 'hover:bg-white/15'}`}`}
-    >
-      <span className={`pointer-events-none absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,0,0,0.12)] transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
-    </button>
-  )
+  const rowLabel = useContext(SettingRowLabelContext)
+  return <Switch checked={checked} onChange={onChange} label={label ?? rowLabel} disabled={disabled} />
 }
 
 type SettingSelectOption = { value: string | number; label: string }
@@ -216,7 +228,7 @@ function SettingSelect({
         }`}
       >
         <span className="truncate">{selected?.label}</span>
-        <svg className={`h-4 w-4 flex-none text-white/45 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <svg className={`h-4 w-4 flex-none text-white/60 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
           <path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
@@ -257,7 +269,7 @@ function DangerButton({ children, onClick }: { children: React.ReactNode; onClic
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-[13px] font-semibold transition-colors cursor-pointer"
+      className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
     >
       {children}
     </button>
@@ -270,7 +282,7 @@ function ServiceIcon({ service, className = 'w-4.5 h-4.5' }: { service: string; 
     return <img src={iconUrl} alt="" className={`${className} object-contain flex-shrink-0`} loading="lazy" />
   }
   return (
-    <span className={`${className} inline-flex items-center justify-center rounded bg-white/10 text-[9px] font-black text-white/70 flex-shrink-0`}>
+    <span className={`${className} inline-flex items-center justify-center rounded bg-white/10 text-tag font-black text-white/70 flex-shrink-0`}>
       {service.slice(0, 2).toUpperCase()}
     </span>
   )
@@ -355,7 +367,7 @@ function AppUpdateSection() {
               <span className="text-sm font-semibold text-white">
                 {updateInfo ? `v${updateInfo.version} available` : noUpdate ? 'Up to date' : `v${appVersion}`}
               </span>
-              <p className="text-[11px] text-white/35">
+              <p className="text-label text-white/60">
                 {checking ? 'Checking for updates...'
                   : installing ? progress?.stage === 'installing' ? 'Installing update...' : 'Downloading update...'
                   : updateInfo ? 'A new version is ready to install'
@@ -379,7 +391,7 @@ function AppUpdateSection() {
                 className={[
                   'px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer',
                   checking || installing
-                    ? 'bg-white/[0.04] text-white/30 cursor-not-allowed'
+                    ? 'bg-white/[0.04] text-white/50 cursor-not-allowed'
                     : 'bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white',
                 ].join(' ')}
               >
@@ -407,7 +419,7 @@ function AppUpdateSection() {
                 <div className="h-full bg-accent/60 rounded-full animate-pulse" style={{ width: '100%' }} />
               )}
             </div>
-            <p className="text-[10px] text-white/30 text-right">
+            <p className="text-meta text-white/50 text-right">
               {progressPct != null ? `${progressPct}%` : progress ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} MB` : 'Preparing...'}
             </p>
           </div>
@@ -419,7 +431,7 @@ function AppUpdateSection() {
             <p className="text-xs text-white/60">
               This app was installed from a standalone Flatpak bundle. Download the new bundle, then reinstall it:
             </p>
-            <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
+            <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-label text-white/85">
               {getFlatpakInstallCommand(updateInfo.version)}
             </code>
             <button
@@ -428,7 +440,7 @@ function AppUpdateSection() {
             >
               Open v{updateInfo.version} Downloads
             </button>
-            <p className="mt-2 text-[10px] text-white/35">
+            <p className="mt-2 text-meta text-white/60">
               The normal flatpak update command only works with an installed Flatpak repository.
             </p>
           </div>
@@ -437,7 +449,7 @@ function AppUpdateSection() {
         {/* Release notes */}
         {updateInfo?.body && (
           <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-white/30 block mb-2">Release Notes</span>
+            <span className="text-meta font-bold uppercase tracking-wider text-white/50 block mb-2">Release Notes</span>
             <p className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap">{updateInfo.body}</p>
           </div>
         )}
@@ -513,12 +525,12 @@ function CacheManagementSection() {
       {stats && (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 px-1 sm:grid-cols-4">
-            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Session</div><div className="text-sm font-bold">{runtimeStats.memoryEntries} entries</div></div>
-            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Memory size</div><div className="text-sm font-bold">{(runtimeStats.approximateBytes / 1024 / 1024).toFixed(1)} MB</div></div>
-            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Refreshing</div><div className="text-sm font-bold">{runtimeStats.pendingRequests}</div></div>
-            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-[10px] uppercase text-white/30">Errors</div><div className="text-sm font-bold">{runtimeStats.errorEntries}</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Session</div><div className="text-sm font-bold">{runtimeStats.memoryEntries} entries</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Memory size</div><div className="text-sm font-bold">{(runtimeStats.approximateBytes / 1024 / 1024).toFixed(1)} MB</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Refreshing</div><div className="text-sm font-bold">{runtimeStats.pendingRequests}</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Errors</div><div className="text-sm font-bold">{runtimeStats.errorEntries}</div></div>
           </div>
-          <div className="px-1 text-[11px] text-white/35">Last refresh: {runtimeStats.lastRefreshTime ? new Date(runtimeStats.lastRefreshTime).toLocaleString() : 'Not this session'}</div>
+          <div className="px-1 text-label text-white/60">Last refresh: {runtimeStats.lastRefreshTime ? new Date(runtimeStats.lastRefreshTime).toLocaleString() : 'Not this session'}</div>
           <div className="flex items-center justify-between px-1">
             <span className="text-xs text-muted">{stats.totalEntries} cached entries ({stats.expiredEntries} expired)</span>
             <div className="flex gap-2">
@@ -536,7 +548,7 @@ function CacheManagementSection() {
           {Object.entries(stats.byCategory).filter(([, count]) => count > 0).map(([cat, count]) => (
             <div key={cat} className="flex items-center justify-between px-1 py-1">
               <span className="text-xs text-white/70">{categoryLabels[cat] || cat} ({count})</span>
-              <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-[10px] font-bold cursor-pointer">
+              <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-meta font-bold cursor-pointer">
                 Clear
               </button>
             </div>
@@ -671,76 +683,73 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
     <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
       {/* Header */}
       <div className="px-6 pt-5 pb-1">
-        <h3 className="text-[15px] font-semibold text-white">Image Cache</h3>
-        <p className="text-[13px] text-white/40 mt-0.5">Control how posters and backdrops are stored on this device.</p>
+        <h3 className="text-sm font-semibold text-white">Image Cache</h3>
+        <p className="text-sm text-white/60 mt-0.5">Control how posters and backdrops are stored on this device.</p>
       </div>
 
       <div className="divide-y divide-white/[0.04]">
         {/* Image Quality */}
         <div>
           <div className="flex items-center justify-between gap-4 px-6 py-4">
-            <p className="text-[14px] text-white font-medium">Image Quality</p>
+            <p className="text-sm text-white font-medium">Image Quality</p>
             <div className="relative">
-              <select
-                value={store.imageQuality}
+              <SelectMenu
+                aria-label="Image cache quality" value={store.imageQuality}
                 onChange={(e) => store.setImageQuality(e.target.value as 'data-saver' | 'balanced' | 'high')}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
               >
                 {qualityOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
-              </select>
-              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+              </SelectMenu>
             </div>
           </div>
-          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">{currentQuality.desc}</p>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">{currentQuality.desc}</p>
         </div>
 
         {/* Disk Cache Size */}
         <div>
           <div className="flex items-center justify-between gap-4 px-6 py-4">
-            <p className="text-[14px] text-white font-medium">Disk Cache Size</p>
+            <p className="text-sm text-white font-medium">Disk Cache Size</p>
             <div className="relative">
-              <select
-                value={store.imageCacheSizeMb}
+              <SelectMenu
+                aria-label="Image cache size limit" value={store.imageCacheSizeMb}
                 onChange={(e) => store.setImageCacheSizeMb(Number(e.target.value))}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
               >
                 {sizeOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
-              </select>
-              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+              </SelectMenu>
             </div>
           </div>
-          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
         </div>
 
         {/* Keep Images For */}
         <div>
           <div className="flex items-center justify-between gap-4 px-6 py-4">
-            <p className="text-[14px] text-white font-medium">Keep Images For</p>
+            <p className="text-sm text-white font-medium">Keep Images For</p>
             <div className="relative">
-              <select
-                value={store.imageKeepDays}
+              <SelectMenu
+                aria-label="Image cache retention" value={store.imageKeepDays}
                 onChange={(e) => store.setImageKeepDays(Number(e.target.value))}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-[13px] text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
               >
                 {keepOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
-              </select>
-              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+              </SelectMenu>
             </div>
           </div>
-          <p className="px-6 pb-4 text-[12px] text-white/35 leading-relaxed -mt-1">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
         </div>
 
         {/* Cache in Use + Clear */}
         <div className="px-6 py-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-[14px] text-white font-medium">Cache in Use</p>
-            <span className="text-[14px] text-white/50 font-semibold tabular-nums">
+            <p className="text-sm text-white font-medium">Cache in Use</p>
+            <span className="text-sm text-white/50 font-semibold tabular-nums">
               {cacheInUseMb == null ? '—' : `${cacheInUseMb} MB`}
             </span>
           </div>
@@ -748,12 +757,12 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
             <button
               onClick={handleClear}
               disabled={clearing}
-              className="text-[14px] font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+              className="text-sm font-semibold transition-colors disabled:opacity-50 cursor-pointer"
               style={{ color: cleared ? 'rgb(134 239 172)' : 'rgb(239 68 68)' }}
             >
               {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : 'Clear Image Cache'}
             </button>
-            <p className="text-[12px] text-white/35 mt-1.5 leading-relaxed">Images re-download as needed after clearing.</p>
+            <p className="text-xs text-white/60 mt-1.5 leading-relaxed">Images re-download as needed after clearing.</p>
           </div>
         </div>
       </div>
@@ -830,7 +839,7 @@ function ArtworkSettingsSection() {
       <SettingSection description="Custom URL patterns replace the default artwork everywhere. Use placeholders: {imdb_id}, {tmdb_id}, {tvdb_id}, {mal_id}, {anilist_id}, {type}, {season}, {episode}">
         <SettingRow label="Poster URL pattern" description="e.g. https://example.com/poster/{imdb_id}.jpg">
           <div className="flex items-center gap-2">
-            <select
+            <SelectMenu
               value={customArtUrls.posterUrl === btttrPosterUrl ? btttrPosterUrl : customArtUrls.posterUrl ? 'custom' : ''}
               onChange={(e) => {
                 if (e.target.value === 'custom') updateCustomUrl('posterUrl', 'https://example.com/poster/{imdb_id}.jpg')
@@ -841,7 +850,7 @@ function ArtworkSettingsSection() {
               <option value="">None</option>
               <option value={btttrPosterUrl}>btttr.cc</option>
               <option value="custom">Custom</option>
-            </select>
+            </SelectMenu>
             <input
               type="text"
               value={customArtUrls.posterUrl}
@@ -881,10 +890,10 @@ function ArtworkSettingsSection() {
       </SettingSection>
 
       <div className="mt-4 px-1">
-        <p className="text-xs text-white/30">Custom URL patterns take priority over all providers. If a pattern is set and resolves successfully (all placeholders filled, valid URL), it replaces the default art everywhere — home, discover, detail pages, and cards.</p>
+        <p className="text-xs text-white/50">Custom URL patterns take priority over all providers. If a pattern is set and resolves successfully (all placeholders filled, valid URL), it replaces the default art everywhere — home, discover, detail pages, and cards.</p>
         <div className="mt-3 bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
           <p className="text-xs font-semibold text-white/50 mb-2">Available placeholders</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-white/40">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-white/60">
             <span><code className="text-accent/70">{'{imdb_id}'}</code> — IMDb ID (tt1234567)</span>
             <span><code className="text-accent/70">{'{tmdb_id}'}</code> — TMDb numeric ID</span>
             <span><code className="text-accent/70">{'{tvdb_id}'}</code> — TVDb numeric ID</span>
@@ -977,7 +986,7 @@ function SearchSettingsSection() {
 
       <SettingSection title="AI-Powered Search" description="Configure the AI model in the Accounts tab under OpenRouter.">
         <SettingRow label="Status" description="AI search uses your OpenRouter API key to interpret natural language queries.">
-          <span className={`text-xs font-semibold ${openrouterApiKey ? 'text-green-400' : 'text-white/30'}`}>
+          <span className={`text-xs font-semibold ${openrouterApiKey ? 'text-green-400' : 'text-white/50'}`}>
             {openrouterApiKey ? `Active — ${openrouterModel || 'default model'}` : 'Not configured'}
           </span>
         </SettingRow>
@@ -1009,7 +1018,7 @@ function SortablePriorityItem({ id, label, connected }: PriorityItemProps) {
         <button
           {...attributes}
           {...listeners}
-          className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/5 cursor-grab text-white/40 hover:text-white transition-colors"
+          className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/5 cursor-grab text-white/60 hover:text-white transition-colors"
           type="button"
           aria-label={`Drag ${label}`}
         >
@@ -1020,8 +1029,8 @@ function SortablePriorityItem({ id, label, connected }: PriorityItemProps) {
         <span className="text-sm font-semibold text-white">{label}</span>
       </div>
       <div>
-        <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider ${
-          connected ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-white/5 text-white/30 border border-white/5'
+        <span className={`text-meta font-bold px-2 py-1 rounded-full uppercase tracking-wider ${
+          connected ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-white/5 text-white/50 border border-white/5'
         }`}>
           {connected ? 'Connected' : 'Not Connected'}
         </span>
@@ -1111,12 +1120,12 @@ function ManualHeroPicker() {
   }, [query])
 
   return <div className="w-80">
-    {selected && <div className="mb-2 flex items-center justify-between rounded-xl bg-white/[.05] px-3 py-2 text-xs"><span className="truncate">{selected.title}{selected.year ? ` (${selected.year})` : ''}</span><button onClick={() => setSelected(null)} className="ml-2 text-white/45 hover:text-white">Remove</button></div>}
+    {selected && <div className="mb-2 flex items-center justify-between rounded-xl bg-white/[.05] px-3 py-2 text-xs"><span className="truncate">{selected.title}{selected.year ? ` (${selected.year})` : ''}</span><button onClick={() => setSelected(null)} className="ml-2 text-white/60 hover:text-white">Remove</button></div>}
     <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search movies and shows…" className="w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm outline-none focus:border-accent/50" />
     {(loading || results.length > 0) && <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-white/[.08] bg-[#151515] p-1 shadow-2xl">
-      {loading ? <p className="px-3 py-2 text-xs text-white/40">Searching…</p> : results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => { setSelected(item); setQuery(''); setResults([]) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-white/[.08]">
+      {loading ? <p className="px-3 py-2 text-xs text-white/60">Searching…</p> : results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => { setSelected(item); setQuery(''); setResults([]) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-white/[.08]">
         {item.poster && <img src={item.poster} alt="" className="h-12 w-8 rounded object-cover" />}
-        <span className="min-w-0"><span className="block truncate text-sm font-semibold">{item.title}</span><span className="text-xs text-white/40">{item.year || 'Unknown year'} · {item.type === 'series' ? 'Show' : 'Movie'}</span></span>
+        <span className="min-w-0"><span className="block truncate text-sm font-semibold">{item.title}</span><span className="text-xs text-white/60">{item.year || 'Unknown year'} · {item.type === 'series' ? 'Show' : 'Movie'}</span></span>
       </button>)}
     </div>}
   </div>
@@ -2045,7 +2054,7 @@ export default function SettingsPage() {
       <div className="settings-page__nav w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
         {categories.map((cat) => (
           <div key={cat.title}>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-white/30 px-3 mb-1.5">{cat.title}</div>
+            <div className="text-meta font-bold uppercase tracking-wider text-white/50 px-3 mb-1.5">{cat.title}</div>
             <div className="space-y-0.5">
               {cat.items.map((item) => {
                 const active = activeTab === item.id
@@ -2053,13 +2062,13 @@ export default function SettingsPage() {
                   <button
                     key={item.id}
                     onClick={() => { setActiveTab(item.id as any) }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-[7px] text-[13px] font-medium rounded-lg transition-all cursor-pointer text-left ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-[7px] text-sm font-medium rounded-lg transition-all cursor-pointer text-left ${
                       active
                         ? 'bg-white/[0.08] text-white'
                         : 'text-white/50 hover:text-white/70 hover:bg-white/[0.04]'
                     }`}
                   >
-                    <span className={active ? 'text-white/80' : 'text-white/35'}>{item.icon}</span>
+                    <span className={active ? 'text-white/80' : 'text-white/60'}>{item.icon}</span>
                     <span className="settings-page__nav-label">{item.label}</span>
                   </button>
                 )
@@ -2072,7 +2081,7 @@ export default function SettingsPage() {
       {/* ─── Right Content ─── */}
       <div className="settings-page__content flex-1 min-w-0 overflow-y-auto p-8 pt-32">
         <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
-        <p className="text-[13px] text-white/35 mb-8">{activeItem?.description ?? ''}</p>
+        <p className="text-sm text-white/60 mb-8">{activeItem?.description ?? ''}</p>
 
         <div className="settings-page__content-inner space-y-6 max-w-3xl">
 
@@ -2098,7 +2107,7 @@ export default function SettingsPage() {
                           <p className="text-sm font-bold text-white">
                             {store.traktAccount?.name ?? store.traktAccount?.username ?? 'Trakt User'}
                           </p>
-                          <p className="text-xs text-white/40 mt-0.5">Connected to Trakt</p>
+                          <p className="text-xs text-white/60 mt-0.5">Connected to Trakt</p>
                         </div>
                       </div>
                       <button
@@ -2111,7 +2120,7 @@ export default function SettingsPage() {
                   ) : (
                     <div className="space-y-4">
                       {hasBundledTrakt ? (
-                        <p className="text-sm text-white/40">Connect your Trakt account with device authorization.</p>
+                        <p className="text-sm text-white/60">Connect your Trakt account with device authorization.</p>
                       ) : (
                         <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
                           <p className="text-sm text-yellow-200">
@@ -2140,13 +2149,13 @@ export default function SettingsPage() {
                         </div>
                       ) : (
                         <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.06]">
-                          <p className="text-sm text-white/40 mb-3">
+                          <p className="text-sm text-white/60 mb-3">
                             1. Go to{' '}
                             <a href={traktCode.verificationUrl} target="_blank" rel="noopener noreferrer" className="text-accent underline font-medium">
                               {traktCode.verificationUrl}
                             </a>
                           </p>
-                          <p className="text-sm text-white/40 mb-4">2. Enter this PIN code:</p>
+                          <p className="text-sm text-white/60 mb-4">2. Enter this PIN code:</p>
                           <div className="flex items-center gap-3 mb-4">
                             <span className="font-mono text-3xl font-bold text-accent tracking-widest select-all">{traktCode.userCode}</span>
                             <button
@@ -2159,7 +2168,7 @@ export default function SettingsPage() {
                           {traktPolling && (
                             <div className="flex items-center gap-2">
                               <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                              <span className="text-xs text-white/40">Waiting for you to authorize...</span>
+                              <span className="text-xs text-white/60">Waiting for you to authorize...</span>
                             </div>
                           )}
                         </div>
@@ -2167,7 +2176,7 @@ export default function SettingsPage() {
                       {(!hasBundledTrakt || showTraktAdvanced) && (
                         <div className="space-y-4 pt-4 border-t border-white/[0.06]">
                           <div>
-                            <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Client ID</label>
+                            <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">Client ID</label>
                             <input
                               type="text"
                               value={store.traktClientId}
@@ -2177,7 +2186,7 @@ export default function SettingsPage() {
                             />
                           </div>
                           <div>
-                            <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Client Secret</label>
+                            <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">Client Secret</label>
                             <input
                               type="password"
                               value={store.traktClientSecret}
@@ -2185,7 +2194,7 @@ export default function SettingsPage() {
                               placeholder="Paste your Trakt app Client Secret"
                               className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
                             />
-                            <p className="text-xs text-white/35 mt-1.5">
+                            <p className="text-xs text-white/60 mt-1.5">
                               This is stored locally on this device. Bundling a shared Trakt client secret would expose it in the released app.
                             </p>
                           </div>
@@ -2215,7 +2224,7 @@ export default function SettingsPage() {
                             <p className="text-sm font-bold text-white">
                               {simklStatus.account?.username ?? store.simklAccount?.username ?? 'Simkl User'}
                             </p>
-                            <p className="text-xs text-white/40 mt-0.5">
+                            <p className="text-xs text-white/60 mt-0.5">
                               {simklLastSync ? `Last sync: ${new Date(simklLastSync).toLocaleString()}` : 'Never synced'}
                             </p>
                           </div>
@@ -2237,7 +2246,7 @@ export default function SettingsPage() {
                         </div>
                       </div>
                       {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
+                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
                           {simklError}
                         </p>
                       )}
@@ -2246,7 +2255,7 @@ export default function SettingsPage() {
                     <div className="space-y-4">
                       <div>
                         <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
-                        <p className="text-xs text-white/40 leading-relaxed">
+                        <p className="text-xs text-white/60 leading-relaxed">
                           Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
                         </p>
                       </div>
@@ -2268,18 +2277,18 @@ export default function SettingsPage() {
                         </button>
                       </div>
                       {simklVerificationUrl && (
-                        <p className="text-xs text-white/40">
+                        <p className="text-xs text-white/60">
                           Verification page: <span className="font-mono text-white/80">{simklVerificationUrl}</span>
                         </p>
                       )}
-                      <button onClick={cancelSimklAuth} className="text-xs text-white/40 hover:text-white transition-colors cursor-pointer">Cancel</button>
+                      <button onClick={cancelSimklAuth} className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer">Cancel</button>
                       {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/40' : 'text-red-400'}`}>{simklError}</p>
+                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/60' : 'text-red-400'}`}>{simklError}</p>
                       )}
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <p className="text-sm text-white/40">
+                      <p className="text-sm text-white/60">
                         Connect your Simkl account to sync your watchlist, watching, and watch history.
                       </p>
                       <button
@@ -2333,22 +2342,22 @@ export default function SettingsPage() {
                         </div>
                       )}
                       <div>
-                        <p className="text-xs text-white/40">Connected as</p>
+                        <p className="text-xs text-white/60">Connected as</p>
                         <p className="text-sm font-semibold text-white">{store.anilistAccount.name}</p>
                       </div>
                     </div>
                   )}
 
-                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/40'}`}>{anilistMessage}</p>}
+                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/60'}`}>{anilistMessage}</p>}
 
                   {/* Manual Token Fallback */}
                   <div className="pt-4 border-t border-white/[0.06]">
                     <details className="group">
-                      <summary className="text-xs text-white/30 hover:text-white/50 cursor-pointer select-none font-semibold">
+                      <summary className="text-xs text-white/50 hover:text-white/50 cursor-pointer select-none font-semibold">
                         Advanced: Manual Token Entry
                       </summary>
                       <div className="mt-3 space-y-3">
-                        <label className="text-xs text-white/40 block font-semibold uppercase tracking-wider">Manual Access Token</label>
+                        <label className="text-xs text-white/60 block font-semibold uppercase tracking-wider">Manual Access Token</label>
                         <div className="flex gap-2">
                           <input
                             type="password"
@@ -2365,7 +2374,7 @@ export default function SettingsPage() {
                             Save Manual Token
                           </button>
                         </div>
-                        <p className="text-[11px] text-white/30 leading-relaxed">
+                        <p className="text-label text-white/50 leading-relaxed">
                           Alternatively, you can generate a token via AniList's developer portal/client authorization flow and paste it here directly.
                         </p>
                       </div>
@@ -2383,7 +2392,7 @@ export default function SettingsPage() {
                         <div className="h-3.5 w-3.5 rounded-full bg-accent" />
                         <div>
                           <p className="text-sm font-semibold text-white">{torBoxUser.email}</p>
-                          <p className="mt-0.5 text-xs text-white/40">Connected · {['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`}</p>
+                          <p className="mt-0.5 text-xs text-white/60">Connected · {['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`}</p>
                         </div>
                       </div>
                       <button onClick={handleTorBoxDisconnect} className="rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/20">
@@ -2393,19 +2402,19 @@ export default function SettingsPage() {
                   ) : torBoxDevice ? (
                     <div className="space-y-3 rounded-xl border border-accent/20 bg-accent/[0.05] p-4">
                       <p className="text-sm font-semibold text-white">Authorize Aurales in TorBox</p>
-                      <p className="text-xs leading-relaxed text-white/45">The TorBox page opened in your browser. Enter this code if requested:</p>
+                      <p className="text-xs leading-relaxed text-white/60">The TorBox page opened in your browser. Enter this code if requested:</p>
                       <div className="font-mono text-2xl font-black tracking-[0.3em] text-accent">{torBoxDevice.code}</div>
                       <a href={torBoxDevice.friendly_verification_url} target="_blank" rel="noreferrer" className="block text-xs text-accent hover:underline">{torBoxDevice.friendly_verification_url}</a>
-                      <button onClick={handleTorBoxDisconnect} className="text-xs text-white/40 hover:text-white">Cancel</button>
+                      <button onClick={handleTorBoxDisconnect} className="text-xs text-white/60 hover:text-white">Cancel</button>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <p className="text-sm leading-relaxed text-white/45">Aurales checks torrent hashes in the TorBox cache and only prepares cached files. Uncached downloads are never started automatically.</p>
+                      <p className="text-sm leading-relaxed text-white/60">Aurales checks torrent hashes in the TorBox cache and only prepares cached files. Uncached downloads are never started automatically.</p>
                       <button onClick={handleTorBoxConnect} disabled={torBoxLoading} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent/80 disabled:opacity-50">
                         {torBoxLoading ? 'Connecting…' : 'Connect TorBox'}
                       </button>
                       <details className="border-t border-white/[0.06] pt-3">
-                        <summary className="cursor-pointer select-none text-xs font-semibold text-white/30 hover:text-white/50">Advanced: Manual API Token</summary>
+                        <summary className="cursor-pointer select-none text-xs font-semibold text-white/50 hover:text-white/50">Advanced: Manual API Token</summary>
                         <div className="mt-3 flex gap-2">
                           <input type="password" value={torBoxTokenInput} onChange={(event) => setTorBoxTokenInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && handleTorBoxManualConnect()} placeholder="Paste TorBox API token" className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" />
                           <button onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-40">Save</button>
@@ -2413,7 +2422,7 @@ export default function SettingsPage() {
                       </details>
                     </div>
                   )}
-                  {torBoxMessage && <p className={`text-xs ${/error|failed|expired|invalid/i.test(torBoxMessage) ? 'text-red-400' : 'text-white/40'}`}>{torBoxMessage}</p>}
+                  {torBoxMessage && <p className={`text-xs ${/error|failed|expired|invalid/i.test(torBoxMessage) ? 'text-red-400' : 'text-white/60'}`}>{torBoxMessage}</p>}
                 </div>
               </SettingSection>
 
@@ -2427,7 +2436,7 @@ export default function SettingsPage() {
                           <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
                           <div>
                             <span className="text-sm font-semibold text-white">Connected</span>
-                            <p className="text-xs text-white/40 mt-0.5">{stremioAuth.email}</p>
+                            <p className="text-xs text-white/60 mt-0.5">{stremioAuth.email}</p>
                           </div>
                         </div>
                         <div className="flex gap-2">
@@ -2446,13 +2455,13 @@ export default function SettingsPage() {
                           </button>
                         </div>
                       </div>
-                      {stremioError && <p className="text-xs text-white/40">{stremioError}</p>}
+                      {stremioError && <p className="text-xs text-white/60">{stremioError}</p>}
                     </div>
                   ) : (
                     <div className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
+                          <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
                           <input
                             type="email"
                             value={stremioEmail}
@@ -2462,7 +2471,7 @@ export default function SettingsPage() {
                           />
                         </div>
                         <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
+                          <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
                           <input
                             type="password"
                             value={stremioPassword}
@@ -2481,7 +2490,7 @@ export default function SettingsPage() {
                         {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
                       </button>
                       <div className="pt-4 border-t border-white/[0.06]">
-                        <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
+                        <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
                         <div className="flex gap-2">
                           <input
                             type="password"
@@ -2499,7 +2508,7 @@ export default function SettingsPage() {
                             Import
                           </button>
                         </div>
-                        <p className="text-xs text-white/35 mt-1.5 leading-relaxed">
+                        <p className="text-xs text-white/60 mt-1.5 leading-relaxed">
                           Use this if your Stremio account uses social login or Stremio rejects the password with "Wrong passphrase".
                         </p>
                       </div>
@@ -2520,7 +2529,7 @@ export default function SettingsPage() {
               <SettingSection title="PublicMetaDB (PMDB)" description="Sync watch history, scrobbles, skip timestamps, and continue watching.">
                 <div className="px-6 py-4 space-y-3">
                   <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">PublicMetaDB API Key</label>
+                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">PublicMetaDB API Key</label>
                     <input
                       type="password"
                       value={store.pmdbApiKey}
@@ -2528,7 +2537,7 @@ export default function SettingsPage() {
                       placeholder="pm-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                       className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
                     />
-                    <p className="text-[11px] text-white/30 mt-1">
+                    <p className="text-label text-white/50 mt-1">
                       Get your API key at{' '}
                       <a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-accent hover:underline">publicmetadb.com</a>
                     </p>
@@ -2560,7 +2569,7 @@ export default function SettingsPage() {
                         <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
                           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           Connected
-                          {pmdbConnStatus.resumeCount != null && <span className="text-white/30 ml-1">({pmdbConnStatus.resumeCount} resume points)</span>}
+                          {pmdbConnStatus.resumeCount != null && <span className="text-white/50 ml-1">({pmdbConnStatus.resumeCount} resume points)</span>}
                         </span>
                       ) : (
                         <span className="flex items-center gap-1.5 text-sm text-red-400">
@@ -2579,7 +2588,7 @@ export default function SettingsPage() {
               <SettingSection title="IntroDB" description="Intro, recap, and credits skip timestamps for TV episodes.">
                 <div className="px-6 py-4 space-y-3">
                   <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">IntroDB API Key</label>
+                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">IntroDB API Key</label>
                     <input
                       type="password"
                       value={store.introdbApiKey}
@@ -2587,7 +2596,7 @@ export default function SettingsPage() {
                       placeholder="Enter your IntroDB API key"
                       className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
                     />
-                    <p className="text-[11px] text-white/30 mt-1">
+                    <p className="text-label text-white/50 mt-1">
                       Get your API key at{' '}
                       <a href="https://introdb.app" target="_blank" rel="noreferrer" className="text-accent hover:underline">introdb.app</a>
                       {' '}-- docs:{' '}
@@ -2624,7 +2633,7 @@ export default function SettingsPage() {
                   </div>
 
                   <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
+                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
                     <input
                       type="password"
                       value={store.mdblistApiKey}
@@ -2632,7 +2641,7 @@ export default function SettingsPage() {
                       placeholder="Enter your MDBList API key"
                       className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
                     />
-                    <p className="text-[11px] text-white/30 mt-1">
+                    <p className="text-label text-white/50 mt-1">
                       Optional fallback. Empty key still uses Aurales' built-in MDBList key for ratings only. Account features use OAuth or your own key. API docs:{' '}
                       <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
                     </p>
@@ -2664,7 +2673,7 @@ export default function SettingsPage() {
                         <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
                           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           Connected
-                          {mdblistConnStatus.user?.username && <span className="text-white/30 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
+                          {mdblistConnStatus.user?.username && <span className="text-white/50 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
                         </span>
                       ) : (
                         <span className="flex items-center gap-1.5 text-sm text-red-400">
@@ -2726,7 +2735,7 @@ export default function SettingsPage() {
                   />
                 </SettingRow>
                 <SettingRow label="Model" description="Select the AI model for search and translation.">
-                  <select
+                  <SelectMenu
                     value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'}
                     onChange={(e) => {
                       if (e.target.value === 'custom') {
@@ -2743,7 +2752,7 @@ export default function SettingsPage() {
                     <option value="deepseek/deepseek-chat">DeepSeek V3</option>
                     <option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option>
                     <option value="custom">Custom Model</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 {!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && (
                   <SettingRow label="Custom Model ID" description="Enter any valid OpenRouter model identifier.">
@@ -2804,7 +2813,7 @@ export default function SettingsPage() {
                             aria-label={`Rename ${addon.manifest.name}`}
                             className="w-full max-w-sm rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-bold text-white outline-none hover:border-white/10 hover:bg-white/[0.04] focus:border-accent/50 focus:bg-white/[0.06]"
                           />
-                          <div className="text-xs text-white/35 truncate mt-0.5">{addon.manifest.description || addon.url}</div>
+                          <div className="text-xs text-white/60 truncate mt-0.5">{addon.manifest.description || addon.url}</div>
 
                         </div>
                       </div>
@@ -2828,7 +2837,7 @@ export default function SettingsPage() {
                   ))
                 ) : (
                   <div className="px-6 py-8 text-center">
-                    <p className="text-sm text-white/30 italic">No custom addons installed.</p>
+                    <p className="text-sm text-white/50 italic">No custom addons installed.</p>
                   </div>
                 )}
               </SettingSection>
@@ -2886,7 +2895,7 @@ export default function SettingsPage() {
                           className={`flex h-8 items-center justify-center rounded-full border px-3.5 text-xs font-bold transition-all cursor-pointer ${
                             active
                               ? 'border-white/25 bg-white/12 text-white shadow-[inset_0_1px_rgba(255,255,255,0.08),0_8px_20px_rgba(0,0,0,0.16)]'
-                              : 'border-white/5 bg-white/5 text-white/55 hover:border-white/12 hover:bg-white/9 hover:text-white'
+                              : 'border-white/5 bg-white/5 text-white/60 hover:border-white/12 hover:bg-white/9 hover:text-white'
                           }`}
                         >
                           {labelMap[opt]}
@@ -2955,7 +2964,7 @@ export default function SettingsPage() {
                       onChange={(e) => store.setTrailerVolume(Number(e.target.value))}
                       className="w-full accent-white"
                     />
-                    <span className="w-10 text-right text-[12px] font-semibold text-white/60">{store.trailerVolume}%</span>
+                    <span className="w-10 text-right text-xs font-semibold text-white/60">{store.trailerVolume}%</span>
                   </div>
                 </SettingRow>
                 <SettingRow label="Hero trailer delay" description="Automatically starts a muted trailer in the Hero banner after this delay.">
@@ -3005,7 +3014,7 @@ export default function SettingsPage() {
                           className={`flex items-center justify-between p-3 rounded-xl border text-left transition-colors cursor-pointer ${
                             enabled
                               ? 'bg-accent/10 border-accent/40 text-white'
-                              : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:bg-white/[0.06] hover:text-white/70'
+                              : 'bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/70'
                           }`}
                         >
                           <div className="flex items-center gap-2.5">
@@ -3060,12 +3069,12 @@ export default function SettingsPage() {
                   <SettingToggle checked={store.preferTvdbAnimeSeasons} onChange={store.setPreferTvdbAnimeSeasons} />
                 </SettingRow>
                 <SettingRow label="Anime titles" description="English is preferred in Auto mode, followed by Romaji and native titles.">
-                  <select value={store.animeTitleLanguage} onChange={(event) => store.setAnimeTitleLanguage(event.target.value as typeof store.animeTitleLanguage)} className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white">
+                  <SelectMenu value={store.animeTitleLanguage} onChange={(event) => store.setAnimeTitleLanguage(event.target.value as typeof store.animeTitleLanguage)} className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white">
                     <option value="auto">Auto</option>
                     <option value="english">English</option>
                     <option value="romaji">Romaji</option>
                     <option value="native">Native / Japanese</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Clear app metadata cache" description="Remove normalized metadata and addon-to-media mappings.">
                   <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Clear Cache</button>
@@ -3164,7 +3173,7 @@ export default function SettingsPage() {
                     Clear Cache
                   </button>
                 </SettingRow>
-                <p className="text-xs text-white/40 mt-2 px-1">Anime is displayed like normal shows using TVDB seasons and episodes. Addon metadata is ignored for anime display — addons are only used for streams and IDs.</p>
+                <p className="text-xs text-white/60 mt-2 px-1">Anime is displayed like normal shows using TVDB seasons and episodes. Addon metadata is ignored for anime display — addons are only used for streams and IDs.</p>
               </SettingSection>
 
             </>
@@ -3192,7 +3201,7 @@ export default function SettingsPage() {
               {/* ─── Global Settings ─── */}
               <SettingSection title="Continue Watching" description="Every connected service has its own Continue Watching — switch between them directly on the Home row. Use each service's 'Save Resume Position' below to opt out.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
-                  <select
+                  <SelectMenu
                     value={store.continueWatchingLimit}
                     onChange={(e) => store.setContinueWatchingLimit(Number(e.target.value))}
                     className="w-28 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
@@ -3201,7 +3210,7 @@ export default function SettingsPage() {
                     <option value={10}>10 items</option>
                     <option value={20}>20 items</option>
                     <option value={50}>50 items</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
 
               </SettingSection>
@@ -3219,7 +3228,7 @@ export default function SettingsPage() {
               {/* ─── Anime Tracking ─── */}
               <SettingSection title="Anime Tracking" description="Choose your anime progress provider and watched source.">
                 <SettingRow label="Provider" description="Where anime watch progress is tracked.">
-                  <select
+                  <SelectMenu
                     value={store.animeTrackingProvider}
                     onChange={(e) => store.setAnimeTrackingProvider(e.target.value as any)}
                     className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
@@ -3228,7 +3237,7 @@ export default function SettingsPage() {
                     <option value="simkl">Simkl</option>
                     <option value="trakt">Trakt</option>
                     <option value="local">Local Only</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
 
               </SettingSection>
@@ -3355,7 +3364,7 @@ export default function SettingsPage() {
 
                   {svc.setSyncFreq && svc.syncFreqValue !== null && (
                     <SettingRow label="Sync Frequency" description="How often to pull data in the background.">
-                      <select
+                      <SelectMenu
                         value={svc.syncFreqValue}
                         onChange={(e) => svc.setSyncFreq!(e.target.value)}
                         className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
@@ -3364,7 +3373,7 @@ export default function SettingsPage() {
                         <option value="every_5">Every 5 Minutes</option>
                         <option value="every_15">Every 15 Minutes</option>
                         <option value="manual">Manual Only</option>
-                      </select>
+                      </SelectMenu>
                     </SettingRow>
                   )}
 
@@ -3400,12 +3409,12 @@ export default function SettingsPage() {
               ))}
 
               {simklError && (
-                <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
+                <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
                   {simklError}
                 </p>
               )}
               {anilistMessage && (
-                <p className={`text-xs px-1 ${anilistMessage.includes('failed') ? 'text-red-400' : 'text-white/40'}`}>
+                <p className={`text-xs px-1 ${anilistMessage.includes('failed') ? 'text-red-400' : 'text-white/60'}`}>
                   {anilistMessage}
                 </p>
               )}
@@ -3425,11 +3434,11 @@ export default function SettingsPage() {
                 <div className="px-6 py-5 space-y-4">
                   <div className="flex items-center justify-between gap-4">
                     <p className="text-sm font-bold text-white/85">Preferred languages</p>
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-bold text-white/40">{store.preferredAudio.length} selected</span>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-meta font-bold text-white/60">{store.preferredAudio.length} selected</span>
                   </div>
                   <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
                     {store.preferredAudio.length === 0 ? (
-                      <span className="text-xs text-white/30 italic">No preferred audio languages. System default will be used.</span>
+                      <span className="text-xs text-white/50 italic">No preferred audio languages. System default will be used.</span>
                     ) : (
                       store.preferredAudio.map((code) => {
                         const lang = APP_LANGUAGES.find((l) => l.code === code)
@@ -3445,9 +3454,9 @@ export default function SettingsPage() {
                   </div>
 
                   <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
-                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/55 transition-colors hover:text-white/85">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/60 transition-colors hover:text-white/85">
                       Add another language
-                      <span className="text-lg font-light text-white/35 transition-transform group-open:rotate-45">+</span>
+                      <span className="text-lg font-light text-white/60 transition-transform group-open:rotate-45">+</span>
                     </summary>
                     <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {APP_LANGUAGES.filter((lang) => !store.preferredAudio.includes(lang.code)).map((lang) => (
@@ -3469,7 +3478,7 @@ export default function SettingsPage() {
               <SettingSection title="Subtitle Preferences" description="Choose how subtitles should appear when playback starts.">
                 <div className="px-6 py-5 space-y-5">
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-2">
-                    <div className="px-2.5 pb-2 pt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/35">Playback behavior</div>
+                    <div className="px-2.5 pb-2 pt-1 text-meta font-bold uppercase tracking-[0.16em] text-white/60">Playback behavior</div>
                     <div className="grid gap-2 md:grid-cols-3">
                     {[
                       { id: 'show', title: 'Show subtitles', description: 'Always select your preferred subtitle language.', symbol: 'CC' },
@@ -3484,9 +3493,9 @@ export default function SettingsPage() {
                           onClick={() => store.setSubtitleMode(mode.id as 'show' | 'forced' | 'hide')}
                           className={`group relative min-h-[96px] rounded-xl border px-3.5 py-3 text-left transition-all cursor-pointer ${active ? 'border-accent/70 bg-accent/10 shadow-[0_0_0_1px_rgba(16,185,129,0.1)]' : 'border-transparent bg-transparent hover:border-white/[0.1] hover:bg-white/[0.04]'}`}
                         >
-                          <span className={`mb-2 grid h-7 w-7 place-items-center rounded-md text-[10px] font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.08] text-white/60'}`}>{mode.symbol}</span>
-                          <span className={`block text-[13px] font-bold ${active ? 'text-white' : 'text-white/75'}`}>{mode.title}</span>
-                          <span className="mt-1 block text-[10px] leading-relaxed text-white/35">{mode.description}</span>
+                          <span className={`mb-2 grid h-7 w-7 place-items-center rounded-md text-meta font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.08] text-white/60'}`}>{mode.symbol}</span>
+                          <span className={`block text-sm font-bold ${active ? 'text-white' : 'text-white/75'}`}>{mode.title}</span>
+                          <span className="mt-1 block text-meta leading-relaxed text-white/60">{mode.description}</span>
                           {active && <span className="absolute right-3 top-3 text-xs font-black text-accent">✓</span>}
                         </button>
                       )
@@ -3497,13 +3506,13 @@ export default function SettingsPage() {
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <p className="text-sm font-bold text-white/85">Preferred languages</p>
-                      <p className="mt-0.5 text-[11px] text-white/35">Used to choose the best matching track.</p>
+                      <p className="mt-0.5 text-label text-white/60">Used to choose the best matching track.</p>
                     </div>
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-bold text-white/40">{store.preferredSubtitles.length} selected</span>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-meta font-bold text-white/60">{store.preferredSubtitles.length} selected</span>
                   </div>
                   <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
                     {store.preferredSubtitles.length === 0 ? (
-                      <span className="text-xs text-white/30 italic">No preferred subtitle languages. System default will be used.</span>
+                      <span className="text-xs text-white/50 italic">No preferred subtitle languages. System default will be used.</span>
                     ) : (
                       store.preferredSubtitles.map((code) => {
                         const lang = APP_LANGUAGES.find((l) => l.code === code)
@@ -3519,9 +3528,9 @@ export default function SettingsPage() {
                   </div>
 
                   <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
-                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/55 transition-colors hover:text-white/85">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/60 transition-colors hover:text-white/85">
                       Add another language
-                      <span className="text-lg font-light text-white/35 transition-transform group-open:rotate-45">+</span>
+                      <span className="text-lg font-light text-white/60 transition-transform group-open:rotate-45">+</span>
                     </summary>
                     <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {APP_LANGUAGES.filter((lang) => !store.preferredSubtitles.includes(lang.code)).map((lang) => (
@@ -3565,7 +3574,7 @@ export default function SettingsPage() {
                           >
                             <div>
                               <p className={`text-sm font-semibold ${active ? 'text-accent' : 'text-white'}`}>{preset.title}</p>
-                              <p className="text-xs text-white/35 mt-0.5">{preset.desc}</p>
+                              <p className="text-xs text-white/60 mt-0.5">{preset.desc}</p>
                             </div>
                             <svg className={`w-4 h-4 transition-colors ${active ? 'text-accent' : 'text-white/20'}`} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                               <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
@@ -3574,7 +3583,7 @@ export default function SettingsPage() {
                         )
                       })}
                     </div>
-                    <p className="text-[10px] text-white/30 italic">Apply a preset style or customize individual settings below</p>
+                    <p className="text-meta text-white/50 italic">Apply a preset style or customize individual settings below</p>
                   </div>
 
                   {/* AA Font */}
@@ -3593,7 +3602,7 @@ export default function SettingsPage() {
                           onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
                           className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
                         />
-                        <p className="text-[10px] text-white/30">Size at 720p reference - scales with screen</p>
+                        <p className="text-meta text-white/50">Size at 720p reference - scales with screen</p>
                       </div>
 
                       {/* Scale */}
@@ -3613,11 +3622,11 @@ export default function SettingsPage() {
                       {/* Bold & Italic Toggles */}
                       <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
                         <span className="text-xs font-semibold text-white/70">Bold</span>
-                        <SettingToggle checked={store.subtitleBold} onChange={(v) => store.setSubtitleBold(v)} />
+                        <SettingToggle label="Bold subtitles" checked={store.subtitleBold} onChange={(v) => store.setSubtitleBold(v)} />
                       </div>
                       <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
                         <span className="text-xs font-semibold text-white/70">Italic</span>
-                        <SettingToggle checked={store.subtitleItalic} onChange={(v) => store.setSubtitleItalic(v)} />
+                        <SettingToggle label="Italic subtitles" checked={store.subtitleItalic} onChange={(v) => store.setSubtitleItalic(v)} />
                       </div>
                     </div>
                   </div>
@@ -3629,8 +3638,8 @@ export default function SettingsPage() {
                       {/* Text Color */}
                       <div className="flex items-center justify-between px-5 py-3">
                         <span className="text-xs font-semibold text-white/70">Text Color</span>
-                        <select
-                          value={store.subtitleColor}
+                        <SelectMenu
+                          aria-label="Subtitle text colour" value={store.subtitleColor}
                           onChange={(e) => store.setSubtitleColor(e.target.value)}
                           className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
                         >
@@ -3641,14 +3650,14 @@ export default function SettingsPage() {
                           <option value="#00FF00">Green</option>
                           <option value="#FF88CC">Pink</option>
                           <option value="#888888">Gray</option>
-                        </select>
+                        </SelectMenu>
                       </div>
 
                       {/* Outline Color */}
                       <div className="flex items-center justify-between px-5 py-3">
                         <span className="text-xs font-semibold text-white/70">Outline Color</span>
-                        <select
-                          value={store.subtitleOutlineColor}
+                        <SelectMenu
+                          aria-label="Subtitle outline colour" value={store.subtitleOutlineColor}
                           onChange={(e) => store.setSubtitleOutlineColor(e.target.value)}
                           className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
                         >
@@ -3656,21 +3665,21 @@ export default function SettingsPage() {
                           <option value="#FFFFFF">White</option>
                           <option value="#FFFF00">Yellow</option>
                           <option value="#888888">Gray</option>
-                        </select>
+                        </SelectMenu>
                       </div>
 
                       {/* Background Color */}
                       <div className="flex items-center justify-between px-5 py-3">
                         <span className="text-xs font-semibold text-white/70">Background Color</span>
-                        <select
-                          value={store.subtitleBgColor}
+                        <SelectMenu
+                          aria-label="Subtitle background colour" value={store.subtitleBgColor}
                           onChange={(e) => store.setSubtitleBgColor(e.target.value)}
                           className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
                         >
                           <option value="#000000">Black</option>
                           <option value="#FFFFFF">White</option>
                           <option value="#888888">Gray</option>
-                        </select>
+                        </SelectMenu>
                       </div>
 
                       {/* Background Opacity */}
@@ -3696,15 +3705,15 @@ export default function SettingsPage() {
                       {/* Style select */}
                       <div className="flex items-center justify-between pb-1">
                         <span className="text-xs font-semibold text-white/70">Style</span>
-                        <select
-                          value={store.subtitleBorderStyle}
+                        <SelectMenu
+                          aria-label="Subtitle outline and shadow style" value={store.subtitleBorderStyle}
                           onChange={(e) => store.setSubtitleBorderStyle(e.target.value as any)}
                           className="w-40 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
                         >
                           <option value="outline">Outline & Shadow</option>
                           <option value="shadow">Shadow Only</option>
                           <option value="none">None</option>
-                        </select>
+                        </SelectMenu>
                       </div>
 
                       {/* Outline Thickness */}
@@ -3762,16 +3771,16 @@ export default function SettingsPage() {
                           <span className="text-accent font-bold">{store.subtitleVerticalPosition}</span>
                         </div>
                         <div className="flex items-center gap-2.5">
-                          <span className="text-[10px] text-white/30 w-10 text-left">Higher</span>
+                          <span className="text-meta text-white/50 w-10 text-left">Higher</span>
                           <input
                             type="range" min="50" max="150" step="1"
                             value={store.subtitleVerticalPosition}
                             onChange={(e) => store.setSubtitleVerticalPosition(Number(e.target.value))}
                             className="flex-grow h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
                           />
-                          <span className="text-[10px] text-white/30 w-10 text-right">Lower</span>
+                          <span className="text-meta text-white/50 w-10 text-right">Lower</span>
                         </div>
-                        <p className="text-[10px] text-white/30">100 = Default. Lower values move up, higher values push down.</p>
+                        <p className="text-meta text-white/50">100 = Default. Lower values move up, higher values push down.</p>
                       </div>
 
                       {/* Alignment */}
@@ -3832,24 +3841,24 @@ export default function SettingsPage() {
                       {/* Scale with Window Size */}
                       <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
                         <span className="text-xs font-semibold text-white/70">Scale with Window Size</span>
-                        <SettingToggle checked={store.subtitleScaleWithWindow} onChange={(v) => store.setSubtitleScaleWithWindow(v)} />
+                        <SettingToggle label="Scale subtitles with window size" checked={store.subtitleScaleWithWindow} onChange={(v) => store.setSubtitleScaleWithWindow(v)} />
                       </div>
 
                       {/* ASS Style Override */}
                       <div className="space-y-2 border-t border-white/[0.04] pt-4">
                         <div className="flex items-center justify-between pb-1">
                           <span className="text-xs font-semibold text-white/70">ASS Style Override</span>
-                          <select
-                            value={store.subtitleAssOverride}
+                          <SelectMenu
+                            aria-label="ASS style override" value={store.subtitleAssOverride}
                             onChange={(e) => store.setSubtitleAssOverride(e.target.value as any)}
                             className="w-48 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
                           >
                             <option value="apply">Apply Style Overrides</option>
                             <option value="scale_only">Scale Only</option>
                             <option value="ignore">Ignore Styles</option>
-                          </select>
+                          </SelectMenu>
                         </div>
-                        <p className="text-[10px] text-white/30">ASS override controls how styled subtitle files are handled. 'Scale Only' is recommended.</p>
+                        <p className="text-meta text-white/50">ASS override controls how styled subtitle files are handled. 'Scale Only' is recommended.</p>
                       </div>
                     </div>
                   </div>
@@ -3907,7 +3916,7 @@ export default function SettingsPage() {
                   <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
                 </SettingRow>
                 <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
-                  <select
+                  <SelectMenu
                     value={store.subtitleTranslationLang}
                     onChange={(e) => {
                       const language = e.target.value
@@ -3920,12 +3929,12 @@ export default function SettingsPage() {
                     {APP_LANGUAGES.map((lang) => (
                       <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
                     ))}
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
                   <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
                 </SettingRow>
-                <div className="px-6 py-3 text-xs text-white/30 leading-relaxed">
+                <div className="px-6 py-3 text-xs text-white/50 leading-relaxed">
                   {store.openrouterApiKey ? 'Ready (OpenRouter)' : 'OpenRouter API key required'}.
                   Subtitle text is sent to OpenRouter. No account data or viewing history is included.
                 </div>
@@ -3956,7 +3965,7 @@ export default function SettingsPage() {
                     const active = store.playerQualityProfile === value
                     return <button key={value} onClick={() => store.setPlayerQualityProfile(value)} className={`rounded-2xl border p-4 text-left transition-colors ${active ? 'border-accent/45 bg-accent/10 shadow-[0_0_0_1px_rgba(var(--accent-rgb),.08)]' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05]'}`}>
                       <div className="mb-1.5 flex items-center gap-2 text-sm font-bold text-white"><span className={`h-2 w-2 rounded-full ${active ? 'bg-accent' : 'bg-white/20'}`} />{label}</div>
-                      <p className="text-xs leading-relaxed text-white/45">{description}</p>
+                      <p className="text-xs leading-relaxed text-white/60">{description}</p>
                     </button>
                   })}
                 </div>
@@ -3966,10 +3975,10 @@ export default function SettingsPage() {
                 <details className="group">
                   <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
                     <div>
-                      <h3 className="text-[15px] font-semibold text-white">Troubleshooting</h3>
-                      <p className="text-[13px] text-white/40 mt-0.5">Isolated playback mode for diagnosing player issues.</p>
+                      <h3 className="text-sm font-semibold text-white">Troubleshooting</h3>
+                      <p className="text-sm text-white/60 mt-0.5">Isolated playback mode for diagnosing player issues.</p>
                     </div>
-                    <svg className="w-4 h-4 text-white/40 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                    <svg className="w-4 h-4 text-white/60 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
                   </summary>
                   <div className="divide-y divide-white/[0.04]">
                     <SettingRow
@@ -3979,14 +3988,14 @@ export default function SettingsPage() {
                       <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
                     </SettingRow>
                     <SettingRow label="Isolated hardware decoding" description="Compare GPU decoding against software decoding.">
-                      <select
+                      <SelectMenu
                         value={store.isolatedPlaybackHwdec}
                         onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
                         className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                       >
                         <option value="auto-safe">Auto-safe</option>
                         <option value="no">Software only</option>
-                      </select>
+                      </SelectMenu>
                     </SettingRow>
                     <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
                       <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
@@ -4105,7 +4114,7 @@ export default function SettingsPage() {
               {/* Hardware Decoding */}
               <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
                 <SettingRow label="Hardware decoding" description="Leave on Auto-detect unless video stutters or shows visual glitches.">
-                  <select
+                  <SelectMenu
                     value={store.hwdecMode}
                     onChange={(e) => store.setHwdecMode(e.target.value as any)}
                     className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
@@ -4115,14 +4124,14 @@ export default function SettingsPage() {
                     <option value="videotoolbox">macOS (VideoToolbox)</option>
                     <option value="nvdec">NVIDIA (nvdec)</option>
                     <option value="vaapi">Intel/AMD Linux (vaapi)</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
               </SettingSection>
 
               {/* Buffer */}
               <SettingSection title="Buffer Cache" description="Adjust cache to prevent buffering on slow networks.">
                 <SettingRow label="Memory cache size" description="How much of the stream is kept in memory. Larger helps on unstable connections.">
-                  <select
+                  <SelectMenu
                     value={store.cacheBufferSize}
                     onChange={(e) => store.setCacheBufferSize(e.target.value as any)}
                     className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
@@ -4130,7 +4139,7 @@ export default function SettingsPage() {
                     <option value="default">Default (150MB)</option>
                     <option value="large">Large (256MB)</option>
                     <option value="aggressive">Aggressive (512MB)</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Cache duration (seconds)" description="Amount of stream time to buffer ahead.">
                   <input
@@ -4228,14 +4237,14 @@ export default function SettingsPage() {
 
               <SettingSection title="Room Defaults" description="Default settings for new rooms you create.">
                 <SettingRow label="Default control mode" description="Who can control playback in rooms you host.">
-                  <select
+                  <SelectMenu
                     value={wtStore.defaultControlMode}
                     onChange={(e) => wtStore.setDefaultControlMode(e.target.value as 'host_only' | 'everyone')}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
                   >
                     <option value="host_only">Host only</option>
                     <option value="everyone">Everyone can control</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Require ready check" description="Wait for all participants before starting playback.">
                   <SettingToggle checked={wtStore.requireReadyCheck} onChange={(v) => wtStore.setRequireReadyCheck(v)} />
@@ -4250,7 +4259,7 @@ export default function SettingsPage() {
 
               <SettingSection title="Playback Sync" description="Fine-tune how playback synchronization works.">
                 <SettingRow label="Drift correction threshold" description="Seconds of drift before forcing a seek correction.">
-                  <select
+                  <SelectMenu
                     value={wtStore.driftThreshold}
                     onChange={(e) => wtStore.setDriftThreshold(Number(e.target.value))}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
@@ -4260,10 +4269,10 @@ export default function SettingsPage() {
                     <option value={3}>3 seconds</option>
                     <option value={5}>5 seconds</option>
                     <option value={10}>10 seconds</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Sync interval" description="How often the host broadcasts its playback position.">
-                  <select
+                  <SelectMenu
                     value={wtStore.syncInterval}
                     onChange={(e) => wtStore.setSyncInterval(Number(e.target.value))}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
@@ -4272,7 +4281,7 @@ export default function SettingsPage() {
                     <option value={5}>5 seconds</option>
                     <option value={10}>10 seconds</option>
                     <option value={15}>15 seconds</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
               </SettingSection>
             </>
@@ -4286,7 +4295,7 @@ export default function SettingsPage() {
               {/* Discovery Preferences */}
               <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
                 <SettingRow label="Region">
-                  <select
+                  <SelectMenu
                     value={store.discoveryRegion}
                     onChange={(e) => store.setDiscoveryRegion(e.target.value)}
                     className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
@@ -4306,10 +4315,10 @@ export default function SettingsPage() {
                     ].map((region) => (
                       <option key={region.code} value={region.code}>{region.name}</option>
                     ))}
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Minimum rating">
-                  <select
+                  <SelectMenu
                     value={store.discoveryMinRating}
                     onChange={(e) => store.setDiscoveryMinRating(Number(e.target.value))}
                     className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
@@ -4317,7 +4326,7 @@ export default function SettingsPage() {
                     {[0, 5, 6, 7, 8].map((rating) => (
                       <option key={rating} value={rating}>{rating === 0 ? 'Any' : `${rating}+ / 10`}</option>
                     ))}
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
                   <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
@@ -4342,7 +4351,7 @@ export default function SettingsPage() {
                           }`}
                         >
                           <span className="text-sm font-black tracking-wide">{title}</span>
-                          <span className={`text-xs mt-1 ${active ? 'text-black/60' : 'text-white/35'}`}>{subtitle}</span>
+                          <span className={`text-xs mt-1 ${active ? 'text-black/60' : 'text-white/60'}`}>{subtitle}</span>
                         </button>
                       )
                     })}
@@ -4363,7 +4372,7 @@ export default function SettingsPage() {
               
               {/* SAVE / CANCEL BAR */}
               <div className="flex items-center justify-between pt-4 mt-6">
-                <span className="text-xs text-white/35">Ready to save</span>
+                <span className="text-xs text-white/60">Ready to save</span>
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
@@ -4399,7 +4408,7 @@ export default function SettingsPage() {
                     <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06] flex flex-col justify-between h-36">
                       <div>
                         <span className="text-sm font-semibold text-white">Export Backup</span>
-                        <p className="text-xs text-white/35 mt-1">Download configurations to your local drive.</p>
+                        <p className="text-xs text-white/60 mt-1">Download configurations to your local drive.</p>
                       </div>
                       <button
                         onClick={handleExportConfig}
@@ -4411,7 +4420,7 @@ export default function SettingsPage() {
                     <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06] flex flex-col justify-between h-36">
                       <div>
                         <span className="text-sm font-semibold text-white">Restore Backup</span>
-                        <p className="text-xs text-white/35 mt-1">Import a JSON backup to overwrite current settings.</p>
+                        <p className="text-xs text-white/60 mt-1">Import a JSON backup to overwrite current settings.</p>
                       </div>
                       <label className="w-full py-2 bg-white/5 border border-white/[0.08] hover:bg-white/10 text-white font-bold rounded-xl text-xs text-center transition-colors cursor-pointer block">
                         <span>Select Backup File</span>
@@ -4438,10 +4447,10 @@ export default function SettingsPage() {
                 <details className="group">
                   <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
                     <div>
-                      <h3 className="text-[15px] font-semibold text-white">Anime ID Mappings</h3>
-                      <p className="text-[13px] text-white/40 mt-0.5">Local mapping data connecting anime across services.</p>
+                      <h3 className="text-sm font-semibold text-white">Anime ID Mappings</h3>
+                      <p className="text-sm text-white/60 mt-0.5">Local mapping data connecting anime across services.</p>
                     </div>
-                    <svg className="w-4 h-4 text-white/40 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                    <svg className="w-4 h-4 text-white/60 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
                   </summary>
                   <div className="divide-y divide-white/[0.04]">
                     <AnimeIdMappingsSection />

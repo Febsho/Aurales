@@ -758,9 +758,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                 <div className="hidden h-[72px] w-12 flex-shrink-0 rounded-xl bg-white/[0.05] sm:block" />
               )}
               <div className="min-w-0">
-              <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.26em] text-accent">Select source</p>
+              <p className="mb-1 text-meta font-bold uppercase tracking-[0.26em] text-accent">Select source</p>
               <h2 className="truncate text-2xl font-black tracking-tight text-white sm:text-3xl">{displayTitle}</h2>
-                <p className="mt-1 text-xs text-white/35">{filteredStreams.length ? `${filteredStreams.length} playable sources` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
+                <p className="mt-1 text-xs text-white/60">{filteredStreams.length ? `${filteredStreams.length} playable sources` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
               </div>
             </div>
             <div className="flex flex-shrink-0 items-center">
@@ -782,10 +782,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             <div className="hidden h-6 w-px bg-white/[0.08] lg:block" />
             <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
             {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
-              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/40 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
+              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
             ))}
             <div className="hidden h-6 w-px bg-white/[0.08] xl:block" />
-            <span className="px-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white/25">Show</span>
+            <span className="px-1 text-tag font-bold uppercase tracking-[0.18em] text-white/25">Show</span>
             {([
               ['Title', showStreamName, toggleStreamName],
               ['Description', showStreamDesc, toggleStreamDesc],
@@ -796,8 +796,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                 type="button"
                 onClick={toggle}
                 aria-pressed={visible}
-                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-[11px] font-semibold transition-colors ${
-                  visible ? 'bg-white/[0.09] text-white/80' : 'text-white/30 hover:bg-white/[0.04] hover:text-white/55'
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-label font-semibold transition-colors ${
+                  visible ? 'bg-white/[0.09] text-white/80' : 'text-white/50 hover:bg-white/[0.04] hover:text-white/60'
                 }`}
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${visible ? 'bg-accent' : 'bg-white/20'}`} />
@@ -859,19 +859,19 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                   </div>
                 )}
                 {showStreamDesc && description && (
-                  <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-white/60">
+                  <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-white/60">
                     {description}
                   </p>
                 )}
                 {showStreamTags && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-white/60">
                     {filterBadges.map((badge) => (
-                      <span key={`filter-${badge}`} className="rounded-md border border-white/[0.12] bg-white/[0.06] px-2 py-0.5 text-[10px] font-bold text-white/80">
+                      <span key={`filter-${badge}`} className="rounded-md border border-white/[0.12] bg-white/[0.06] px-2 py-0.5 text-meta font-bold text-white/80">
                         {badge}
                       </span>
                     ))}
                     {getStreamBadges(stream).map((badge) => (
-                      <span key={badge} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-white/50">{badge}</span>
+                      <span key={badge} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-meta text-white/50">{badge}</span>
                     ))}
                   </div>
                 )}
@@ -895,7 +895,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.035] p-3 shadow-2xl backdrop-blur-2xl">
               <img src={cachedImage(artwork.poster)} alt="" className="aspect-[2/3] w-full rounded-2xl object-cover shadow-2xl" />
               <div className="px-1 pb-1 pt-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30">{seasonEpisode ? `Season ${seasonEpisode.season} Â· Episode ${seasonEpisode.episode}` : 'Movie'}</p>
+                <p className="text-meta font-bold uppercase tracking-[0.2em] text-white/50">{seasonEpisode ? `Season ${seasonEpisode.season} Â· Episode ${seasonEpisode.episode}` : 'Movie'}</p>
                 <h3 className="mt-1.5 text-xl font-black leading-tight text-white">{title}</h3>
               </div>
             </div>

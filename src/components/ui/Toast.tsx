@@ -94,7 +94,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
       )}
       <button
         onClick={() => onDismiss(toast.id)}
-        className="text-white/30 hover:text-white/60 transition-colors cursor-pointer ml-1"
+        className="text-white/50 hover:text-white/60 transition-colors cursor-pointer ml-1"
       >
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <path d="M18 6L6 18M6 6l12 12" />

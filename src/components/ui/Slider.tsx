@@ -32,7 +32,7 @@ export default function Slider({
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-0.5">
             {label && <span className="text-sm font-medium text-white/80">{label}</span>}
-            {description && <span className="text-xs text-white/40">{description}</span>}
+            {description && <span className="text-xs text-white/60">{description}</span>}
           </div>
           {showValue && (
             <span className="text-sm font-semibold text-accent tabular-nums">{displayValue}</span>

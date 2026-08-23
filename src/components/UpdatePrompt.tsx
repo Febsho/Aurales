@@ -62,7 +62,7 @@ function renderMarkdown(markdown: string): ReactNode[] {
     const heading = line.match(/^(#{1,4})\s+(.*)/)
     if (heading) {
       nodes.push(
-        <h4 key={`h-${index}`} className="mb-2 mt-4 text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/45 first:mt-0">
+        <h4 key={`h-${index}`} className="mb-2 mt-4 text-label font-extrabold uppercase tracking-[0.14em] text-white/60 first:mt-0">
           {renderInline(heading[2], `h-${index}`)}
         </h4>,
       )
@@ -162,7 +162,7 @@ export default function UpdatePrompt() {
               </div>
               <div>
                 <h2 className="text-lg font-black tracking-tight text-white">Update available</h2>
-                <p className="mt-0.5 text-xs font-medium text-white/45">
+                <p className="mt-0.5 text-xs font-medium text-white/60">
                   {getAppVersion()} <span className="mx-1 text-white/25">→</span> <span className="text-white/75">{update.version}</span>
                 </p>
               </div>
@@ -170,7 +170,7 @@ export default function UpdatePrompt() {
             {phase !== 'downloading' && (
               <button
                 onClick={() => setPhase('hidden')}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-white/35 transition-colors hover:bg-white/10 hover:text-white/80 cursor-pointer"
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white/80 cursor-pointer"
                 aria-label="Dismiss"
               >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -189,10 +189,10 @@ export default function UpdatePrompt() {
           {!selfUpdates && (
             <div className="mb-4 rounded-xl border border-white/[0.10] bg-black/25 px-4 py-3 text-xs text-white/60">
               <p>This is a standalone Flatpak bundle. Download the new bundle, then reinstall it:</p>
-              <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85">
+              <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-label text-white/85">
                 {getFlatpakInstallCommand(update.version)}
               </code>
-              <p className="mt-2 text-[10px] text-white/35">
+              <p className="mt-2 text-meta text-white/60">
                 “flatpak update” cannot update standalone bundles because they have no repository remote.
               </p>
             </div>
@@ -206,7 +206,7 @@ export default function UpdatePrompt() {
 
           {phase === 'downloading' ? (
             <div>
-              <div className="mb-2 flex items-center justify-between text-xs font-semibold text-white/55">
+              <div className="mb-2 flex items-center justify-between text-xs font-semibold text-white/60">
                 <span>{progress.stage === 'installing' ? 'Installing update…' : 'Downloading update…'}</span>
                 <span>{percent != null ? `${percent}%` : formatBytes(progress.downloaded)}</span>
               </div>
@@ -216,13 +216,13 @@ export default function UpdatePrompt() {
                   style={percent != null ? { width: `${percent}%` } : undefined}
                 />
               </div>
-              <p className="mt-3 text-center text-[11px] text-white/35">The app restarts automatically when the update is installed.</p>
+              <p className="mt-3 text-center text-label text-white/60">The app restarts automatically when the update is installed.</p>
             </div>
           ) : (
             <div className="flex items-center justify-end gap-3">
               <button
                 onClick={() => setPhase('hidden')}
-                className="rounded-full px-5 py-2.5 text-sm font-bold text-white/55 transition-colors hover:bg-white/[0.07] hover:text-white/85 cursor-pointer"
+                className="rounded-full px-5 py-2.5 text-sm font-bold text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/85 cursor-pointer"
               >
                 {selfUpdates ? 'Later' : 'Close'}
               </button>

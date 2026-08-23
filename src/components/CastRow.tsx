@@ -1,3 +1,4 @@
+import useEdgeFade from '../hooks/useEdgeFade'
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { CastMember, CrewMember } from '../types'
@@ -14,6 +15,7 @@ interface CastRowProps {
 
 export default function CastRow({ cast, crew }: CastRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  useEdgeFade(scrollRef)
   const [showModal, setShowModal] = useState(false)
   const navigate = useNavigate()
 
@@ -48,12 +50,13 @@ export default function CastRow({ cast, crew }: CastRowProps) {
           {hasFullCredits && (
             <button
               onClick={() => setShowModal(true)}
-              className="text-xs font-semibold text-white/40 hover:text-white/70 transition-colors cursor-pointer"
+              className="text-xs font-semibold text-white/60 hover:text-white transition-colors cursor-pointer"
             >
               View All
             </button>
           )}
         </div>
+        <div className="shelf-fade">
         <div
           ref={scrollRef}
           className="flex gap-6 overflow-x-auto px-8 pb-3"
@@ -68,6 +71,7 @@ export default function CastRow({ cast, crew }: CastRowProps) {
           {creators.slice(0, 2).map((c) => (
             <PersonCard key={c.id} id={c.id} personProvider={c.personProvider} name={c.name} subtitle="Creator" image={c.profilePath} onOpen={openPerson} />
           ))}
+        </div>
         </div>
       </div>
 
@@ -113,10 +117,10 @@ function PersonCard({ id, personProvider, name, subtitle, label, image, onOpen }
           </div>
         )}
         {label && (
-          <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/70 text-[10px] font-bold uppercase tracking-wider text-white/80 backdrop-blur-sm">{label}</span>
+          <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/70 text-meta font-bold uppercase tracking-wider text-white/80 backdrop-blur-sm">{label}</span>
         )}
       </div>
-      <p className="text-base text-white/55 truncate leading-tight">{name}</p>
+      <p className="text-base text-white/60 truncate leading-tight">{name}</p>
       {subtitle && <p className="text-lg font-semibold text-white/90 truncate mt-1">{subtitle}</p>}
     </>
   )
@@ -192,7 +196,7 @@ function CreditsModal({ cast, directors, writers, creators, producers, onClose, 
 function CreditsSection({ title, items, onOpenPerson }: { title: string; items: (PersonTarget & { role?: string; image?: string })[]; onOpenPerson: OpenPerson }) {
   return (
     <div>
-      <h3 className="text-sm font-bold uppercase tracking-wider text-white/40 mb-4">{title}</h3>
+      <h3 className="text-sm font-bold uppercase tracking-wider text-white/60 mb-4">{title}</h3>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {items.map((item, i) => (
           <CreditsPerson key={`${item.name}-${i}`} {...item} onOpenPerson={onOpenPerson} />
@@ -218,7 +222,7 @@ function CreditsPerson({ id, personProvider, name, role, image, onOpenPerson }: 
       </div>
       <div className="min-w-0">
         <p className="text-sm font-semibold text-white/80 truncate">{name}</p>
-        {role && <p className="text-xs text-white/35 truncate">{role}</p>}
+        {role && <p className="text-xs text-white/60 truncate">{role}</p>}
       </div>
     </>
   )

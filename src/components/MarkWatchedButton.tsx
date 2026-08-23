@@ -435,7 +435,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
       <div className="relative">
         <button
           onClick={(e) => { e.stopPropagation(); void markAll() }}
-          className={`flex items-center gap-1.5 text-xs transition-colors cursor-pointer ${allDone ? 'text-accent hover:text-accent-hover' : 'text-white/50 hover:text-white'}`}
+          // The label is deliberately small and quiet, but a 17px-tall target
+          // is not reliably clickable. A transparent vertical outset lifts the
+          // hit area to the 44px guideline without changing how it looks.
+          className={`relative flex items-center gap-1.5 text-xs transition-colors cursor-pointer after:absolute after:-inset-x-2 after:-inset-y-3 after:content-[''] ${allDone ? 'text-accent hover:text-accent-hover' : 'text-white/60 hover:text-white'}`}
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
@@ -464,7 +467,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
             <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
-        <span className="whitespace-nowrap text-[13px] font-semibold">{allDone ? 'Watched' : 'Mark watched'}</span>
+        <span className="whitespace-nowrap text-sm font-semibold">{allDone ? 'Watched' : 'Mark watched'}</span>
       </button>
       {open && connectedServices.length > 0 && <DropdownMenu connectedServices={connectedServices} states={states} markAll={markAll} markSingle={markSingle} watched={allDone} above />}
     </div>
@@ -486,7 +489,7 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
     ].join(' ')}>
       <button
         onClick={(e) => { e.stopPropagation(); markAll() }}
-        className="flex w-full items-center gap-2.5 border-b border-white/[0.06] px-3.5 py-3 text-[12px] font-semibold text-white/85 transition-colors cursor-pointer hover:bg-white/[0.07]"
+        className="flex w-full items-center gap-2.5 border-b border-white/[0.06] px-3.5 py-3 text-xs font-semibold text-white/85 transition-colors cursor-pointer hover:bg-white/[0.07]"
       >
         <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
@@ -500,7 +503,7 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
             key={service}
             onClick={(e) => { e.stopPropagation(); markSingle(service) }}
             disabled={st.loading || st.checking}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-[12px] font-medium text-white/60 transition-colors cursor-pointer hover:bg-white/[0.05] hover:text-white disabled:cursor-default disabled:opacity-40"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-xs font-medium text-white/60 transition-colors cursor-pointer hover:bg-white/[0.05] hover:text-white disabled:cursor-default disabled:opacity-40"
           >
             {st.loading || st.checking ? (
               <svg className="w-3.5 h-3.5 animate-spin text-white/50" fill="none" viewBox="0 0 24 24">
@@ -519,7 +522,7 @@ function DropdownMenu({ connectedServices, states, markAll, markSingle, watched,
               <div className="w-3.5 h-3.5 rounded-full border border-white/20" />
             )}
             <span className="flex-1 text-left">{SERVICE_LABELS[service]}</span>
-            {!st.loading && !st.checking && st.done && <span className="text-[9px] font-semibold uppercase tracking-wider text-white/30">Watched</span>}
+            {!st.loading && !st.checking && st.done && <span className="text-tag font-semibold uppercase tracking-wider text-white/50">Watched</span>}
           </button>
         )
       })}

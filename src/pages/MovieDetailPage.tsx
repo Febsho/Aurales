@@ -831,7 +831,7 @@ export default function MovieDetailPage() {
             tmdbId={movie.tmdbId}
             tvdbId={movie.tvdbId}
             className="mb-3"
-            compact
+            variant="hero"
           />
         }
         actions={

@@ -1,3 +1,4 @@
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 
 const links = [
@@ -8,8 +9,55 @@ const links = [
   { to: '/settings', label: 'Settings' },
 ]
 
+interface IndicatorRect {
+  left: number
+  width: number
+}
+
 export default function CinematicTopNav({ hidden = false }: { hidden?: boolean }) {
   const location = useLocation()
+  const navRef = useRef<HTMLElement>(null)
+  const [indicator, setIndicator] = useState<IndicatorRect | null>(null)
+  // The indicator slides between destinations, but must not animate into
+  // position on first paint -- that reads as the nav assembling itself.
+  const hasPositioned = useRef(false)
+
+  const activeIndex = links.findIndex((link) =>
+    link.exact ? location.pathname === link.to : location.pathname.startsWith(link.to),
+  )
+
+  const measure = useCallback(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const active = nav.querySelector<HTMLElement>('[data-nav-active="true"]')
+    if (!active) {
+      setIndicator(null)
+      return
+    }
+    const navBox = nav.getBoundingClientRect()
+    const activeBox = active.getBoundingClientRect()
+    setIndicator({ left: activeBox.left - navBox.left, width: activeBox.width })
+  }, [])
+
+  useLayoutEffect(() => {
+    measure()
+    const id = requestAnimationFrame(() => {
+      measure()
+      hasPositioned.current = true
+    })
+    return () => cancelAnimationFrame(id)
+  }, [measure, activeIndex])
+
+  // Fluid type means the pill widths change with the viewport, so the
+  // indicator has to be re-measured on resize rather than only on navigation.
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [measure])
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('a, button'))
@@ -19,16 +67,43 @@ export default function CinematicTopNav({ hidden = false }: { hidden?: boolean }
     event.preventDefault()
     next.focus()
   }
+
   return (
-    <header onKeyDown={handleKeyDown} className={`cinematic-top-nav group pointer-events-none absolute inset-x-0 top-1 z-[70] flex h-20 items-center justify-center px-8 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${hidden ? '-translate-y-[140%] opacity-0' : 'translate-y-0 opacity-100'}`}>
-      <nav className="cinematic-nav-capsule pointer-events-auto flex items-center justify-center gap-2 rounded-[1.35rem] border border-white/10 px-4 py-3 shadow-2xl backdrop-blur-xl" aria-label="Primary navigation">
-        <NavLink to="/search" aria-label="Search" title="Search" className="focus-ring flex h-9 w-9 items-center justify-center rounded-full text-white/70 transition hover:bg-white/10 hover:text-white">
-          <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" strokeLinecap="round" /></svg>
+    <header
+      onKeyDown={handleKeyDown}
+      data-nav-hidden={hidden || undefined}
+      className="cinematic-top-nav"
+    >
+      <nav ref={navRef} className="cinematic-nav-capsule" aria-label="Primary navigation">
+        {/* Sits behind the labels and slides between them. transform-only, so
+            it never triggers layout while moving. */}
+        {indicator && (
+          <span
+            aria-hidden="true"
+            className="cinematic-nav-indicator"
+            data-instant={hasPositioned.current ? undefined : true}
+            style={{
+              transform: `translateX(${indicator.left}px)`,
+              width: `${indicator.width}px`,
+            }}
+          />
+        )}
+        <NavLink to="/search" aria-label="Search" title="Search" className="cinematic-nav-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+          </svg>
         </NavLink>
-        {links.map((link) => {
-          const active = link.exact ? location.pathname === link.to : location.pathname.startsWith(link.to)
+        {links.map((link, index) => {
+          const active = index === activeIndex
           return (
-            <NavLink key={link.to} to={link.to} className={`focus-ring rounded-full px-4 py-2 text-sm font-semibold transition-all duration-200 ${active ? 'bg-white/[0.12] text-white shadow-inner ring-1 ring-white/10' : 'text-white/55 hover:bg-white/[0.08] hover:text-white focus-visible:bg-white/15'}`}>
+            <NavLink
+              key={link.to}
+              to={link.to}
+              data-nav-active={active}
+              aria-current={active ? 'page' : undefined}
+              className="cinematic-nav-link"
+            >
               {link.label}
             </NavLink>
           )

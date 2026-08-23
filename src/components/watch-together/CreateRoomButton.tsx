@@ -101,10 +101,10 @@ export default function CreateRoomButton({ label, variant = 'nav' }: { label?: s
             </svg>
           )}
         </div>
-        {variant === 'hero' ? <span className="min-w-0 flex-1"><strong className="block text-xl font-black">{currentRoom ? 'Open your room' : (label || 'Start a room')}</strong><span className="mt-1 block text-sm text-white/45">{currentRoom ? `Room ${currentRoom.code} · ${currentRoom.participants.length} connected` : 'Create a code and invite friends to watch in sync.'}</span></span> : <span className={`text-[13px] tracking-wide whitespace-nowrap ${currentRoom ? 'font-semibold' : 'font-medium'}`}>{currentRoom ? 'Watch Together' : (label || 'Watch Together')}</span>}
-        {variant === 'hero' && <svg className="h-6 w-6 text-white/45 transition-transform group-hover:translate-x-1 group-hover:text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+        {variant === 'hero' ? <span className="min-w-0 flex-1"><strong className="block text-xl font-black">{currentRoom ? 'Open your room' : (label || 'Start a room')}</strong><span className="mt-1 block text-sm text-white/60">{currentRoom ? `Room ${currentRoom.code} · ${currentRoom.participants.length} connected` : 'Create a code and invite friends to watch in sync.'}</span></span> : <span className={`text-sm tracking-wide whitespace-nowrap ${currentRoom ? 'font-semibold' : 'font-medium'}`}>{currentRoom ? 'Watch Together' : (label || 'Watch Together')}</span>}
+        {variant === 'hero' && <svg className="h-6 w-6 text-white/60 transition-transform group-hover:translate-x-1 group-hover:text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
         {currentRoom && (
-          <span className="ml-auto text-[10px] font-bold text-accent bg-accent/15 px-1.5 py-0.5 rounded-md">
+          <span className="ml-auto text-meta font-bold text-accent bg-accent/15 px-1.5 py-0.5 rounded-md">
             {currentRoom.participants.length}
           </span>
         )}

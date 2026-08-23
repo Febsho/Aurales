@@ -33,7 +33,7 @@ export default function EmptyState({
       )}
       <h3 className="text-base font-bold text-white/70 mb-1.5">{title}</h3>
       {description && (
-        <p className="text-sm text-white/35 max-w-sm leading-relaxed">{description}</p>
+        <p className="text-sm text-white/60 max-w-sm leading-relaxed">{description}</p>
       )}
       {(action || secondaryAction) && (
         <div className="mt-5 flex items-center gap-2.5">

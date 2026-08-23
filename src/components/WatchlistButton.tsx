@@ -417,7 +417,7 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
         aria-label="Manage watchlists"
         aria-expanded={open}
         title={label}
-        className={`grid ${detailSize ? 'h-10 w-8' : 'h-9 w-8'} place-items-center rounded-full border border-white/10 bg-[#171717] text-white/55 transition-colors hover:border-white/25 hover:bg-[#242424] hover:text-white disabled:opacity-45 ${open ? 'border-white/25 bg-[#242424] text-white' : ''}`}
+        className={`grid ${detailSize ? 'h-10 w-8' : 'h-9 w-8'} place-items-center rounded-full border border-white/10 bg-[#171717] text-white/60 transition-colors hover:border-white/25 hover:bg-[#242424] hover:text-white disabled:opacity-45 ${open ? 'border-white/25 bg-[#242424] text-white' : ''}`}
       >
         <svg className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
       </button>
@@ -439,7 +439,7 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
                     else toggleProvider(provider)
                   }}
                   disabled={st.loading}
-                  className="relative w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 text-[13px] font-medium text-white/80 hover:bg-white/[0.10] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                  className="relative w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 text-sm font-medium text-white/80 hover:bg-white/[0.10] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
                 >
                   <span className="flex min-w-0 items-center gap-2.5">
                     {st.loading ? (
@@ -453,15 +453,15 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
                       </svg>
                     ) : <div className="w-3.5 h-3.5 shrink-0 rounded-full border border-white/20" />}
                     <span>{PROVIDER_LABELS[provider]}</span>
-                    {statusLabel(provider, st.status) && <span className="truncate text-[10px] font-normal text-white/35">{statusLabel(provider, st.status)}</span>}
+                    {statusLabel(provider, st.status) && <span className="truncate text-meta font-normal text-white/60">{statusLabel(provider, st.status)}</span>}
                   </span>
-                  {hasStatuses ? <svg className={`h-3.5 w-3.5 text-white/35 transition-transform ${expandedProvider === provider ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
-                    : st.inList && <span className="text-[10px] text-white/30">Remove</span>}
+                  {hasStatuses ? <svg className={`h-3.5 w-3.5 text-white/60 transition-transform ${expandedProvider === provider ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
+                    : st.inList && <span className="text-meta text-white/50">Remove</span>}
                 </button>
                 {hasStatuses && expandedProvider === provider && (
                   <div className="relative grid grid-cols-2 gap-1 px-2.5 pb-2.5">
-                    {statusOptions.map((option) => <button key={option.value} onClick={(event) => { event.stopPropagation(); setProviderStatus(provider, option.value) }} className={`rounded-lg border px-2 py-1.5 text-left text-[11px] transition-colors ${st.status === option.value ? 'border-accent/40 bg-accent/15 text-white' : 'border-white/[0.07] bg-white/[0.035] text-white/55 hover:bg-white/[0.09]'}`}>{option.label}</button>)}
-                    {st.inList && <button onClick={(event) => { event.stopPropagation(); setProviderStatus(provider, null) }} className="col-span-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-red-300/65 hover:bg-red-500/10">Remove from {PROVIDER_LABELS[provider]}</button>}
+                    {statusOptions.map((option) => <button key={option.value} onClick={(event) => { event.stopPropagation(); setProviderStatus(provider, option.value) }} className={`rounded-lg border px-2 py-1.5 text-left text-label transition-colors ${st.status === option.value ? 'border-accent/40 bg-accent/15 text-white' : 'border-white/[0.07] bg-white/[0.035] text-white/60 hover:bg-white/[0.09]'}`}>{option.label}</button>)}
+                    {st.inList && <button onClick={(event) => { event.stopPropagation(); setProviderStatus(provider, null) }} className="col-span-2 rounded-lg px-2 py-1.5 text-left text-label text-red-300/65 hover:bg-red-500/10">Remove from {PROVIDER_LABELS[provider]}</button>}
                   </div>
                 )}
               </div>
