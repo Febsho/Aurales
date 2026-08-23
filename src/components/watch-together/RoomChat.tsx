@@ -46,7 +46,7 @@ export default function RoomChat() {
 
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Chat</h3>
+      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Chat</h3>
 
       {/* Messages */}
       <div
@@ -55,7 +55,7 @@ export default function RoomChat() {
       >
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
-            <p className="text-[11px] text-white/20">No messages yet</p>
+            <p className="text-label text-white/20">No messages yet</p>
           </div>
         ) : (
           messages.map((msg) => {
@@ -70,12 +70,12 @@ export default function RoomChat() {
               >
                 <div className="flex items-center gap-1.5">
                   <span className={[
-                    'text-[10px] font-semibold',
-                    isMe ? 'text-accent/80' : 'text-white/40',
+                    'text-meta font-semibold',
+                    isMe ? 'text-accent/80' : 'text-white/60',
                   ].join(' ')}>
                     {isMe ? 'You' : msg.userName}
                   </span>
-                  <span className="text-[9px] text-white/20">{formatRelativeTime(msg.sentAt)}</span>
+                  <span className="text-tag text-white/20">{formatRelativeTime(msg.sentAt)}</span>
                 </div>
                 <p className="text-xs text-white/80 leading-relaxed break-words">{msg.message}</p>
               </div>

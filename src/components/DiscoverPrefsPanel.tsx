@@ -1,3 +1,4 @@
+import SelectMenu from './ui/SelectMenu'
 import { useState, useEffect, useRef } from 'react'
 import {
   DISCOVER_LANGUAGES,
@@ -221,12 +222,12 @@ export default function DiscoverPrefsPanel({
         <div className="flex items-center justify-between mb-4 border-b border-white/[0.04] pb-2">
           <div>
             <h3 className="text-xs font-black tracking-wider text-white uppercase">Ranking weights</h3>
-            <p className="text-[10px] text-white/35 mt-0.5">Blank fields use the recipe preset.</p>
+            <p className="text-meta text-white/60 mt-0.5">Blank fields use the recipe preset.</p>
           </div>
           <button
             type="button"
             onClick={resetWeights}
-            className="flex items-center gap-1 text-[11px] font-black tracking-wide text-white/55 hover:text-white uppercase transition-all"
+            className="flex items-center gap-1 text-label font-black tracking-wide text-white/60 hover:text-white uppercase transition-all"
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" strokeLinecap="round" strokeLinejoin="round" />
@@ -240,7 +241,7 @@ export default function DiscoverPrefsPanel({
             const val = localPrefs[key] as number
             return (
               <div key={key} className="flex items-center gap-4">
-                <span className="w-24 text-[10px] font-bold text-white/45 tracking-wider uppercase">
+                <span className="w-24 text-meta font-bold text-white/60 tracking-wider uppercase">
                   {label}
                 </span>
                 <input
@@ -254,7 +255,7 @@ export default function DiscoverPrefsPanel({
                 />
                 <span className="w-8 text-right text-xs font-semibold text-white/60 tabular-nums">
                   {val >= 0 ? ` ${val.toFixed(1)}` : val.toFixed(1)}
-                  {isNovelty && val !== 0 && <span className="text-[10px] text-white/35 ml-0.5">·p</span>}
+                  {isNovelty && val !== 0 && <span className="text-meta text-white/60 ml-0.5">·p</span>}
                 </span>
               </div>
             )
@@ -264,8 +265,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 2. ONLY THESE LANGUAGES */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2">
-          Only these languages <span className="text-[10px] text-white/20 normal-case font-medium">(leave empty for all)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2">
+          Only these languages <span className="text-meta text-white/20 normal-case font-medium">(leave empty for all)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {DISCOVER_LANGUAGES.map((lang) => {
@@ -278,7 +279,7 @@ export default function DiscoverPrefsPanel({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                   active
                     ? 'bg-white/10 text-white border-white/20'
-                    : 'bg-white/[0.03] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                    : 'bg-white/[0.03] text-white/60 border-white/[0.06] hover:bg-white/[0.06]'
                 }`}
               >
                 {lang.name}
@@ -290,8 +291,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 3. EXCLUDE LANGUAGES */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2">
-          Exclude languages <span className="text-[10px] text-white/20 normal-case font-medium">(never recommend these)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2">
+          Exclude languages <span className="text-meta text-white/20 normal-case font-medium">(never recommend these)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {DISCOVER_LANGUAGES.map((lang) => {
@@ -304,7 +305,7 @@ export default function DiscoverPrefsPanel({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                   active
                     ? 'bg-red-950/20 text-red-400 border-red-900/40'
-                    : 'bg-white/[0.03] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                    : 'bg-white/[0.03] text-white/60 border-white/[0.06] hover:bg-white/[0.06]'
                 }`}
               >
                 {lang.name}
@@ -317,7 +318,7 @@ export default function DiscoverPrefsPanel({
       {/* 4. MIN VOTE COUNT & AVERAGE */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5">
+          <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5">
             Min vote count
           </h3>
           <input
@@ -329,7 +330,7 @@ export default function DiscoverPrefsPanel({
           />
         </div>
         <div>
-          <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5">
+          <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5">
             Min vote average
           </h3>
           <input
@@ -347,7 +348,7 @@ export default function DiscoverPrefsPanel({
 
       {/* 5. YEAR RANGE */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5">
           Year range (optional)
         </h3>
         <div className="flex items-center gap-3">
@@ -358,7 +359,7 @@ export default function DiscoverPrefsPanel({
             onChange={(e) => onChange({ yearFrom: e.target.value ? Number(e.target.value) : null })}
             className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/20 placeholder:text-white/20"
           />
-          <span className="text-white/35">—</span>
+          <span className="text-white/60">—</span>
           <input
             type="number"
             placeholder="To"
@@ -371,8 +372,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 6. ONLY THESE GENRES */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2">
-          Only these genres <span className="text-[10px] text-white/20 normal-case font-medium">(leave empty for all)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2">
+          Only these genres <span className="text-meta text-white/20 normal-case font-medium">(leave empty for all)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {onlyGenreList.map((g) => {
@@ -385,7 +386,7 @@ export default function DiscoverPrefsPanel({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                   active
                     ? 'bg-white/10 text-white border-white/20'
-                    : 'bg-white/[0.03] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                    : 'bg-white/[0.03] text-white/60 border-white/[0.06] hover:bg-white/[0.06]'
                 }`}
               >
                 {g.name}
@@ -397,8 +398,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 7. EXCLUDE GENRES */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2">
-          Exclude genres <span className="text-[10px] text-white/20 normal-case font-medium">(never recommend these)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2">
+          Exclude genres <span className="text-meta text-white/20 normal-case font-medium">(never recommend these)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {CANONICAL_GENRES.map((g) => {
@@ -411,7 +412,7 @@ export default function DiscoverPrefsPanel({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                   active
                     ? 'bg-red-950/20 text-red-400 border-red-900/40'
-                    : 'bg-white/[0.03] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                    : 'bg-white/[0.03] text-white/60 border-white/[0.06] hover:bg-white/[0.06]'
                 }`}
               >
                 {g.name}
@@ -423,7 +424,7 @@ export default function DiscoverPrefsPanel({
 
       {/* 8. RUNTIME */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5 flex items-center gap-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5 flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
             <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
@@ -437,7 +438,7 @@ export default function DiscoverPrefsPanel({
             onChange={(e) => onChange({ runtimeMin: e.target.value ? Number(e.target.value) : null })}
             className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/20 placeholder:text-white/20"
           />
-          <span className="text-white/35">—</span>
+          <span className="text-white/60">—</span>
           <input
             type="number"
             placeholder="Max"
@@ -450,8 +451,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 9. MUST INCLUDE KEYWORDS */}
       <div ref={dropdownRef1} className="relative">
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5">
-          Must include keywords <span className="text-[10px] text-white/20 normal-case font-medium">(e.g. cyberpunk, heist, time-travel)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5">
+          Must include keywords <span className="text-meta text-white/20 normal-case font-medium">(e.g. cyberpunk, heist, time-travel)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {localPrefs.mustIncludeKeywords.map((kw) => (
@@ -463,7 +464,7 @@ export default function DiscoverPrefsPanel({
               <button
                 type="button"
                 onClick={() => handleRemoveKeyword(kw.id, 'mustIncludeKeywords')}
-                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-[8px]"
+                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-tag"
               >
                 ✕
               </button>
@@ -505,8 +506,8 @@ export default function DiscoverPrefsPanel({
 
       {/* 10. EXCLUDE KEYWORDS */}
       <div ref={dropdownRef2} className="relative">
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5">
-          Exclude keywords <span className="text-[10px] text-white/20 normal-case font-medium">(e.g. anime, sequel, remake)</span>
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5">
+          Exclude keywords <span className="text-meta text-white/20 normal-case font-medium">(e.g. anime, sequel, remake)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {localPrefs.excludeKeywords.map((kw) => (
@@ -518,7 +519,7 @@ export default function DiscoverPrefsPanel({
               <button
                 type="button"
                 onClick={() => handleRemoveKeyword(kw.id, 'excludeKeywords')}
-                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-[8px]"
+                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-tag"
               >
                 ✕
               </button>
@@ -556,16 +557,16 @@ export default function DiscoverPrefsPanel({
             ))}
           </div>
         )}
-        <p className="text-[10px] text-white/35 mt-1">Matched against TMDB keywords. Up to 10.</p>
+        <p className="text-meta text-white/60 mt-1">Matched against TMDB keywords. Up to 10.</p>
       </div>
 
       {/* 11. STREAMING PROVIDERS */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2 flex items-center gap-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2 flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
             <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          Streaming providers <span className="text-[10px] text-white/20 normal-case font-medium">(leave empty for all)</span>
+          Streaming providers <span className="text-meta text-white/20 normal-case font-medium">(leave empty for all)</span>
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {STREAMING_PROVIDERS.map((prov) => {
@@ -578,7 +579,7 @@ export default function DiscoverPrefsPanel({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                   active
                     ? 'bg-white/10 text-white border-white/20'
-                    : 'bg-white/[0.03] text-white/45 border-white/[0.06] hover:bg-white/[0.06]'
+                    : 'bg-white/[0.03] text-white/60 border-white/[0.06] hover:bg-white/[0.06]'
                 }`}
               >
                 {prov}
@@ -590,14 +591,14 @@ export default function DiscoverPrefsPanel({
 
       {/* 12. CONTENT RATING */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-2 flex items-center gap-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-2 flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
             <path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           Content rating
         </h3>
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs text-white/45 font-medium">Up to</span>
+          <span className="text-xs text-white/60 font-medium">Up to</span>
           <div className="flex gap-1.5">
             {['G', 'PG', 'PG-13', 'R', 'NC-17'].map((rating) => {
               const active = localPrefs.contentRating === rating
@@ -609,7 +610,7 @@ export default function DiscoverPrefsPanel({
                   className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border transition-all ${
                     active
                       ? 'bg-white text-black border-white'
-                      : 'bg-white/[0.03] text-white/55 border-white/10 hover:bg-white/[0.06]'
+                      : 'bg-white/[0.03] text-white/60 border-white/10 hover:bg-white/[0.06]'
                   }`}
                 >
                   {rating}
@@ -622,7 +623,7 @@ export default function DiscoverPrefsPanel({
 
       {/* 13. PRODUCTION COMPANY */}
       <div ref={dropdownRef3} className="relative">
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5 flex items-center gap-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5 flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
             <path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
@@ -638,7 +639,7 @@ export default function DiscoverPrefsPanel({
               <button
                 type="button"
                 onClick={() => handleRemoveCompany(c.id)}
-                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-[8px]"
+                className="w-3.5 h-3.5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-tag"
               >
                 ✕
               </button>
@@ -691,13 +692,14 @@ export default function DiscoverPrefsPanel({
 
       {/* 14. SORT ORDER */}
       <div>
-        <h3 className="text-[11px] font-black tracking-wider text-white/45 uppercase mb-1.5 flex items-center gap-1.5">
+        <h3 className="text-label font-black tracking-wider text-white/60 uppercase mb-1.5 flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
             <path d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           Sort order
         </h3>
-        <select
+        <SelectMenu
+          aria-label="Sort order"
           value={localPrefs.sortOrder}
           onChange={(e) => onChange({ sortOrder: e.target.value as DiscoverPrefs['sortOrder'] })}
           className="w-full bg-[#181818] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
@@ -707,7 +709,7 @@ export default function DiscoverPrefsPanel({
               {opt.label}
             </option>
           ))}
-        </select>
+        </SelectMenu>
       </div>
     </div>
   )

@@ -60,7 +60,7 @@ export default function PlayerChatOverlay({ visible, onInteraction }: PlayerChat
         </svg>
         {collapsed ? 'Show Chat' : 'Hide Chat'}
         {collapsed && messages.length > 0 && (
-          <span className="ml-1 px-1.5 py-0.5 rounded-full bg-accent/80 text-black text-[9px] font-black">
+          <span className="ml-1 px-1.5 py-0.5 rounded-full bg-accent/80 text-black text-tag font-black">
             {messages.length}
           </span>
         )}
@@ -72,7 +72,7 @@ export default function PlayerChatOverlay({ visible, onInteraction }: PlayerChat
           <div className="h-52 overflow-y-auto p-3 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-white/10">
             {messages.length === 0 ? (
               <div className="flex-1 flex items-center justify-center">
-                <p className="text-[11px] text-white/25">No messages yet</p>
+                <p className="text-label text-white/25">No messages yet</p>
               </div>
             ) : (
               messages.map((msg) => {
@@ -86,8 +86,8 @@ export default function PlayerChatOverlay({ visible, onInteraction }: PlayerChat
                     ].join(' ')}
                   >
                     <span className={[
-                      'text-[10px] font-semibold',
-                      isMe ? 'text-accent/80' : 'text-white/40',
+                      'text-meta font-semibold',
+                      isMe ? 'text-accent/80' : 'text-white/60',
                     ].join(' ')}>
                       {isMe ? 'You' : msg.userName}
                     </span>

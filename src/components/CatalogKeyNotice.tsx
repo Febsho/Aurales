@@ -20,7 +20,7 @@ export default function CatalogKeyNotice() {
           </div>
           <div>
             <h2 className="text-sm font-bold text-white/85">Catalogs need a TMDB key</h2>
-            <p className="mt-0.5 max-w-xl text-xs leading-relaxed text-white/45">
+            <p className="mt-0.5 max-w-xl text-xs leading-relaxed text-white/60">
               No TMDB API key is configured, so trending, discovery, and recommendation
               catalogs can't load. Add a free key in Settings to get started.
             </p>

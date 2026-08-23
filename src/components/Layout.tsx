@@ -18,7 +18,6 @@ export default function Layout() {
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
-  const homeHeroMode = useAppStore((s) => s.homeHeroMode)
   const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
@@ -229,7 +228,7 @@ export default function Layout() {
   const searchInput = (
     <div className="global-search relative w-full max-w-lg">
       <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-        <svg className="w-4 h-4 text-white/35" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <svg className="w-4 h-4 text-white/60" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />
         </svg>
@@ -249,7 +248,7 @@ export default function Layout() {
           'rounded-xl text-sm font-medium tracking-wide',
           'text-white placeholder-white/30',
           'focus:outline-none',
-          'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'transition-all duration-300 ease-expo',
           'shadow-[0_4px_16px_rgba(0,0,0,0.3)]',
         ].join(' ')}
       />
@@ -260,7 +259,7 @@ export default function Layout() {
             handleInputChange('')
             inputRef.current?.focus()
           }}
-          className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center text-white/30 hover:text-white/70 hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center text-white/50 hover:text-white/70 hover:bg-white/[0.08] transition-colors cursor-pointer"
           aria-label="Clear search"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -269,7 +268,7 @@ export default function Layout() {
         </button>
       ) : (
         <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-          <kbd className="text-[10px] font-bold text-white/25 px-1.5 py-0.5 bg-white/[0.06] rounded border border-white/[0.06]">/</kbd>
+          <kbd className="text-meta font-bold text-white/25 px-1.5 py-0.5 bg-white/[0.06] rounded border border-white/[0.06]">/</kbd>
         </div>
       )}
     </div>
@@ -284,9 +283,9 @@ export default function Layout() {
       {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
           Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
       {usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
-        <div className={`cinematic-nav-brand pointer-events-none absolute left-8 ${homeHeroMode === 'fixed' && location.pathname === '/' ? 'top-1' : 'top-4'} z-[71] flex h-20 items-center gap-3 px-2 transition-opacity duration-200`}>
+        <div className="cinematic-nav-brand">
           <img src="/app-logo.png?v=3" alt="" className="h-10 w-10 object-contain" />
-          <span className="text-xl font-black tracking-tight text-white" style={{ textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>Aurales</span>
+          <span className="text-xl font-black tracking-tight text-white">Aurales</span>
         </div>
       )}
 
@@ -333,7 +332,7 @@ export default function Layout() {
           className={[
             'absolute left-1/2 z-[9998]',
             'w-[min(38rem,calc(100vw-2rem))]',
-            'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+            'transition-all duration-300 ease-expo',
             usesTopNav || searchBarVisible || searchFocused || isSearchPage
               ? `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
               : '-translate-x-1/2 -top-8 opacity-0 pointer-events-none',
@@ -342,7 +341,7 @@ export default function Layout() {
           {searchInput}
         </header>}
 
-        <main ref={mainRef} className={`app-scroll-root flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'app-scroll-root--panel-open mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
+        <main ref={mainRef} className={`app-scroll-root flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'app-scroll-root--panel-open mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-expo`}>
           <Outlet />
         </main>
       </div>

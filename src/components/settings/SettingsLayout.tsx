@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 
 export interface SettingsCategory {
   id: string
@@ -37,11 +37,11 @@ export default function SettingsLayout({
       <div className="w-64 flex-shrink-0 border-r border-white/[0.06] bg-white/[0.02] overflow-y-auto">
         <div className="p-4">
           <h1 className="text-2xl font-bold tracking-tight text-white mb-1">Settings</h1>
-          <p className="text-xs text-white/35 mb-4">Configure your app</p>
+          <p className="text-xs text-white/60 mb-4">Configure your app</p>
 
           {/* Search */}
           <div className="relative mb-5">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/50" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
@@ -60,7 +60,7 @@ export default function SettingsLayout({
           {Object.entries(groups).map(([group, cats]) => (
             <div key={group} className="mb-4">
               <div className="px-3 mb-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/20">{group}</span>
+                <span className="text-meta font-bold uppercase tracking-[0.15em] text-white/20">{group}</span>
               </div>
               {cats.map((cat) => (
                 <button
@@ -68,13 +68,13 @@ export default function SettingsLayout({
                   onClick={() => onCategoryChange(cat.id)}
                   className={[
                     'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left',
-                    'transition-all duration-200 cursor-pointer text-[13px] font-medium',
+                    'transition-all duration-200 cursor-pointer text-sm font-medium',
                     activeCategory === cat.id
                       ? 'bg-accent/10 text-accent'
                       : 'text-white/50 hover:text-white/75 hover:bg-white/[0.04]',
                   ].join(' ')}
                 >
-                  <span className={`[&>svg]:w-4 [&>svg]:h-4 flex-shrink-0 ${activeCategory === cat.id ? 'text-accent' : 'text-white/35'}`}>
+                  <span className={`[&>svg]:w-4 [&>svg]:h-4 flex-shrink-0 ${activeCategory === cat.id ? 'text-accent' : 'text-white/60'}`}>
                     {cat.icon}
                   </span>
                   {cat.label}
@@ -114,7 +114,7 @@ export function SettingsSection({
         : 'border-white/[0.06] bg-white/[0.02]',
     ].join(' ')}>
       <h3 className={`text-base font-bold mb-1 ${danger ? 'text-danger' : 'text-white'}`}>{title}</h3>
-      {description && <p className="text-xs text-white/40 mb-5 leading-relaxed">{description}</p>}
+      {description && <p className="text-xs text-white/60 mb-5 leading-relaxed">{description}</p>}
       <div className="space-y-5">
         {children}
       </div>
@@ -135,7 +135,7 @@ export function SettingsRow({
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
         <div className="text-sm font-medium text-white/85">{label}</div>
-        {description && <div className="text-xs text-white/35 mt-0.5 leading-relaxed">{description}</div>}
+        {description && <div className="text-xs text-white/60 mt-0.5 leading-relaxed">{description}</div>}
       </div>
       <div className="flex-shrink-0">{children}</div>
     </div>

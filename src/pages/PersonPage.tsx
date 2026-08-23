@@ -73,7 +73,7 @@ export default function PersonPage() {
     return (
       <div className="min-h-screen px-8 py-24">
         <h1 className="text-2xl font-bold text-white mt-16">Person not found</h1>
-        {error && <p className="mt-2 text-sm text-white/45">{error}</p>}
+        {error && <p className="mt-2 text-sm text-white/60">{error}</p>}
       </div>
     )
   }
@@ -122,7 +122,7 @@ export default function PersonPage() {
         <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4 mb-5">
           <div>
             <h2 className="text-2xl font-bold text-white">Credits</h2>
-            <p className="text-sm text-white/40 mt-1">{movieCount} movies · {seriesCount} series · {directingCount} directed · newest first</p>
+            <p className="text-sm text-white/60 mt-1">{movieCount} movies · {seriesCount} series · {directingCount} directed · newest first</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <SegmentedButton active={mediaFilter === 'all'} onClick={() => setMediaFilter('all')}>All</SegmentedButton>
@@ -148,7 +148,7 @@ export default function PersonPage() {
         ) : filteredCredits.length > 0 ? (
           <Timeline groups={timelineGroups} />
         ) : (
-          <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-8 text-white/45">No credits match these filters.</div>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-8 text-white/60">No credits match these filters.</div>
         )}
       </section>
     </div>
@@ -160,7 +160,7 @@ function SegmentedButton({ active, onClick, children }: { active: boolean; onCli
     <button
       onClick={onClick}
       className={`h-8 px-3 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-        active ? 'bg-white text-black' : 'bg-white/[0.06] text-white/55 hover:bg-white/[0.12] hover:text-white'
+        active ? 'bg-white text-black' : 'bg-white/[0.06] text-white/60 hover:bg-white/[0.12] hover:text-white'
       }`}
     >
       {children}
@@ -206,13 +206,13 @@ function TimelineItem({ credit }: { credit: TmdbPersonCredit }) {
       <div className="min-w-0 self-center">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-bold text-white truncate">{credit.title}</h3>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-white/35">{credit.type === 'movie' ? 'Movie' : 'Series'}</span>
-          {credit.creditTypes.includes('directing') && <span className="text-[10px] font-bold uppercase tracking-wider text-accent">Director</span>}
-          {credit.creditTypes.includes('voice') && <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Voice</span>}
+          <span className="text-meta font-bold uppercase tracking-wider text-white/60">{credit.type === 'movie' ? 'Movie' : 'Series'}</span>
+          {credit.creditTypes.includes('directing') && <span className="text-meta font-bold uppercase tracking-wider text-accent">Director</span>}
+          {credit.creditTypes.includes('voice') && <span className="text-meta font-bold uppercase tracking-wider text-blue-400">Voice</span>}
         </div>
-        {credit.character && <p className="mt-1 text-xs text-white/55 truncate">{credit.character}</p>}
-        {credit.job && <p className="mt-1 text-xs text-white/55 truncate">{credit.job}</p>}
-        {credit.overview && <p className="mt-2 text-xs leading-5 text-white/40 line-clamp-2">{credit.overview}</p>}
+        {credit.character && <p className="mt-1 text-xs text-white/60 truncate">{credit.character}</p>}
+        {credit.job && <p className="mt-1 text-xs text-white/60 truncate">{credit.job}</p>}
+        {credit.overview && <p className="mt-2 text-xs leading-5 text-white/60 line-clamp-2">{credit.overview}</p>}
       </div>
     </button>
   )
@@ -235,14 +235,14 @@ function CreditCard({ credit }: { credit: TmdbPersonCredit }) {
         )}
       </div>
       <h3 className="mt-2 text-sm font-bold text-white/85 truncate group-hover:text-white">{credit.title}</h3>
-      <div className="mt-1 flex items-center gap-2 text-xs text-white/40">
+      <div className="mt-1 flex items-center gap-2 text-xs text-white/60">
         {credit.year && <span>{credit.year}</span>}
         <span>{credit.type === 'movie' ? 'Movie' : 'Series'}</span>
         {credit.creditTypes.includes('directing') && <span className="text-accent">Director</span>}
         {credit.creditTypes.includes('voice') && <span className="text-blue-400">Voice</span>}
       </div>
-      {credit.character && <p className="mt-1 text-xs text-white/55 truncate">{credit.character}</p>}
-      {credit.job && <p className="mt-1 text-xs text-white/55 truncate">{credit.job}</p>}
+      {credit.character && <p className="mt-1 text-xs text-white/60 truncate">{credit.character}</p>}
+      {credit.job && <p className="mt-1 text-xs text-white/60 truncate">{credit.job}</p>}
     </button>
   )
 }

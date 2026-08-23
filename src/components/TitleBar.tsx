@@ -38,6 +38,18 @@ export default function TitleBar() {
     }
   }, [appWindow])
 
+  // Custom chrome overlays the top of the viewport with a drag strip and the
+  // window controls. Flagging it on the root lets layout reserve a safe area
+  // for both, instead of floating UI underneath them where clicks are stolen
+  // by the drag region. Plain-browser preview keeps the tighter offsets.
+  useEffect(() => {
+    if (!appWindow) return
+    document.documentElement.dataset.windowChrome = 'custom'
+    return () => {
+      delete document.documentElement.dataset.windowChrome
+    }
+  }, [appWindow])
+
   if (!appWindow) return null
 
   return (

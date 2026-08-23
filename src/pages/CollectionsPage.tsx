@@ -6,6 +6,7 @@
  * – Inline "Add Widget" overlay with search, addon catalogs & Simkl lists
  */
 
+import SelectMenu from '../components/ui/SelectMenu'
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
@@ -419,12 +420,12 @@ function SortableShelfCard({
 
       {/* Source pill (top-left) */}
       <div className="absolute top-2.5 left-2.5 z-10">
-        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-black/50 backdrop-blur-sm ${sourceColor(row).split(' ').find(c => c.startsWith('text-')) || 'text-white/60'}`}>
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-tag font-bold bg-black/50 backdrop-blur-sm ${sourceColor(row).split(' ').find(c => c.startsWith('text-')) || 'text-white/60'}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${sourceColor(row).split(' ').find(c => c.startsWith('bg-'))?.replace(/\/\d+/, '') || 'bg-white/40'}`} />
           {locked ? 'Fixed' : shelfSourceLabel(row)}
         </span>
         {!row.enabled && (
-          <span className="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold bg-black/50 backdrop-blur-sm text-amber-300/90">
+          <span className="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-tag font-bold bg-black/50 backdrop-blur-sm text-amber-300/90">
             Hidden
           </span>
         )}
@@ -474,7 +475,7 @@ function SortableShelfCard({
       {/* Title + count (bottom) */}
       <div className="absolute bottom-0 left-0 right-0 p-3.5 z-10">
         <p className="text-sm font-bold text-white truncate leading-tight drop-shadow-lg">{row.title}</p>
-        <p className="text-[11px] text-white/50 mt-0.5 drop-shadow-md">{loading ? '...' : row.sourceType === 'discover' ? (row.discoverConfig?.maxResults ? `Up to ${row.discoverConfig.maxResults} titles` : 'All matching titles') : `${count} items`}</p>
+        <p className="text-label text-white/50 mt-0.5 drop-shadow-md">{loading ? '...' : row.sourceType === 'discover' ? (row.discoverConfig?.maxResults ? `Up to ${row.discoverConfig.maxResults} titles` : 'All matching titles') : `${count} items`}</p>
       </div>
     </div>
   )
@@ -700,12 +701,12 @@ function HeroBannerSection({
             <div className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border border-accent/15 bg-accent/10">
               <svg className="h-5 w-5 text-accent" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
             </div>
-            <div className="min-w-0"><p className="text-sm font-bold text-white/85">Hero source</p><p className="mt-0.5 truncate text-[11px] text-white/35">Choose which catalog supplies featured titles.</p></div>
+            <div className="min-w-0"><p className="text-sm font-bold text-white/85">Hero source</p><p className="mt-0.5 truncate text-label text-white/60">Choose which catalog supplies featured titles.</p></div>
           </div>
           <button type="button" onClick={() => setPickerOpen(true)} className="group flex min-w-0 items-center gap-3 rounded-xl border border-white/[0.09] bg-white/[0.045] px-3.5 py-2.5 text-left transition-all hover:border-white/[0.16] hover:bg-white/[0.075] sm:min-w-[340px] cursor-pointer">
-            <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-accent/10 text-[11px] font-black text-accent">{selectedOption?.group.slice(0, 1) || 'H'}</span>
-            <span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-white/80">{selectedOption?.label || 'Choose a catalog'}</span><span className="mt-0.5 block truncate text-[10px] text-white/30">{selectedOption ? `${selectedOption.group} • ${selectedOption.detail}` : 'No source selected'}</span></span>
-            <svg className="h-4 w-4 flex-shrink-0 text-white/25 transition-transform group-hover:translate-x-0.5 group-hover:text-white/55" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
+            <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-accent/10 text-label font-black text-accent">{selectedOption?.group.slice(0, 1) || 'H'}</span>
+            <span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-white/80">{selectedOption?.label || 'Choose a catalog'}</span><span className="mt-0.5 block truncate text-meta text-white/50">{selectedOption ? `${selectedOption.group} • ${selectedOption.detail}` : 'No source selected'}</span></span>
+            <svg className="h-4 w-4 flex-shrink-0 text-white/25 transition-transform group-hover:translate-x-0.5 group-hover:text-white/60" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
           </button>
         </div>
       </div>
@@ -713,11 +714,11 @@ function HeroBannerSection({
       <Modal open={pickerOpen} onClose={() => setPickerOpen(false)} title="Choose hero catalog" description="The hero source is independent from your Home shelves, so the same catalog can be used in both places." size="lg" className="max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div className="space-y-4">
           <div className="relative"><svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg><input value={pickerQuery} onChange={(event) => setPickerQuery(event.target.value)} placeholder="Search catalogs and lists…" className="h-11 w-full rounded-xl border border-white/[0.09] bg-white/[0.045] pl-10 pr-4 text-sm text-white outline-none placeholder:text-white/25 focus:border-accent/30 focus:bg-white/[0.065]" autoFocus /></div>
-          <div className="flex flex-wrap gap-2 pb-1">{pickerGroups.map((group) => <button key={group} type="button" onClick={() => setPickerGroup(group)} className={`rounded-xl border px-3 py-2 text-[11px] font-bold transition-all cursor-pointer ${pickerGroup === group ? 'border-accent/25 bg-accent/12 text-accent' : 'border-white/[0.06] bg-white/[0.025] text-white/35 hover:bg-white/[0.055] hover:text-white/65'}`}>{group}</button>)}</div>
+          <div className="flex flex-wrap gap-2 pb-1">{pickerGroups.map((group) => <button key={group} type="button" onClick={() => setPickerGroup(group)} className={`rounded-xl border px-3 py-2 text-label font-bold transition-all cursor-pointer ${pickerGroup === group ? 'border-accent/25 bg-accent/12 text-accent' : 'border-white/[0.06] bg-white/[0.025] text-white/60 hover:bg-white/[0.055] hover:text-white/65'}`}>{group}</button>)}</div>
           <div className="max-h-[min(520px,55vh)] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
-            {filteredOptions.length === 0 ? <div className="grid min-h-44 place-items-center rounded-2xl border border-dashed border-white/[0.08] text-center"><div><p className="text-sm font-semibold text-white/45">No matching catalogs</p><p className="mt-1 text-xs text-white/25">Try another source or search term.</p></div></div> : <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{filteredOptions.map((option) => {
+            {filteredOptions.length === 0 ? <div className="grid min-h-44 place-items-center rounded-2xl border border-dashed border-white/[0.08] text-center"><div><p className="text-sm font-semibold text-white/60">No matching catalogs</p><p className="mt-1 text-xs text-white/25">Try another source or search term.</p></div></div> : <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{filteredOptions.map((option) => {
               const active = option.value === selectedOption?.value
-              return <button key={option.value} type="button" onClick={() => handleCatalogChange(option.value)} className={`group flex min-h-[70px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-all cursor-pointer ${active ? 'border-accent/35 bg-accent/[0.09]' : 'border-white/[0.07] bg-white/[0.03] hover:border-white/[0.15] hover:bg-white/[0.06]'}`}><span className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl text-xs font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.06] text-white/45'}`}>{active ? '✓' : option.group.slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-white/80">{option.label}</span><span className="mt-1 block truncate text-[10px] text-white/30">{option.group} • {option.detail}</span></span></button>
+              return <button key={option.value} type="button" onClick={() => handleCatalogChange(option.value)} className={`group flex min-h-[70px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-all cursor-pointer ${active ? 'border-accent/35 bg-accent/[0.09]' : 'border-white/[0.07] bg-white/[0.03] hover:border-white/[0.15] hover:bg-white/[0.06]'}`}><span className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl text-xs font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.06] text-white/60'}`}>{active ? '✓' : option.group.slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-white/80">{option.label}</span><span className="mt-1 block truncate text-meta text-white/50">{option.group} • {option.detail}</span></span></button>
             })}</div>}
           </div>
         </div>
@@ -789,14 +790,14 @@ function ProviderListPickerSection({
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-white/85 truncate">{list.label}</p>
               <div className="mt-1 flex items-center gap-1.5">
-                <span className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white/35">poster</span>
-                <span className="text-[10px] text-white/20">{label}</span>
+                <span className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-meta font-semibold uppercase text-white/60">poster</span>
+                <span className="text-meta text-white/20">{label}</span>
               </div>
             </div>
             {added ? (
               <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                 <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
+                <span className="text-meta text-emerald-400/80 font-semibold">Added</span>
               </div>
             ) : (
               <span className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded-md border text-xs font-black transition-colors ${selected ? 'border-accent bg-accent text-black' : 'border-white/[0.14] bg-white/[0.03] text-transparent group-hover:border-white/30'}`}>
@@ -1698,9 +1699,9 @@ function AddWidgetOverlay({
         {added || selected ? (
           <svg className="w-3 h-3 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
         ) : (
-          <svg className="w-3 h-3 text-white/35 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M12 5v14m7-7H5" /></svg>
+          <svg className="w-3 h-3 text-white/60 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M12 5v14m7-7H5" /></svg>
         )}
-        <span className="text-[11px] font-bold text-white/75 truncate">{list.label}</span>
+        <span className="text-label font-bold text-white/75 truncate">{list.label}</span>
       </button>
     )
   }
@@ -1717,7 +1718,7 @@ function AddWidgetOverlay({
       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer select-none ${
         checked
           ? 'bg-accent/15 border-accent/40 text-accent'
-          : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:text-white/60'
+          : 'bg-white/[0.03] border-white/[0.06] text-white/60 hover:text-white/60'
       }`}
     >
       <div className={`w-7 h-4 rounded-full flex items-center transition-all ${checked ? 'bg-accent justify-end' : 'bg-white/10 justify-start'}`}>
@@ -1735,8 +1736,8 @@ function AddWidgetOverlay({
           key={m}
           type="button"
           onClick={() => onChange(m)}
-          className={`px-3 py-1.5 text-[10px] font-bold transition-all cursor-pointer ${
-            value === m ? 'bg-accent/20 text-accent' : 'bg-white/[0.02] text-white/30 hover:text-white/50'
+          className={`px-3 py-1.5 text-meta font-bold transition-all cursor-pointer ${
+            value === m ? 'bg-accent/20 text-accent' : 'bg-white/[0.02] text-white/50 hover:text-white/50'
           }`}
         >
           {m === 'OR' ? 'Any' : 'All'}
@@ -1824,14 +1825,14 @@ function AddWidgetOverlay({
         <div className="flex-shrink-0 border-b border-white/[0.07] px-5 py-4 sm:px-6">
           <div className="flex flex-wrap items-center gap-3">
             {!overview && (
-              <button type="button" onClick={() => { if (query && !pickerSource) setSearch(''); else setPickerSource(null); setPickerContentType('all') }} className="grid h-10 w-10 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-white/45 hover:bg-white/[0.08] hover:text-white cursor-pointer" aria-label="Back to sources">
+              <button type="button" onClick={() => { if (query && !pickerSource) setSearch(''); else setPickerSource(null); setPickerContentType('all') }} className="grid h-10 w-10 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-white/60 hover:bg-white/[0.08] hover:text-white cursor-pointer" aria-label="Back to sources">
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>
               </button>
             )}
             <div className="relative min-w-[240px] flex-1">
-              <svg className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>
+              <svg className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>
               <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search catalogs, lists, and public collections…" className="h-11 w-full rounded-xl border border-white/[0.10] bg-white/[0.05] pl-11 pr-10 text-sm text-white outline-none placeholder:text-white/25 focus:border-accent/35 focus:bg-white/[0.07]" autoFocus />
-              {search && <button type="button" onClick={() => setSearch('')} className="absolute right-3 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-lg text-white/30 hover:bg-white/10 hover:text-white cursor-pointer">×</button>}
+              {search && <button type="button" onClick={() => setSearch('')} className="absolute right-3 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-lg text-white/50 hover:bg-white/10 hover:text-white cursor-pointer">×</button>}
             </div>
             <button type="button" onClick={requestSmartCollection} className="h-11 rounded-xl border border-amber-400/15 bg-amber-400/[0.07] px-4 text-xs font-bold text-amber-200/75 transition-all hover:bg-amber-400/12 hover:text-amber-100 cursor-pointer">Create Smart Collection</button>
           </div>
@@ -1840,7 +1841,7 @@ function AddWidgetOverlay({
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6" style={{ scrollbarWidth: 'thin', scrollbarGutter: 'stable' }}>
           {overview ? (
             <div>
-              <div className="mb-5"><h3 className="text-base font-bold text-white/90">Choose a source</h3><p className="mt-1 text-xs text-white/35">Browse the catalogs available from Aurales and your connected services.</p></div>
+              <div className="mb-5"><h3 className="text-base font-bold text-white/90">Choose a source</h3><p className="mt-1 text-xs text-white/60">Browse the catalogs available from Aurales and your connected services.</p></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {sourceOrder.map((source) => {
                   const meta = sourceMeta[source]
@@ -1848,8 +1849,8 @@ function AddWidgetOverlay({
                   const colors = sourceColors[source] || sourceColors.builtin
                   return (
                     <div key={source} role={meta.connected ? 'button' : undefined} tabIndex={meta.connected ? 0 : -1} onClick={() => meta.connected ? setPickerSource(source) : undefined} onKeyDown={(event) => { if (meta.connected && (event.key === 'Enter' || event.key === ' ')) setPickerSource(source) }} className={`group rounded-2xl border p-4 text-left transition-all ${meta.connected ? 'cursor-pointer border-white/[0.08] bg-white/[0.035] hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.065] focus:outline-none focus:ring-1 focus:ring-accent/35' : 'cursor-default border-white/[0.05] bg-white/[0.018] opacity-65'}`}>
-                      <div className="flex items-start gap-3"><span className={`grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl text-sm font-black ${colors.bg} ${colors.text}`}>{meta.letter}</span><span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-white/80">{meta.label}</span><span className="rounded-lg bg-white/[0.06] px-2 py-1 text-[10px] font-bold text-white/40">{count}</span></span><span className="mt-1 block text-[11px] leading-relaxed text-white/30">{meta.description}</span></span></div>
-                      {!meta.connected && <span className="mt-3 flex items-center justify-between border-t border-white/[0.05] pt-3 text-[10px] font-semibold text-white/30"><span>Not connected</span><button type="button" onClick={(event) => { event.stopPropagation(); onClose(); navigate('/settings') }} className="text-accent/70 hover:text-accent cursor-pointer">Open Settings →</button></span>}
+                      <div className="flex items-start gap-3"><span className={`grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl text-sm font-black ${colors.bg} ${colors.text}`}>{meta.letter}</span><span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-white/80">{meta.label}</span><span className="rounded-lg bg-white/[0.06] px-2 py-1 text-meta font-bold text-white/60">{count}</span></span><span className="mt-1 block text-label leading-relaxed text-white/50">{meta.description}</span></span></div>
+                      {!meta.connected && <span className="mt-3 flex items-center justify-between border-t border-white/[0.05] pt-3 text-meta font-semibold text-white/50"><span>Not connected</span><button type="button" onClick={(event) => { event.stopPropagation(); onClose(); navigate('/settings') }} className="text-accent/70 hover:text-accent cursor-pointer">Open Settings →</button></span>}
                     </div>
                   )
                 })}
@@ -1858,20 +1859,20 @@ function AddWidgetOverlay({
           ) : (
             <div>
               <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-                <div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/25">{query && !pickerSource ? 'Global search' : 'Browsing source'}</p><h3 className="mt-1 text-lg font-bold text-white/90">{query && !pickerSource ? `Results for “${search.trim()}”` : pickerSource ? sourceMeta[pickerSource].label : 'Catalogs'}</h3><p className="mt-1 text-xs text-white/30">{browsingItems.length} available {browsingItems.length === 1 ? 'catalog' : 'catalogs'}</p></div>
+                <div><p className="text-meta font-bold uppercase tracking-[0.18em] text-white/25">{query && !pickerSource ? 'Global search' : 'Browsing source'}</p><h3 className="mt-1 text-lg font-bold text-white/90">{query && !pickerSource ? `Results for “${search.trim()}”` : pickerSource ? sourceMeta[pickerSource].label : 'Catalogs'}</h3><p className="mt-1 text-xs text-white/50">{browsingItems.length} available {browsingItems.length === 1 ? 'catalog' : 'catalogs'}</p></div>
                 <div className="flex rounded-xl border border-white/[0.07] bg-white/[0.025] p-1">
-                  {(['all', 'movie', 'series', 'anime'] as const).map((type) => <button key={type} type="button" onClick={() => setPickerContentType(type)} className={`rounded-lg px-3 py-2 text-[11px] font-bold capitalize transition-all cursor-pointer ${pickerContentType === type ? 'bg-white/[0.10] text-white' : 'text-white/30 hover:text-white/60'}`}>{type === 'all' ? 'All' : type === 'movie' ? 'Movies' : type === 'series' ? 'Series' : 'Anime'}</button>)}
+                  {(['all', 'movie', 'series', 'anime'] as const).map((type) => <button key={type} type="button" onClick={() => setPickerContentType(type)} className={`rounded-lg px-3 py-2 text-label font-bold capitalize transition-all cursor-pointer ${pickerContentType === type ? 'bg-white/[0.10] text-white' : 'text-white/50 hover:text-white/60'}`}>{type === 'all' ? 'All' : type === 'movie' ? 'Movies' : type === 'series' ? 'Series' : 'Anime'}</button>)}
                 </div>
               </div>
 
-              {Object.keys(grouped).length === 0 ? <div className="grid min-h-56 place-items-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.015] text-center"><div><p className="text-sm font-semibold text-white/45">No matching catalogs</p><p className="mt-1 text-xs text-white/25">Try another search or content filter.</p></div></div> : (
+              {Object.keys(grouped).length === 0 ? <div className="grid min-h-56 place-items-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.015] text-center"><div><p className="text-sm font-semibold text-white/60">No matching catalogs</p><p className="mt-1 text-xs text-white/25">Try another search or content filter.</p></div></div> : (
                 <div className="space-y-6">
                   {Object.entries(grouped).map(([groupKey, groupItems]) => {
                     const first = groupItems[0]
                     const colors = sourceColors[first.source] || sourceColors.builtin
-                    return <section key={groupKey}><div className="mb-2.5 flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${colors.dot}`} /><h4 className="text-xs font-bold text-white/55">{first.group}</h4><span className="text-[10px] text-white/20">{groupItems.length}</span></div><div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">{groupItems.map((item) => {
+                    return <section key={groupKey}><div className="mb-2.5 flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${colors.dot}`} /><h4 className="text-xs font-bold text-white/60">{first.group}</h4><span className="text-meta text-white/20">{groupItems.length}</span></div><div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">{groupItems.map((item) => {
                       const selected = selectedShelves.some((selection) => selection.key === item.key)
-                      return <button key={item.key} type="button" disabled={item.added} onClick={() => queueShelf(item.row, item.existingId)} className={`group flex min-h-[72px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-all ${item.added ? 'cursor-default border-white/[0.05] bg-white/[0.02] opacity-55' : selected ? 'cursor-pointer border-accent/35 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(16,185,129,0.08)]' : 'cursor-pointer border-white/[0.08] bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.065]'}`}><span className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl text-xs font-black ${colors.bg} ${colors.text}`}>{sourceMeta[item.source].letter}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-white/80">{item.title}</span><span className="mt-1 block truncate text-[10px] text-white/30">{item.subtitle}</span></span>{item.added ? <span className="rounded-lg bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-300/70">On Home</span> : <span className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded-md border text-xs font-black ${selected ? 'border-accent bg-accent text-black' : 'border-white/[0.16] bg-white/[0.025] text-transparent group-hover:border-white/30'}`}>✓</span>}</button>
+                      return <button key={item.key} type="button" disabled={item.added} onClick={() => queueShelf(item.row, item.existingId)} className={`group flex min-h-[72px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-all ${item.added ? 'cursor-default border-white/[0.05] bg-white/[0.02] opacity-55' : selected ? 'cursor-pointer border-accent/35 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(16,185,129,0.08)]' : 'cursor-pointer border-white/[0.08] bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.065]'}`}><span className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl text-xs font-black ${colors.bg} ${colors.text}`}>{sourceMeta[item.source].letter}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-white/80">{item.title}</span><span className="mt-1 block truncate text-meta text-white/50">{item.subtitle}</span></span>{item.added ? <span className="rounded-lg bg-emerald-500/10 px-2 py-1 text-meta font-bold text-emerald-300/70">On Home</span> : <span className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded-md border text-xs font-black ${selected ? 'border-accent bg-accent text-black' : 'border-white/[0.16] bg-white/[0.025] text-transparent group-hover:border-white/30'}`}>✓</span>}</button>
                     })}</div></section>
                   })}
                 </div>
@@ -1910,7 +1911,7 @@ function AddWidgetOverlay({
                     : 'Edit Shelf Settings'
                   : startMode === 'discover' || mode === 'discover' ? 'Create Smart Collection' : 'Add shelves to Home'}
               </h2>
-              <p className="text-xs text-white/40 mt-0.5">
+              <p className="text-xs text-white/60 mt-0.5">
                 {editingRow
                   ? editingRow.sourceType === 'discover'
                     ? 'Modify this collection\'s rules and Home visibility'
@@ -1919,7 +1920,7 @@ function AddWidgetOverlay({
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.10] flex items-center justify-center transition-all text-white/40 hover:text-white/75 duration-200 cursor-pointer">
+          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.10] flex items-center justify-center transition-all text-white/60 hover:text-white/75 duration-200 cursor-pointer">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -1937,10 +1938,10 @@ function AddWidgetOverlay({
                   : 'bg-white/[0.025] hover:bg-white/[0.05] border-white/[0.04]'
               }`}
             >
-              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'preset' ? 'text-accent' : 'text-white/40'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'preset' ? 'text-accent' : 'text-white/60'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
               <span className="min-w-0">
                 <span className={`block text-xs sm:text-sm font-semibold ${mode === 'preset' ? 'text-accent' : 'text-white/60'}`}>Browse Shelves</span>
-                <span className="hidden sm:block text-[10px] text-white/30 mt-0.5 truncate">Catalogs & lists from your addons, Trakt, Simkl, MDBList…</span>
+                <span className="hidden sm:block text-meta text-white/50 mt-0.5 truncate">Catalogs & lists from your addons, Trakt, Simkl, MDBList…</span>
               </span>
             </button>
             <button
@@ -1951,10 +1952,10 @@ function AddWidgetOverlay({
                   : 'bg-white/[0.025] hover:bg-white/[0.05] border-white/[0.04]'
               }`}
             >
-              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'discover' ? 'text-accent' : 'text-white/40'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+              <svg className={`w-4 h-4 flex-shrink-0 ${mode === 'discover' ? 'text-accent' : 'text-white/60'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
               <span className="min-w-0">
                 <span className={`block text-xs sm:text-sm font-semibold ${mode === 'discover' ? 'text-accent' : 'text-white/60'}`}>Create Smart Collection</span>
-                <span className="hidden sm:block text-[10px] text-white/30 mt-0.5 truncate">Build a dynamic collection with genre, rating & streaming rules</span>
+                <span className="hidden sm:block text-meta text-white/50 mt-0.5 truncate">Build a dynamic collection with genre, rating & streaming rules</span>
               </span>
             </button>
           </div>
@@ -1966,7 +1967,7 @@ function AddWidgetOverlay({
             <div className="flex-1 overflow-y-auto px-6 py-8 space-y-6" style={{ scrollbarWidth: 'thin' }}>
               <div className="bg-white/[0.03] border border-white/[0.06] p-5 rounded-xl space-y-5">
                 <div>
-                  <label className="block text-[11px] text-white/40 mb-2 font-medium uppercase tracking-wider">Catalog Name</label>
+                  <label className="block text-label text-white/60 mb-2 font-medium uppercase tracking-wider">Catalog Name</label>
                   <input
                     value={catalogName}
                     onChange={(e) => setCatalogName(e.target.value)}
@@ -1976,7 +1977,7 @@ function AddWidgetOverlay({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] text-white/40 mb-2 font-medium uppercase tracking-wider">Layout Style</label>
+                  <label className="block text-label text-white/60 mb-2 font-medium uppercase tracking-wider">Layout Style</label>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {([
                       { value: 'poster', label: 'Poster', icon: 'M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z' },
@@ -1991,11 +1992,11 @@ function AddWidgetOverlay({
                         className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all cursor-pointer ${
                           editLayout === opt.value
                             ? 'bg-accent/15 border-accent/25 text-accent'
-                            : 'bg-white/[0.02] border-white/[0.06] text-white/30 hover:bg-white/[0.04] hover:text-white/50'
+                            : 'bg-white/[0.02] border-white/[0.06] text-white/50 hover:bg-white/[0.04] hover:text-white/50'
                         }`}
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d={opt.icon} /></svg>
-                        <span className="text-[11px] font-semibold">{opt.label}</span>
+                        <span className="text-label font-semibold">{opt.label}</span>
                       </button>
                     ))}
                   </div>
@@ -2003,7 +2004,7 @@ function AddWidgetOverlay({
               </div>
             </div>
             <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-end gap-3">
-              <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer">
+              <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/60 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer">
                 Cancel
               </button>
               <button onClick={handleSaveStandardEdit} className="px-6 py-2.5 bg-accent hover:bg-accent/80 text-black text-xs font-bold rounded-xl shadow-lg shadow-accent/10 transition-all cursor-pointer">
@@ -2060,7 +2061,7 @@ function AddWidgetOverlay({
                   </div>
                   <h4 className="text-sm font-semibold text-white mb-2">{name} not connected</h4>
                   <p className="text-xs text-white/25 max-w-xs leading-relaxed">{desc}</p>
-                  <div className="mt-4 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/30 font-medium hover:bg-white/[0.08] transition-colors cursor-default">
+                  <div className="mt-4 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/[0.08] text-label text-white/50 font-medium hover:bg-white/[0.08] transition-colors cursor-default">
                     Go to Settings &rarr; Accounts
                   </div>
                 </div>
@@ -2072,7 +2073,7 @@ function AddWidgetOverlay({
                 <div className="border-b border-white/[0.06] bg-black/10 px-5 sm:px-6 py-4 flex-shrink-0">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                     <div className="relative">
-                      <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                         <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                       </svg>
                       <input
@@ -2085,13 +2086,13 @@ function AddWidgetOverlay({
                         autoFocus
                       />
                       {search && (
-                        <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] flex items-center justify-center text-white/40 hover:text-white/75 transition-all cursor-pointer">
+                        <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] flex items-center justify-center text-white/60 hover:text-white/75 transition-all cursor-pointer">
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                         </button>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 text-[11px] text-white/35">
-                      <span className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-2.5 py-1.5 font-semibold text-white/55">{totalVisible} shelves</span>
+                    <div className="flex items-center gap-2 text-label text-white/60">
+                      <span className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-2.5 py-1.5 font-semibold text-white/60">{totalVisible} shelves</span>
                       <span className="hidden sm:inline">Click any row to add it to Home</span>
                     </div>
                   </div>
@@ -2103,15 +2104,15 @@ function AddWidgetOverlay({
                           key={filter.id}
                           type="button"
                           onClick={() => setSelectedSourceFilter(filter.id)}
-                          className={`flex h-9 flex-shrink-0 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold transition-all ${
+                          className={`flex h-9 flex-shrink-0 items-center gap-2 rounded-xl border px-3 text-label font-bold transition-all ${
                             active
                               ? 'border-accent/25 bg-accent/15 text-accent'
-                              : 'border-white/[0.06] bg-white/[0.035] text-white/45 hover:bg-white/[0.065] hover:text-white/70'
+                              : 'border-white/[0.06] bg-white/[0.035] text-white/60 hover:bg-white/[0.065] hover:text-white/70'
                           }`}
                         >
                           {filter.color && <span className={`h-2 w-2 rounded-full ${filter.connected ? filter.color.dot : 'bg-white/18'}`} />}
                           <span>{filter.shortLabel}</span>
-                          <span className="rounded-md bg-white/[0.08] px-1.5 py-0.5 text-[10px] text-white/45">{filter.count}</span>
+                          <span className="rounded-md bg-white/[0.08] px-1.5 py-0.5 text-meta text-white/60">{filter.count}</span>
                         </button>
                       )
                     })}
@@ -2131,12 +2132,12 @@ function AddWidgetOverlay({
                             className={`group flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
                               active
                                 ? 'border-accent/25 bg-accent/12 text-white'
-                                : 'border-transparent text-white/45 hover:border-white/[0.06] hover:bg-white/[0.045] hover:text-white/70'
+                                : 'border-transparent text-white/60 hover:border-white/[0.06] hover:bg-white/[0.045] hover:text-white/70'
                             }`}
                           >
                             <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${filter.color ? (filter.connected ? filter.color.dot : 'bg-white/15') : 'bg-accent'}`} />
                             <span className="min-w-0 flex-1 truncate text-xs font-bold">{filter.label}</span>
-                            <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${active ? 'bg-black/20 text-white/55' : 'bg-white/[0.06] text-white/30 group-hover:text-white/50'}`}>{filter.count}</span>
+                            <span className={`rounded-md px-1.5 py-0.5 text-meta font-bold ${active ? 'bg-black/20 text-white/60' : 'bg-white/[0.06] text-white/50 group-hover:text-white/50'}`}>{filter.count}</span>
                           </button>
                         )
                       })}
@@ -2173,7 +2174,7 @@ function AddWidgetOverlay({
                         </svg>
                       </div>
                       <h4 className="text-sm font-semibold text-white mb-1">No addons installed</h4>
-                      <p className="text-xs text-white/30 max-w-xs leading-relaxed">Install Stremio addons in Settings to browse their catalogs here.</p>
+                      <p className="text-xs text-white/50 max-w-xs leading-relaxed">Install Stremio addons in Settings to browse their catalogs here.</p>
                     </div>
                   )}
 
@@ -2203,12 +2204,12 @@ function AddWidgetOverlay({
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-white/80">Continue Watching</p>
-                              <p className="text-[10px] text-white/25 mt-0.5">Resume where you left off</p>
+                              <p className="text-meta text-white/25 mt-0.5">Resume where you left off</p>
                             </div>
                             {added ? (
                               <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                 <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
+                                <span className="text-meta text-emerald-400/80 font-semibold">Added</span>
                               </div>
                             ) : (
                               <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
@@ -2224,10 +2225,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                          <span className={`text-meta font-black ${sourceColors.pmdb.text}`}>P</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Catalogs</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbAddonCatalogs.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbAddonCatalogs.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {filteredPmdbAddonCatalogs.map((cat) => {
@@ -2260,15 +2261,15 @@ function AddWidgetOverlay({
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="text-[10px] text-white/25">{cat.addonName}</span>
-                                  <span className="text-[10px] text-white/10">·</span>
-                                  <span className="text-[10px] text-white/25">{cat.catalogType}</span>
+                                  <span className="text-meta text-white/25">{cat.addonName}</span>
+                                  <span className="text-meta text-white/10">·</span>
+                                  <span className="text-meta text-white/25">{cat.catalogType}</span>
                                 </div>
                               </div>
                               {added || selected ? (
                                 <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/80 font-semibold">{added ? 'Added' : 'Selected'}</span>
+                                  <span className="text-meta text-emerald-400/80 font-semibold">{added ? 'Added' : 'Selected'}</span>
                                 </div>
                               ) : (
                                 <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
@@ -2284,9 +2285,9 @@ function AddWidgetOverlay({
                   {showSmart && smartRows.length > 0 && (
                     <div>
                       <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] px-4 py-2.5">
-                        <div className={`grid h-6 w-6 place-items-center rounded-lg ${sourceColors.smart.bg}`}><span className={`text-[10px] font-black ${sourceColors.smart.text}`}>S</span></div>
+                        <div className={`grid h-6 w-6 place-items-center rounded-lg ${sourceColors.smart.bg}`}><span className={`text-meta font-black ${sourceColors.smart.text}`}>S</span></div>
                         <h3 className="flex-1 text-xs font-bold uppercase tracking-wider text-white/50">Smart Collections</h3>
-                        <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] font-medium text-white/25">{smartRows.length}</span>
+                        <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-meta font-medium text-white/25">{smartRows.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {smartRows.map((row) => {
@@ -2302,8 +2303,8 @@ function AddWidgetOverlay({
                               <span className={`grid h-9 w-9 place-items-center rounded-xl ${selected ? 'bg-accent/20 text-accent' : sourceColors.smart.bg + ' ' + sourceColors.smart.text}`}>
                                 {selected ? '✓' : 'S'}
                               </span>
-                              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-white/80">{row.title}</span><span className="mt-0.5 block text-[10px] text-white/25">Dynamic TMDB collection • Poster</span></span>
-                              <span className="text-[10px] font-bold text-white/30">{row.enabled ? 'On Home' : selected ? 'Selected' : 'Select'}</span>
+                              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-white/80">{row.title}</span><span className="mt-0.5 block text-meta text-white/25">Dynamic TMDB collection • Poster</span></span>
+                              <span className="text-meta font-bold text-white/50">{row.enabled ? 'On Home' : selected ? 'Selected' : 'Select'}</span>
                             </button>
                           )
                         })}
@@ -2319,7 +2320,7 @@ function AddWidgetOverlay({
                           <svg className="w-3.5 h-3.5 text-orange-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Addon Catalogs</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredOtherAddonCatalogs.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredOtherAddonCatalogs.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {filteredOtherAddonCatalogs.map((cat) => {
@@ -2354,15 +2355,15 @@ function AddWidgetOverlay({
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{cat.catalogName}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="text-[10px] text-white/25">{cat.addonName}</span>
-                                  <span className="text-[10px] text-white/10">·</span>
-                                  <span className="text-[10px] text-white/25">{cat.catalogType}</span>
+                                  <span className="text-meta text-white/25">{cat.addonName}</span>
+                                  <span className="text-meta text-white/10">·</span>
+                                  <span className="text-meta text-white/25">{cat.catalogType}</span>
                                 </div>
                               </div>
                               {added || selected ? (
                                 <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/80 font-semibold">{added ? 'Added' : 'Selected'}</span>
+                                  <span className="text-meta text-emerald-400/80 font-semibold">{added ? 'Added' : 'Selected'}</span>
                                 </div>
                               ) : (
                                 <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
@@ -2385,7 +2386,7 @@ function AddWidgetOverlay({
                             </div>
                             <div>
                               <h3 className="text-sm font-bold text-white/85">Watchlist Catalogs</h3>
-                              <p className="text-[10px] text-white/35">Add watchlist catalogs for movies, shows, and anime by status</p>
+                              <p className="text-meta text-white/60">Add watchlist catalogs for movies, shows, and anime by status</p>
                             </div>
                           </div>
                           <div className="space-y-2.5">
@@ -2394,13 +2395,13 @@ function AddWidgetOverlay({
                               if (!items.length) return null
                               return (
                                 <div key={section}>
-                                  <p className="text-[10px] font-bold text-white/45 mb-1.5">{section}</p>
+                                  <p className="text-meta font-bold text-white/60 mb-1.5">{section}</p>
                                   <div className="grid grid-cols-2 gap-2">{items.map(renderSimklCatalogButton)}</div>
                                 </div>
                               )
                             })}
                           </div>
-                          <p className="text-[9px] text-white/25 mt-3">These catalogs show your Simkl watchlist items by status. Page size must match your Simkl settings.</p>
+                          <p className="text-tag text-white/25 mt-3">These catalogs show your Simkl watchlist items by status. Page size must match your Simkl settings.</p>
                         </div>
                       )}
 
@@ -2412,8 +2413,8 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2 mb-2">
                         <div className={`w-1.5 h-5 rounded-full ${sourceColors.simkl.dot}`} />
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Simkl Lists</h3>
-                        <span className="text-[10px] text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredSimklLists.length}</span>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/60">Simkl Lists</h3>
+                        <span className="text-meta text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-md font-medium">{filteredSimklLists.length}</span>
                       </div>
                       <div className="space-y-1.5">
                         {filteredSimklLists.map((list) => {
@@ -2440,12 +2441,12 @@ function AddWidgetOverlay({
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-white/80 truncate">{list.label}</p>
-                                <p className="text-[10px] text-white/25 mt-0.5">{list.type} layout</p>
+                                <p className="text-meta text-white/25 mt-0.5">{list.type} layout</p>
                               </div>
                               {added ? (
                                 <div className="flex items-center gap-1.5 flex-shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
-                                  <span className="text-[10px] text-emerald-400/80 font-semibold">Added</span>
+                                  <span className="text-meta text-emerald-400/80 font-semibold">Added</span>
                                 </div>
                               ) : (
                                 <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
@@ -2462,10 +2463,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors.anilist.bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors.anilist.text}`}>A</span>
+                          <span className={`text-meta font-black ${sourceColors.anilist.text}`}>A</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">AniList Lists</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredAniListLists.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredAniListLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="AniList Lists"
@@ -2484,10 +2485,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors.trakt.bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors.trakt.text}`}>T</span>
+                          <span className={`text-meta font-black ${sourceColors.trakt.text}`}>T</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Trakt Lists</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredTraktLists.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredTraktLists.length}</span>
                       </div>
                       {filteredTraktLists.length > 0 && (
                         <ProviderListPickerSection
@@ -2503,9 +2504,9 @@ function AddWidgetOverlay({
                       {/* Trakt public list search */}
                       <div className="mt-4 pt-4 border-t border-white/[0.06]">
                         <div className="flex items-center gap-2 mb-2">
-                          <svg className="w-3.5 h-3.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
-                          <h4 className="text-[11px] font-bold uppercase tracking-wider text-white/30">Search Public Lists</h4>
-                          <span className="text-[10px] text-white/20 ml-auto">Find lists by other Trakt users</span>
+                          <svg className="w-3.5 h-3.5 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                          <h4 className="text-label font-bold uppercase tracking-wider text-white/50">Search Public Lists</h4>
+                          <span className="text-meta text-white/20 ml-auto">Find lists by other Trakt users</span>
                         </div>
                         <div className="flex gap-2 mb-3">
                           <input
@@ -2547,10 +2548,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors.pmdb.bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors.pmdb.text}`}>P</span>
+                          <span className={`text-meta font-black ${sourceColors.pmdb.text}`}>P</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Lists</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbLists.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbLists.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="PMDB Lists"
@@ -2569,10 +2570,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors.mdblist.bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors.mdblist.text}`}>M</span>
+                          <span className={`text-meta font-black ${sourceColors.mdblist.text}`}>M</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">MDBList Lists</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredMdblistLists.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredMdblistLists.length}</span>
                       </div>
                       <div className="mb-3 flex gap-2">
                         <input
@@ -2603,9 +2604,9 @@ function AddWidgetOverlay({
                       {/* Public list search */}
                       <div className="mt-4 pt-4 border-t border-white/[0.06]">
                         <div className="flex items-center gap-2 mb-2">
-                          <svg className="w-3.5 h-3.5 text-white/30" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
-                          <h4 className="text-[11px] font-bold uppercase tracking-wider text-white/30">Search Public Lists</h4>
-                          <span className="text-[10px] text-white/20 ml-auto">Find lists by other MDBList users</span>
+                          <svg className="w-3.5 h-3.5 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                          <h4 className="text-label font-bold uppercase tracking-wider text-white/50">Search Public Lists</h4>
+                          <span className="text-meta text-white/20 ml-auto">Find lists by other MDBList users</span>
                         </div>
                         <div className="flex gap-2 mb-3">
                           <input
@@ -2647,10 +2648,10 @@ function AddWidgetOverlay({
                     <div>
                       <div className="flex items-center gap-2.5 mb-3 bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5">
                         <div className={`w-6 h-6 rounded-lg ${sourceColors['pmdb-picks'].bg} flex items-center justify-center flex-shrink-0`}>
-                          <span className={`text-[10px] font-black ${sourceColors['pmdb-picks'].text}`}>P</span>
+                          <span className={`text-meta font-black ${sourceColors['pmdb-picks'].text}`}>P</span>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">PMDB Picks</h3>
-                        <span className="text-[10px] text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbPicks.length}</span>
+                        <span className="text-meta text-white/25 bg-white/[0.06] px-2 py-0.5 rounded-full font-medium">{filteredPmdbPicks.length}</span>
                       </div>
                       <ProviderListPickerSection
                         title="PMDB Picks"
@@ -2672,13 +2673,13 @@ function AddWidgetOverlay({
                           <svg className="w-3.5 h-3.5 text-sky-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
                         </div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-white/50 flex-1">Public Lists</h3>
-                        <span className="text-[10px] text-white/25">
+                        <span className="text-meta text-white/25">
                           {globalPublicSearching ? 'Searching Trakt & MDBList…' : `${globalPublicTrakt.length + globalPublicMdblist.length} found for “${search.trim()}”`}
                         </span>
                       </div>
                       {globalPublicTrakt.length > 0 && (
                         <div className="mb-3">
-                          <p className="text-[10px] font-bold text-white/40 mb-1.5 px-1">From Trakt</p>
+                          <p className="text-meta font-bold text-white/60 mb-1.5 px-1">From Trakt</p>
                           <ProviderListPickerSection
                             title="Public Trakt Lists"
                             service="trakt"
@@ -2692,7 +2693,7 @@ function AddWidgetOverlay({
                       )}
                       {globalPublicMdblist.length > 0 && (
                         <div>
-                          <p className="text-[10px] font-bold text-white/40 mb-1.5 px-1">From MDBList</p>
+                          <p className="text-meta font-bold text-white/60 mb-1.5 px-1">From MDBList</p>
                           <ProviderListPickerSection
                             title="Public MDBList Lists"
                             service="mdblist"
@@ -2715,7 +2716,7 @@ function AddWidgetOverlay({
                           <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                         </svg>
                       </div>
-                      <p className="text-sm text-white/30 font-medium">No results for &ldquo;{search}&rdquo;</p>
+                      <p className="text-sm text-white/50 font-medium">No results for &ldquo;{search}&rdquo;</p>
                       <p className="text-xs text-white/15 mt-1">
                         {traktConnected || mdblistApiKey
                           ? 'Nothing local and no public Trakt/MDBList lists matched'
@@ -2733,7 +2734,7 @@ function AddWidgetOverlay({
                           <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
                         </svg>
                       </div>
-                      <p className="text-sm text-white/30 font-medium mb-1">No services connected</p>
+                      <p className="text-sm text-white/50 font-medium mb-1">No services connected</p>
                       <p className="text-xs text-white/15 leading-relaxed max-w-xs">Install addons or connect accounts in Settings to start adding shelves</p>
                     </div>
                   )}
@@ -2750,23 +2751,23 @@ function AddWidgetOverlay({
                 <div className="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-accent/15 blur-3xl" />
                 <div className="relative flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-accent">Smart collection</p>
+                    <p className="text-meta font-bold uppercase tracking-[0.18em] text-accent">Smart collection</p>
                     <h3 className="mt-1 text-xl font-bold text-white">{editingRow ? 'Edit catalog' : 'Build a catalog'}</h3>
                   </div>
                   <div className="flex items-center gap-2">
-                    <label className="rounded-full border border-white/[0.10] bg-black/20 px-3 py-2 text-xs font-semibold text-white/70"><span className="mr-2 text-white/35">Style</span><select value={contentType} onChange={(e) => setContentType(e.target.value as 'movie' | 'series')} className="bg-transparent text-white outline-none"><option value="movie" className="bg-[#0a0b0e]">Movies</option><option value="series" className="bg-[#0a0b0e]">TV Shows</option></select></label>
-                    <span className="rounded-full border border-white/[0.10] bg-black/20 px-3 py-2 text-xs font-semibold text-white/70"><span className="mr-2 text-white/35">Catalog</span>TMDB</span>
+                    <label className="rounded-full border border-white/[0.10] bg-black/20 px-3 py-2 text-xs font-semibold text-white/70"><span className="mr-2 text-white/60">Style</span><SelectMenu value={contentType} onChange={(e) => setContentType(e.target.value as 'movie' | 'series')} className="bg-transparent text-white outline-none"><option value="movie" className="bg-[#0a0b0e]">Movies</option><option value="series" className="bg-[#0a0b0e]">TV Shows</option></SelectMenu></label>
+                    <span className="rounded-full border border-white/[0.10] bg-black/20 px-3 py-2 text-xs font-semibold text-white/70"><span className="mr-2 text-white/60">Catalog</span>TMDB</span>
                   </div>
                 </div>
-                <p className="relative mt-6 text-[11px] font-bold uppercase tracking-[0.16em] text-white/30">Your collection will show</p>
+                <p className="relative mt-6 text-label font-bold uppercase tracking-[0.16em] text-white/50">Your collection will show</p>
                 <p className="relative mt-2 max-w-5xl text-xl font-semibold leading-relaxed text-white/92 sm:text-2xl">{builderPrompt}</p>
-                <div className="relative mt-5 flex flex-wrap items-center gap-2 text-xs"><span className="text-white/35">Call it</span><input value={catalogName} onChange={(e) => setCatalogName(e.target.value)} placeholder="Popular movies" aria-label="Collection name" className="min-w-44 border-b border-white/20 bg-transparent px-1 py-1 font-bold text-white outline-none placeholder:text-white/25 focus:border-accent" /><span className="text-white/35">— you can change any rule below.</span></div>
+                <div className="relative mt-5 flex flex-wrap items-center gap-2 text-xs"><span className="text-white/60">Call it</span><input value={catalogName} onChange={(e) => setCatalogName(e.target.value)} placeholder="Popular movies" aria-label="Collection name" className="min-w-44 border-b border-white/20 bg-transparent px-1 py-1 font-bold text-white outline-none placeholder:text-white/25 focus:border-accent" /><span className="text-white/60">— you can change any rule below.</span></div>
               </section>
 
               <div>
                 <div className="mb-3 flex items-end justify-between gap-4">
-                  <div><h3 className="text-sm font-bold text-white/75">Shape your collection</h3><p className="mt-1 text-[11px] text-white/30">Pick a card to edit that rule here.</p></div>
-                  <span className="hidden text-[10px] font-semibold text-white/25 sm:block">All filters are optional</span>
+                  <div><h3 className="text-sm font-bold text-white/75">Shape your collection</h3><p className="mt-1 text-label text-white/50">Pick a card to edit that rule here.</p></div>
+                  <span className="hidden text-meta font-semibold text-white/25 sm:block">All filters are optional</span>
                 </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {[
@@ -2785,35 +2786,35 @@ function AddWidgetOverlay({
                   { key: 'max-results', label: 'Maximum results', value: maxResults ? `${maxResults} titles` : 'Uncapped', icon: '#' },
                 ].map((item) => (
                   <button key={item.key} type="button" aria-expanded={quickEditor === item.key} onClick={() => setQuickEditor((current) => current === item.key ? null : item.key)} className={`group flex min-w-0 items-center gap-3 rounded-2xl border p-3.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${quickEditor === item.key ? 'border-accent/40 bg-accent/[0.10]' : 'border-white/[0.09] bg-white/[0.045] hover:-translate-y-0.5 hover:border-accent/35 hover:bg-accent/[0.08]'}`}>
-                    <span className="flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-white/[0.08] text-base font-bold text-accent">{item.icon}</span><span className="min-w-0 flex-1"><span className="block text-sm font-bold text-white/80">{item.label}</span><span className="block truncate text-xs text-white/38">{item.value}</span></span><span className="text-xl text-white/30 transition-transform group-hover:translate-x-0.5 group-hover:text-accent">›</span>
+                    <span className="flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-white/[0.08] text-base font-bold text-accent">{item.icon}</span><span className="min-w-0 flex-1"><span className="block text-sm font-bold text-white/80">{item.label}</span><span className="block truncate text-xs text-white/60">{item.value}</span></span><span className="text-xl text-white/50 transition-transform group-hover:translate-x-0.5 group-hover:text-accent">›</span>
                   </button>
                 ))}
               </div>
               {quickEditor && (
                 <div className="mt-3 rounded-2xl border border-accent/25 bg-white/[0.045] p-4 sm:p-5">
-                  {quickEditor === 'max-results' && <label className="mb-4 block max-w-xs text-xs text-white/45">Maximum titles<input type="number" min="1" max="10000" value={maxResults} onChange={(e) => setMaxResults(e.target.value)} placeholder="Uncapped" className={`${styledInput} mt-1.5`} /><span className="mt-1.5 block text-[11px] text-white/30">Leave empty to load every matching title.</span></label>}
-                  <div className="mb-4 flex items-center justify-between"><p className="text-sm font-bold text-white/80">Edit {quickEditor.replace(/-/g, ' ')}</p><button type="button" onClick={() => setQuickEditor(null)} className="grid h-8 w-8 place-items-center rounded-lg bg-white/[0.06] text-white/45 hover:bg-white/[0.10] hover:text-white">×</button></div>
+                  {quickEditor === 'max-results' && <label className="mb-4 block max-w-xs text-xs text-white/60">Maximum titles<input type="number" min="1" max="10000" value={maxResults} onChange={(e) => setMaxResults(e.target.value)} placeholder="Uncapped" className={`${styledInput} mt-1.5`} /><span className="mt-1.5 block text-label text-white/50">Leave empty to load every matching title.</span></label>}
+                  <div className="mb-4 flex items-center justify-between"><p className="text-sm font-bold text-white/80">Edit {quickEditor.replace(/-/g, ' ')}</p><button type="button" onClick={() => setQuickEditor(null)} className="grid h-8 w-8 place-items-center rounded-lg bg-white/[0.06] text-white/60 hover:bg-white/[0.10] hover:text-white">×</button></div>
                   {quickEditor === 'ordering' && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{[
                     ['popularity.desc', 'Popular'], ['vote_average.desc', 'Highest rated'],
                     [contentType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc', 'Newest'],
                     [contentType === 'movie' ? 'primary_release_date.asc' : 'first_air_date.asc', 'Oldest'],
-                  ].map(([value, label]) => <button type="button" key={value} onClick={() => setSortBy(value)} className={`rounded-xl border px-4 py-3 text-left text-xs font-semibold ${sortBy === value ? 'border-accent/40 bg-accent/15 text-accent' : 'border-white/[0.08] bg-black/10 text-white/55 hover:text-white'}`}>{label}</button>)}</div>}
-                  {quickEditor === 'period' && <div className="space-y-4"><div className="flex flex-wrap gap-2">{['This Month', 'This Year', 'Last Year', 'Last 5 Years', '2010s', '2000s', '1990s', '1980s'].map((value) => <button type="button" key={value} onClick={() => applyPreset(value)} className={`rounded-lg border px-3 py-2 text-xs font-semibold ${presetName === value ? 'border-accent/35 bg-accent/15 text-accent' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>{value}</button>)}<button type="button" onClick={() => applyPreset('Clear')} className="rounded-lg border border-white/[0.08] px-3 py-2 text-xs text-white/45">Any period</button></div><div className="grid gap-3 sm:grid-cols-2"><label className="text-[11px] text-white/40">From<input type="date" value={releaseDateFrom} onChange={(e) => { setReleaseDateFrom(e.target.value); setPresetName('') }} className={`${styledInput} mt-1.5`} /></label><label className="text-[11px] text-white/40">To<input type="date" value={releaseDateTo} onChange={(e) => { setReleaseDateTo(e.target.value); setPresetName('') }} className={`${styledInput} mt-1.5`} /></label></div></div>}
-                  {quickEditor === 'genres' && <div className="grid gap-4 sm:grid-cols-2"><div><div className="mb-2 flex items-center justify-between"><label className="text-xs text-white/50">Include genres</label><MatchModeToggle value={genreMatchMode} onChange={setGenreMatchMode} name="quick-genre" /></div><select value="" onChange={(e) => { if (e.target.value && !selectedIncludeGenres.includes(e.target.value)) setSelectedIncludeGenres([...selectedIncludeGenres, e.target.value]) }} className={styledSelect}><option value="">Add genre…</option>{genresList.map((genre) => <option key={genre.id} value={genre.id} className="bg-[#0a0b0e]">{genre.name}</option>)}</select><div className="mt-2 flex flex-wrap gap-1.5">{selectedIncludeGenres.map((id) => <button type="button" key={id} onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((item) => item !== id))} className="rounded-lg bg-accent/10 px-2.5 py-1 text-[11px] text-accent">{genresList.find((genre) => String(genre.id) === id)?.name || id} ×</button>)}</div></div><div><label className="mb-2 block text-xs text-white/50">Exclude genres</label><select value="" onChange={(e) => { if (e.target.value && !selectedExcludeGenres.includes(e.target.value)) setSelectedExcludeGenres([...selectedExcludeGenres, e.target.value]) }} className={styledSelect}><option value="">Exclude genre…</option>{genresList.map((genre) => <option key={genre.id} value={genre.id} className="bg-[#0a0b0e]">{genre.name}</option>)}</select><div className="mt-2 flex flex-wrap gap-1.5">{selectedExcludeGenres.map((id) => <button type="button" key={id} onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((item) => item !== id))} className="rounded-lg bg-red-500/10 px-2.5 py-1 text-[11px] text-red-300">{genresList.find((genre) => String(genre.id) === id)?.name || id} ×</button>)}</div></div></div>}
-                  {quickEditor === 'rating' && <div className="grid gap-4 sm:grid-cols-3"><label className="text-xs text-white/45">Minimum rating<input type="number" min="0" max="10" step="0.5" value={voteAverageMin} onChange={(e) => setVoteAverageMin(Math.min(10, Math.max(0, Number(e.target.value))))} className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/45">Maximum rating<input type="number" min="0" max="10" step="0.5" value={voteAverageMax} onChange={(e) => setVoteAverageMax(Math.min(10, Math.max(0, Number(e.target.value))))} className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/45">Minimum votes<input type="number" min="0" value={voteCountMin} onChange={(e) => setVoteCountMin(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label></div>}
-                  {quickEditor === 'language' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-white/45">Original language<select value={originalLanguage} onChange={(e) => setOriginalLanguage(e.target.value)} className={`${styledSelect} mt-1.5`}><option value="">Any language</option>{languagesList.map((language) => <option key={language.iso_639_1} value={language.iso_639_1} className="bg-[#0a0b0e]">{language.english_name}</option>)}</select></label><label className="text-xs text-white/45">Country of origin<select value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} className={`${styledSelect} mt-1.5`}><option value="Any">Any country</option>{countriesList.map((country) => <option key={country.iso_3166_1} value={country.iso_3166_1} className="bg-[#0a0b0e]">{country.english_name}</option>)}</select></label></div>}
-                  {quickEditor === 'providers' && <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><select value={watchRegion} onChange={(e) => setWatchRegion(e.target.value)} className={styledSelect}>{[['US','United States'],['GB','United Kingdom'],['DE','Germany'],['FR','France'],['CA','Canada'],['AU','Australia'],['JP','Japan']].map(([code, name]) => <option key={code} value={code} className="bg-[#0a0b0e]">{name} ({code})</option>)}</select><input value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} placeholder="Search providers…" className={styledInput} /></div><div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto">{filteredProviders.slice(0, 80).map((provider) => { const selected = selectedProviders.some((item) => item.id === provider.provider_id); return <button type="button" key={provider.provider_id} onClick={() => setSelectedProviders(selected ? selectedProviders.filter((item) => item.id !== provider.provider_id) : [...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])} className={`rounded-lg border px-2.5 py-1.5 text-[11px] ${selected ? 'border-accent/35 bg-accent/15 text-accent' : 'border-white/[0.08] text-white/45'}`}>{provider.provider_name}</button> })}</div></div>}
+                  ].map(([value, label]) => <button type="button" key={value} onClick={() => setSortBy(value)} className={`rounded-xl border px-4 py-3 text-left text-xs font-semibold ${sortBy === value ? 'border-accent/40 bg-accent/15 text-accent' : 'border-white/[0.08] bg-black/10 text-white/60 hover:text-white'}`}>{label}</button>)}</div>}
+                  {quickEditor === 'period' && <div className="space-y-4"><div className="flex flex-wrap gap-2">{['This Month', 'This Year', 'Last Year', 'Last 5 Years', '2010s', '2000s', '1990s', '1980s'].map((value) => <button type="button" key={value} onClick={() => applyPreset(value)} className={`rounded-lg border px-3 py-2 text-xs font-semibold ${presetName === value ? 'border-accent/35 bg-accent/15 text-accent' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>{value}</button>)}<button type="button" onClick={() => applyPreset('Clear')} className="rounded-lg border border-white/[0.08] px-3 py-2 text-xs text-white/60">Any period</button></div><div className="grid gap-3 sm:grid-cols-2"><label className="text-label text-white/60">From<input type="date" value={releaseDateFrom} onChange={(e) => { setReleaseDateFrom(e.target.value); setPresetName('') }} className={`${styledInput} mt-1.5`} /></label><label className="text-label text-white/60">To<input type="date" value={releaseDateTo} onChange={(e) => { setReleaseDateTo(e.target.value); setPresetName('') }} className={`${styledInput} mt-1.5`} /></label></div></div>}
+                  {quickEditor === 'genres' && <div className="grid gap-4 sm:grid-cols-2"><div><div className="mb-2 flex items-center justify-between"><label className="text-xs text-white/50">Include genres</label><MatchModeToggle value={genreMatchMode} onChange={setGenreMatchMode} name="quick-genre" /></div><SelectMenu value="" onChange={(e) => { if (e.target.value && !selectedIncludeGenres.includes(e.target.value)) setSelectedIncludeGenres([...selectedIncludeGenres, e.target.value]) }} className={styledSelect}><option value="">Add genre…</option>{genresList.map((genre) => <option key={genre.id} value={genre.id} className="bg-[#0a0b0e]">{genre.name}</option>)}</SelectMenu><div className="mt-2 flex flex-wrap gap-1.5">{selectedIncludeGenres.map((id) => <button type="button" key={id} onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((item) => item !== id))} className="rounded-lg bg-accent/10 px-2.5 py-1 text-label text-accent">{genresList.find((genre) => String(genre.id) === id)?.name || id} ×</button>)}</div></div><div><label className="mb-2 block text-xs text-white/50">Exclude genres</label><SelectMenu value="" onChange={(e) => { if (e.target.value && !selectedExcludeGenres.includes(e.target.value)) setSelectedExcludeGenres([...selectedExcludeGenres, e.target.value]) }} className={styledSelect}><option value="">Exclude genre…</option>{genresList.map((genre) => <option key={genre.id} value={genre.id} className="bg-[#0a0b0e]">{genre.name}</option>)}</SelectMenu><div className="mt-2 flex flex-wrap gap-1.5">{selectedExcludeGenres.map((id) => <button type="button" key={id} onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((item) => item !== id))} className="rounded-lg bg-red-500/10 px-2.5 py-1 text-label text-red-300">{genresList.find((genre) => String(genre.id) === id)?.name || id} ×</button>)}</div></div></div>}
+                  {quickEditor === 'rating' && <div className="grid gap-4 sm:grid-cols-3"><label className="text-xs text-white/60">Minimum rating<input type="number" min="0" max="10" step="0.5" value={voteAverageMin} onChange={(e) => setVoteAverageMin(Math.min(10, Math.max(0, Number(e.target.value))))} className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/60">Maximum rating<input type="number" min="0" max="10" step="0.5" value={voteAverageMax} onChange={(e) => setVoteAverageMax(Math.min(10, Math.max(0, Number(e.target.value))))} className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/60">Minimum votes<input type="number" min="0" value={voteCountMin} onChange={(e) => setVoteCountMin(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label></div>}
+                  {quickEditor === 'language' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-white/60">Original language<SelectMenu value={originalLanguage} onChange={(e) => setOriginalLanguage(e.target.value)} className={`${styledSelect} mt-1.5`}><option value="">Any language</option>{languagesList.map((language) => <option key={language.iso_639_1} value={language.iso_639_1} className="bg-[#0a0b0e]">{language.english_name}</option>)}</SelectMenu></label><label className="text-xs text-white/60">Country of origin<SelectMenu value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} className={`${styledSelect} mt-1.5`}><option value="Any">Any country</option>{countriesList.map((country) => <option key={country.iso_3166_1} value={country.iso_3166_1} className="bg-[#0a0b0e]">{country.english_name}</option>)}</SelectMenu></label></div>}
+                  {quickEditor === 'providers' && <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><SelectMenu value={watchRegion} onChange={(e) => setWatchRegion(e.target.value)} className={styledSelect}>{[['US','United States'],['GB','United Kingdom'],['DE','Germany'],['FR','France'],['CA','Canada'],['AU','Australia'],['JP','Japan']].map(([code, name]) => <option key={code} value={code} className="bg-[#0a0b0e]">{name} ({code})</option>)}</SelectMenu><input value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} placeholder="Search providers…" className={styledInput} /></div><div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto">{filteredProviders.slice(0, 80).map((provider) => { const selected = selectedProviders.some((item) => item.id === provider.provider_id); return <button type="button" key={provider.provider_id} onClick={() => setSelectedProviders(selected ? selectedProviders.filter((item) => item.id !== provider.provider_id) : [...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])} className={`rounded-lg border px-2.5 py-1.5 text-label ${selected ? 'border-accent/35 bg-accent/15 text-accent' : 'border-white/[0.08] text-white/60'}`}>{provider.provider_name}</button> })}</div></div>}
                   {quickEditor === 'cast' && <div className="relative"><input value={peopleSearch} onChange={(e) => setPeopleSearch(e.target.value)} placeholder="Search actors, directors, or people…" className={styledInput} />{peopleSuggestions.length > 0 && <div className="mt-2 overflow-hidden rounded-xl border border-white/10 bg-[#14161d]">{peopleSuggestions.map((person) => <button type="button" key={person.id} onClick={() => { if (!peopleList.some((item) => item.id === person.id)) setPeopleList([...peopleList, { id: person.id, name: person.name }]); setPeopleSearch(''); setPeopleSuggestions([]) }} className="block w-full border-b border-white/[0.05] px-3 py-2 text-left text-xs text-white/70 last:border-0 hover:bg-white/[0.05]">{person.name}</button>)}</div>}<div className="mt-3 flex flex-wrap gap-2">{peopleList.map((person) => <button type="button" key={person.id} onClick={() => setPeopleList(peopleList.filter((item) => item.id !== person.id))} className="rounded-lg bg-accent/10 px-2.5 py-1.5 text-xs text-accent">{person.name} ×</button>)}</div></div>}
                   {quickEditor === 'studios' && <div><input value={companySearch} onChange={(e) => setCompanySearch(e.target.value)} placeholder="Search studios or companies…" className={styledInput} />{companySuggestions.length > 0 && <div className="mt-2 overflow-hidden rounded-xl border border-white/10 bg-[#14161d]">{companySuggestions.map((company) => <button type="button" key={company.id} onClick={() => { if (!includeCompanies.some((item) => item.id === company.id)) setIncludeCompanies([...includeCompanies, company]); setCompanySearch(''); setCompanySuggestions([]) }} className="block w-full border-b border-white/[0.05] px-3 py-2 text-left text-xs text-white/70 last:border-0 hover:bg-white/[0.05]">{company.name}</button>)}</div>}<div className="mt-3 flex flex-wrap gap-2">{includeCompanies.map((company) => <button type="button" key={company.id} onClick={() => setIncludeCompanies(includeCompanies.filter((item) => item.id !== company.id))} className="rounded-lg bg-accent/10 px-2.5 py-1.5 text-xs text-accent">{company.name} ×</button>)}</div></div>}
                   {(quickEditor === 'include-keywords' || quickEditor === 'exclude-keywords') && <div><input value={keywordSearch} onChange={(e) => setKeywordSearch(e.target.value)} placeholder="Search keywords…" className={styledInput} />{keywordSuggestions.length > 0 && <div className="mt-2 overflow-hidden rounded-xl border border-white/10 bg-[#14161d]">{keywordSuggestions.map((keyword) => <button type="button" key={keyword.id} onClick={() => { const excluding = quickEditor === 'exclude-keywords'; if (excluding && !excludeKeywords.some((item) => item.id === keyword.id)) setExcludeKeywords([...excludeKeywords, keyword]); if (!excluding && !includeKeywords.some((item) => item.id === keyword.id)) setIncludeKeywords([...includeKeywords, keyword]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="block w-full border-b border-white/[0.05] px-3 py-2 text-left text-xs text-white/70 last:border-0 hover:bg-white/[0.05]">{keyword.name}</button>)}</div>}<div className="mt-3 flex flex-wrap gap-2">{(quickEditor === 'exclude-keywords' ? excludeKeywords : includeKeywords).map((keyword) => <button type="button" key={keyword.id} onClick={() => quickEditor === 'exclude-keywords' ? setExcludeKeywords(excludeKeywords.filter((item) => item.id !== keyword.id)) : setIncludeKeywords(includeKeywords.filter((item) => item.id !== keyword.id))} className={`rounded-lg px-2.5 py-1.5 text-xs ${quickEditor === 'exclude-keywords' ? 'bg-red-500/10 text-red-300' : 'bg-accent/10 text-accent'}`}>{keyword.name} ×</button>)}</div></div>}
-                  {quickEditor === 'runtime' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-white/45">Minimum minutes<input type="number" min="0" value={runtimeMin} onChange={(e) => setRuntimeMin(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/45">Maximum minutes<input type="number" min="0" value={runtimeMax} onChange={(e) => setRuntimeMax(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label></div>}
-                  {quickEditor === 'visibility' && <div className="grid gap-2 sm:grid-cols-2"><button type="button" onClick={() => setShowOnHome(false)} className={`rounded-xl border p-4 text-left ${!showOnHome ? 'border-accent/35 bg-accent/15' : 'border-white/[0.08]'}`}><span className="block text-sm font-bold text-white/80">Library only</span><span className="mt-1 block text-xs text-white/35">Keep it out of the Home screen.</span></button><button type="button" onClick={() => setShowOnHome(true)} className={`rounded-xl border p-4 text-left ${showOnHome ? 'border-accent/35 bg-accent/15' : 'border-white/[0.08]'}`}><span className="block text-sm font-bold text-white/80">Library and Home</span><span className="mt-1 block text-xs text-white/35">Also add this collection as a Home shelf.</span></button></div>}
+                  {quickEditor === 'runtime' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-white/60">Minimum minutes<input type="number" min="0" value={runtimeMin} onChange={(e) => setRuntimeMin(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label><label className="text-xs text-white/60">Maximum minutes<input type="number" min="0" value={runtimeMax} onChange={(e) => setRuntimeMax(e.target.value)} placeholder="Any" className={`${styledInput} mt-1.5`} /></label></div>}
+                  {quickEditor === 'visibility' && <div className="grid gap-2 sm:grid-cols-2"><button type="button" onClick={() => setShowOnHome(false)} className={`rounded-xl border p-4 text-left ${!showOnHome ? 'border-accent/35 bg-accent/15' : 'border-white/[0.08]'}`}><span className="block text-sm font-bold text-white/80">Library only</span><span className="mt-1 block text-xs text-white/60">Keep it out of the Home screen.</span></button><button type="button" onClick={() => setShowOnHome(true)} className={`rounded-xl border p-4 text-left ${showOnHome ? 'border-accent/35 bg-accent/15' : 'border-white/[0.08]'}`}><span className="block text-sm font-bold text-white/80">Library and Home</span><span className="mt-1 block text-xs text-white/60">Also add this collection as a Home shelf.</span></button></div>}
                 </div>
               )}
               </div>
 
               {false && <details open={advancedBuilderOpen} onToggle={(event) => setAdvancedBuilderOpen(event.currentTarget.open)} className="rounded-2xl border border-white/[0.07] bg-black/[0.12]">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-bold text-white/70 marker:hidden"><span>Templates &amp; uncommon settings</span><span className="text-lg text-white/35">{advancedBuilderOpen ? '−' : '+'}</span></summary>
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-bold text-white/70 marker:hidden"><span>Templates &amp; uncommon settings</span><span className="text-lg text-white/60">{advancedBuilderOpen ? '−' : '+'}</span></summary>
                 <div className="space-y-5 border-t border-white/[0.06] p-4 sm:p-5">
 
               {/* ── Setup Tab ── */}
@@ -2822,8 +2823,8 @@ function AddWidgetOverlay({
                   {!editingRow && (
                     <div className="space-y-3">
                       <div>
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/55">Start with a template</h3>
-                        <p className="text-[11px] text-white/25 mt-1">Choose a starting point, then adjust any rule before saving.</p>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white/60">Start with a template</h3>
+                        <p className="text-label text-white/25 mt-1">Choose a starting point, then adjust any rule before saving.</p>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                         {SMART_COLLECTION_TEMPLATES.map((template) => (
@@ -2834,7 +2835,7 @@ function AddWidgetOverlay({
                             className={`rounded-xl border p-3.5 text-left transition-all cursor-pointer ${presetName === template.id ? 'bg-accent/12 border-accent/30' : 'bg-white/[0.025] border-white/[0.06] hover:bg-white/[0.05] hover:border-white/[0.12]'}`}
                           >
                             <span className={`block text-xs font-bold ${presetName === template.id ? 'text-accent' : 'text-white/75'}`}>{template.label}</span>
-                            <span className="block text-[10px] leading-relaxed text-white/30 mt-1">{template.description}</span>
+                            <span className="block text-meta leading-relaxed text-white/50 mt-1">{template.description}</span>
                           </button>
                         ))}
                       </div>
@@ -2847,25 +2848,25 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Name</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Name</label>
                         <input value={catalogName} onChange={(e) => setCatalogName(e.target.value)} placeholder="e.g. Cyberpunk Essentials" className={styledInput} />
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Source</label>
-                        <div className={`${styledInput} text-white/60`}>TMDB <span className="ml-2 text-[10px] text-white/25">Smart Collections currently use TMDB</span></div>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Source</label>
+                        <div className={`${styledInput} text-white/60`}>TMDB <span className="ml-2 text-meta text-white/25">Smart Collections currently use TMDB</span></div>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Content Type</label>
-                        <select value={contentType} onChange={(e) => setContentType(e.target.value as any)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Content Type</label>
+                        <SelectMenu value={contentType} onChange={(e) => setContentType(e.target.value as any)} className={styledSelect}>
                           <option value="movie" className="bg-[#0a0b0e]">Movies</option>
                           <option value="series" className="bg-[#0a0b0e]">TV Shows</option>
-                        </select>
+                        </SelectMenu>
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Sort By</label>
-                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Sort By</label>
+                        <SelectMenu value={sortBy} onChange={(e) => setSortBy(e.target.value)} className={styledSelect}>
                           <option value="popularity.desc" className="bg-[#0a0b0e]">Popularity (High to Low)</option>
                           <option value="popularity.asc" className="bg-[#0a0b0e]">Popularity (Low to High)</option>
                           <option value="vote_average.desc" className="bg-[#0a0b0e]">Rating (High to Low)</option>
@@ -2881,17 +2882,17 @@ function AddWidgetOverlay({
                               <option value="first_air_date.asc" className="bg-[#0a0b0e]">Air Date (Oldest)</option>
                             </>
                           )}
-                        </select>
+                        </SelectMenu>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Cache TTL (seconds)</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Cache TTL (seconds)</label>
                         <input type="number" value={cacheTtl} onChange={(e) => setCacheTtl(Math.max(300, parseInt(e.target.value) || 300))} min="300" className={styledInput} />
-                        <span className="text-[9px] text-white/20 mt-1 block">Min 300s (5 min)</span>
+                        <span className="text-tag text-white/20 mt-1 block">Min 300s (5 min)</span>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Maximum results</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Maximum results</label>
                         <input type="number" min="1" max="10000" value={maxResults} onChange={(e) => setMaxResults(e.target.value)} placeholder="Uncapped" className={styledInput} />
-                        <span className="text-[9px] text-white/20 mt-1 block">Leave empty to load all matching results.</span>
+                        <span className="text-tag text-white/20 mt-1 block">Leave empty to load all matching results.</span>
                       </div>
                       <div className="flex items-start gap-3 pt-5">
                         <PillToggle checked={releasedOnly} onChange={setReleasedOnly} label="Released Only" />
@@ -2900,7 +2901,7 @@ function AddWidgetOverlay({
                     </div>
                     <div className="pt-3 border-t border-white/[0.06]">
                       <PillToggle checked={showOnHome} onChange={setShowOnHome} label="Show on Home" />
-                      <p className="text-[10px] text-white/25 mt-2">The collection always remains available in Library.</p>
+                      <p className="text-meta text-white/25 mt-2">The collection always remains available in Library.</p>
                     </div>
                   </div>
                 </div>
@@ -2919,19 +2920,19 @@ function AddWidgetOverlay({
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-[11px] text-white/40 font-medium">Include Genres</label>
+                          <label className="text-label text-white/60 font-medium">Include Genres</label>
                           <MatchModeToggle value={genreMatchMode} onChange={setGenreMatchMode} name="genre" />
                         </div>
-                        <select onChange={(e) => { const v = e.target.value; if (v && !selectedIncludeGenres.includes(v)) setSelectedIncludeGenres([...selectedIncludeGenres, v]); e.target.value = '' }} className={styledSelect}>
+                        <SelectMenu value="" onChange={(e) => { const v = e.target.value; if (v && !selectedIncludeGenres.includes(v)) setSelectedIncludeGenres([...selectedIncludeGenres, v]); e.target.value = '' }} className={styledSelect}>
                           <option value="">+ Add genre</option>
                           {genresList.map((g) => (<option key={g.id} value={g.id} className="bg-[#0a0b0e]">{g.name}</option>))}
-                        </select>
+                        </SelectMenu>
                         <div className="flex flex-wrap gap-1.5 mt-2 min-h-[28px]">
-                          {selectedIncludeGenres.length === 0 && <span className="text-[10px] text-white/15 italic">No genres selected</span>}
+                          {selectedIncludeGenres.length === 0 && <span className="text-meta text-white/15 italic">No genres selected</span>}
                           {selectedIncludeGenres.map((gid) => {
                             const g = genresList.find((item) => String(item.id) === gid)
                             return (
-                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-label font-medium">
                                 {g?.name || gid}
                                 <button onClick={() => setSelectedIncludeGenres(selectedIncludeGenres.filter((id) => id !== gid))} className="hover:text-white cursor-pointer text-emerald-400/60 hover:text-emerald-300 transition-colors">&times;</button>
                               </span>
@@ -2940,17 +2941,17 @@ function AddWidgetOverlay({
                         </div>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Exclude Genres</label>
-                        <select onChange={(e) => { const v = e.target.value; if (v && !selectedExcludeGenres.includes(v)) setSelectedExcludeGenres([...selectedExcludeGenres, v]); e.target.value = '' }} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Exclude Genres</label>
+                        <SelectMenu value="" onChange={(e) => { const v = e.target.value; if (v && !selectedExcludeGenres.includes(v)) setSelectedExcludeGenres([...selectedExcludeGenres, v]); e.target.value = '' }} className={styledSelect}>
                           <option value="">+ Exclude genre</option>
                           {genresList.map((g) => (<option key={g.id} value={g.id} className="bg-[#0a0b0e]">{g.name}</option>))}
-                        </select>
+                        </SelectMenu>
                         <div className="flex flex-wrap gap-1.5 mt-2 min-h-[28px]">
-                          {selectedExcludeGenres.length === 0 && <span className="text-[10px] text-white/15 italic">None excluded</span>}
+                          {selectedExcludeGenres.length === 0 && <span className="text-meta text-white/15 italic">None excluded</span>}
                           {selectedExcludeGenres.map((gid) => {
                             const g = genresList.find((item) => String(item.id) === gid)
                             return (
-                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                              <span key={gid} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-label font-medium">
                                 {g?.name || gid}
                                 <button onClick={() => setSelectedExcludeGenres(selectedExcludeGenres.filter((id) => id !== gid))} className="hover:text-white cursor-pointer text-red-400/60 hover:text-red-300 transition-colors">&times;</button>
                               </span>
@@ -2963,41 +2964,41 @@ function AddWidgetOverlay({
                     {/* Language / Country / Region / Certification */}
                     <div className="border-t border-white/[0.06] pt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Original Language</label>
-                        <select value={originalLanguage} onChange={(e) => setOriginalLanguage(e.target.value)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Original Language</label>
+                        <SelectMenu value={originalLanguage} onChange={(e) => setOriginalLanguage(e.target.value)} className={styledSelect}>
                           <option value="Any" className="bg-[#0a0b0e]">Any</option>
                           {languagesList.map((lang) => (<option key={lang.iso_639_1} value={lang.iso_639_1} className="bg-[#0a0b0e]">{lang.english_name}</option>))}
-                        </select>
+                        </SelectMenu>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Origin Country</label>
-                        <select value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Origin Country</label>
+                        <SelectMenu value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} className={styledSelect}>
                           <option value="Any" className="bg-[#0a0b0e]">Any</option>
                           {countriesList.map((c) => (<option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-[#0a0b0e]">{c.english_name}</option>))}
-                        </select>
+                        </SelectMenu>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Release Region</label>
-                        <select value={releaseRegion} onChange={(e) => setReleaseRegion(e.target.value)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Release Region</label>
+                        <SelectMenu value={releaseRegion} onChange={(e) => setReleaseRegion(e.target.value)} className={styledSelect}>
                           <option value="Any" className="bg-[#0a0b0e]">Any</option>
                           {countriesList.map((c) => (<option key={c.iso_3166_1} value={c.iso_3166_1} className="bg-[#0a0b0e]">{c.english_name}</option>))}
-                        </select>
+                        </SelectMenu>
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Certification Country</label>
-                        <select value={certificationCountry} onChange={(e) => { setCertificationCountry(e.target.value); setCertification('None') }} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Certification Country</label>
+                        <SelectMenu value={certificationCountry} onChange={(e) => { setCertificationCountry(e.target.value); setCertification('None') }} className={styledSelect}>
                           <option value="None" className="bg-[#0a0b0e]">None</option>
                           {certificationCountries.map((c) => (<option key={c} value={c} className="bg-[#0a0b0e]">{c}</option>))}
-                        </select>
+                        </SelectMenu>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Certification</label>
-                        <select value={certification} disabled={certificationCountry === 'None'} onChange={(e) => setCertification(e.target.value)} className={`${styledSelect} disabled:opacity-30`}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Certification</label>
+                        <SelectMenu value={certification} disabled={certificationCountry === 'None'} onChange={(e) => setCertification(e.target.value)} className={`${styledSelect} disabled:opacity-30`}>
                           <option value="None" className="bg-[#0a0b0e]">None</option>
                           {certificationsForCountry.map((c) => (<option key={c.certification} value={c.certification} className="bg-[#0a0b0e]">{c.certification}</option>))}
-                        </select>
+                        </SelectMenu>
                       </div>
                     </div>
                   </div>
@@ -3014,8 +3015,8 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Watch Region</label>
-                        <select value={watchRegion} onChange={(e) => setWatchRegion(e.target.value)} className={styledSelect}>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Watch Region</label>
+                        <SelectMenu value={watchRegion} onChange={(e) => setWatchRegion(e.target.value)} className={styledSelect}>
                           <option value="US" className="bg-[#0a0b0e]">United States (US)</option>
                           <option value="GB" className="bg-[#0a0b0e]">United Kingdom (GB)</option>
                           <option value="CA" className="bg-[#0a0b0e]">Canada (CA)</option>
@@ -3027,11 +3028,11 @@ function AddWidgetOverlay({
                           <option value="BR" className="bg-[#0a0b0e]">Brazil (BR)</option>
                           <option value="IN" className="bg-[#0a0b0e]">India (IN)</option>
                           <option value="JP" className="bg-[#0a0b0e]">Japan (JP)</option>
-                        </select>
+                        </SelectMenu>
                       </div>
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-[11px] text-white/40 font-medium">Provider Matching</label>
+                          <label className="text-label text-white/60 font-medium">Provider Matching</label>
                           <MatchModeToggle value={providerMatchMode} onChange={setProviderMatchMode} name="provider" />
                         </div>
                         <input value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} placeholder="Filter providers..." className={styledInput} />
@@ -3041,7 +3042,7 @@ function AddWidgetOverlay({
                     {/* Quick select popular */}
                     {quickSelectProviders.length > 0 && (
                       <div>
-                        <label className="block text-[10px] text-white/25 mb-2 uppercase tracking-wider font-semibold">Popular Services</label>
+                        <label className="block text-meta text-white/25 mb-2 uppercase tracking-wider font-semibold">Popular Services</label>
                         <div className="flex flex-wrap gap-2">
                           {quickSelectProviders.map((provider) => {
                             const selected = selectedProviders.some((p) => p.id === provider.provider_id)
@@ -3055,7 +3056,7 @@ function AddWidgetOverlay({
                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
                                   selected
                                     ? 'bg-accent/15 border-accent/30 text-white'
-                                    : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:bg-white/[0.06] hover:text-white/60'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/60'
                                 }`}
                               >
                                 {provider.logo_path && (
@@ -3072,7 +3073,7 @@ function AddWidgetOverlay({
 
                     {/* Full provider grid */}
                     <div>
-                      <label className="block text-[11px] text-white/40 mb-2 font-medium">All Providers</label>
+                      <label className="block text-label text-white/60 mb-2 font-medium">All Providers</label>
                       <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-1.5 max-h-44 overflow-y-auto border border-white/[0.04] bg-black/20 p-2.5 rounded-xl" style={{ scrollbarWidth: 'thin' }}>
                         {filteredProviders.map((provider) => {
                           const selected = selectedProviders.some((p) => p.id === provider.provider_id)
@@ -3083,10 +3084,10 @@ function AddWidgetOverlay({
                                 if (selected) setSelectedProviders(selectedProviders.filter((p) => p.id !== provider.provider_id))
                                 else setSelectedProviders([...selectedProviders, { id: provider.provider_id, name: provider.provider_name }])
                               }}
-                              className={`flex items-center gap-2 p-2 rounded-lg border text-left text-[11px] transition-all cursor-pointer select-none ${
+                              className={`flex items-center gap-2 p-2 rounded-lg border text-left text-label transition-all cursor-pointer select-none ${
                                 selected
                                   ? 'bg-accent/10 border-accent/25 text-white'
-                                  : 'bg-white/[0.02] border-white/[0.04] text-white/35 hover:bg-white/[0.04]'
+                                  : 'bg-white/[0.02] border-white/[0.04] text-white/60 hover:bg-white/[0.04]'
                               }`}
                             >
                               {provider.logo_path && (
@@ -3103,7 +3104,7 @@ function AddWidgetOverlay({
                     {selectedProviders.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
                         {selectedProviders.map((p) => (
-                          <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-[11px] font-medium">
+                          <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-label font-medium">
                             {p.name}
                             <button onClick={() => setSelectedProviders(selectedProviders.filter((item) => item.id !== p.id))} className="text-accent/50 hover:text-accent cursor-pointer transition-colors">&times;</button>
                           </span>
@@ -3124,7 +3125,7 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4">
                       <div className="relative">
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Search People</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Search People</label>
                         <input value={peopleSearch} onChange={(e) => setPeopleSearch(e.target.value)} placeholder="e.g. Denis Villeneuve, Timothee Chalamet..." className={styledInput} />
                         {peopleSuggestions.length > 0 && (
                           <div className="absolute z-50 left-0 right-0 mt-1 max-h-44 overflow-y-auto bg-[#14161d] border border-white/10 rounded-xl shadow-2xl" style={{ scrollbarWidth: 'thin' }}>
@@ -3142,9 +3143,9 @@ function AddWidgetOverlay({
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                      {peopleList.length === 0 && <span className="text-[10px] text-white/15 italic">No people selected</span>}
+                      {peopleList.length === 0 && <span className="text-meta text-white/15 italic">No people selected</span>}
                       {peopleList.map((p) => (
-                        <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-[11px] font-medium">
+                        <span key={p.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent border border-accent/20 rounded-lg text-label font-medium">
                           {p.name}
                           <button onClick={() => setPeopleList(peopleList.filter((item) => item.id !== p.id))} className="text-accent/50 hover:text-accent cursor-pointer transition-colors">&times;</button>
                         </span>
@@ -3169,8 +3170,8 @@ function AddWidgetOverlay({
                             <div key={c.id} className="flex justify-between items-center px-3 py-2 hover:bg-white/[0.04] border-b border-white/[0.04] last:border-none">
                               <span className="text-sm text-white/80">{c.name}</span>
                               <div className="flex gap-1.5">
-                                <button onClick={() => { if (!includeCompanies.some((item) => item.id === c.id)) setIncludeCompanies([...includeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Include</button>
-                                <button onClick={() => { if (!excludeCompanies.some((item) => item.id === c.id)) setExcludeCompanies([...excludeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Exclude</button>
+                                <button onClick={() => { if (!includeCompanies.some((item) => item.id === c.id)) setIncludeCompanies([...includeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-meta cursor-pointer transition-colors">Include</button>
+                                <button onClick={() => { if (!excludeCompanies.some((item) => item.id === c.id)) setExcludeCompanies([...excludeCompanies, c]); setCompanySearch(''); setCompanySuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-meta cursor-pointer transition-colors">Exclude</button>
                               </div>
                             </div>
                           ))}
@@ -3179,11 +3180,11 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
+                        <label className="block text-meta text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
                         <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                          {includeCompanies.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {includeCompanies.length === 0 && <span className="text-meta text-white/15 italic">None</span>}
                           {includeCompanies.map((c) => (
-                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-label font-medium">
                               {c.name}
                               <button onClick={() => setIncludeCompanies(includeCompanies.filter((item) => item.id !== c.id))} className="text-emerald-400/50 hover:text-emerald-300 cursor-pointer transition-colors">&times;</button>
                             </span>
@@ -3191,11 +3192,11 @@ function AddWidgetOverlay({
                         </div>
                       </div>
                       <div>
-                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
+                        <label className="block text-meta text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
                         <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                          {excludeCompanies.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {excludeCompanies.length === 0 && <span className="text-meta text-white/15 italic">None</span>}
                           {excludeCompanies.map((c) => (
-                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                            <span key={c.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-label font-medium">
                               {c.name}
                               <button onClick={() => setExcludeCompanies(excludeCompanies.filter((item) => item.id !== c.id))} className="text-red-400/50 hover:text-red-300 cursor-pointer transition-colors">&times;</button>
                             </span>
@@ -3222,8 +3223,8 @@ function AddWidgetOverlay({
                             <div key={k.id} className="flex justify-between items-center px-3 py-2 hover:bg-white/[0.04] border-b border-white/[0.04] last:border-none">
                               <span className="text-sm text-white/80">{k.name}</span>
                               <div className="flex gap-1.5">
-                                <button onClick={() => { if (!includeKeywords.some((item) => item.id === k.id)) setIncludeKeywords([...includeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Include</button>
-                                <button onClick={() => { if (!excludeKeywords.some((item) => item.id === k.id)) setExcludeKeywords([...excludeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-[10px] cursor-pointer transition-colors">Exclude</button>
+                                <button onClick={() => { if (!includeKeywords.some((item) => item.id === k.id)) setIncludeKeywords([...includeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 font-semibold rounded-md text-meta cursor-pointer transition-colors">Include</button>
+                                <button onClick={() => { if (!excludeKeywords.some((item) => item.id === k.id)) setExcludeKeywords([...excludeKeywords, k]); setKeywordSearch(''); setKeywordSuggestions([]) }} className="px-2.5 py-1 bg-red-500/15 text-red-400 hover:bg-red-500/25 font-semibold rounded-md text-meta cursor-pointer transition-colors">Exclude</button>
                               </div>
                             </div>
                           ))}
@@ -3232,11 +3233,11 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
+                        <label className="block text-meta text-white/25 mb-1.5 font-medium uppercase tracking-wider">Included</label>
                         <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                          {includeKeywords.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {includeKeywords.length === 0 && <span className="text-meta text-white/15 italic">None</span>}
                           {includeKeywords.map((k) => (
-                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-medium">
+                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-label font-medium">
                               {k.name}
                               <button onClick={() => setIncludeKeywords(includeKeywords.filter((item) => item.id !== k.id))} className="text-emerald-400/50 hover:text-emerald-300 cursor-pointer transition-colors">&times;</button>
                             </span>
@@ -3244,11 +3245,11 @@ function AddWidgetOverlay({
                         </div>
                       </div>
                       <div>
-                        <label className="block text-[10px] text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
+                        <label className="block text-meta text-white/25 mb-1.5 font-medium uppercase tracking-wider">Excluded</label>
                         <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                          {excludeKeywords.length === 0 && <span className="text-[10px] text-white/15 italic">None</span>}
+                          {excludeKeywords.length === 0 && <span className="text-meta text-white/15 italic">None</span>}
                           {excludeKeywords.map((k) => (
-                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium">
+                            <span key={k.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-label font-medium">
                               {k.name}
                               <button onClick={() => setExcludeKeywords(excludeKeywords.filter((item) => item.id !== k.id))} className="text-red-400/50 hover:text-red-300 cursor-pointer transition-colors">&times;</button>
                             </span>
@@ -3271,7 +3272,7 @@ function AddWidgetOverlay({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-2 font-medium">Vote Average: {voteAverageMin} - {voteAverageMax}</label>
+                        <label className="block text-label text-white/60 mb-2 font-medium">Vote Average: {voteAverageMin} - {voteAverageMax}</label>
                         <div className="flex items-center gap-3">
                           <input type="range" min="0" max="10" step="0.5" value={voteAverageMin} onChange={(e) => setVoteAverageMin(parseFloat(e.target.value))} className="flex-1 accent-accent" />
                           <span className="text-white/20 text-xs">to</span>
@@ -3279,13 +3280,13 @@ function AddWidgetOverlay({
                         </div>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Min Vote Count</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Min Vote Count</label>
                         <input type="number" placeholder="e.g. 100" value={voteCountMin} onChange={(e) => setVoteCountMin(e.target.value)} className={styledInput} />
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">Runtime (min)</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">Runtime (min)</label>
                         <div className="flex items-center gap-2">
                           <input type="number" placeholder="Min" value={runtimeMin} onChange={(e) => setRuntimeMin(e.target.value)} className={styledInput} />
                           <span className="text-white/20 text-xs flex-shrink-0">to</span>
@@ -3302,33 +3303,33 @@ function AddWidgetOverlay({
                       <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Release Date</h3>
                     </div>
                     <div>
-                      <label className="block text-[10px] text-white/25 mb-2 uppercase tracking-wider font-semibold">Quick Presets</label>
+                      <label className="block text-meta text-white/25 mb-2 uppercase tracking-wider font-semibold">Quick Presets</label>
                       <div className="flex flex-wrap gap-1.5">
                         {['This Month', 'Last Month', 'This Year', 'Last Year', 'Last 5 Years', 'Last 10 Years', '2010s', '2000s', '1990s', '1980s'].map((preset) => (
                           <button
                             key={preset}
                             onClick={() => applyPreset(preset)}
-                            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
+                            className={`px-3 py-1.5 rounded-lg text-label font-semibold border transition-all cursor-pointer ${
                               presetName === preset
                                 ? 'bg-accent/15 border-accent/30 text-accent'
-                                : 'bg-white/[0.03] border-white/[0.06] text-white/35 hover:border-white/10 hover:text-white/50'
+                                : 'bg-white/[0.03] border-white/[0.06] text-white/60 hover:border-white/10 hover:text-white/50'
                             }`}
                           >
                             {preset}
                           </button>
                         ))}
-                        <button onClick={() => applyPreset('Clear')} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-500/10 border border-red-500/15 text-red-400/70 hover:bg-red-500/20 hover:text-red-400 transition-all cursor-pointer">
+                        <button onClick={() => applyPreset('Clear')} className="px-3 py-1.5 rounded-lg text-label font-semibold bg-red-500/10 border border-red-500/15 text-red-400/70 hover:bg-red-500/20 hover:text-red-400 transition-all cursor-pointer">
                           Clear
                         </button>
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">From</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">From</label>
                         <input type="date" value={releaseDateFrom} onChange={(e) => { setReleaseDateFrom(e.target.value); setPresetName('') }} className={styledInput} />
                       </div>
                       <div>
-                        <label className="block text-[11px] text-white/40 mb-1.5 font-medium">To</label>
+                        <label className="block text-label text-white/60 mb-1.5 font-medium">To</label>
                         <input type="date" value={releaseDateTo} onChange={(e) => { setReleaseDateTo(e.target.value); setPresetName('') }} className={styledInput} />
                       </div>
                     </div>
@@ -3348,7 +3349,7 @@ function AddWidgetOverlay({
                     </div>
                     <div>
                       <h3 className="text-xs font-bold uppercase tracking-wider text-accent">Preview</h3>
-                      <p className="text-[10px] text-white/30 mt-0.5">{Object.keys(livePreview).length - 3} active filters</p>
+                      <p className="text-meta text-white/50 mt-0.5">{Object.keys(livePreview).length - 3} active filters</p>
                     </div>
                   </div>
                   <button
@@ -3366,11 +3367,11 @@ function AddWidgetOverlay({
                 </div>
 
                 <details className="group">
-                  <summary className="text-[10px] text-white/25 font-medium cursor-pointer hover:text-white/40 transition-colors flex items-center gap-1.5 select-none">
+                  <summary className="text-meta text-white/25 font-medium cursor-pointer hover:text-white/60 transition-colors flex items-center gap-1.5 select-none">
                     <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
                     Raw Query Parameters
                   </summary>
-                  <div className="mt-2 bg-black/30 border border-white/[0.04] rounded-lg p-3 text-[10px] font-mono text-white/35 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+                  <div className="mt-2 bg-black/30 border border-white/[0.04] rounded-lg p-3 text-meta font-mono text-white/60 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
                     {JSON.stringify(livePreview, null, 2)}
                   </div>
                 </details>
@@ -3378,8 +3379,8 @@ function AddWidgetOverlay({
                 {previewItems.length > 0 && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
-                      <h4 className="text-[10px] font-bold text-white/35 uppercase tracking-wider">Matching Titles</h4>
-                      <span className="text-[10px] text-accent/70 bg-accent/10 px-2 py-0.5 rounded-md font-bold">{previewItems.length}</span>
+                      <h4 className="text-meta font-bold text-white/60 uppercase tracking-wider">Matching Titles</h4>
+                      <span className="text-meta text-accent/70 bg-accent/10 px-2 py-0.5 rounded-md font-bold">{previewItems.length}</span>
                     </div>
                     <div className="flex gap-3 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
                       {previewItems.map((item) => (
@@ -3387,11 +3388,11 @@ function AddWidgetOverlay({
                           {item.poster ? (
                             <img src={item.poster} className="w-full aspect-[2/3] object-cover rounded-lg border border-white/[0.06] group-hover:border-accent/30 group-hover:shadow-lg group-hover:shadow-accent/5 transition-all" alt="" />
                           ) : (
-                            <div className="w-full aspect-[2/3] bg-white/[0.04] border border-white/[0.06] rounded-lg flex items-center justify-center text-[8px] text-white/15 text-center px-1">
+                            <div className="w-full aspect-[2/3] bg-white/[0.04] border border-white/[0.06] rounded-lg flex items-center justify-center text-tag text-white/15 text-center px-1">
                               {item.title}
                             </div>
                           )}
-                          <span className="text-[9px] text-white/30 group-hover:text-white/50 truncate w-full text-center mt-1.5 transition-colors">{item.title}</span>
+                          <span className="text-tag text-white/50 group-hover:text-white/50 truncate w-full text-center mt-1.5 transition-colors">{item.title}</span>
                         </div>
                       ))}
                     </div>
@@ -3402,11 +3403,11 @@ function AddWidgetOverlay({
 
             {/* Footer */}
             <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between">
-              <p className="text-[10px] text-white/20">{catalogName ? `"${catalogName}"` : 'Untitled collection'} &middot; {source} &middot; {contentType === 'movie' ? 'Movies' : 'TV Shows'}</p>
+              <p className="text-meta text-white/20">{catalogName ? `"${catalogName}"` : 'Untitled collection'} &middot; {source} &middot; {contentType === 'movie' ? 'Movies' : 'TV Shows'}</p>
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => { if (editingRow || startMode === 'discover') onClose(); else setMode('preset') }}
-                  className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/40 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white/60 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -3427,7 +3428,7 @@ function AddWidgetOverlay({
             {selectedShelves.length > 0 && (
               <div className="mb-3 flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'thin' }}>
                 {selectedShelves.map((selection) => (
-                  <button key={selection.key} type="button" onClick={() => setSelectedShelves((current) => current.filter((item) => item.key !== selection.key))} className="group/chip flex max-w-52 flex-shrink-0 items-center gap-2 rounded-lg border border-accent/15 bg-accent/[0.07] px-2.5 py-1.5 text-[10px] font-semibold text-white/60 hover:border-red-400/20 hover:bg-red-400/[0.07] hover:text-white cursor-pointer">
+                  <button key={selection.key} type="button" onClick={() => setSelectedShelves((current) => current.filter((item) => item.key !== selection.key))} className="group/chip flex max-w-52 flex-shrink-0 items-center gap-2 rounded-lg border border-accent/15 bg-accent/[0.07] px-2.5 py-1.5 text-meta font-semibold text-white/60 hover:border-red-400/20 hover:bg-red-400/[0.07] hover:text-white cursor-pointer">
                     <span className="truncate">{selection.row.title}</span><span className="text-white/25 group-hover/chip:text-red-300">×</span>
                   </button>
                 ))}
@@ -3436,9 +3437,9 @@ function AddWidgetOverlay({
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-bold text-white/70">{selectedShelves.length ? `${selectedShelves.length} ${selectedShelves.length === 1 ? 'shelf' : 'shelves'} selected` : 'Select catalogs to add'}</p>
-                <p className="mt-0.5 truncate text-[10px] text-white/25">New shelves use Poster layout and can be changed after adding.</p>
+                <p className="mt-0.5 truncate text-meta text-white/25">New shelves use Poster layout and can be changed after adding.</p>
               </div>
-              {selectedShelves.length > 0 && <button type="button" onClick={() => setSelectedShelves([])} className="px-3 py-2 text-xs font-semibold text-white/35 hover:text-white/65 cursor-pointer">Clear</button>}
+              {selectedShelves.length > 0 && <button type="button" onClick={() => setSelectedShelves([])} className="px-3 py-2 text-xs font-semibold text-white/60 hover:text-white/65 cursor-pointer">Clear</button>}
               <button
                 type="button"
                 disabled={selectedShelves.length === 0}
@@ -3454,7 +3455,7 @@ function AddWidgetOverlay({
 
       <Modal open={confirmPickerExit} onClose={() => setConfirmPickerExit(false)} title="Discard selected shelves?" description="Your current catalog selections will be cleared before opening the Smart Collection builder." size="sm">
         <div className="flex justify-end gap-2.5">
-          <button type="button" onClick={() => setConfirmPickerExit(false)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/55 hover:bg-white/[0.08] hover:text-white cursor-pointer">Keep Browsing</button>
+          <button type="button" onClick={() => setConfirmPickerExit(false)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/60 hover:bg-white/[0.08] hover:text-white cursor-pointer">Keep Browsing</button>
           <button type="button" onClick={() => { setSelectedShelves([]); setConfirmPickerExit(false); setPickerSource(null); setSearch(''); setMode('discover') }} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-black hover:bg-accent/80 cursor-pointer">Discard and Continue</button>
         </div>
       </Modal>
@@ -3556,7 +3557,7 @@ export default function CollectionsPage() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Library</h1>
-            <p className="text-sm text-white/35">Save titles locally, build collections, and curate your home screen</p>
+            <p className="text-sm text-white/60">Save titles locally, build collections, and curate your home screen</p>
           </div>
           {activeTab !== 'watchlist' && activeTab !== 'calendar' && activeTab !== 'activity' && <button
             onClick={() => { setEditingRow(null); setOverlayStartMode(activeTab === 'collections' ? 'discover' : 'preset'); setAddOverlay(true) }}
@@ -3576,7 +3577,7 @@ export default function CollectionsPage() {
             <button
               key={id}
               onClick={() => { setSearchParams(id === 'shelves' ? {} : { tab: id }); setShelfQuery(''); setSourceFilter('All') }}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === id ? 'bg-accent/15 text-accent shadow-sm' : 'text-white/35 hover:text-white/65 hover:bg-white/[0.04]'}`}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === id ? 'bg-accent/15 text-accent shadow-sm' : 'text-white/60 hover:text-white/65 hover:bg-white/[0.04]'}`}
             >
               {label}
             </button>
@@ -3592,9 +3593,9 @@ export default function CollectionsPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-white/80">Home Hero</p>
-                <p className="mt-0.5 truncate text-[11px] text-white/30">{heroRow ? `${heroRow.enabled ? 'Visible' : 'Hidden'} • ${heroRow.title} • ${shelfSourceLabel(heroRow)}` : 'Not configured'}</p>
+                <p className="mt-0.5 truncate text-label text-white/50">{heroRow ? `${heroRow.enabled ? 'Visible' : 'Hidden'} • ${heroRow.title} • ${shelfSourceLabel(heroRow)}` : 'Not configured'}</p>
               </div>
-              <button type="button" onClick={() => setHeroExpanded((value) => !value)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-bold text-white/55 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer">{heroExpanded ? 'Done' : 'Configure'}</button>
+              <button type="button" onClick={() => setHeroExpanded((value) => !value)} className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-bold text-white/60 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer">{heroExpanded ? 'Done' : 'Configure'}</button>
             </div>
             {heroExpanded && <div className="mt-4 border-t border-white/[0.06] pt-4"><HeroBannerSection row={heroRow} addons={addons} smartCollections={smartCollectionRows} onUpdate={updateHomeRow} onAdd={addHomeRow} /></div>}
           </div>
@@ -3604,20 +3605,20 @@ export default function CollectionsPage() {
         <div>
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-3">
-              <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">
+              <h2 className="text-label font-semibold uppercase tracking-[0.18em] text-white/60">
                 {activeTab === 'collections' ? 'Smart Collections' : 'Shelves'} ({visibleRows.length})
               </h2>
-              {activeTab === 'shelves' && hiddenCount > 0 && <span className="rounded-lg border border-amber-500/15 bg-amber-500/[0.07] px-2.5 py-1 text-[10px] font-semibold text-amber-300/70">{hiddenCount} hidden</span>}
+              {activeTab === 'shelves' && hiddenCount > 0 && <span className="rounded-lg border border-amber-500/15 bg-amber-500/[0.07] px-2.5 py-1 text-meta font-semibold text-amber-300/70">{hiddenCount} hidden</span>}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {activeTab === 'shelves' && sourceOptions.length > 2 && sourceOptions.map((src) => (
                 <button
                   key={src}
                   onClick={() => setSourceFilter(src)}
-                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all cursor-pointer border ${
+                  className={`px-3 py-1.5 rounded-lg text-label font-semibold transition-all cursor-pointer border ${
                     sourceFilter === src
                       ? 'bg-accent/15 text-accent border-accent/25'
-                      : 'text-white/40 hover:text-white/70 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
+                      : 'text-white/60 hover:text-white/70 bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.06]'
                   }`}
                 >
                   {src}
@@ -3632,7 +3633,7 @@ export default function CollectionsPage() {
                   value={shelfQuery}
                   onChange={(e) => setShelfQuery(e.target.value)}
                   placeholder={activeTab === 'collections' ? 'Filter collections...' : 'Filter shelves...'}
-                  className="w-44 pl-8 pr-7 py-1.5 bg-white/[0.04] border border-white/[0.06] rounded-lg text-[11px] text-white placeholder-white/25 focus:outline-none focus:bg-white/[0.07] focus:border-white/[0.12] transition-all"
+                  className="w-44 pl-8 pr-7 py-1.5 bg-white/[0.04] border border-white/[0.06] rounded-lg text-label text-white placeholder-white/25 focus:outline-none focus:bg-white/[0.07] focus:border-white/[0.12] transition-all"
                 />
                 {shelfQuery && (
                   <button
@@ -3657,7 +3658,7 @@ export default function CollectionsPage() {
                   <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
                 </svg>
               </div>
-              <p className="text-sm font-medium text-white/35 mb-1">{activeTab === 'collections' ? 'No smart collections yet' : 'No shelves yet'}</p>
+              <p className="text-sm font-medium text-white/60 mb-1">{activeTab === 'collections' ? 'No smart collections yet' : 'No shelves yet'}</p>
               <p className="text-xs text-white/20 mb-6">{activeTab === 'collections' ? 'Create a dynamic collection from a template or your own rules.' : 'Add catalogs and lists to your home screen.'}</p>
               <button
                 onClick={() => { setEditingRow(null); setOverlayStartMode(activeTab === 'collections' ? 'discover' : 'preset'); setAddOverlay(true) }}
@@ -3671,7 +3672,7 @@ export default function CollectionsPage() {
             </div>
           ) : visibleRows.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 glass-panel-light rounded-2xl">
-              <p className="text-sm font-medium text-white/35 mb-1">No {activeTab === 'collections' ? 'collections' : 'shelves'} match</p>
+              <p className="text-sm font-medium text-white/60 mb-1">No {activeTab === 'collections' ? 'collections' : 'shelves'} match</p>
               <p className="text-xs text-white/20">Try a different name or source filter.</p>
             </div>
           ) : (
@@ -3746,14 +3747,14 @@ export default function CollectionsPage() {
             </div>
             <div>
               <p className="text-sm font-semibold text-white/80">This action cannot be undone.</p>
-              <p className="mt-1 text-xs leading-relaxed text-white/40">{deleteCandidate?.sourceType === 'discover' ? 'The collection rules and its linked Home shelf will be permanently deleted.' : 'You can add this catalog again later from the catalog drawer.'}</p>
+              <p className="mt-1 text-xs leading-relaxed text-white/60">{deleteCandidate?.sourceType === 'discover' ? 'The collection rules and its linked Home shelf will be permanently deleted.' : 'You can add this catalog again later from the catalog drawer.'}</p>
             </div>
           </div>
           <div className="flex justify-end gap-2.5">
             <button
               type="button"
               onClick={() => setDeleteCandidate(null)}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/55 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/60 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer"
             >
               Cancel
             </button>
@@ -3787,7 +3788,7 @@ function CompactPosterStack({ posters, loading, fallback }: { posters: string[];
 
   if (items.length === 0) {
     return (
-      <div className="grid h-[52px] w-[88px] place-items-center rounded-xl border border-white/[0.07] bg-white/[0.04] text-[9px] font-black uppercase tracking-wider text-white/20 sm:w-[104px]">
+      <div className="grid h-[52px] w-[88px] place-items-center rounded-xl border border-white/[0.07] bg-white/[0.04] text-tag font-black uppercase tracking-wider text-white/20 sm:w-[104px]">
         {fallback.slice(0, 3)}
       </div>
     )
@@ -3843,7 +3844,7 @@ function CompactShelfRow({
         {...(!locked ? listeners : {})}
         type="button"
         disabled={locked}
-        className={`grid h-9 w-9 place-items-center rounded-xl text-xs font-black ${locked ? 'cursor-default bg-accent/10 text-accent/70' : 'cursor-grab bg-white/[0.045] text-white/30 hover:bg-white/[0.09] hover:text-white/65 active:cursor-grabbing'}`}
+        className={`grid h-9 w-9 place-items-center rounded-xl text-xs font-black ${locked ? 'cursor-default bg-accent/10 text-accent/70' : 'cursor-grab bg-white/[0.045] text-white/50 hover:bg-white/[0.09] hover:text-white/65 active:cursor-grabbing'}`}
         aria-label={locked ? 'Fixed shelf' : `Drag shelf ${index + 1}`}
       >
         {locked ? <span>•</span> : <span>{index + 1}</span>}
@@ -3864,7 +3865,7 @@ function CompactShelfRow({
         ) : (
           <button type="button" onClick={() => !locked && setEditing(true)} className="block w-full truncate text-left text-sm font-bold text-white/80 hover:text-white cursor-text">{row.title}</button>
         )}
-        <div className="mt-1 flex items-center gap-1.5 text-[10px] text-white/28">
+        <div className="mt-1 flex items-center gap-1.5 text-meta text-white/28">
           <span>{locked ? 'Built-in' : shelfSourceLabel(row)}</span>
           <span>•</span>
           <span>{row.discoverConfig?.contentType === 'series' || row.catalogType === 'series' ? 'Series' : row.catalogType === 'movie' || row.discoverConfig?.contentType === 'movie' ? 'Movies' : 'Catalog'}</span>
@@ -3873,7 +3874,7 @@ function CompactShelfRow({
       </div>
 
       {!locked ? (
-        <select
+        <SelectMenu
           value={row.layout}
           onChange={(event) => onUpdate({ layout: event.target.value as HomeRowConfig['layout'] })}
           className="hidden h-9 rounded-xl border border-white/[0.07] bg-white/[0.04] px-3 text-xs font-semibold text-white/60 outline-none hover:bg-white/[0.07] md:block"
@@ -3884,8 +3885,8 @@ function CompactShelfRow({
           <option value="feature" className="bg-[#111318]">Feature posters</option>
           <option value="landscape" className="bg-[#111318]">Landscape</option>
           <option value="list" className="bg-[#111318]">Compact list</option>
-        </select>
-      ) : <span className="hidden text-center text-[10px] font-bold uppercase tracking-wider text-white/20 md:block">Fixed</span>}
+        </SelectMenu>
+      ) : <span className="hidden text-center text-meta font-bold uppercase tracking-wider text-white/20 md:block">Fixed</span>}
 
       <button
         type="button"
@@ -3908,7 +3909,7 @@ function CompactShelfRow({
 
       {!locked && (
         <div className="col-span-4 flex items-center gap-2 border-t border-white/[0.05] pt-2 md:hidden">
-          <select
+          <SelectMenu
             value={row.layout}
             onChange={(event) => onUpdate({ layout: event.target.value as HomeRowConfig['layout'] })}
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.07] bg-white/[0.04] px-3 text-xs font-semibold text-white/60 outline-none"
@@ -3918,7 +3919,7 @@ function CompactShelfRow({
             <option value="feature" className="bg-[#111318]">Feature posters</option>
             <option value="landscape" className="bg-[#111318]">Landscape</option>
             <option value="list" className="bg-[#111318]">Compact list</option>
-          </select>
+          </SelectMenu>
           <button type="button" onClick={onRemove} className="h-9 rounded-xl border border-red-500/15 bg-red-500/[0.07] px-3 text-xs font-bold text-red-300 cursor-pointer">Delete</button>
         </div>
       )}

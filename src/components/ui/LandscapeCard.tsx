@@ -49,12 +49,12 @@ export default function LandscapeCard({
       onClick={onClick}
       className={[
         'flex-shrink-0 group cursor-pointer focus-ring text-left',
-        'transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+        'transition-all duration-[var(--duration-slow)] ease-expo',
         sizeWidths[size],
         className,
       ].join(' ')}
     >
-      <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-card border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-hover:-translate-y-1.5 group-hover:scale-[1.03] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)]">
+      <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-card border border-white/[0.04] transition-all duration-[var(--duration-slow)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-hover:-translate-y-1.5 group-hover:scale-[1.03] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)]">
         {image ? (
           <img
             src={image}
@@ -84,7 +84,7 @@ export default function LandscapeCard({
         )}
 
         {showRating && ratingStr && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-meta font-bold text-yellow-400">
             <svg className="w-3 h-3 fill-current" viewBox="0 0 24 24">
               <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
             </svg>

@@ -20,11 +20,11 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           </label>
         )}
         {description && (
-          <p className="text-xs text-white/40">{description}</p>
+          <p className="text-xs text-white/60">{description}</p>
         )}
         <div className="relative">
           {icon && (
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 [&>svg]:w-4 [&>svg]:h-4">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-white/60 [&>svg]:w-4 [&>svg]:h-4">
               {icon}
             </div>
           )}
@@ -33,7 +33,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
             id={inputId}
             className={[
               'w-full bg-white/5 hover:bg-white/8 border rounded-xl text-sm text-white placeholder-white/30',
-              'transition-all duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+              'transition-all duration-[var(--duration-normal)] ease-expo',
               'focus:outline-none focus:bg-white/10 focus:border-white/20',
               'focus:shadow-[0_0_0_3px_rgba(255,255,255,0.05)]',
               error ? 'border-danger/40' : 'border-white/8',
@@ -48,7 +48,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
           {iconRight && (
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 [&>svg]:w-4 [&>svg]:h-4">
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-white/60 [&>svg]:w-4 [&>svg]:h-4">
               {iconRight}
             </div>
           )}

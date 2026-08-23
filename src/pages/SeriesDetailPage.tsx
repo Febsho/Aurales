@@ -12,6 +12,7 @@ import MediaRow from '../components/MediaRow'
 import StreamSelector from '../components/StreamSelector'
 import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
+import useEdgeFade from '../hooks/useEdgeFade'
 import DetailHero from '../components/media/DetailHero'
 import { cacheGet, cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
@@ -460,6 +461,10 @@ export default function SeriesDetailPage() {
   const fetchedSeasonRef = useRef<string | null>(null)
   const episodeScrollRef = useRef<HTMLDivElement>(null)
   const seasonScrollRef = useRef<HTMLDivElement>(null)
+  // The episode track only exists once its season resolves, and the season
+  // rail once the show does; both must re-arm when that happens.
+  useEdgeFade(episodeScrollRef, [seasonData])
+  useEdgeFade(seasonScrollRef, [show])
   const [showSeasonArrows, setShowSeasonArrows] = useState(false)
   const manuallySelectedSeasonRef = useRef(false)
   const resumeSeasonAppliedForShowRef = useRef<string | null>(null)
@@ -2466,7 +2471,7 @@ export default function SeriesDetailPage() {
               tmdbId={show.tmdbId}
               tvdbId={show.tvdbId}
               className="mb-3"
-              compact
+              variant="hero"
             />
             {metadataStatus === 'fallback' && (
               <div className="inline-flex items-center self-start px-2.5 py-1 bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-bold rounded-lg uppercase tracking-wider mb-2">
@@ -2617,6 +2622,7 @@ export default function SeriesDetailPage() {
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
+          <div className="shelf-fade">
           <div
             ref={seasonScrollRef}
             onWheel={handleSeasonWheel}
@@ -2637,12 +2643,13 @@ export default function SeriesDetailPage() {
                   'flex-shrink-0 px-6 py-3 rounded-xl text-base font-semibold transition-all duration-300 cursor-pointer focus-ring',
                   selectedSeason === season.seasonNumber
                     ? 'bg-white/15 text-white border border-white/25'
-                    : 'text-white/55 hover:text-white hover:bg-white/[0.08] border border-transparent',
+                    : 'text-white/60 hover:text-white hover:bg-white/[0.08] border border-transparent',
                 ].join(' ')}
               >
                 {season.name}
               </button>
             ))}
+          </div>
           </div>
           {showSeasonArrows && (
             <button
@@ -2657,6 +2664,7 @@ export default function SeriesDetailPage() {
         </div>
 
         {seasonData && (
+          <div className="shelf-fade">
           <div
             ref={episodeScrollRef}
             onWheel={handleEpisodeWheel}
@@ -2734,7 +2742,7 @@ export default function SeriesDetailPage() {
                           <div className="absolute bottom-0 inset-x-0 h-1.5 bg-black/55 z-10">
                             <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
                           </div>
-                          <div className="absolute top-3 right-3 rounded-full bg-black/75 border border-white/10 px-2.5 py-1 text-[11px] font-bold text-white z-10">
+                          <div className="absolute top-3 right-3 rounded-full bg-black/75 border border-white/10 px-2.5 py-1 text-label font-bold text-white z-10">
                             Resume {Math.round(progressPercent)}%
                           </div>
                         </>
@@ -2821,12 +2829,13 @@ export default function SeriesDetailPage() {
                           />
                         </div>
                       </div>
-                      {ep.airDate && <p className="text-sm text-white/45 mt-2">{formatEpisodeAirDate(ep.airDate)}</p>}
+                      {ep.airDate && <p className="text-sm text-white/60 mt-2">{formatEpisodeAirDate(ep.airDate)}</p>}
                     </div>
                   </div>
                 );
               });
             })()}
+          </div>
           </div>
         )}
         {!seasonData && show && (

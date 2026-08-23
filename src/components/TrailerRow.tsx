@@ -1,3 +1,4 @@
+import useEdgeFade from '../hooks/useEdgeFade'
 import { useRef } from 'react'
 import type { Video } from '../types'
 
@@ -8,6 +9,7 @@ interface TrailerRowProps {
 
 export default function TrailerRow({ title, videos }: TrailerRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  useEdgeFade(scrollRef)
 
   if (videos.length === 0) return null
 
@@ -22,6 +24,7 @@ export default function TrailerRow({ title, videos }: TrailerRowProps) {
   return (
     <div className="mb-12 pt-2">
       <h2 className="text-2xl font-bold px-8 mb-5">{title}</h2>
+      <div className="shelf-fade">
       <div
         ref={scrollRef}
         className="flex gap-6 overflow-x-auto px-8 pb-3"
@@ -61,9 +64,10 @@ export default function TrailerRow({ title, videos }: TrailerRowProps) {
             <h3 className="text-base font-semibold text-white/85 truncate group-hover:text-white transition-colors">
               {video.name}
             </h3>
-            <p className="text-sm text-white/40 mt-0.5">{video.type}</p>
+            <p className="text-sm text-white/60 mt-0.5">{video.type}</p>
           </a>
         )})}
+      </div>
       </div>
     </div>
   )

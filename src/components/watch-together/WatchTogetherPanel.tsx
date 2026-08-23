@@ -43,7 +43,7 @@ export default function WatchTogetherPanel({ open, onClose }: WatchTogetherPanel
       className={[
         'watch-together-panel fixed top-0 right-0 bottom-0 z-50 w-[380px] flex flex-col',
         'backdrop-blur-2xl border-l',
-        'transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+        'transition-transform duration-300 ease-expo',
         open ? 'translate-x-0' : 'translate-x-full',
       ].join(' ')}
     >
@@ -73,13 +73,13 @@ export default function WatchTogetherPanel({ open, onClose }: WatchTogetherPanel
                       : 'bg-white/30',
                 ].join(' ')}
               />
-              <span className="text-[11px] text-white/40 capitalize">{connectionStatus}</span>
+              <span className="text-label text-white/60 capitalize">{connectionStatus}</span>
             </div>
           </div>
         </div>
         <button
           onClick={onClose}
-          className="watch-together-control w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white transition-all duration-200 cursor-pointer"
+          className="watch-together-control w-8 h-8 rounded-lg flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 cursor-pointer"
           aria-label="Close panel"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -134,7 +134,7 @@ export default function WatchTogetherPanel({ open, onClose }: WatchTogetherPanel
                 <path d="M16 3.13a4 4 0 0 1 0 7.75" />
               </svg>
             </div>
-            <p className="text-sm text-white/40 leading-relaxed">
+            <p className="text-sm text-white/60 leading-relaxed">
               No room active. Create or join a room to watch together with friends.
             </p>
             <div className="mt-5 flex w-full max-w-56 flex-col gap-2">

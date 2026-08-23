@@ -729,7 +729,7 @@ function UnconfiguredShelf({
     <div className="px-6 mb-8 select-none">
       <div className="flex items-center gap-2.5 mb-3">
         {headerLeftControls}
-        <h2 className="text-lg font-semibold text-white/40">{getRowDisplayTitle(row)}</h2>
+        <h2 className="text-lg font-semibold text-white/60">{getRowDisplayTitle(row)}</h2>
       </div>
       <div className="px-6">
         <div
@@ -737,14 +737,14 @@ function UnconfiguredShelf({
           className="w-full max-w-4xl border border-dashed border-white/10 hover:border-accent/40 bg-white/[0.01] hover:bg-white/[0.03] rounded-2xl p-6 flex items-center justify-between transition-all duration-200 cursor-pointer group"
         >
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-white/35 group-hover:text-accent transition-colors">
+            <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-white/60 group-hover:text-accent transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
             <div className="text-left">
-              <span className="block text-sm font-bold text-white/55 group-hover:text-white transition-colors">Unconfigured Shelf</span>
-              <span className="block text-xs text-white/35 mt-0.5">Click to choose a content source for this row.</span>
+              <span className="block text-sm font-bold text-white/60 group-hover:text-white transition-colors">Unconfigured Shelf</span>
+              <span className="block text-xs text-white/60 mt-0.5">Click to choose a content source for this row.</span>
             </div>
           </div>
           <div className="flex items-center gap-2">

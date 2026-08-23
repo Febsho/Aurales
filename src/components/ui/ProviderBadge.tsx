@@ -33,7 +33,7 @@ export default function ProviderBadge({
     <span
       className={[
         'inline-flex items-center gap-1.5 rounded-lg border border-white/8 bg-white/5',
-        size === 'sm' ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-xs',
+        size === 'sm' ? 'px-2 py-0.5 text-meta' : 'px-2.5 py-1 text-xs',
         'font-semibold text-white/60',
         className,
       ].join(' ')}
@@ -41,7 +41,7 @@ export default function ProviderBadge({
       {iconUrl ? (
         <img src={iconUrl} alt="" className={`${iconSize} object-contain`} loading="lazy" />
       ) : (
-        <span className={`${iconSize} inline-flex items-center justify-center rounded bg-white/10 text-[8px] font-black`}>
+        <span className={`${iconSize} inline-flex items-center justify-center rounded bg-white/10 text-tag font-black`}>
           {provider.slice(0, 2).toUpperCase()}
         </span>
       )}

@@ -548,9 +548,9 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onBlur={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onMouseLeave={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
-        className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
+        className={`relative flex-shrink-0 cursor-pointer text-left focus-ring transition-[width] duration-[var(--duration-card)] ease-expo ${expanded ? 'w-[min(38vw,38rem)]' : 'w-[clamp(10rem,13vw,13rem)]'}`}
       >
-        <div data-hero-viewport className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border transition-[border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
+        <div data-hero-viewport className={`relative h-[clamp(15rem,19.5vw,19.5rem)] overflow-hidden rounded-2xl border transition-[border-color,box-shadow,transform] duration-[var(--duration-card)] ease-expo ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
           {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, posterUrl)} />}
           {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, focusMedia)} />}
           {cinematicTrailer && (useNativeTrailerPlayer ? (
@@ -577,12 +577,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             <div className="px-2 pt-3">
               <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
                 {cinematicGenre && <span>{cinematicGenre}</span>}
-                {cinematicGenre && displayItem.year && <span className="text-white/30">•</span>}
+                {cinematicGenre && displayItem.year && <span className="text-white/50">•</span>}
                 {displayItem.year && <span>{displayItem.year}</span>}
-                {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
-                {getDisplayProvider(displayItem) && <><span className="text-white/30">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+                {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
+                {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
               </div>
-              {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
+              {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/60 h-[3.25rem]">{displayItem.overview}</p>}
             </div>
           </div>
         </div>
@@ -644,8 +644,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             {cleanTmdbLogo ? <img src={cachedImage(cleanTmdbLogo)} alt={displayItem.title} className="mb-3 max-h-16 max-w-[72%] object-contain object-left drop-shadow-xl" /> : <h3 className="mb-2 line-clamp-2 text-xl font-black leading-tight text-white drop-shadow-xl">{displayItem.title}</h3>}
             <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white/75">
               <span>{displayItem.type === 'series' ? 'Series' : 'Movie'}</span>
-              {featureGenre && <><span className="text-white/35">·</span><span>{String(featureGenre)}</span></>}
-              {displayItem.year && <><span className="text-white/35">·</span><span>{displayItem.year}</span></>}
+              {featureGenre && <><span className="text-white/60">·</span><span>{String(featureGenre)}</span></>}
+              {displayItem.year && <><span className="text-white/60">·</span><span>{displayItem.year}</span></>}
             </div>
           </div>}
           {!nativeTrailerVisible && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
@@ -666,9 +666,9 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onContextMenu={handleContextMenu}
         onFocus={() => { warmDetailArtwork(); announceFocus() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
-        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cinematicWidth}`}
+        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[var(--duration-card)] ease-expo ${cinematicWidth}`}
       >
-        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
+        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[var(--duration-slow)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
           {landscapeBackdrop ? (
             <img
               src={cachedImage(landscapeBackdrop)}
@@ -698,7 +698,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           
           {/* Rating badge (landscape) */}
           {showRatingsOnCards && ratingStr && (
-            <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
+            <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-meta font-bold text-yellow-400">
               <svg className="w-3 h-3 fill-current text-yellow-400" viewBox="0 0 24 24">
                 <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
               </svg>
@@ -738,12 +738,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
                 const text = typeof genre === 'object' && genre ? (genre as any).name || (genre as any).title || JSON.stringify(genre) : genre
                 return <span key={text}>{text}</span>
               })}
-              {displayItem.genres?.length && displayItem.year ? <span className="text-white/30">•</span> : null}
+              {displayItem.genres?.length && displayItem.year ? <span className="text-white/50">•</span> : null}
               {displayItem.year && <span>{displayItem.year}</span>}
-              {ratingStr && <><span className="text-white/30">•</span><span>★ {ratingStr}</span></>}
-              {getDisplayProvider(displayItem) && <><span className="text-white/30">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+              {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
+              {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
             </div>
-            {displayItem.overview && <p className="line-clamp-2 max-w-xl text-base leading-relaxed text-white/55 h-[3.25rem]">{displayItem.overview}</p>}
+            {displayItem.overview && <p className="line-clamp-2 max-w-xl text-base leading-relaxed text-white/60 h-[3.25rem]">{displayItem.overview}</p>}
           </div>
         )}
       </button>
@@ -772,6 +772,24 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const rankedPosterWidthClass = fixedHome ? 'w-[calc(var(--fixed-cinematic-card-height)*2/3)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'w-[157px]' : posterSize === 'large' ? 'w-[220px]' : posterSize === 'huge' ? 'w-[250px]' : 'w-[187px]' : posterSize === 'compact' ? 'w-[173px]' : posterSize === 'large' ? 'w-[260px]' : posterSize === 'huge' ? 'w-[297px]' : 'w-[220px]'
   const rankedExpandedContentWidthClass = fixedHome ? 'w-[calc(var(--fixed-cinematic-card-height)*1.8)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'w-[400px]' : posterSize === 'large' ? 'w-[570px]' : posterSize === 'huge' ? 'w-[648px]' : 'w-[486px]' : posterSize === 'compact' ? 'w-[462px]' : posterSize === 'large' ? 'w-[693px]' : posterSize === 'huge' ? 'w-[791px]' : 'w-[587px]'
   const rankedContentClass = `${rankedNumberSlotClass} ${trailerExpanded ? rankedExpandedContentWidthClass : rankedPosterWidthClass}`
+  // The numeral is sized from the poster it sits beside, not from the viewport.
+  // The previous clamp(11rem, 17vw, 16rem) grew on a different curve than the
+  // artwork, so the two drifted apart between window sizes. 0.66 of the poster
+  // height reproduces the original proportion at the default poster size.
+  const rankedNumberFontSize = fixedHome
+    ? 'calc(var(--fixed-cinematic-card-height) * 0.66)'
+    : compactSpecialLayouts
+      ? posterSize === 'compact' ? '155px' : posterSize === 'large' ? '218px' : posterSize === 'huge' ? '248px' : '186px'
+      : posterSize === 'compact' ? '172px' : posterSize === 'large' ? '257px' : posterSize === 'huge' ? '294px' : '218px'
+  // Must mirror rankedNumberSlotClass exactly -- this is the poster's left
+  // offset, and the numeral column has to be the same width for the two to
+  // line up. Applied inline rather than as a derived `w-[..]` class because
+  // Tailwind only emits classes it can find literally in the source.
+  const rankedNumberSlotWidth = fixedHome
+    ? 'calc(var(--fixed-cinematic-card-height) * 0.3)'
+    : compactSpecialLayouts
+      ? posterSize === 'compact' ? '70px' : posterSize === 'large' ? '99px' : posterSize === 'huge' ? '112px' : '84px'
+      : posterSize === 'compact' ? '78px' : posterSize === 'large' ? '116px' : posterSize === 'huge' ? '133px' : '99px'
   const cardWidthClass = trailerExpanded && ranked ? rankedTrailerWidthClass : trailerExpanded ? expandedPosterWidthClass : widthClass
   // A ranked row must not change its block height when preview details appear;
   // otherwise every catalog below it gets reflowed on hover.
@@ -788,10 +806,24 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       onMouseLeave={closeHoverPreview}
       onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
-      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${cardWidthClass} ${cardSlotHeightClass}`}
+      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[var(--duration-card)] ease-expo ${cardWidthClass} ${cardSlotHeightClass}`}
     >
-      {ranked && <span aria-hidden="true" className={`pointer-events-none absolute -left-1 top-0 z-0 flex items-center font-black leading-none text-white/[.13] ${rankedTrailerHeightClass}`} style={{ fontSize: 'clamp(11rem, 17vw, 16rem)', WebkitTextStroke: '1px rgba(255,255,255,.15)' }}>{rank || cardIndex! + 1}</span>}
-      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,border-color,box-shadow,transform] duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
+      {/* The numeral occupies exactly the gutter the poster is offset by, and is
+          right-aligned with tabular figures inside it. Previously it was a
+          content-width box at -left-1: "1" and "10" therefore sat on different
+          left edges, double digits ran under the artwork, and rank 1 bled
+          outside the row's page gutter. Its size is expressed in ch of the slot
+          rather than vw so it tracks the poster instead of the viewport. */}
+      {ranked && (
+        <span
+          aria-hidden="true"
+          className={`media-rank ${rankedTrailerHeightClass}`}
+          style={{ fontSize: rankedNumberFontSize, width: rankedNumberSlotWidth }}
+        >
+          {rank || cardIndex! + 1}
+        </span>
+      )}
+      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,border-color,box-shadow,transform] duration-[var(--duration-card)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
         {inlineTrailerPreview ? (
           <div className="relative h-full w-full">
             {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
@@ -836,15 +868,15 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         {!inlineTrailerPreview && (showGenreOnCards || showRatingsOnCards) && (
           <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center justify-center gap-1.5">
             {showGenreOnCards && genre && (
-              <span className="text-[10px] font-semibold text-white/70 tracking-wide">
+              <span className="text-meta font-semibold text-white/70 tracking-wide">
                 {genre}
               </span>
             )}
             {showGenreOnCards && genre && showRatingsOnCards && ratingStr && (
-              <span className="text-white/30">·</span>
+              <span className="text-white/50">·</span>
             )}
             {showRatingsOnCards && ratingStr && (
-              <span className="flex items-center gap-0.5 text-[10px] font-bold text-yellow-400">
+              <span className="flex items-center gap-0.5 text-meta font-bold text-yellow-400">
                 <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
                   <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
                 </svg>
@@ -855,7 +887,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         )}
 
         {import.meta.env.DEV && displayItem.metadataFallback && (
-          <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-[9px] font-bold z-20">metadata fallback</div>
+          <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-tag font-bold z-20">metadata fallback</div>
         )}
 
         {/* In-progress bar */}
@@ -871,13 +903,13 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       {inlineTrailerPreview ? (
         ranked && trailerExpanded ? null : <>
           {(genre || displayItem.year) && (
-            <p className="text-[10px] text-muted/80 pl-1 mt-0.5 truncate">
+            <p className="text-meta text-muted pl-1 mt-0.5 truncate">
               {[genre, displayItem.year].filter(Boolean).join(' · ')}
             </p>
           )}
         </>
       ) : displayItem.year && (
-        <p className={`text-[11px] text-muted/80 pl-1 mt-0.5 ${ranked ? rankedNumberSlotClass : ''}`}>{displayItem.year}</p>
+        <p className={`text-label text-muted pl-1 mt-0.5 ${ranked ? rankedNumberSlotClass : ''}`}>{displayItem.year}</p>
       )}
     </button>
   )

@@ -359,12 +359,12 @@ export default function ContextMenu() {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
               <div className="absolute bottom-3 left-3.5 right-3.5">
-                <p className="text-[13px] font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{title}</p>
+                <p className="text-sm font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{title}</p>
                 {target.episode.name && (
-                  <p className="text-[11px] text-white/70 truncate mt-0.5 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">{target.episode.name}</p>
+                  <p className="text-label text-white/70 truncate mt-0.5 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">{target.episode.name}</p>
                 )}
                 {target.episode.runtime && (
-                  <p className="text-[10px] text-white/40 mt-0.5">{target.episode.runtime}m</p>
+                  <p className="text-meta text-white/60 mt-0.5">{target.episode.runtime}m</p>
                 )}
               </div>
             </div>
@@ -376,12 +376,12 @@ export default function ContextMenu() {
                   <img src={item.poster} alt="" className="w-8 h-12 rounded-md object-cover flex-shrink-0" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-semibold text-white truncate">{title}</p>
+                  <p className="text-sm font-semibold text-white truncate">{title}</p>
                   {!isSeason && item.year && (
-                    <p className="text-[11px] text-white/40 mt-0.5">{item.year} &middot; {isAnimeItem(item) ? 'Anime' : item.type === 'movie' ? 'Movie' : 'Series'}</p>
+                    <p className="text-label text-white/60 mt-0.5">{item.year} &middot; {isAnimeItem(item) ? 'Anime' : item.type === 'movie' ? 'Movie' : 'Series'}</p>
                   )}
                   {isSeason && (
-                    <p className="text-[11px] text-white/40 mt-0.5">{target.episodeCount} episodes</p>
+                    <p className="text-label text-white/60 mt-0.5">{target.episodeCount} episodes</p>
                   )}
                 </div>
               </div>
@@ -394,9 +394,9 @@ export default function ContextMenu() {
                   <img src={item.poster} alt="" className="w-8 h-12 rounded-md object-cover flex-shrink-0" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-semibold text-white truncate">{title}</p>
+                  <p className="text-sm font-semibold text-white truncate">{title}</p>
                   {target.episode.name && (
-                    <p className="text-[11px] text-white/40 truncate mt-0.5">{target.episode.name}</p>
+                    <p className="text-label text-white/60 truncate mt-0.5">{target.episode.name}</p>
                   )}
                 </div>
               </div>
@@ -404,7 +404,7 @@ export default function ContextMenu() {
           )}
           {providerStates.length > 0 && (
             <div className="px-1.5 py-1.5 border-b border-white/[0.08]">
-              <p className="px-2.5 py-1 text-[10px] font-semibold text-white/25 uppercase tracking-wider">Watch Status</p>
+              <p className="px-2.5 py-1 text-meta font-semibold text-white/25 uppercase tracking-wider">Watch Status</p>
               {providerStates.map((state) => (
                 <button
                   key={state.provider}
@@ -413,7 +413,7 @@ export default function ContextMenu() {
                   className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer disabled:opacity-50 group"
                 >
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PROVIDER_META[state.provider].color }}></div>
-                  <span className="text-[13px] text-white/80 flex-1 text-left">{PROVIDER_META[state.provider].label}</span>
+                  <span className="text-sm text-white/80 flex-1 text-left">{PROVIDER_META[state.provider].label}</span>
                   {state.loading ? (
                     <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin"></div>
                   ) : (
@@ -435,13 +435,13 @@ export default function ContextMenu() {
                 <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-[13px] text-white/70">Mark all providers</span>
+                <span className="text-sm text-white/70">Mark all providers</span>
               </button>
               <button onClick={() => handleMarkAllProviders(false)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
                 <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-[13px] text-white/70">Unmark all providers</span>
+                <span className="text-sm text-white/70">Unmark all providers</span>
               </button>
             </div>
           )}
@@ -451,19 +451,19 @@ export default function ContextMenu() {
                 <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-[13px] text-white/70">Go to details</span>
+                <span className="text-sm text-white/70">Go to details</span>
               </button>
             )}
             <button onClick={handleCopyId} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
               <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <span className="text-[13px] text-white/70">Copy IDs</span>
+              <span className="text-sm text-white/70">Copy IDs</span>
             </button>
           </div>
           {target.kind === 'media' && <div className="border-t border-white/[0.08] px-1.5 py-1.5">
-            <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/25">Recommendations</p>
-            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-white/70 transition-colors hover:bg-white/[0.08]">{label}</button>)}
+            <p className="px-2.5 py-1 text-meta font-semibold uppercase tracking-wider text-white/25">Recommendations</p>
+            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-white/70 transition-colors hover:bg-white/[0.08]">{label}</button>)}
           </div>}
         </div>
       </div>

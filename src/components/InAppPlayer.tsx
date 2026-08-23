@@ -833,7 +833,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
         <div className="text-right">
           <h2 className="font-bold text-lg">{title}</h2>
-          {subtitle && <p className="text-xs text-white/55 uppercase tracking-[0.2em]">{subtitle}</p>}
+          {subtitle && <p className="text-xs text-white/60 uppercase tracking-[0.2em]">{subtitle}</p>}
         </div>
       </div>
 

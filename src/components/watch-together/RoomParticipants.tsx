@@ -31,7 +31,7 @@ export default function RoomParticipants() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">
+        <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">
           Participants ({participants.length})
         </h3>
       </div>
@@ -57,10 +57,10 @@ export default function RoomParticipants() {
             {/* Name + status */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-[13px] font-medium text-white truncate">
+                <span className="text-sm font-medium text-white truncate">
                   {p.name}
                   {p.id === currentUserId && (
-                    <span className="text-white/30 font-normal"> (you)</span>
+                    <span className="text-white/50 font-normal"> (you)</span>
                   )}
                 </span>
                 {p.isHost && (
@@ -74,7 +74,7 @@ export default function RoomParticipants() {
               </div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDotColor[p.status]}`} />
-                <span className="text-[10px] text-white/30">{statusLabel[p.status]}</span>
+                <span className="text-meta text-white/50">{statusLabel[p.status]}</span>
                 {p.isReady && (
                   <svg className="w-3 h-3 text-success ml-0.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
                     <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />

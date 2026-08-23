@@ -89,7 +89,7 @@ export default function EpisodeCard({
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-bold text-accent">E{episodeNumber}</span>
           {runtime && (
-            <span className="text-xs text-white/30">{runtime}m</span>
+            <span className="text-xs text-white/50">{runtime}m</span>
           )}
           {rating && (
             <span className="flex items-center gap-0.5 text-xs text-yellow-400/70 font-semibold">
@@ -104,7 +104,7 @@ export default function EpisodeCard({
           {name}
         </h4>
         {overview && (
-          <p className="episode-card__overview text-xs text-white/35 line-clamp-2 mt-1 leading-relaxed">{overview}</p>
+          <p className="episode-card__overview text-xs text-white/60 line-clamp-2 mt-1 leading-relaxed">{overview}</p>
         )}
       </div>
     </button>

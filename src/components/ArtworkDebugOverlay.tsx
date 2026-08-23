@@ -78,7 +78,7 @@ export default function ArtworkDebugOverlay() {
           <div>
             <p className="text-xs font-bold uppercase tracking-[.18em] text-cyan-300">Dev artwork inspector</p>
             <h2 className="mt-1 text-2xl font-bold text-white">{detail.item.title}</h2>
-            <p className="mt-1 text-xs text-white/45">IMDb {detail.item.imdbId || '—'} · TMDB {detail.item.tmdbId || '—'} · TVDB {detail.item.tvdbId || '—'}</p>
+            <p className="mt-1 text-xs text-white/60">IMDb {detail.item.imdbId || '—'} · TMDB {detail.item.tmdbId || '—'} · TVDB {detail.item.tvdbId || '—'}</p>
           </div>
           <div className="flex gap-2">
             <button onClick={copyReport} className="rounded-lg bg-cyan-300/15 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-300/25">Copy report</button>
@@ -90,12 +90,12 @@ export default function ArtworkDebugOverlay() {
             <div key={entry.label} className="rounded-xl border border-white/10 bg-black/25 p-4">
               <div className="mb-2 flex items-center justify-between gap-4"><h3 className="font-bold text-white">{entry.label}</h3><span className="rounded bg-white/10 px-2 py-1 text-xs text-white/70">Configured: {entry.configured || 'TMDB fallback'}</span></div>
               <p className="text-xs font-semibold text-cyan-200">Displayed source: {isCustom(entry.value, entry.custom) ? 'Custom override' : sourceName(entry.value)}</p>
-              <code className="mt-1 block break-all rounded bg-black/40 p-2 text-[11px] text-white/70">{entry.value || '—'}</code>
-              <details className="mt-2 text-xs text-white/55"><summary className="cursor-pointer">Resolution details</summary><div className="mt-2 space-y-1"><p>Provider result: {sourceName(entry.providerUrl)}</p><code className="block break-all text-[10px] text-white/40">{entry.providerUrl || '—'}</code><p>Original item URL:</p><code className="block break-all text-[10px] text-white/40">{entry.itemUrl || '—'}</code></div></details>
+              <code className="mt-1 block break-all rounded bg-black/40 p-2 text-label text-white/70">{entry.value || '—'}</code>
+              <details className="mt-2 text-xs text-white/60"><summary className="cursor-pointer">Resolution details</summary><div className="mt-2 space-y-1"><p>Provider result: {sourceName(entry.providerUrl)}</p><code className="block break-all text-meta text-white/60">{entry.providerUrl || '—'}</code><p>Original item URL:</p><code className="block break-all text-meta text-white/60">{entry.itemUrl || '—'}</code></div></details>
             </div>
           ))}
         </div>
-        <p className="mt-4 text-xs text-white/35">Open with Shift + right-click on any media card. This panel exists only in the development build.</p>
+        <p className="mt-4 text-xs text-white/60">Open with Shift + right-click on any media card. This panel exists only in the development build.</p>
       </section>
     </div>
   )

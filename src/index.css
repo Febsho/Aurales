@@ -1,8 +1,64 @@
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   AURALES DESIGN TOKENS
+
+   One source of truth for spacing, type, colour, surface, motion and layout.
+   Components consume these; they do not invent values.
+
+   Two conventions matter when editing this block:
+
+   1. TYPE IS FLUID, NOT PROPORTIONAL. Every --text-* step is a clamp() whose
+      floor is the size the app used before this scale existed. At and below
+      1280px nothing changed; above it, type grows on a shallow slope and stops
+      at +30%. This is deliberately gentler than scaling the UI with the
+      viewport -- a 4K display should gain density and legibility, not a
+      magnified interface.
+
+   2. GLASS IS OPACITY-FIRST. Linux/WebKitGTK disables backdrop-filter app-wide
+      for compositor performance (see the html[data-platform="linux"] rule
+      further down). Every glass surface therefore carries a real background
+      colour that reads correctly on its own, and treats blur as an
+      enhancement. A surface defined only by its blur renders as a transparent
+      hole on that platform.
+   ═══════════════════════════════════════════════════════════════════════════ */
 @theme {
+  /* ── Fluid type scale ─────────────────────────────────────────────────────
+     Overrides Tailwind's --text-* namespace, so every existing text-xs /
+     text-sm / text-lg call site becomes responsive with no markup change.
+     Line heights are unitless so they track the fluid size. */
+  --text-tag: clamp(0.5625rem, 0.4613rem + 0.127vw, 0.7313rem);
+  --text-tag--line-height: 1.45;
+  --text-meta: clamp(0.625rem, 0.5125rem + 0.141vw, 0.8125rem);
+  --text-meta--line-height: 1.45;
+  --text-label: clamp(0.6875rem, 0.5638rem + 0.155vw, 0.8938rem);
+  --text-label--line-height: 1.45;
+
+  --text-xs: clamp(0.75rem, 0.615rem + 0.169vw, 0.975rem);
+  --text-xs--line-height: 1.4;
+  --text-sm: clamp(0.875rem, 0.7175rem + 0.197vw, 1.1375rem);
+  --text-sm--line-height: 1.45;
+  --text-base: clamp(1rem, 0.82rem + 0.225vw, 1.3rem);
+  --text-base--line-height: 1.55;
+  --text-lg: clamp(1.125rem, 0.9225rem + 0.253vw, 1.4625rem);
+  --text-lg--line-height: 1.5;
+  --text-xl: clamp(1.25rem, 1.025rem + 0.281vw, 1.625rem);
+  --text-xl--line-height: 1.4;
+  --text-2xl: clamp(1.5rem, 1.23rem + 0.338vw, 1.95rem);
+  --text-2xl--line-height: 1.3;
+  --text-3xl: clamp(1.875rem, 1.5375rem + 0.422vw, 2.4375rem);
+  --text-3xl--line-height: 1.2;
+  --text-4xl: clamp(2.25rem, 1.845rem + 0.506vw, 2.925rem);
+  --text-4xl--line-height: 1.12;
+  --text-5xl: clamp(3rem, 2.46rem + 0.675vw, 3.9rem);
+  --text-5xl--line-height: 1.05;
+  --text-6xl: clamp(3.75rem, 3.075rem + 0.844vw, 4.875rem);
+  --text-6xl--line-height: 1;
+  --text-7xl: clamp(4.5rem, 3.69rem + 1.013vw, 5.85rem);
+  --text-7xl--line-height: 1;
+
   /* Surface hierarchy */
-  --color-surface: #000000; 
+  --color-surface: #000000;
   --color-surface-elevated: #0d0d0d;
   --color-surface-hover: #161616;
   --color-surface-card: #111111;
@@ -15,7 +71,10 @@
   --color-accent-muted: rgba(16, 185, 129, 0.15);
 
   /* Text */
-  --color-muted: #6b7280;
+  /* #6b7280 measured 4.34:1 on the app's black surfaces -- just under the 4.5
+     AA threshold before any alpha was applied on top. #767d8b keeps the same
+     blue-grey character at 5.08:1, giving usages headroom. */
+  --color-muted: #767d8b;
   --color-text-primary: #f5f5f7;
   --color-text-secondary: rgba(255, 255, 255, 0.65);
   --color-text-tertiary: rgba(255, 255, 255, 0.4);
@@ -46,22 +105,132 @@
   --shadow-glow: 0 0 20px rgba(16, 185, 129, 0.3);
   --shadow-modal: 0 32px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
 
-  /* Transitions */
+  /* ── Motion ───────────────────────────────────────────────────────────────
+     One easing curve owns the whole interface. --ease-out-expo is the
+     decelerating curve used for anything entering, settling or responding to
+     input; --ease-standard is for symmetrical state changes (colour, opacity)
+     where an expo curve reads as sluggish. */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Lives in Tailwind's easing namespace so components can write `ease-expo`
+     instead of restating the curve inline. The app previously carried this
+     same curve hand-written in four different spellings across 37 call
+     sites. */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-instant: 100ms;
   --duration-fast: 150ms;
   --duration-normal: 250ms;
   --duration-slow: 400ms;
+  --duration-deliberate: 520ms;
+  /* Card/shelf transitions used a one-off 360ms. Naming it keeps the shelf
+     feel while bringing it into the same scale as everything else. */
+  --duration-card: 360ms;
 
-  /* Shared layout rhythm. These values mirror the spacing already used by
-     Aurales components and keep responsive rules from inventing a new look. */
-  --space-page-inline: clamp(1rem, 2.1vw, 2rem);
-  --space-section: clamp(1.5rem, 2.5vw, 2.5rem);
+  /* ── Blur tiers ───────────────────────────────────────────────────────────
+     Three real tiers. Tailwind's six named steps alias onto them so the 80-odd
+     existing backdrop-blur-* call sites collapse to a consistent set without
+     needing to be rewritten. */
+  --blur-thin: 12px;
+  --blur-glass: 20px;
+  --blur-heavy: 32px;
+  --blur-sm: var(--blur-thin);
+  --blur-md: var(--blur-thin);
+  --blur-lg: var(--blur-glass);
+  --blur-xl: var(--blur-glass);
+  --blur-2xl: var(--blur-heavy);
+  --blur-3xl: var(--blur-heavy);
+  /* Legacy aliases retained for .glass-panel / .glass-panel-light. */
+  --glass-blur: var(--blur-heavy);
+  --glass-blur-light: var(--blur-glass);
+
+  /* ── Glass surfaces ───────────────────────────────────────────────────────
+     Each tier is legible with backdrop-filter switched off. Opacity climbs as
+     the surface carries more text: a tooltip needs more backing than a hover
+     highlight. Borders are the top-light convention -- a single translucent
+     hairline, never a visible outline. */
+  --surface-glass: rgba(13, 13, 13, 0.72);
+  --surface-glass-light: rgba(255, 255, 255, 0.06);
+  --glass-subtle-bg: rgba(16, 16, 18, 0.58);
+  --glass-bg: rgba(12, 12, 14, 0.76);
+  --glass-strong-bg: rgba(8, 8, 10, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-border-strong: rgba(255, 255, 255, 0.16);
+  --glass-highlight: inset 0 1px rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 12px 38px rgba(0, 0, 0, 0.36);
+  --glass-shadow-raised: 0 20px 56px rgba(0, 0, 0, 0.48);
+
+  /* ── Interaction states ───────────────────────────────────────────────────
+     Hover/active/selected read as one family across cards, rows, nav and
+     controls so the same gesture always produces the same amount of feedback. */
+  --state-hover-bg: rgba(255, 255, 255, 0.08);
+  --state-active-bg: rgba(255, 255, 255, 0.12);
+  --state-selected-bg: rgba(255, 255, 255, 0.14);
+  --state-hover-border: rgba(255, 255, 255, 0.18);
+  --state-lift: -2px;
+  --state-lift-card: -4px;
+  --state-scale: 1.03;
+  --state-press-scale: 0.97;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --focus-ring-color: var(--color-accent);
+
+  /* ── Text opacity ─────────────────────────────────────────────────────────
+     Four rungs only. Anything below --text-alpha-quaternary fails AA on the
+     app's darkest surfaces and is reserved for non-essential decoration. */
+  --text-alpha-primary: 0.95;
+  --text-alpha-secondary: 0.72;
+  --text-alpha-tertiary: 0.5;
+  --text-alpha-quaternary: 0.36;
+
+  /* ── Overlay strengths ────────────────────────────────────────────────────
+     Scrims for text over artwork. --overlay-hero-* compose the artwork-aware
+     hero gradient; --overlay-modal backs dialogs. */
+  --overlay-hero-bottom: rgba(0, 0, 0, 0.88);
+  --overlay-hero-mid: rgba(0, 0, 0, 0.45);
+  --overlay-hero-top: rgba(0, 0, 0, 0.55);
+  --overlay-card: rgba(0, 0, 0, 0.55);
+  --overlay-modal: rgba(0, 0, 0, 0.72);
+  --overlay-scrim: rgba(0, 0, 0, 0.35);
+
+  /* ── Layout rhythm ────────────────────────────────────────────────────────
+     Gutters and content widths are fluid; maximum widths stop content from
+     stretching just because an ultrawide display has room for it. */
+  /* The gutter used to cap at 2rem, which meant a 3840px display had the same
+     32px margin as a 1520px window -- content ran to the edge of the screen.
+     The ceiling now keeps rising to 4rem so large displays get proportionate
+     breathing room, while everything at or below 1520px is unchanged. */
+  --space-page-inline: clamp(1rem, 2.1vw, 4rem);
+  --space-section: clamp(1.5rem, 2.5vw, 3.5rem);
+  --space-shelf-gap: clamp(0.75rem, 1vw, 1.25rem);
   --layout-content-max: 144rem;
   --layout-readable-max: 64rem;
-  --glass-blur: 40px;
-  --glass-blur-light: 30px;
-  --surface-glass: rgba(13, 13, 13, 0.6);
-  --surface-glass-light: rgba(255, 255, 255, 0.05);
+  --layout-prose-max: 46rem;
+  --layout-settings-max: 48rem;
+  --layout-nav-height: 4.5rem;
+  --layout-nav-offset: 0.75rem;
+
+  /* ── Window chrome safe areas ─────────────────────────────────────────────
+     The custom title bar is a 2rem drag strip carrying three 46px controls at
+     the top right. Floating UI must clear both: the strip steals mousedown
+     from anything beneath it, and the controls must never be overlapped.
+     Defaults here assume no custom chrome; the html[data-window-chrome]
+     rule below raises them when Tauri's title bar is mounted. */
+  --window-chrome-height: 0rem;
+  --window-controls-width: 8.625rem;
+  --window-safe-inline: var(--space-page-inline);
+
+  /* ── Card sizes ───────────────────────────────────────────────────────────
+     Shelves size their cards from these so a poster is the same poster on
+     Home, Search, Library and a detail page. Maxima keep cards from becoming
+     absurd on ultrawide displays. */
+  --card-poster-w: clamp(8rem, 10vw, 12.5rem);
+  --card-poster-ratio: 2 / 3;
+  --card-landscape-w: clamp(15rem, 19vw, 22rem);
+  --card-landscape-ratio: 16 / 9;
+  --card-continue-w: clamp(17rem, 21vw, 24rem);
+  --card-episode-w: clamp(20rem, 24vw, 28rem);
+  --card-cast-w: clamp(7.5rem, 9vw, 10.5rem);
+  --card-cast-ratio: 2 / 3;
 }
 
 *, *::before, *::after {
@@ -132,43 +301,58 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* The WebView and Aurales, not the host desktop theme, own native controls. */
-:where(button, input, textarea, select, option, optgroup, dialog, progress) {
-  font: inherit;
-  color: inherit;
-}
+/* The WebView and Aurales, not the host desktop theme, own native controls.
 
-:where(button, input, textarea, select) {
-  accent-color: var(--color-accent);
-}
+   These MUST stay inside @layer base. Unlayered CSS outranks every layered
+   rule regardless of specificity, and Tailwind emits its utilities into
+   @layer utilities -- so while this block sat outside a layer, `font: inherit`
+   and `color: inherit` silently beat every text-* size and colour utility on
+   every button, input, textarea and select in the app. Buttons rendered at the
+   inherited 16px no matter what size class they carried, and `text-black` on
+   the white hero Play button never applied, leaving white-on-white text.
+   Layering it restores the intent: a default that utilities can override. */
+@layer base {
+  :where(button, input, textarea, select, option, optgroup, dialog, progress) {
+    font: inherit;
+    color: inherit;
+  }
 
-:where(button) {
-  appearance: none;
-  -webkit-appearance: none;
-}
+  :where(button, input, textarea, select) {
+    accent-color: var(--color-accent);
+  }
 
-:where(input, textarea, select) {
-  min-width: 0;
-}
+  :where(button) {
+    appearance: none;
+    -webkit-appearance: none;
+  }
 
-:where(a) {
-  color: inherit;
-  text-decoration: none;
-}
+  :where(input, textarea, select) {
+    min-width: 0;
+  }
 
-:where(dialog) {
-  color-scheme: dark;
-  background: var(--color-surface-elevated);
-  border-color: var(--color-border-subtle);
-}
+  :where(a) {
+    color: inherit;
+    text-decoration: none;
+  }
 
-:where(.app-scroll-root, .media-row, .search-page, .settings-page, .library-page, .catalog-page) :where(.flex, .grid) > * {
-  min-width: 0;
+  :where(dialog) {
+    color-scheme: dark;
+    background: var(--color-surface-elevated);
+    border-color: var(--color-border-subtle);
+  }
+
+  :where(.app-scroll-root, .media-row, .search-page, .settings-page, .library-page, .catalog-page) :where(.flex, .grid) > * {
+    min-width: 0;
+  }
 }
 
 /* WebKitGTK's reliable non-DMA-BUF path performs poorly when repeatedly
    sampling the full window for glass effects. Opaque translucent surfaces
-   retain the visual hierarchy without forcing a repaint on every frame. */
+   retain the visual hierarchy without forcing a repaint on every frame.
+
+   This rule is why every glass surface in Aurales must be opacity-first. A
+   surface whose only background is its blur renders as a transparent hole
+   here. Define the background colour first; treat blur as enhancement. */
 html[data-platform="linux"] * {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -477,6 +661,155 @@ select option {
   display: none;
 }
 
+/* ── Select menu ────────────────────────────────────────────────────────────
+   The app-owned replacement for native <select>. Opacity-first so the popup
+   stays readable on Linux where backdrop-filter is disabled. */
+.select-menu {
+  position: relative;
+}
+
+.select-menu__trigger {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-inline: 0.9rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, var(--text-alpha-secondary));
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.select-menu__trigger:hover:not(:disabled) {
+  border-color: var(--state-hover-border);
+  background: var(--state-hover-bg);
+  color: rgba(255, 255, 255, var(--text-alpha-primary));
+}
+
+.select-menu__trigger[data-open] {
+  border-color: var(--glass-border-strong);
+  background: var(--state-active-bg);
+  color: #fff;
+}
+
+.select-menu__trigger:focus-visible {
+  outline: none;
+  border-color: var(--glass-border-strong);
+  box-shadow:
+    0 0 0 var(--focus-ring-offset) var(--color-surface),
+    0 0 0 calc(var(--focus-ring-offset) + var(--focus-ring-width)) var(--focus-ring-color);
+}
+
+.select-menu__trigger:disabled {
+  cursor: not-allowed;
+  /* Readable rather than merely faded: disabled controls still have to be
+     legible enough to explain why they are unavailable. */
+  opacity: 0.55;
+  color: rgba(255, 255, 255, var(--text-alpha-tertiary));
+}
+
+.select-menu__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-menu__chevron {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, var(--text-alpha-quaternary));
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.select-menu__trigger[data-open] .select-menu__chevron {
+  transform: rotate(180deg);
+}
+
+.select-menu__list {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(100% + 0.5rem);
+  z-index: 120;
+  max-height: 18rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.375rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--glass-strong-bg);
+  box-shadow: var(--glass-shadow-raised);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.4);
+}
+
+.select-menu__list[data-flip] {
+  top: auto;
+  bottom: calc(100% + 0.5rem);
+  transform-origin: bottom center;
+}
+
+.select-menu__option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, var(--text-alpha-secondary));
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-instant) var(--ease-standard);
+}
+
+/* Pointer and keyboard share one highlight, so moving the mouse and pressing
+   Down look identical rather than producing two competing focus styles. */
+.select-menu__option[data-active] {
+  background: var(--state-hover-bg);
+  color: #fff;
+}
+
+.select-menu__option[data-selected] {
+  font-weight: 600;
+  color: #fff;
+}
+
+.select-menu__option[aria-disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.select-menu__option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-menu__marker {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+  background: transparent;
+}
+
+.select-menu__option[data-selected] .select-menu__marker {
+  background: var(--color-accent);
+  box-shadow: 0 0 10px var(--color-accent);
+}
+
 @keyframes settings-select-enter {
   from {
     opacity: 0;
@@ -531,18 +864,53 @@ html[data-theme-accent="white"] {
   --color-accent-muted: rgba(255, 255, 255, 0.15);
 }
 
-/* Glass panels */
+/* ── Glass surfaces ─────────────────────────────────────────────────────────
+   Opacity-first: the background colour alone carries the surface, and blur is
+   layered on where the platform supports it. This is what keeps glass legible
+   on Linux/WebKitGTK, where backdrop-filter is disabled app-wide.
+
+   Three tiers, matching the token set:
+     .glass-subtle  hover highlights, inline chips
+     .glass         nav, dropdowns, tooltips, player controls
+     .glass-strong  dialogs and anything sitting over bright artwork */
+.glass-subtle,
+.glass,
+.glass-strong {
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), var(--glass-highlight);
+}
+
+.glass-subtle {
+  background: var(--glass-subtle-bg);
+  backdrop-filter: blur(var(--blur-thin)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--blur-thin)) saturate(1.3);
+}
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-glass)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(1.4);
+}
+
+.glass-strong {
+  background: var(--glass-strong-bg);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.5);
+  box-shadow: var(--glass-shadow-raised), var(--glass-highlight);
+}
+
+/* Retained names, now routed through the same opacity-first tiers. */
 .glass-panel {
   background: var(--surface-glass);
-  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
 }
 
 .glass-panel-light {
   background: var(--surface-glass-light);
   backdrop-filter: blur(var(--glass-blur-light));
   -webkit-backdrop-filter: blur(var(--glass-blur-light));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
 }
 
 /* Focus ring for keyboard/remote navigation */
@@ -550,7 +918,9 @@ html[data-theme-accent="white"] {
   outline: none;
 }
 .focus-ring:focus-visible {
-  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-accent);
+  box-shadow:
+    0 0 0 var(--focus-ring-offset) var(--color-surface),
+    0 0 0 calc(var(--focus-ring-offset) + var(--focus-ring-width)) var(--focus-ring-color);
 }
 
 /* Cinematic TV theme. All selectors are rooted so the default Aurales
@@ -1034,17 +1404,414 @@ html[data-interface-theme="cinematic"] .watch-together-empty > div {
   animation: cinematic-panel-in 180ms cubic-bezier(.16,1,.3,1);
 }
 
+/* Derived from the nav tokens so scroll anchoring stays correct if the bar's
+   height or offset is ever retuned. */
 .cinematic-main {
-  scroll-padding-top: 7rem;
+  scroll-padding-top: calc(var(--layout-nav-offset) + var(--layout-nav-height) + var(--space-page-inline));
 }
-.cinematic-top-nav { text-shadow: 0 2px 12px rgba(0,0,0,.9); }
+/* With custom chrome mounted, the nav and brand drop below the drag strip so
+   their click targets are genuinely theirs, and the capsule is kept clear of
+   the window controls from both sides so it stays optically centred. */
+html[data-window-chrome='custom'] {
+  --window-chrome-height: 2rem;
+  --window-safe-inline: calc(var(--window-controls-width) + 0.5rem);
+  --layout-nav-offset: calc(2rem + 0.375rem);
+}
+
+/* ── Detail hero ratings ────────────────────────────────────────────────────
+   One score leads, the others follow at secondary weight, and each is named.
+   The divider separates "the headline number" from "corroborating sources",
+   which is the hierarchy the old flat icon row was missing. */
+.ratings-hero {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+}
+
+.ratings-hero__lead,
+.ratings-hero__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.ratings-hero__rest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 0.9rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--glass-border);
+}
+
+.ratings-hero__icon,
+.ratings-hero__glyph {
+  align-self: center;
+  width: 1.05em;
+  height: 1.05em;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.ratings-hero__glyph {
+  display: inline-grid;
+  place-items: center;
+  width: auto;
+  padding-inline: 0.3em;
+  border-radius: var(--radius-sm);
+  background: var(--state-hover-bg);
+  font-size: 0.75em;
+  font-weight: 900;
+}
+
+.ratings-hero__lead {
+  font-size: var(--text-lg);
+}
+
+.ratings-hero__item {
+  font-size: var(--text-sm);
+}
+
+.ratings-hero__value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, var(--text-alpha-primary));
+}
+
+/* Providers return their names in whatever casing they please -- "trakt",
+   "metacritic", "POPCORN". Rendering secondary labels in uppercase at a
+   consistent tracking makes the row read as one designed system instead of
+   four differently-styled words. The lead keeps its source's own casing so
+   brand marks like "IMDb" stay correct. */
+.ratings-hero__label {
+  font-size: 0.66em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, var(--text-alpha-tertiary));
+  white-space: nowrap;
+}
+
+.ratings-hero__rest .ratings-hero__label {
+  font-size: var(--text-tag);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 700px) {
+  .ratings-hero__rest {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* ── Ranked shelf numerals ──────────────────────────────────────────────────
+   The numeral is a fixed-width column the poster is offset by, so every rank
+   in the shelf shares one left edge and one baseline regardless of digit
+   count. Sizing is relative to the column, which is itself derived from the
+   poster width -- so the numeral and the artwork scale on the same curve.
+   The poster stays the foreground: the numeral is a low-contrast fill with a
+   hairline stroke, behind the artwork's stacking context. */
+.media-rank {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* Slight overhang past the column keeps the optical weight of round glyphs
+     consistent with flat-sided ones without letting them escape the gutter. */
+  padding-right: 0.02em;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.13);
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+  /* Long ranks (100+) compress into the column instead of pushing the poster. */
+  overflow: hidden;
+}
+
+/* ── Home hero ──────────────────────────────────────────────────────────────
+   The hero used to sit in an inset rounded card (mx-8, rounded-[2rem], border,
+   drop shadow), which read as a widget placed on the page rather than as the
+   page itself. It is now full-bleed and dissolves into the background through
+   the artwork mask, so the artwork -- not a container -- defines the top of
+   the page. Content keeps its own gutters via .hero-content-overlay. */
+.home-hero--bleed {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Fixed Featured mode is the exception. There the hero is deliberately an
+   inset banner with shelves beneath it, so it keeps its rounded panel -- the
+   de-carding above targets the full-bleed Dynamic Focus hero, where the
+   artwork is meant to become the top of the page. */
+.fixed-cinematic-hero.home-hero--bleed {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-2xl);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+}
+
+/* The artwork runs up behind the floating nav rather than starting below it,
+   which is what makes the bar read as floating over the image. Only the hero's
+   copy is inset, and that inset is derived from the nav tokens. */
+.home-hero--under-nav {
+  margin-top: 0;
+}
+
+/* Hero copy shares the shelves' content frame rather than hugging the page
+   gutter. Artwork stays full-bleed, but on a 4K display the shelves are
+   centred inside --layout-content-max, so gutter-aligned hero text would sit
+   ~700px left of the first poster. Constraining both to one frame is what
+   makes the hero and the shelves below it read as the same page. */
+.home-hero--under-nav .hero-content-overlay {
+  width: min(calc(100% - (2 * var(--space-page-inline))), var(--layout-content-max));
+  margin-inline: auto;
+  padding-inline: 0;
+}
+
+/* ── Hero pagination ────────────────────────────────────────────────────────
+   Catalogs routinely carry 30-50 hero slides, and one dot per slide produced a
+   dense ribbon that read as a loading bar. The rail shows a fixed window of
+   dots centred on the active slide and slides beneath a mask, so the control
+   stays the same restrained size no matter how long the catalog is. */
+.hero-dots {
+  --hero-dot-size: 0.5rem;
+  --hero-dot-gap: 0.375rem;
+  --hero-dot-window: 7;
+  position: relative;
+  margin-left: auto;
+  overflow: hidden;
+  width: calc(
+    (var(--hero-dot-size) * var(--hero-dot-window)) +
+    (var(--hero-dot-gap) * (var(--hero-dot-window) - 1)) +
+    1.25rem
+  );
+  max-width: 100%;
+  /* Edge fade communicates that the rail continues past the window. */
+  mask-image: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+}
+
+.hero-dots__track {
+  display: flex;
+  align-items: center;
+  gap: var(--hero-dot-gap);
+  width: max-content;
+  transition: transform var(--duration-normal) var(--ease-out-expo);
+  will-change: transform;
+}
+
+.hero-dots__dot {
+  width: var(--hero-dot-size);
+  height: var(--hero-dot-size);
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition:
+    width var(--duration-normal) var(--ease-out-expo),
+    background-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-normal) var(--ease-out-expo);
+}
+
+.hero-dots__dot:hover {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.hero-dots__dot[data-active='true'] {
+  width: 1.5rem;
+  background: #fff;
+}
+
+.hero-dots__dot:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--focus-ring-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-dots__track,
+  .hero-dots__dot {
+    transition: none;
+  }
+}
+
+/* ── Floating navigation ────────────────────────────────────────────────────
+   One height and one top offset on every page, both token-driven, so the nav
+   never appears to shift between routes. The header spans the viewport and is
+   click-through; only the capsule and its controls take pointer input. */
+.cinematic-top-nav {
+  position: absolute;
+  inset-inline: 0;
+  top: var(--layout-nav-offset);
+  z-index: 70;
+  display: flex;
+  height: var(--layout-nav-height);
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-page-inline);
+  pointer-events: none;
+  transition:
+    transform var(--duration-normal) var(--ease-out-expo),
+    opacity var(--duration-normal) var(--ease-out-expo);
+}
+
+.cinematic-top-nav[data-nav-hidden] {
+  transform: translateY(-140%);
+  opacity: 0;
+}
+
+/* The capsule previously declared `background: transparent` and relied purely
+   on backdrop-filter for its surface, which left it completely invisible on
+   Linux where blur is disabled -- nav labels sat directly on hero artwork.
+   It now uses the standard glass background with blur as enhancement. */
 .cinematic-nav-capsule {
-  background: transparent;
-  box-shadow: 0 12px 38px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.08);
-  backdrop-filter: blur(24px) saturate(1.35);
-  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  /* Symmetric inset keeps the capsule centred while guaranteeing it can never
+     extend under the window controls at narrow widths. */
+  max-width: min(100%, calc(100vw - 2 * var(--window-safe-inline)));
+  padding: 0.375rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow), var(--glass-highlight);
+  backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
+  -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
+  pointer-events: auto;
 }
-.cinematic-nav-brand { filter: drop-shadow(0 3px 12px rgba(0,0,0,.9)); }
+
+/* Restrained active state: a soft filled pill rather than a ring or outline.
+   Animating transform/width only -- it never reflows the labels it sits under. */
+.cinematic-nav-indicator {
+  position: absolute;
+  left: 0;
+  top: 0.375rem;
+  bottom: 0.375rem;
+  z-index: 0;
+  border-radius: var(--radius-full);
+  background: var(--state-selected-bg);
+  box-shadow: var(--glass-highlight);
+  transition:
+    transform var(--duration-normal) var(--ease-out-expo),
+    width var(--duration-normal) var(--ease-out-expo);
+  will-change: transform, width;
+}
+
+.cinematic-nav-indicator[data-instant] {
+  transition: none;
+}
+
+.cinematic-nav-link,
+.cinematic-nav-search {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The visible bar stays compact while the hit target meets the 44px
+     guideline: padding grows the target, the capsule does not grow with it. */
+  min-height: 2.5rem;
+  border-radius: var(--radius-full);
+  color: rgba(255, 255, 255, var(--text-alpha-tertiary));
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+/* Both axes are fluid rather than stepped at a breakpoint. An earlier version
+   dropped font-size and padding at 900px, which shrank the capsule by 14% over
+   two pixels of viewport -- a visible snap while dragging a window edge. These
+   clamps compress the bar continuously from ~12px/8px at the 800px minimum to
+   14px/18px on a wide display. */
+.cinematic-nav-link {
+  padding-inline: clamp(0.5rem, 0.1rem + 0.85vw, 1.15rem);
+  font-size: clamp(0.75rem, 0.45rem + 0.55vw, 0.875rem);
+}
+
+.cinematic-nav-search {
+  width: 2.5rem;
+  flex: 0 0 auto;
+}
+
+.cinematic-nav-search svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.cinematic-nav-link:hover,
+.cinematic-nav-search:hover {
+  background: var(--state-hover-bg);
+  color: rgba(255, 255, 255, var(--text-alpha-primary));
+}
+
+.cinematic-nav-link[data-nav-active='true'] {
+  color: #fff;
+}
+
+/* The indicator already marks the active item, so the active link must not
+   also paint its own background -- that reads as two overlapping pills. */
+.cinematic-nav-link[data-nav-active='true']:hover {
+  background: transparent;
+}
+
+.cinematic-nav-link:focus-visible,
+.cinematic-nav-search:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 var(--focus-ring-offset) var(--color-surface),
+    0 0 0 calc(var(--focus-ring-offset) + var(--focus-ring-width)) var(--focus-ring-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cinematic-nav-indicator {
+    transition: none;
+  }
+}
+/* The brand shares the nav's height and top offset so the two read as one
+   floating layer, rather than the logo sitting a few pixels off the bar. */
+.cinematic-nav-brand {
+  position: absolute;
+  left: var(--space-page-inline);
+  top: var(--layout-nav-offset);
+  z-index: 71;
+  display: flex;
+  height: var(--layout-nav-height);
+  align-items: center;
+  gap: 0.75rem;
+  /* No inline padding: the mark must sit on the same gutter as hero copy and
+     shelf headings, not 8px inboard of them. */
+  pointer-events: none;
+  filter: drop-shadow(0 3px 12px rgba(0, 0, 0, 0.9));
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+.cinematic-nav-brand span {
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}
+
+/* Below this width the capsule needs the full line; the wordmark would
+   collide with it, so only the mark survives. */
+@media (max-width: 1100px) {
+  .cinematic-nav-brand span {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .cinematic-nav-brand {
+    display: none;
+  }
+}
 .cinematic-tv-shell .cinematic-hero-artwork {
   filter: saturate(1.16) contrast(1.06) sepia(.09);
 }
@@ -1307,11 +2074,21 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
   from { opacity: .65; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
 }
+/* The capsule tightens continuously (see the clamps above) rather than
+   becoming a horizontal scroller, so every destination stays reachable and the
+   bar keeps its shape down to the 800px minimum window width. Only the gap and
+   the search affordance step, and both are small enough not to read as a jump. */
 @media (max-width: 900px) {
-  .cinematic-top-nav { gap: .5rem; padding-inline: 1rem; overflow-x: auto; }
-  .cinematic-top-nav nav { min-width: max-content; }
-  .cinematic-top-nav span.text-xl { display: none; }
   .cinematic-focus-panel { margin-inline: 1rem; min-height: 210px; }
+}
+
+@media (max-width: 720px) {
+  .cinematic-nav-capsule {
+    gap: 0;
+  }
+  .cinematic-nav-search {
+    width: 2.1rem;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .cinematic-focus-panel { animation: none; }
@@ -1341,11 +2118,21 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
   overscroll-behavior-x: contain;
 }
 
+/* The selector sat 44px clear of the episodes it filters, reading as an
+   unrelated floating row. Pulling it onto the track and marking the boundary
+   with a hairline makes the two a single unit: choose a season above the rule,
+   see that season's episodes below it. */
 .season-scroll {
   scrollbar-width: auto;
   scrollbar-color: rgba(255, 255, 255, 0.38) rgba(255, 255, 255, 0.08);
   scroll-behavior: smooth;
   overscroll-behavior-x: contain;
+  padding-bottom: 0.75rem !important;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.detail-episode-track {
+  padding-top: 1.25rem;
 }
 
 .season-scroll::-webkit-scrollbar {
@@ -1463,6 +2250,140 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
 .detail-content-shell.is-active .detail-content-shell__brand {
   opacity: 1;
   transform: translateY(0) scale(1);
+}
+
+/* ── Artwork-aware ambient colour ───────────────────────────────────────────
+   --ambient-rgb is published by useGlobalBackdrop from the current backdrop,
+   already clamped dark and desaturated at source (services/ambientColor.ts).
+   It is used only for glow and accent-adjacent surfaces, never behind body
+   text, so a dynamic colour can never move a contrast ratio. Falls back to a
+   neutral when artwork is unreadable, so nothing depends on it resolving.
+
+   One radial gradient, no filter: an ambient wash must not add another blurred
+   full-viewport layer on top of the backdrop that .hero-bg-active already
+   paints. */
+html.hero-bg-active::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(
+      120% 80% at 50% 0%,
+      rgb(var(--ambient-rgb, 12 12 14) / 0.5),
+      transparent 68%
+    );
+  opacity: 0;
+  transition: opacity var(--duration-deliberate) var(--ease-standard);
+  pointer-events: none;
+}
+
+/* Only fades in once a colour has actually been derived, so the page never
+   flashes a neutral wash while artwork loads. */
+html.hero-bg-active[style*='--ambient-rgb']::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.hero-bg-active::after {
+    transition: none;
+  }
+}
+
+/* ── Continue Watching ──────────────────────────────────────────────────────
+   The card was a fixed 320x180. That reads as oversized in an 800px window and
+   sparse on a 4K display, since it never changes. Sizing from the shared card
+   token makes it grow with available space and stop at a ceiling, so it never
+   becomes excessively wide on ultrawide. The frame derives its height from the
+   16:9 ratio rather than restating it as a pixel value. */
+.cw-card {
+  width: var(--card-continue-w);
+  transition: transform var(--duration-normal) var(--ease-out-expo);
+}
+
+/* Derived from the card, not restated as a pixel value: the track was fixed at
+   212px, which clipped the card once it grew past that height on wide
+   displays. The extra 2rem is the track's own pt-4/pb-4. */
+.cw-track {
+  height: calc((var(--card-continue-w) * 9 / 16) + 2rem);
+}
+
+.cw-card__frame {
+  aspect-ratio: var(--card-landscape-ratio);
+  transition:
+    border-color var(--duration-normal) var(--ease-standard),
+    box-shadow var(--duration-normal) var(--ease-standard),
+    background-color var(--duration-normal) var(--ease-standard);
+}
+
+/* Progress is the card's most scannable signal, so it gets a real hover
+   response -- but via transform, which never triggers layout. */
+.cw-progress {
+  height: 3px;
+  transform-origin: bottom;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.cw-card:hover .cw-progress,
+.cw-card:focus-within .cw-progress {
+  transform: scaleY(1.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cw-card,
+  .cw-card__frame,
+  .cw-progress {
+    transition: none;
+  }
+  .cw-card:hover .cw-progress,
+  .cw-card:focus-within .cw-progress {
+    transform: none;
+  }
+}
+
+/* ── Shelf edge fades ───────────────────────────────────────────────────────
+   Communicates that a horizontal track continues past the viewport. Painted as
+   pseudo-elements on the wrapper, so the scroller itself is never masked and
+   stays on the cheap paint path while it moves. Each edge only appears when
+   there is genuinely content beyond it -- a permanent fade would dim the first
+   card of a track that does not overflow at all. */
+.shelf-fade {
+  position: relative;
+}
+
+.shelf-fade::before,
+.shelf-fade::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: clamp(1.5rem, 3vw, 3.5rem);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-normal) var(--ease-standard);
+}
+
+.shelf-fade::before {
+  left: 0;
+  background: linear-gradient(to right, var(--color-surface), transparent);
+}
+
+.shelf-fade::after {
+  right: 0;
+  background: linear-gradient(to left, var(--color-surface), transparent);
+}
+
+.shelf-fade[data-fade-start]::before,
+.shelf-fade[data-fade-end]::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shelf-fade::before,
+  .shelf-fade::after {
+    transition: none;
+  }
 }
 
 .episode-showcase-card {
@@ -1590,6 +2511,26 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
   max-width: min(48rem, 88vw);
   overflow-wrap: anywhere;
   font-size: clamp(2.5rem, 6vw, 4.5rem);
+}
+
+/* The logo previously used max-h-[150px] with a md: bump to 190px, which is
+   backwards: it capped at 190px on a 4K display while still allowing 150px in
+   an 800px window, so the mark dominated small windows and got lost on large
+   ones. Sizing against viewport height ties it to the hero it sits in, and the
+   clamp gives it a real floor and ceiling. Section 5 asks that titles and
+   logos never consume excessive space. */
+.detail-hero-panel__brand {
+  display: flex;
+  align-items: flex-end;
+  min-height: clamp(3.5rem, 8vh, 6rem);
+  margin-bottom: clamp(0.75rem, 1.6vh, 1.25rem);
+}
+
+.detail-hero-panel__logo {
+  max-height: clamp(4.5rem, 14vh, 11rem);
+  max-width: min(90%, 34rem);
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.6));
 }
 
 .detail-episodes-section {

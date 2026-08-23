@@ -506,7 +506,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   return (
     <div
       ref={heroRef}
-      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'mx-8 w-[calc(100%-4rem)] rounded-[2rem] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,.65)]' : 'w-full'} ${cinematic && !isSmall ? (usesTopNav ? (fixed ? 'mt-[5.5rem]' : 'mt-[7.25rem]') : 'mt-8') : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--bleed' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
@@ -716,7 +716,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
           {/* Overview */}
           {item.overview && (
-            <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-[15px] line-clamp-2 mb-4'}`}>
+            <p className={`text-white/60 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-sm line-clamp-2 mb-4'}`}>
               {item.overview}
             </p>
           )}
@@ -730,14 +730,14 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     {actor.photo ? (
                       <img src={cachedImage(actor.photo)} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-white/40">
+                      <div className="w-full h-full flex items-center justify-center text-meta font-bold text-white/60">
                         {actor.name.charAt(0)}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
-              <span className="text-xs text-white/45 font-medium truncate max-w-sm">
+              <span className="text-xs text-white/60 font-medium truncate max-w-sm">
                 {cast.map((a) => a.name).join(', ')}
               </span>
             </div>
@@ -758,20 +758,33 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
             )}
 
             {count > 1 && (
-              <div className="flex items-center gap-1.5 ml-auto">
-                {items.map((_, i) => (
-                  <button
-                    key={i}
-                    onClick={() => goTo(i)}
-                    className={[
-                      'rounded-full transition-all duration-300 cursor-pointer',
-                      i === activeIndex
-                        ? 'w-7 h-2 bg-white'
-                        : 'w-2 h-2 bg-white/25 hover:bg-white/50',
-                    ].join(' ')}
-                    aria-label={`Go to slide ${i + 1}`}
-                  />
-                ))}
+              <div
+                className="hero-dots"
+                role="tablist"
+                aria-label={`Featured titles, ${activeIndex + 1} of ${count}`}
+              >
+                <div
+                  className="hero-dots__track"
+                  // Centre the active dot inside the 7-dot window, clamping at
+                  // both ends so the rail never scrolls past its own content.
+                  style={{
+                    transform: `translateX(-${
+                      Math.min(Math.max(activeIndex - 3, 0), Math.max(count - 7, 0)) * 0.875
+                    }rem)`,
+                  }}
+                >
+                  {items.map((_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => goTo(i)}
+                      className="hero-dots__dot"
+                      data-active={i === activeIndex}
+                      role="tab"
+                      aria-selected={i === activeIndex}
+                      aria-label={`Go to slide ${i + 1} of ${count}`}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </div>

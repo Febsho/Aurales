@@ -455,7 +455,7 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
       <div className="absolute right-0 top-[calc(var(--pip-top)+var(--pip-h))] bottom-0 w-[calc(var(--pip-right)+var(--pip-w))] bg-gradient-to-t from-black/70 via-black/35 to-black/20" />
       <div className="absolute right-[var(--pip-right)] top-[var(--pip-top)] w-[var(--pip-w)] h-[var(--pip-h)] rounded-2xl border border-white/20 shadow-2xl bg-transparent pointer-events-none">
         <div className="absolute inset-0 rounded-2xl ring-1 ring-white/15 shadow-[0_0_80px_rgba(0,0,0,0.9)]" />
-        <span className="absolute left-3 top-2 rounded-full bg-black/55 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/65 backdrop-blur-sm">
+        <span className="absolute left-3 top-2 rounded-full bg-black/55 px-2 py-1 text-meta font-semibold uppercase tracking-[0.16em] text-white/65 backdrop-blur-sm">
           Now Playing
         </span>
       </div>
@@ -480,10 +480,10 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
             <p className="text-xs text-white/50 font-medium tracking-wider mb-1">{epCode}</p>
             <h3 className="text-xl font-bold text-white leading-tight truncate">{nextEp.title}</h3>
             {nextEp.overview && (
-              <p className="text-sm text-white/55 mt-1.5 line-clamp-2 leading-relaxed">{nextEp.overview}</p>
+              <p className="text-sm text-white/60 mt-1.5 line-clamp-2 leading-relaxed">{nextEp.overview}</p>
             )}
             {nextEp.runtime != null && (
-              <p className="text-xs text-white/35 mt-1">{nextEp.runtime} min</p>
+              <p className="text-xs text-white/60 mt-1">{nextEp.runtime} min</p>
             )}
 
             {/* Action row */}
@@ -575,7 +575,7 @@ function PausedInfoOverlay({ title, subtitle, backdrop, meta }: PausedInfoOverla
 
       {/* Info block — lower third, left aligned */}
       <div className="absolute left-0 bottom-0 px-16 pb-24 max-w-3xl">
-        <p className="text-sm font-semibold tracking-[0.2em] uppercase text-white/55 mb-3">You're watching</p>
+        <p className="text-sm font-semibold tracking-[0.2em] uppercase text-white/60 mb-3">You're watching</p>
         <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight drop-shadow-lg">{title}</h1>
         {metaBits.length > 0 && (
           <p className="mt-3 text-base text-white/70 font-medium">{metaBits.join('  ·  ')}</p>
@@ -584,7 +584,7 @@ function PausedInfoOverlay({ title, subtitle, backdrop, meta }: PausedInfoOverla
           <p className="mt-3 text-sm text-white/60 tracking-wider uppercase">{subtitle}</p>
         )}
         {meta?.genres?.length ? (
-          <p className="mt-2 text-sm text-white/45">{meta.genres.slice(0, 3).join(' · ')}</p>
+          <p className="mt-2 text-sm text-white/60">{meta.genres.slice(0, 3).join(' · ')}</p>
         ) : null}
         {meta?.overview && (
           <p className="mt-4 text-base text-white/70 leading-relaxed line-clamp-3">{meta.overview}</p>
@@ -610,7 +610,7 @@ interface TrackMenuPanelProps {
 function TrackMenuPanel({ type, tracks, selected, onSelect, onClose, onToggleTranslate, translateActive, hasTranslateKey }: TrackMenuPanelProps) {
   return (
     <div className="absolute bottom-full right-0 mb-3 w-56 bg-black/95 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl py-1.5 z-30 max-h-80 overflow-y-auto">
-      <div className="px-4 py-1.5 text-[10px] font-semibold tracking-wider text-white/35 uppercase">
+      <div className="px-4 py-1.5 text-meta font-semibold tracking-wider text-white/60 uppercase">
         {type === 'subs' ? 'Subtitles' : 'Audio Track'}
       </div>
       {type === 'subs' && (
@@ -636,7 +636,7 @@ function TrackMenuPanel({ type, tracks, selected, onSelect, onClose, onToggleTra
         </button>
       ))}
       {tracks.length === 0 && type === 'audio' && (
-        <div className="px-4 py-2 text-sm text-white/35">No tracks detected</div>
+        <div className="px-4 py-2 text-sm text-white/60">No tracks detected</div>
       )}
       {type === 'subs' && hasTranslateKey && (
         <>
@@ -744,8 +744,8 @@ function IsolatedNativeMpvPlayer({ url, title, startTime, onClose, onPickAnother
       <div className="absolute inset-0 flex items-center justify-center px-8 text-center">
         <div>
           <p className="text-lg font-semibold">Isolated playback is running in a separate mpv window.</p>
-          <p className="mt-2 text-sm text-white/55">Use mpv's native controls. Aurales IPC and window hooks are disabled.</p>
-          <p className="mt-4 text-xs text-white/35">Hardware decoding: {hwdecMode}</p>
+          <p className="mt-2 text-sm text-white/60">Use mpv's native controls. Aurales IPC and window hooks are disabled.</p>
+          <p className="mt-4 text-xs text-white/60">Hardware decoding: {hwdecMode}</p>
         </div>
       </div>
       {error && <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-xl border border-red-500/30 bg-red-950/85 px-5 py-3 text-sm text-red-100">{error}</div>}
@@ -3582,7 +3582,7 @@ function FullNativeMpvPlayer({
               </svg>
             </div>
             <h3 className="mb-1.5 text-base font-bold text-white">This stream could not be played</h3>
-            <p className="mb-5 break-words text-xs leading-relaxed text-white/45">{error}</p>
+            <p className="mb-5 break-words text-xs leading-relaxed text-white/60">{error}</p>
             <div className="flex items-center justify-center gap-2.5">
               <button
                 onClick={(e) => { e.stopPropagation(); pickAnother() }}
@@ -3610,7 +3610,7 @@ function FullNativeMpvPlayer({
 
       {/* Track loading spinner */}
       {!tracksLoaded && !error && (
-        <div className="absolute left-1/2 bottom-32 z-20 -translate-x-1/2 flex items-center gap-2 text-xs text-white/40 pointer-events-none">
+        <div className="absolute left-1/2 bottom-32 z-20 -translate-x-1/2 flex items-center gap-2 text-xs text-white/60 pointer-events-none">
           <div className="w-3.5 h-3.5 border border-white/30 border-t-transparent rounded-full animate-spin" />
           Detecting tracks…
         </div>
@@ -3627,7 +3627,7 @@ function FullNativeMpvPlayer({
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`player-controls mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
+          className={`player-controls mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-expo ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
         >
 
           {/* Info row: title + track icons */}
@@ -3635,12 +3635,12 @@ function FullNativeMpvPlayer({
             <div className="min-w-0 pr-4">
               <h2 className="text-lg font-semibold leading-tight truncate text-white/95">{currentDisplayTitle}</h2>
               {currentDisplaySubtitle && (
-                <p className="text-xs text-white/45 mt-1 truncate">{currentDisplaySubtitle}</p>
+                <p className="text-xs text-white/60 mt-1 truncate">{currentDisplaySubtitle}</p>
               )}
               {mediaBadges.length > 0 && (
                 <div className="mt-3 flex items-center gap-1.5">
                   {mediaBadges.map((badge) => (
-                    <span key={badge} className="rounded border border-white/25 bg-black/25 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-white/80 backdrop-blur-sm">
+                    <span key={badge} className="rounded border border-white/25 bg-black/25 px-2 py-0.5 text-meta font-semibold tracking-wide text-white/80 backdrop-blur-sm">
                       {badge}
                     </span>
                   ))}
@@ -3764,7 +3764,7 @@ function FullNativeMpvPlayer({
                     setShowSpeedMenu((v) => !v)
                   }}
                   title="Playback speed"
-                  className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-[11px] font-bold transition-colors ${
+                  className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-label font-bold transition-colors ${
                     playbackSpeed !== 1 ? 'bg-white/18 text-white' : 'text-white/60 hover:bg-white/10 hover:text-white'
                   }`}
                 >
@@ -3783,7 +3783,7 @@ function FullNativeMpvPlayer({
                     changeVolume(newVol)
                   }}
                   title={volume > 0 ? 'Mute (M)' : 'Unmute (M)'}
-                  className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+                  className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
                 >
                   {volume === 0 ? (
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -3901,15 +3901,44 @@ function FullNativeMpvPlayer({
             >
               {timelinePreview.visible && (
                 <div
-                  className="pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2 overflow-hidden rounded-xl border border-white/20 bg-black/90 shadow-2xl"
-                  style={{ left: `${timelinePreview.leftPct}%` }}
+                  className="seek-preview pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2 overflow-hidden rounded-xl border border-white/20 bg-black/90 shadow-2xl"
+                  // The bubble is centred on the cursor, so at either end of the
+                  // timeline half of it used to render outside the viewport.
+                  // Clamping the centre by half the bubble's own width keeps it
+                  // fully on screen while staying as close to the scrub position
+                  // as possible. --seek-preview-half tracks whether a thumbnail
+                  // is present, since that changes the bubble's width.
+                  style={{
+                    left: `clamp(var(--seek-preview-half), ${timelinePreview.leftPct}%, calc(100% - var(--seek-preview-half)))`,
+                    ['--seek-preview-half' as string]: timelineThumbnail ? '6rem' : '2.5rem',
+                  }}
                 >
                   {timelineThumbnail && (
                     <img src={timelineThumbnail} alt="" className="h-[108px] w-48 object-cover" draggable={false} />
                   )}
-                  <span className="block px-2.5 py-1 text-center text-[11px] font-semibold text-white/90 backdrop-blur-sm">
+                  <span className="block px-2.5 py-1 text-center text-label font-semibold text-white/90 backdrop-blur-sm">
                     {formatTime(timelinePreview.time)}
                   </span>
+                  {/* Section 10: show the chapter name when one covers this
+                      position. The chapter a time belongs to is the last one
+                      starting at or before it. */}
+                  {(() => {
+                    if (chapters.length === 0) return null
+                    // Does not assume `chapters` is sorted -- elsewhere in this
+                    // file it is explicitly sorted before use, so it isn't.
+                    let current: PlayerChapter | null = null
+                    for (const chapter of chapters) {
+                      if (chapter.time > timelinePreview.time) continue
+                      if (!current || chapter.time > current.time) current = chapter
+                    }
+                    const label = current?.title?.trim()
+                    if (!label) return null
+                    return (
+                      <span className="block max-w-48 truncate border-t border-white/10 px-2.5 pb-1 text-center text-tag font-medium uppercase tracking-wider text-white/60">
+                        {label}
+                      </span>
+                    )
+                  })()}
                 </div>
               )}
               <div className="absolute inset-0 rounded-full bg-white/25 group-hover:bg-white/35 transition-colors" />
@@ -4018,7 +4047,7 @@ function FullNativeMpvPlayer({
           </div>
 
           {/* Timestamps row */}
-          <div className="relative flex items-center justify-between text-[11px] text-white/50" data-player-popover>
+          <div className="relative flex items-center justify-between text-label text-white/50" data-player-popover>
             <div className="flex items-center gap-5">
               <button onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${showMediaInfo ? 'bg-white text-black' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Info</button>
               <button disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Chapters</button>
@@ -4026,7 +4055,7 @@ function FullNativeMpvPlayer({
                 <button
                   type="button"
                   onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo(false); setShowChapters(false); setShowPlayerDebug((value) => !value) }}
-                  className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors ${showPlayerDebug ? 'border-amber-300 bg-amber-300 text-black' : 'border-amber-300/25 text-amber-200/70 hover:bg-amber-300/10 hover:text-amber-100'}`}
+                  className={`rounded-xl border px-3 py-2 text-meta font-black uppercase tracking-wider transition-colors ${showPlayerDebug ? 'border-amber-300 bg-amber-300 text-black' : 'border-amber-300/25 text-amber-200/70 hover:bg-amber-300/10 hover:text-amber-100'}`}
                 >
                   Debug
                 </button>
@@ -4044,7 +4073,7 @@ function FullNativeMpvPlayer({
               <div className="absolute bottom-full left-0 mb-4 w-[min(34rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/90 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl">
                 <div className="flex items-start justify-between gap-5">
                   <div className="min-w-0">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Now playing</p>
+                    <p className="text-meta font-bold uppercase tracking-[0.18em] text-white/60">Now playing</p>
                     <h3 className="mt-1.5 text-lg font-semibold leading-tight text-white">{currentDisplayTitle}</h3>
                     {(currentMeta?.episodeTitle || currentDisplaySubtitle) && (
                       <p className="mt-1 text-sm text-white/50">
@@ -4052,21 +4081,21 @@ function FullNativeMpvPlayer({
                       </p>
                     )}
                   </div>
-                  <button type="button" onClick={() => setShowMediaInfo(false)} aria-label="Close information" className="grid h-8 w-8 flex-none place-items-center rounded-full bg-white/5 text-lg text-white/45 transition-colors hover:bg-white/10 hover:text-white">×</button>
+                  <button type="button" onClick={() => setShowMediaInfo(false)} aria-label="Close information" className="grid h-8 w-8 flex-none place-items-center rounded-full bg-white/5 text-lg text-white/60 transition-colors hover:bg-white/10 hover:text-white">×</button>
                 </div>
 
                 {currentMeta?.overview ? (
                   <p className="mt-4 text-sm leading-6 text-white/68">{currentMeta.overview}</p>
                 ) : (
-                  <p className="mt-4 text-sm text-white/35">Description unavailable.</p>
+                  <p className="mt-4 text-sm text-white/60">Description unavailable.</p>
                 )}
 
                 <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {currentMeta?.year && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{currentMeta.year}</span>}
-                  {currentMeta?.runtime && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{currentMeta.runtime} min</span>}
-                  {currentMeta?.rating != null && <span className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">★ {currentMeta.rating.toFixed(1)}</span>}
-                  {currentMeta?.genres?.slice(0, 3).map((genre) => <span key={genre} className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] font-medium text-white/60">{genre}</span>)}
-                  {mediaBadges.map((badge) => <span key={badge} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-semibold text-white/45">{badge}</span>)}
+                  {currentMeta?.year && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{currentMeta.year}</span>}
+                  {currentMeta?.runtime && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{currentMeta.runtime} min</span>}
+                  {currentMeta?.rating != null && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">★ {currentMeta.rating.toFixed(1)}</span>}
+                  {currentMeta?.genres?.slice(0, 3).map((genre) => <span key={genre} className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{genre}</span>)}
+                  {mediaBadges.map((badge) => <span key={badge} className="rounded-full border border-white/10 px-2.5 py-1 text-meta font-semibold text-white/60">{badge}</span>)}
                 </div>
               </div>
             )}
@@ -4090,7 +4119,7 @@ function FullNativeMpvPlayer({
             <div
               aria-hidden={!showChapters}
               data-player-popover
-              className={`grid transition-[grid-template-rows,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
+              className={`grid transition-[grid-template-rows,opacity,transform] duration-300 ease-expo ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
             >
               <div className="min-h-0 overflow-hidden">
                 <div
@@ -4126,7 +4155,7 @@ function FullNativeMpvPlayer({
                           )}
                           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-3 pb-2 pt-7 opacity-0 transition-opacity duration-150 group-hover/chapter:opacity-100">
                             <p className="truncate text-xs font-semibold text-white">{chapter.title}</p>
-                            <p className="font-mono text-[10px] text-white/60">{formatTime(chapter.time)}</p>
+                            <p className="font-mono text-meta text-white/60">{formatTime(chapter.time)}</p>
                           </div>
                         </div>
                       </button>

@@ -27,7 +27,7 @@ function ExpandableOverview({ text }: { text: string }) {
       ref={textRef}
       onClick={interactive ? () => setExpanded((value) => !value) : undefined}
       title={!expanded && clamped ? 'Show full description' : undefined}
-      className={`text-[17px] text-white/55 leading-relaxed max-w-2xl mb-5 transition-colors ${expanded ? '' : 'line-clamp-3'} ${interactive ? 'cursor-pointer hover:text-white/75' : ''}`}
+      className={`text-lg text-white/60 leading-relaxed max-w-2xl mb-5 transition-colors ${expanded ? '' : 'line-clamp-3'} ${interactive ? 'cursor-pointer hover:text-white/75' : ''}`}
     >
       {text}
     </p>
@@ -54,8 +54,8 @@ function FeatureBadge({ feature }: { feature: StreamFeature }) {
       <span className="inline-flex items-center gap-1 h-[26px] text-white/90" title={`${feature.label} ${feature.sublabel}`}>
         {feature.mark === 'dolby' && <DolbyMark />}
         <span className="flex flex-col leading-none">
-          <span className="text-[14px] font-medium tracking-tight">{feature.label}</span>
-          <span className="text-[9px] font-semibold uppercase tracking-[0.1em]">{feature.sublabel}</span>
+          <span className="text-sm font-medium tracking-tight">{feature.label}</span>
+          <span className="text-tag font-semibold uppercase tracking-[0.1em]">{feature.sublabel}</span>
         </span>
       </span>
     )
@@ -65,7 +65,7 @@ function FeatureBadge({ feature }: { feature: StreamFeature }) {
   // only works while no ancestor between the chip and the backdrop image
   // creates a stacking context — see the content wrapper below.
   return (
-    <span className="inline-flex items-center h-[26px] px-2 rounded-[6px] bg-white text-black text-[13px] font-bold tracking-[0.02em] leading-none mix-blend-screen">
+    <span className="inline-flex items-center h-[26px] px-2 rounded-[6px] bg-white text-black text-sm font-bold tracking-[0.02em] leading-none mix-blend-screen">
       {feature.label}
     </span>
   )
@@ -264,20 +264,20 @@ export default function DetailHero({
             award summary, so the hero never invents editorial claims. */}
         {displayAccolade && (
           <div className="mb-4">
-            <span className="inline-flex h-8 items-center gap-2 rounded-full bg-white/[0.09] px-3.5 text-[13px] font-semibold tracking-[0.01em] text-white/85 ring-1 ring-inset ring-white/[0.12] shadow-[0_8px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-              <Award className="h-4 w-4 text-white/55" strokeWidth={1.8} aria-hidden="true" />
+            <span className="inline-flex h-8 items-center gap-2 rounded-full bg-white/[0.09] px-3.5 text-sm font-semibold tracking-[0.01em] text-white/85 ring-1 ring-inset ring-white/[0.12] shadow-[0_8px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+              <Award className="h-4 w-4 text-white/60" strokeWidth={1.8} aria-hidden="true" />
               {displayAccolade}
             </span>
           </div>
         )}
 
         {/* Title */}
-        <div className="mb-4 min-h-[80px] flex items-end">
+        <div className="detail-hero-panel__brand">
           {logo && !logoError ? (
             <img
               src={cachedImage(logo)}
               alt={title}
-              className="max-h-[150px] md:max-h-[190px] max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+              className="detail-hero-panel__logo"
               onError={(event) => {
                 if (!retryImageFromSource(event.currentTarget, logo)) setFailedLogoUrl(logo)
               }}
@@ -292,14 +292,14 @@ export default function DetailHero({
 
         {/* Kind · genres · certification */}
         <div className="flex items-center gap-2.5 flex-wrap mb-4">
-          <span className="text-[17px] text-white/90 tracking-[0.01em]">{classificationLine}</span>
+          <span className="text-lg text-white/90 tracking-[0.01em]">{classificationLine}</span>
           {certStr && (
-            <span className="inline-flex items-center h-[22px] px-1.5 text-[12px] font-semibold uppercase tracking-wide text-white/85 border border-white/35 rounded-[5px] leading-none">
+            <span className="inline-flex items-center h-[22px] px-1.5 text-xs font-semibold uppercase tracking-wide text-white/85 border border-white/35 rounded-[5px] leading-none">
               {certStr}
             </span>
           )}
           {statusStr && statusStr !== 'Released' && statusStr !== 'Ended' && (
-            <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-white/10 text-white/65 rounded-full leading-none">
+            <span className="px-2.5 py-1 text-label font-bold uppercase tracking-wider bg-white/10 text-white/65 rounded-full leading-none">
               {statusStr}
             </span>
           )}
@@ -320,7 +320,7 @@ export default function DetailHero({
                   {actor.profilePath ? (
                     <img src={actor.profilePath} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/40">
+                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/60">
                       {actor.name.charAt(0)}
                     </div>
                   )}
@@ -337,7 +337,7 @@ export default function DetailHero({
         {(specParts.length > 0 || features.length > 0) && (
           <div className="flex items-center gap-x-2.5 gap-y-2 flex-wrap mb-6">
             {specParts.length > 0 && (
-              <span className="mr-1.5 text-[17px] text-white/90 tracking-[0.01em]">{specParts.join(' · ')}</span>
+              <span className="mr-1.5 text-lg text-white/90 tracking-[0.01em]">{specParts.join(' · ')}</span>
             )}
             {features.map((feature) => (
               <FeatureBadge key={feature.id} feature={feature} />

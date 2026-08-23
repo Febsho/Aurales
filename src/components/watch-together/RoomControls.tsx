@@ -20,7 +20,7 @@ export default function RoomControls() {
 
   return (
     <div className="flex flex-col gap-3">
-      <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">
+      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">
         Room Settings
       </h3>
 
@@ -43,7 +43,7 @@ export default function RoomControls() {
                 </div>
                 <svg
                   className={[
-                    'w-3.5 h-3.5 text-white/30 transition-transform duration-200',
+                    'w-3.5 h-3.5 text-white/50 transition-transform duration-200',
                     transferOpen ? 'rotate-180' : '',
                   ].join(' ')}
                   fill="none"
@@ -63,7 +63,7 @@ export default function RoomControls() {
                       onClick={() => handleTransferHost(p.id)}
                       className="watch-together-control w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors duration-150 cursor-pointer"
                     >
-                      <div className="watch-together-avatar w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white/50">
+                      <div className="watch-together-avatar w-5 h-5 rounded-md flex items-center justify-center text-meta font-bold text-white/50">
                         {p.name.charAt(0).toUpperCase()}
                       </div>
                       <span>{p.name}</span>
