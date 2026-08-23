@@ -2605,7 +2605,7 @@ export default function SeriesDetailPage() {
         imdbId={show.imdbId}
         backdrop={show.backdrop}
       >
-      <div className="px-8 relative z-10">
+      <div className="detail-episodes-section px-8 relative z-10">
         <div className={`relative mb-7 ${showSeasonArrows ? 'px-12' : ''}`}>
           {showSeasonArrows && (
             <button
@@ -2660,7 +2660,7 @@ export default function SeriesDetailPage() {
           <div
             ref={episodeScrollRef}
             onWheel={handleEpisodeWheel}
-            className="episode-scroll flex items-stretch gap-7 overflow-x-auto pb-6"
+            className="episode-scroll detail-episode-track flex items-stretch gap-7 overflow-x-auto pb-6"
           >
             {(() => {
               const nextUnwatchedEpisode = keepNextEpisodeVisible

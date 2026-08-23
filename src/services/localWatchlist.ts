@@ -22,8 +22,11 @@ function loadItems(): LocalWatchlistItem[] {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
     if (!Array.isArray(parsed)) return (cachedItems = [])
     cachedItems = parsed
-      .filter((item): item is LocalWatchlistItem => Boolean(item && typeof item.id === 'string' && typeof item.title === 'string' && (item.type === 'movie' || item.type === 'series')))
+      // Stremio's cloud library is a separate source. Older versions copied it
+      // into this device-only list, so drop those imported records on load.
+      .filter((item): item is LocalWatchlistItem => Boolean(item && item.provider !== 'stremio' && typeof item.id === 'string' && typeof item.title === 'string' && (item.type === 'movie' || item.type === 'series')))
       .sort((left, right) => (right.addedAt || 0) - (left.addedAt || 0))
+    if (cachedItems.length !== parsed.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedItems))
     return cachedItems
   } catch {
     return (cachedItems = [])
@@ -47,7 +50,7 @@ export function isInLocalWatchlist(item: Pick<SearchResult, 'id' | 'type' | 'imd
 
 export function addToLocalWatchlist(item: SearchResult): void {
   const key = localWatchlistKey(item)
-  const next: LocalWatchlistItem = { ...item, provider: item.provider || 'local', addedAt: Date.now() }
+  const next: LocalWatchlistItem = { ...item, provider: 'local', addedAt: Date.now() }
   commit([next, ...loadItems().filter((entry) => localWatchlistKey(entry) !== key)])
 }
 

@@ -3550,7 +3550,7 @@ export default function CollectionsPage() {
   }
 
   return (
-    <div className={`pb-12 ${cinematic ? 'cinematic-library' : ''}`}>
+    <div className={`library-page app-content-frame pb-12 ${cinematic ? 'cinematic-library' : ''}`}>
       {/* Header */}
       <div className="px-8 pt-8 pb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">

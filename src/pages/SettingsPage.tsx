@@ -40,7 +40,6 @@ import { syncProviderNow } from '../services/providerSync'
 import { getAddonConfigureUrl, loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, getStremioLibrary, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
-import { addToLocalWatchlist, isInLocalWatchlist } from '../services/localWatchlist'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
@@ -1421,7 +1420,6 @@ export default function SettingsPage() {
 
   const importStremioActivity = async (authKey: string) => {
     const entries = await getStremioLibrary(authKey, true)
-    let watchlistImported = 0
     let watchedImported = 0
     let continueImported = 0
     const completedKeys = new Set<string>()
@@ -1455,20 +1453,6 @@ export default function SettingsPage() {
     }
 
     for (const entry of entries) {
-      const watchlistItem: SearchResult = {
-        id: entry.id,
-        imdbId: entry.imdbId,
-        title: entry.title,
-        type: entry.type,
-        year: entry.year,
-        poster: entry.poster,
-        provider: 'stremio',
-      }
-      if (entry.inLibrary && !isInLocalWatchlist(watchlistItem)) {
-        addToLocalWatchlist(watchlistItem)
-        watchlistImported++
-      }
-
       if (entry.type === 'movie' && entry.watched) {
         if (saveProgress(entry.id, entry, true)) watchedImported++
         completedKeys.add(entry.id)
@@ -1493,13 +1477,13 @@ export default function SettingsPage() {
       if (saveProgress(key, entry, false, entry.season, entry.episode)) continueImported++
     }
 
-    return { watchlistImported, watchedImported, continueImported }
+    return { watchedImported, continueImported }
   }
 
   const formatStremioSyncResult = (
     addons: { imported: number; updated: number },
-    activity: { watchlistImported: number; watchedImported: number; continueImported: number },
-  ) => `Synced ${addons.imported} new addons, ${addons.updated} updated · ${activity.watchedImported} watched · ${activity.continueImported} continue watching · ${activity.watchlistImported} watchlist`
+    activity: { watchedImported: number; continueImported: number },
+  ) => `Synced ${addons.imported} new addons, ${addons.updated} updated · ${activity.watchedImported} watched · ${activity.continueImported} continue watching`
 
   const handleTraktConnect = async () => {
     if (!hasTraktClientCredentials()) {
@@ -2058,7 +2042,7 @@ export default function SettingsPage() {
   return (
     <div className="settings-page flex h-full">
       {/* ─── Left Sidebar ─── */}
-      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
+      <div className="settings-page__nav w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
         {categories.map((cat) => (
           <div key={cat.title}>
             <div className="text-[10px] font-bold uppercase tracking-wider text-white/30 px-3 mb-1.5">{cat.title}</div>
@@ -2076,7 +2060,7 @@ export default function SettingsPage() {
                     }`}
                   >
                     <span className={active ? 'text-white/80' : 'text-white/35'}>{item.icon}</span>
-                    <span>{item.label}</span>
+                    <span className="settings-page__nav-label">{item.label}</span>
                   </button>
                 )
               })}
@@ -2086,11 +2070,11 @@ export default function SettingsPage() {
       </div>
 
       {/* ─── Right Content ─── */}
-      <div className="flex-1 overflow-y-auto p-8 pt-32">
+      <div className="settings-page__content flex-1 min-w-0 overflow-y-auto p-8 pt-32">
         <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
         <p className="text-[13px] text-white/35 mb-8">{activeItem?.description ?? ''}</p>
 
-        <div className="space-y-6 max-w-3xl">
+        <div className="settings-page__content-inner space-y-6 max-w-3xl">
 
           {/* ═══════════════════════════════════════════════
               ACCOUNTS TAB
@@ -2937,7 +2921,7 @@ export default function SettingsPage() {
                 <SettingRow label="Show Genre on Media Cards" description="Display genre label on poster cards. Disabling can speed up catalog loading.">
                   <SettingToggle checked={store.showGenreOnCards} onChange={(v) => store.setShowGenreOnCards(v)} />
                 </SettingRow>
-                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards.">
+                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards. Fixed Featured Hero keeps shelf cards static so trailers play only in the hero.">
                   <SettingToggle checked={store.posterTrailerPreviews} onChange={(v) => store.setPosterTrailerPreviews(v)} />
                 </SettingRow>
                 <SettingRow label="Poster trailer hover delay" description="Choose how long to hover before poster trailers start.">
@@ -3962,6 +3946,22 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
+              <SettingSection title="Picture Quality" description="A simple rendering profile for mpv. Changes apply the next time you start playback.">
+                <div className="grid gap-2.5 px-6 py-4 md:grid-cols-3">
+                  {([
+                    ['performance', 'Smooth playback', 'Best for older laptops, battery power, or streams that stutter.'],
+                    ['balanced', 'Balanced', 'The recommended default for most computers.'],
+                    ['quality', 'Maximum quality', 'Sharper scaling and cleaner gradients for powerful GPUs.'],
+                  ] as const).map(([value, label, description]) => {
+                    const active = store.playerQualityProfile === value
+                    return <button key={value} onClick={() => store.setPlayerQualityProfile(value)} className={`rounded-2xl border p-4 text-left transition-colors ${active ? 'border-accent/45 bg-accent/10 shadow-[0_0_0_1px_rgba(var(--accent-rgb),.08)]' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05]'}`}>
+                      <div className="mb-1.5 flex items-center gap-2 text-sm font-bold text-white"><span className={`h-2 w-2 rounded-full ${active ? 'bg-accent' : 'bg-white/20'}`} />{label}</div>
+                      <p className="text-xs leading-relaxed text-white/45">{description}</p>
+                    </button>
+                  })}
+                </div>
+              </SettingSection>
+
               <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
                 <details className="group">
                   <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
@@ -4097,7 +4097,7 @@ export default function SettingsPage() {
 
               {/* Audio Passthrough */}
               <SettingSection>
-                <SettingRow label="Digital Audio Passthrough" description="Output compressed formats (Dolby Atmos, DTS) to an external receiver.">
+                <SettingRow label="Digital Audio Passthrough" description="Use only with a compatible HDMI receiver. Leave off for normal speakers or headphones to avoid silent playback.">
                   <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
                 </SettingRow>
               </SettingSection>

@@ -688,6 +688,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     if (nativePlayerAvailable) {
       return createPortal(
         <NativeMpvPlayer
+          // A smart-play fallback is a new playback session, not merely a
+          // source change. Remount so startup/error state from a failed mpv
+          // attempt cannot immediately fail the next candidate as well.
+          key={playback.url}
           url={playback.url}
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
@@ -709,6 +713,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     return createPortal(
       <Suspense fallback={null}>
         <InAppPlayer
+          key={playback.url}
           url={playback.url}
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}

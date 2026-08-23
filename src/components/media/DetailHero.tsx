@@ -259,7 +259,7 @@ export default function DetailHero({
       {/* Content — bottom-left. Intentionally no z-index: it would create a
           stacking context and cut the tech badges' knockout blend off from the
           backdrop. DOM order already paints this above the gradients. */}
-      <div className="absolute bottom-0 left-0 right-0 px-12 pb-14">
+      <div className="detail-hero-panel__content absolute bottom-0 left-0 right-0 px-12 pb-14">
         {/* Sourced accolade highlight; absent when the provider has no notable
             award summary, so the hero never invents editorial claims. */}
         {displayAccolade && (
@@ -284,7 +284,7 @@ export default function DetailHero({
               draggable={false}
             />
           ) : (
-            <h1 className="text-7xl font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-3xl">
+            <h1 className="detail-hero-panel__title text-7xl font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-3xl">
               {title}
             </h1>
           )}

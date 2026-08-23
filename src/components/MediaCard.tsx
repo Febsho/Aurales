@@ -35,9 +35,11 @@ interface MediaCardProps {
   cinematicFocused?: boolean
   /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
   cinematicExpand?: boolean
+  /** Fit special layouts into the fixed-home shelf rather than the page flow. */
+  fixedHome?: boolean
 }
 
-function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true }: MediaCardProps) {
+function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true, fixedHome = false }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
@@ -88,6 +90,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     return false
   })
   const posterSize = useAppStore((s) => s.posterSize)
+  const compactSpecialLayouts = useAppStore((s) => s.interfaceTheme) === 'default'
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
   const posterTrailerPreviews = useAppStore((s) => s.posterTrailerPreviews)
@@ -152,6 +155,15 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
   const widthClass = useMemo(() => {
     if (layout === 'feature') {
+      if (fixedHome) return 'w-[calc(var(--fixed-cinematic-card-height)*0.8)]'
+      if (compactSpecialLayouts) {
+        switch (posterSize) {
+          case 'compact': return 'w-[200px]'
+          case 'large': return 'w-[280px]'
+          case 'huge': return 'w-[330px]'
+          default: return 'w-[240px]'
+        }
+      }
       switch (posterSize) {
         case 'compact': return 'w-[260px]'
         case 'large': return 'w-[360px]'
@@ -162,6 +174,15 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       }
     }
     if (layout === 'ranked') {
+      if (fixedHome) return 'w-[calc(var(--fixed-cinematic-card-height)*0.97)]'
+      if (compactSpecialLayouts) {
+        switch (posterSize) {
+          case 'compact': return 'w-[227px]'
+          case 'large': return 'w-[319px]'
+          case 'huge': return 'w-[362px]'
+          default: return 'w-[271px]'
+        }
+      }
       switch (posterSize) {
         case 'compact': return 'w-[255px]'
         case 'large': return 'w-[380px]'
@@ -190,7 +211,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           return 'w-[144px]'
       }
     }
-  }, [layout, posterSize])
+  }, [compactSpecialLayouts, fixedHome, layout, posterSize])
 
   const expandedPosterWidthClass = useMemo(() => {
     switch (posterSize) {
@@ -486,7 +507,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
   const openHoverPreview = useCallback(() => {
     setSuppressPosterHover(false)
-    if (disableTrailerPreview || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
+    if (disableTrailerPreview || fixedHome || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
     if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
 
@@ -507,7 +528,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         setHoverPreviewOpen(true)
       }).catch(() => undefined)
     }, posterTrailerHoverDelayMs)
-  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
 
   const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
 
@@ -738,19 +759,18 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
   const ranked = layout === 'ranked'
   // Native mpv needs to mount before it can report the first decoded frame.
-  // Keep the real poster layout visible while it starts, then expand only
-  // after playback is confirmed so a failed trailer never leaves a frozen
-  // landscape/black card behind.
+  // The ranked preview may widen horizontally once a first frame is available,
+  // but keeps the poster's height so the shelf never shifts vertically.
   const trailerExpanded = Boolean(inlineTrailerPreview && (!useNativeTrailerPlayer || nativeTrailerVisible))
   // Ranked cards reserve a fixed number column. Keeping the poster's left edge
   // and height identical in both states prevents the rank and artwork from
   // jumping when the portrait smoothly widens into a trailer.
-  const rankedTrailerWidthClass = posterSize === 'compact' ? 'w-[540px]' : posterSize === 'large' ? 'w-[809px]' : posterSize === 'huge' ? 'w-[924px]' : 'w-[686px]'
-  const rankedTrailerHeightClass = posterSize === 'compact' ? 'h-[260px]' : posterSize === 'large' ? 'h-[390px]' : posterSize === 'huge' ? 'h-[445px]' : 'h-[330px]'
-  const rankedSlotHeightClass = posterSize === 'compact' ? 'h-[315px]' : posterSize === 'large' ? 'h-[445px]' : posterSize === 'huge' ? 'h-[500px]' : 'h-[385px]'
-  const rankedNumberSlotClass = posterSize === 'compact' ? 'ml-[78px]' : posterSize === 'large' ? 'ml-[116px]' : posterSize === 'huge' ? 'ml-[133px]' : 'ml-[99px]'
-  const rankedPosterWidthClass = posterSize === 'compact' ? 'w-[173px]' : posterSize === 'large' ? 'w-[260px]' : posterSize === 'huge' ? 'w-[297px]' : 'w-[220px]'
-  const rankedExpandedContentWidthClass = posterSize === 'compact' ? 'w-[462px]' : posterSize === 'large' ? 'w-[693px]' : posterSize === 'huge' ? 'w-[791px]' : 'w-[587px]'
+  const rankedTrailerWidthClass = fixedHome ? 'w-[calc(var(--fixed-cinematic-card-height)*2.1)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'w-[470px]' : posterSize === 'large' ? 'w-[670px]' : posterSize === 'huge' ? 'w-[760px]' : 'w-[570px]' : posterSize === 'compact' ? 'w-[540px]' : posterSize === 'large' ? 'w-[809px]' : posterSize === 'huge' ? 'w-[924px]' : 'w-[686px]'
+  const rankedTrailerHeightClass = fixedHome ? 'h-[var(--fixed-cinematic-card-height)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'h-[235px]' : posterSize === 'large' ? 'h-[330px]' : posterSize === 'huge' ? 'h-[375px]' : 'h-[282px]' : posterSize === 'compact' ? 'h-[260px]' : posterSize === 'large' ? 'h-[390px]' : posterSize === 'huge' ? 'h-[445px]' : 'h-[330px]'
+  const rankedSlotHeightClass = fixedHome ? 'h-[calc(var(--fixed-cinematic-card-height)+1.5rem)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'h-[260px]' : posterSize === 'large' ? 'h-[355px]' : posterSize === 'huge' ? 'h-[400px]' : 'h-[307px]' : posterSize === 'compact' ? 'h-[285px]' : posterSize === 'large' ? 'h-[415px]' : posterSize === 'huge' ? 'h-[470px]' : 'h-[355px]'
+  const rankedNumberSlotClass = fixedHome ? 'ml-[calc(var(--fixed-cinematic-card-height)*0.3)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'ml-[70px]' : posterSize === 'large' ? 'ml-[99px]' : posterSize === 'huge' ? 'ml-[112px]' : 'ml-[84px]' : posterSize === 'compact' ? 'ml-[78px]' : posterSize === 'large' ? 'ml-[116px]' : posterSize === 'huge' ? 'ml-[133px]' : 'ml-[99px]'
+  const rankedPosterWidthClass = fixedHome ? 'w-[calc(var(--fixed-cinematic-card-height)*2/3)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'w-[157px]' : posterSize === 'large' ? 'w-[220px]' : posterSize === 'huge' ? 'w-[250px]' : 'w-[187px]' : posterSize === 'compact' ? 'w-[173px]' : posterSize === 'large' ? 'w-[260px]' : posterSize === 'huge' ? 'w-[297px]' : 'w-[220px]'
+  const rankedExpandedContentWidthClass = fixedHome ? 'w-[calc(var(--fixed-cinematic-card-height)*1.8)]' : compactSpecialLayouts ? posterSize === 'compact' ? 'w-[400px]' : posterSize === 'large' ? 'w-[570px]' : posterSize === 'huge' ? 'w-[648px]' : 'w-[486px]' : posterSize === 'compact' ? 'w-[462px]' : posterSize === 'large' ? 'w-[693px]' : posterSize === 'huge' ? 'w-[791px]' : 'w-[587px]'
   const rankedContentClass = `${rankedNumberSlotClass} ${trailerExpanded ? rankedExpandedContentWidthClass : rankedPosterWidthClass}`
   const cardWidthClass = trailerExpanded && ranked ? rankedTrailerWidthClass : trailerExpanded ? expandedPosterWidthClass : widthClass
   // A ranked row must not change its block height when preview details appear;
@@ -858,17 +878,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         </>
       ) : displayItem.year && (
         <p className={`text-[11px] text-muted/80 pl-1 mt-0.5 ${ranked ? rankedNumberSlotClass : ''}`}>{displayItem.year}</p>
-      )}
-      {ranked && trailerExpanded && (
-        <div className={`px-1 pt-2 text-left ${rankedNumberSlotClass} ${rankedExpandedContentWidthClass}`}>
-          <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-white/75">
-            {genre && <span>{String(genre)}</span>}
-            {displayItem.year && <><span className="text-white/25">•</span><span>{displayItem.year}</span></>}
-            {ratingStr && <><span className="text-white/25">•</span><span>★ {ratingStr}</span></>}
-            {getDisplayProvider(displayItem) && <><span className="text-white/25">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
-          </div>
-          {displayItem.overview && <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-white/45">{displayItem.overview}</p>}
-        </div>
       )}
     </button>
   )

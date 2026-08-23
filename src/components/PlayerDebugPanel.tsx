@@ -8,6 +8,7 @@ interface PlayerDebugPanelProps {
   loading: boolean
   error?: string
   onRefresh: () => void
+  onUseDecodedAudio?: () => void
   onClose: () => void
 }
 
@@ -26,7 +27,7 @@ function DebugRow({ label, value }: { label: string; value: unknown }) {
   )
 }
 
-export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConfigured, loading, error, onRefresh, onClose }: PlayerDebugPanelProps) {
+export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConfigured, loading, error, onRefresh, onUseDecodedAudio, onClose }: PlayerDebugPanelProps) {
   const [copied, setCopied] = useState(false)
   const formats = useMemo(() => snapshot ? detectAudioFormats(snapshot, sourceHint) : [], [snapshot, sourceHint])
   const selectedAudio = snapshot?.tracks.find((track) => track.type === 'audio' && track.selected)
@@ -59,6 +60,12 @@ export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConf
 
       <div className="overflow-y-auto p-5">
         {error && <p className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</p>}
+        {passthroughConfigured && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.07] px-3 py-2.5">
+            <p className="text-xs leading-5 text-amber-100/80">No sound? Your receiver may not support this stream's bitstream. Switch to decoded audio for this device.</p>
+            <button type="button" onClick={onUseDecodedAudio} className="shrink-0 rounded-lg bg-amber-300 px-3 py-1.5 text-[11px] font-bold text-black transition-colors hover:bg-amber-200">Use decoded audio</button>
+          </div>
+        )}
         <section>
           <div className="mb-2 flex items-center justify-between">
             <h4 className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/45">Audio formats</h4>
@@ -102,4 +109,3 @@ export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConf
     </div>
   )
 }
-

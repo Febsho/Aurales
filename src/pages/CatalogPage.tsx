@@ -412,7 +412,7 @@ export default function CatalogPage() {
   }, [row, addons])
 
   return (
-    <div className={`p-6 pb-12 ${cinematic ? 'px-8' : ''}`}>
+    <div className={`catalog-page app-content-frame p-6 pb-12 ${cinematic ? 'px-8' : ''}`}>
       <div className="mb-6">
         <p className="text-sm uppercase tracking-[0.24em] text-muted mb-2">Catalog</p>
         <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
@@ -422,7 +422,7 @@ export default function CatalogPage() {
       </div>
 
       {loading ? (
-        <div className="grid gap-5 animate-pulse" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
+        <div className="media-grid grid gap-5 animate-pulse" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
           {Array.from({ length: 18 }).map((_, i) => (
             <div key={i}>
               <div className="aspect-[2/3] rounded-2xl bg-white/[0.06]" />
@@ -453,7 +453,7 @@ export default function CatalogPage() {
               </div>
             </div>
           })()}
-          <div className={cinematic ? 'flex flex-wrap items-start gap-5' : 'grid gap-5'} style={cinematic ? undefined : { gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
+          <div className={cinematic ? 'flex flex-wrap items-start gap-5' : 'media-grid grid gap-5'} style={cinematic ? undefined : { gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
             {items.map((item) => (
               <MediaCard
                 key={item.id}
