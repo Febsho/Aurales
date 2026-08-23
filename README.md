@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.8-white?style=flat-square" alt="Version 0.2.8" />
+  <img src="https://img.shields.io/badge/version-0.2.9-white?style=flat-square" alt="Version 0.2.9" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -23,16 +23,23 @@ Aurales is an elegant, offline-first desktop media hub that aggregates streaming
 
 ## Download & Install
 
-Download version **0.2.8** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.2.9** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
-### Version 0.2.8 highlights
+### Version 0.2.9 highlights
 
-- New ranked and feature poster rows with theme-controlled inline trailer previews.
-- Redesigned Watch Together entry page, navigation integration, and more reliable host/guest synchronization.
-- TorBox debrid integration and improved stream preparation for faster playback starts.
-- Stremio watch history, continue-watching, and library synchronization.
-- More resilient personalized Discovery with bounded caches and automatic recovery from corrupted or oversized saved data.
-- In-app AppImage and standalone Flatpak update installation with visible download progress.
+- One consistent responsive Aurales layout from compact 800×600 windows through
+  4K and ultrawide displays, including adaptive navigation, heroes, catalogs,
+  detail pages, episodes, settings, and player controls.
+- Shared media-grid and content-width primitives preserve poster ratios and
+  prevent uncontrolled stretching without changing Aurales' visual identity.
+- Fixed Home shelves now keep ranked, feature, and poster presentations within
+  their intended space and leave the featured hero as the primary trailer surface.
+- New mpv picture-quality profiles for performance, balanced, and maximum-quality
+  playback, plus a one-click decoded-audio recovery path for incompatible receivers.
+- More reliable smart stream fallback by isolating each playback attempt from
+  failed player startup state.
+- Stremio activity import now keeps watched and continue-watching data separate
+  from the local Aurales watchlist.
 
 ### Windows
 
@@ -78,9 +85,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.2.8/Aurales_0.2.8_amd64.flatpak \
-  -o Aurales_0.2.8_amd64.flatpak
-flatpak install --user -y ./Aurales_0.2.8_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.2.9/Aurales_0.2.9_amd64.flatpak \
+  -o Aurales_0.2.9_amd64.flatpak
+flatpak install --user -y ./Aurales_0.2.9_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -98,7 +105,7 @@ Download Aurales directly from GitHub, install it for your user, and launch it:
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.2.8/Aurales_0.2.8_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.2.9/Aurales_0.2.9_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -143,7 +150,6 @@ Aurales synchronizes your watch history, watchlist, rating, and current progress
 ### 💬 Watch Together (Co-Viewing)
 - **Synchronized Viewing** — Create or join co-watching rooms using simple invite codes.
 - **Real-Time Interactive Chat** — Text chat with overlay bubbles during playback.
-- **Drawing Canvas** — Live drawing and annotation overlay directly onto the video screen for all participants.
 - **Drift Correction** — Under-the-hood synchronization that adjusts playback speed to correct for latency and keep everyone in sync.
 
 ### 🌟 Anime Support
@@ -220,7 +226,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.2.8`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.2.9`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

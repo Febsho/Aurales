@@ -35,7 +35,7 @@ export default function EpisodeCard({
       onClick={onPlay}
       onContextMenu={onContextMenu}
       className={[
-        'w-full flex gap-4 p-3 rounded-xl',
+        'episode-card w-full flex gap-4 p-3 rounded-xl',
         'bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.04] hover:border-white/[0.10]',
         'transition-all duration-200 cursor-pointer group text-left',
         'focus-ring',
@@ -43,7 +43,7 @@ export default function EpisodeCard({
       ].join(' ')}
     >
       {/* Thumbnail */}
-      <div className="relative w-44 flex-shrink-0 aspect-video rounded-lg overflow-hidden bg-surface-card">
+      <div className="episode-card__thumbnail relative w-44 flex-shrink-0 aspect-video rounded-lg overflow-hidden bg-surface-card">
         {still && !imgError ? (
           <img
             src={still}
@@ -104,7 +104,7 @@ export default function EpisodeCard({
           {name}
         </h4>
         {overview && (
-          <p className="text-xs text-white/35 line-clamp-2 mt-1 leading-relaxed">{overview}</p>
+          <p className="episode-card__overview text-xs text-white/35 line-clamp-2 mt-1 leading-relaxed">{overview}</p>
         )}
       </div>
     </button>

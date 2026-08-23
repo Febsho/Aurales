@@ -32,6 +32,7 @@ function loadAutomaticWatchedCheckmarkSources(): ProgressProvider[] {
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
+export type PlayerQualityProfile = 'performance' | 'balanced' | 'quality'
 export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
 export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
 
@@ -390,10 +391,12 @@ interface AppState {
   mpvCacheSecs: number
   mpvNetworkTimeout: number
   mpvCustomArgs: string
+  playerQualityProfile: PlayerQualityProfile
   seekStepSeconds: number
   setMpvCacheSecs: (secs: number) => void
   setMpvNetworkTimeout: (secs: number) => void
   setMpvCustomArgs: (args: string) => void
+  setPlayerQualityProfile: (profile: PlayerQualityProfile) => void
   setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
 
@@ -1099,10 +1102,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   mpvCacheSecs: Number(localStorage.getItem('aurales_mpv_cache_secs') || '60'),
   mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '60'),
   mpvCustomArgs: localStorage.getItem('aurales_mpv_custom_args') || '',
+  playerQualityProfile: (localStorage.getItem('aurales_player_quality_profile') || 'balanced') as PlayerQualityProfile,
   seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
   setMpvCacheSecs: (secs) => { localStorage.setItem('aurales_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
   setMpvNetworkTimeout: (secs) => { localStorage.setItem('aurales_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
   setMpvCustomArgs: (args) => { localStorage.setItem('aurales_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
+  setPlayerQualityProfile: (profile) => { localStorage.setItem('aurales_player_quality_profile', profile); set({ playerQualityProfile: profile }) },
   setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
     localStorage.setItem('aurales_hwdec_mode', 'auto')
@@ -1110,6 +1115,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_mpv_cache_secs', '60')
     localStorage.setItem('aurales_mpv_network_timeout', '60')
     localStorage.setItem('aurales_mpv_custom_args', '')
+    localStorage.setItem('aurales_player_quality_profile', 'balanced')
     localStorage.setItem('aurales_playback_preload_mode', 'smart')
     localStorage.removeItem('aurales_preload_playback_sources')
     set({
@@ -1118,6 +1124,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       mpvCacheSecs: 60,
       mpvNetworkTimeout: 60,
       mpvCustomArgs: '',
+      playerQualityProfile: 'balanced',
       playbackPreloadMode: 'smart',
     })
   },

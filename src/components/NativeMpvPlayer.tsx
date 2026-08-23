@@ -680,8 +680,15 @@ function wtControlBlocked(): boolean {
 }
 
 // mpv args derived from settings that aren't first-class launch params.
-function buildMpvExtraArgs(storeState: { mpvCustomArgs: string; audioPassthrough: boolean }): string {
-  const parts = [storeState.mpvCustomArgs?.trim() ?? '']
+function buildMpvExtraArgs(storeState: { mpvCustomArgs: string; audioPassthrough: boolean; playerQualityProfile: 'performance' | 'balanced' | 'quality' }): string {
+  // These mirror mpv's safe renderer presets: the default stays conservative,
+  // while users with weaker or stronger GPUs get a one-choice tuning option.
+  const qualityArgs = storeState.playerQualityProfile === 'performance'
+    ? '--scale=bilinear --cscale=bilinear --dscale=bilinear --dither=no --deband=no --vd-lavc-fast=yes --interpolation=no --hdr-compute-peak=no'
+    : storeState.playerQualityProfile === 'quality'
+      ? '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
+      : ''
+  const parts = [qualityArgs, storeState.mpvCustomArgs?.trim() ?? '']
   if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
     parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
   }
@@ -2586,6 +2593,14 @@ function FullNativeMpvPlayer({
     }
   }, [url, title, applySavedVolume])
 
+  const useDecodedAudio = useCallback(() => {
+    const storeState = useAppStore.getState()
+    if (!storeState.audioPassthrough) return
+    storeState.setAudioPassthrough(false)
+    logEvent('PLAYER DEBUG', 'Passthrough disabled; restarting with decoded audio output.')
+    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0))
+  }, [startTime, triggerRestart])
+
   // ─ Polling ───────────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
@@ -3612,11 +3627,11 @@ function FullNativeMpvPlayer({
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
+          className={`player-controls mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
         >
 
           {/* Info row: title + track icons */}
-          <div className={`flex items-center justify-between transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 -translate-y-2 overflow-hidden opacity-0' : 'mb-4 max-h-28 translate-y-0 overflow-visible opacity-100'}`}>
+          <div className={`player-controls__info flex items-center justify-between transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 -translate-y-2 overflow-hidden opacity-0' : 'mb-4 max-h-28 translate-y-0 overflow-visible opacity-100'}`}>
             <div className="min-w-0 pr-4">
               <h2 className="text-lg font-semibold leading-tight truncate text-white/95">{currentDisplayTitle}</h2>
               {currentDisplaySubtitle && (
@@ -3633,7 +3648,7 @@ function FullNativeMpvPlayer({
               )}
             </div>
 
-            <div className="flex flex-shrink-0 items-center gap-3">
+            <div className="player-controls__secondary flex flex-shrink-0 items-center gap-3">
               {activeSkip && (
                 <button
                   onClick={(e) => {
@@ -4064,6 +4079,7 @@ function FullNativeMpvPlayer({
                 loading={playerDebugLoading}
                 error={playerDebugError}
                 onRefresh={() => refreshPlayerDebug().catch(() => {})}
+                onUseDecodedAudio={useDecodedAudio}
                 onClose={() => setShowPlayerDebug(false)}
               />
             )}

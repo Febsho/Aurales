@@ -276,7 +276,7 @@ export default function Layout() {
   )
 
   return (
-    <div className={`app-theme-shell h-screen overflow-hidden bg-black hero-bg-transparent ${!usesTopNav && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`}>
+    <div className={`app-theme-shell h-screen overflow-hidden bg-black hero-bg-transparent ${!usesTopNav && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`} data-nav-mode={usesTopNav ? 'topbar' : sidebarPinned ? 'sidebar-pinned' : 'sidebar-overlay'}>
       <TitleBar />
       {usesTopNav
         ? <CinematicTopNav hidden={cinematicNavHidden} />
@@ -342,7 +342,7 @@ export default function Layout() {
           {searchInput}
         </header>}
 
-        <main ref={mainRef} className={`app-scroll-root flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
+        <main ref={mainRef} className={`app-scroll-root flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'app-scroll-root--panel-open mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}>
           <Outlet />
         </main>
       </div>

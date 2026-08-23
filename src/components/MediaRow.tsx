@@ -30,7 +30,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
   // Layout is authoritative. Older shelf records may still carry showRank=true;
-  // that must never turn a user-selected Poster shelf back into Ranked.
+  // that must never turn a user-selected Poster shelf back into Ranked. Feature
+  // cards retain their chosen presentation on Fixed Home as well—the fixed-home
+  // card sizing in MediaCard keeps them inside the hero-safe shelf area.
   const effectiveLayout = layout
   const specialLayout = effectiveLayout === 'ranked' || effectiveLayout === 'feature'
   // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
@@ -122,7 +124,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   }
 
   return (
-    <section className={`media-row mb-8 ${cinematic ? 'cinematic-media-row !mb-2' : ''}`}>
+    <section className={`media-row media-row--${effectiveLayout} mb-8 ${cinematic ? 'cinematic-media-row !mb-2' : ''}`}>
       <div className="flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
@@ -175,9 +177,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           <MediaCard
             key={`${mediaIdentity(item)}:${idx}`}
             item={item}
-            layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || layout === 'landscape' ? 'landscape' : 'poster'}
+            layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
             disableArtOverride={disableArtOverride}
-            disableTrailerPreview={disableTrailerPreview}
+            // Fixed-home shelves sit beneath the featured hero. Keep their
+            // artwork static so the hero remains the sole trailer surface.
+            disableTrailerPreview={disableTrailerPreview || fixedHome}
             rank={effectiveLayout === 'ranked' ? idx + 1 : undefined}
             cardIndex={idx}
             onFocusItem={cinematic ? handleCardFocus : undefined}
@@ -185,6 +189,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
             cinematicMode={cinematic && !specialLayout}
             cinematicFocused={cinematic && focusedCardIndex === idx}
             cinematicExpand={cinematicExpand && !fixedHome}
+            fixedHome={fixedHome}
           />
         ))}
         {shouldShowAll && showAllPath && (

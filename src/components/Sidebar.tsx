@@ -68,7 +68,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         onMouseEnter={() => !pinned && handleMouseEnter()}
         onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
-          'flex flex-col',
+          'app-sidebar flex flex-col',
           'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
           pinned
             ? 'relative z-30 w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
@@ -83,15 +83,15 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
         ].join(' ')}
       >
       {/* Logo + pin toggle */}
-      <div className="flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
-        <div className="flex items-center gap-2.5">
+      <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
+        <div className="app-sidebar__brand flex items-center gap-2.5">
           <img
             src="/app-logo.png?v=3"
             alt=""
             className="w-8 h-8 object-contain flex-shrink-0"
             draggable={false}
           />
-          <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
+          <span className="app-sidebar__label text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
         </div>
         <button
           onClick={toggle}
@@ -111,7 +111,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 flex flex-col gap-0.5 p-2 mt-1">
+      <nav className="app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 mt-1">
         {navItems.map((item) => {
           const isActive = item.exact
             ? location.pathname === item.path
@@ -135,7 +135,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
                 ].join(' ')}
                 filled={isActive}
               />
-              <span className={`text-[13px] tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
+              <span className={`app-sidebar__label text-[13px] tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
                 {item.label}
               </span>
             </NavLink>
@@ -144,7 +144,7 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
       </nav>
 
       {/* Footer */}
-      <div className="p-3 border-t border-white/[0.04]">
+      <div className="app-sidebar__footer p-3 border-t border-white/[0.04]">
         <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>
 

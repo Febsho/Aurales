@@ -78,7 +78,7 @@ export default function LocalWatchlist() {
           <p className="text-sm font-medium text-white/40">No watchlist titles match this filter</p>
         </div>
       ) : (
-        <div className="grid items-start gap-5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(144px, 1fr))' }}>
+        <div className="media-grid grid items-start gap-5">
           {visibleItems.map((item) => <MediaCard key={`${item.type}:${item.id}`} item={item} disableTrailerPreview />)}
         </div>
       )}
