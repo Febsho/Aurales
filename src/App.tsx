@@ -5,6 +5,8 @@ import UpdatePrompt from './components/UpdatePrompt'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
 import type { ProgressProvider } from './stores/appStore'
+import { prefetchLikelyRoutes } from './services/routePrefetch'
+import { markPerformance, measurePerformance } from './services/performanceMetrics'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -88,6 +90,15 @@ export default function App() {
     ...(anilistConnected ? ['anilist' as const] : []),
   ]
   const automaticWatchedSourcesKey = automaticWatchedSources.join(',')
+
+  useEffect(() => {
+    markPerformance('app-shell-visible')
+    measurePerformance('bootstrap-to-shell', 'bootstrap-start', 'app-shell-visible')
+  }, [])
+
+  // Route chunks stay off the critical path, but likely first destinations are
+  // ready by the time people reach the navigation after the Home shell paints.
+  useEffect(() => prefetchLikelyRoutes(), [])
 
   useEffect(() => {
     if (watchedCheckmarkSources.join(',') === automaticWatchedSourcesKey) return

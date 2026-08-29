@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { prefetchRoute } from '../services/routePrefetch'
 
 const links = [
   { to: '/', label: 'Home', exact: true },
@@ -88,7 +89,7 @@ export default function CinematicTopNav({ hidden = false }: { hidden?: boolean }
             }}
           />
         )}
-        <NavLink to="/search" aria-label="Search" title="Search" className="cinematic-nav-search">
+        <NavLink to="/search" onMouseEnter={() => prefetchRoute('/search')} onFocus={() => prefetchRoute('/search')} aria-label="Search" title="Search" className="cinematic-nav-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-3.5-3.5" strokeLinecap="round" />
@@ -100,6 +101,8 @@ export default function CinematicTopNav({ hidden = false }: { hidden?: boolean }
             <NavLink
               key={link.to}
               to={link.to}
+              onMouseEnter={() => prefetchRoute(link.to)}
+              onFocus={() => prefetchRoute(link.to)}
               data-nav-active={active}
               aria-current={active ? 'page' : undefined}
               className="cinematic-nav-link"

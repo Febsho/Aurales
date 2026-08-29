@@ -6,15 +6,15 @@ describe('Discovery startup snapshot', () => {
     const oldTimestamp = Date.now() - 10 * 24 * 60 * 60 * 1000
     const cachedRows = { movies: { timestamp: oldTimestamp, items: [{ id: '1', title: 'Cached', type: 'movie' as const, provider: 'tmdb' }] } }
     const rankedSnapshots = { 'movies:for-you:scope': [] }
-    expect(retainDiscoverySnapshot({ version: 2, cachedRows, rankedSnapshots })).toEqual({ cachedRows, rankedSnapshots })
+    expect(retainDiscoverySnapshot({ version: 2, cachedRows, rankedSnapshots })).toEqual({ cachedRows, rankedSnapshots, dailySnapshotMeta: {} })
   })
 
   it('normalizes missing or malformed persisted fields to empty maps', () => {
-    expect(retainDiscoverySnapshot(null)).toEqual({ cachedRows: {}, rankedSnapshots: {} })
+    expect(retainDiscoverySnapshot(null)).toEqual({ cachedRows: {}, rankedSnapshots: {}, dailySnapshotMeta: {} })
     expect(retainDiscoverySnapshot({
       version: 2,
       cachedRows: { broken: { items: 'not-an-array', timestamp: 'yesterday' } },
       rankedSnapshots: { broken: [{ item: null }] },
-    } as never)).toEqual({ cachedRows: {}, rankedSnapshots: {} })
+    } as never)).toEqual({ cachedRows: {}, rankedSnapshots: {}, dailySnapshotMeta: {} })
   })
 })

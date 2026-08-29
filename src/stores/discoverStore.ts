@@ -4,6 +4,7 @@ import type { SearchResult } from '../types'
 import type { RankedRecommendation } from '../services/discovery/types'
 import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot'
 import { retainDiscoverySnapshot } from '../services/cache/discoverySnapshot'
+import type { DailySnapshotMeta } from '../services/discovery/dailySnapshot'
 
 export type DiscoverTab = 'movies' | 'series' | 'anime'
 
@@ -59,6 +60,7 @@ interface DiscoverStore {
   // Frozen ranking per day/tab/mode so navigating away and back shows the same
   // order instead of reshuffling on every visit
   rankedSnapshots: Record<string, RankedRecommendation[]>
+  dailySnapshotMeta: Record<string, DailySnapshotMeta>
 
   setTab: (tab: DiscoverTab) => void
   setSelectedGenre: (genre: number | null) => void
@@ -66,7 +68,7 @@ interface DiscoverStore {
   setGenreLoading: (loading: boolean) => void
   setActiveProvider: (provider: string | null) => void
   setCachedRow: (rowId: string, items: SearchResult[]) => void
-  setRankedSnapshot: (key: string, ranked: RankedRecommendation[]) => void
+  setRankedSnapshot: (key: string, ranked: RankedRecommendation[], metadata?: DailySnapshotMeta) => void
   clearCache: () => void
 }
 
@@ -78,6 +80,7 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   activeProvider: null,
   cachedRows: {},
   rankedSnapshots: {},
+  dailySnapshotMeta: {},
 
   setTab: (tab) => set({ tab, activeProvider: null }),
   setSelectedGenre: (selectedGenre) => set({ selectedGenre }),
@@ -90,13 +93,16 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
       if (previous && catalogContentFingerprint(previous.items) === catalogContentFingerprint(items)) return state
       return { cachedRows: { ...state.cachedRows, [rowId]: { items, timestamp: Date.now() } } }
     }),
-  setRankedSnapshot: (key, ranked) =>
+  setRankedSnapshot: (key, ranked, metadata) =>
     set((state) => {
       const previous = state.rankedSnapshots[key]
       if (previous && catalogContentFingerprint(previous.map((entry) => entry.item)) === catalogContentFingerprint(ranked.map((entry) => entry.item))) return state
-      return { rankedSnapshots: { ...state.rankedSnapshots, [key]: ranked } }
+      return {
+        rankedSnapshots: { ...state.rankedSnapshots, [key]: ranked },
+        dailySnapshotMeta: metadata ? { ...state.dailySnapshotMeta, [key]: metadata } : state.dailySnapshotMeta,
+      }
     }),
-  clearCache: () => set({ cachedRows: {}, rankedSnapshots: {} }),
+  clearCache: () => set({ cachedRows: {}, rankedSnapshots: {}, dailySnapshotMeta: {} }),
 }), {
   name: DISCOVERY_CACHE_STORAGE_KEY,
   version: 2,
@@ -107,10 +113,11 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
     // exhaustion. Keep only a bounded set of final rankings for fast startup.
     cachedRows: {},
     rankedSnapshots: compactRankedSnapshots(state.rankedSnapshots),
+    dailySnapshotMeta: Object.fromEntries(Object.entries(state.dailySnapshotMeta).filter(([key]) => key in state.rankedSnapshots).slice(-MAX_PERSISTED_RANKINGS)),
   }),
   merge: (persisted, current) => {
     const saved = persisted as Partial<DiscoverStore> | undefined
-    const { cachedRows, rankedSnapshots } = retainDiscoverySnapshot(saved)
-    return { ...current, cachedRows, rankedSnapshots }
+    const { cachedRows, rankedSnapshots, dailySnapshotMeta } = retainDiscoverySnapshot(saved)
+    return { ...current, cachedRows, rankedSnapshots, dailySnapshotMeta }
   },
 }))

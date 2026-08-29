@@ -394,7 +394,7 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
           `grid ${detailSize ? 'h-12 w-12' : 'h-11 w-11'} flex-shrink-0 place-items-center rounded-full border transition-[transform,background-color,border-color,color] duration-200 cursor-pointer`,
           'active:scale-95 disabled:pointer-events-none disabled:opacity-55',
           localInList
-            ? 'border-accent/45 bg-accent text-black shadow-[0_6px_18px_rgba(0,0,0,0.28)]'
+            ? 'border-accent/60 bg-accent/20 text-accent shadow-[0_6px_18px_rgba(0,0,0,0.22)]'
             : 'border-white/15 bg-[#171717] text-white/70 hover:border-white/30 hover:bg-[#242424] hover:text-white',
         ].join(' ')}
       >

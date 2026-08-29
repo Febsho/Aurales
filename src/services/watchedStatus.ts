@@ -137,7 +137,13 @@ export async function batchIsWatchedFromProviders(
   if (sources.includes('local')) {
     for (const item of items) {
       const ids = normalizedIds(item)
-      if (ids.some((id) => completedIds.has(id))) { result.add(toKey(item)); continue }
+      // A completed series-level progress record must never imply that every
+      // episode is completed. Episode rows require an exact season/episode
+      // key; title-level completion remains valid only for movies.
+      if (item.type === 'movie' && ids.some((id) => completedIds.has(id))) {
+        result.add(toKey(item))
+        continue
+      }
       if (item.type === 'series' && item.season != null && item.episode != null) {
         if (ids.some((id) => completedIds.has(`${id}:${item.season}:${item.episode}`))) result.add(toKey(item))
       }
