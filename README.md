@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.0-white?style=flat-square" alt="Version 0.3.0" />
+  <img src="https://img.shields.io/badge/version-0.3.1-white?style=flat-square" alt="Version 0.3.1" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -23,22 +23,22 @@ Aurales is an elegant, offline-first desktop media hub that aggregates streaming
 
 ## Download & Install
 
-Download version **0.3.0** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.3.1** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
-### Version 0.3.0 highlights
+### Version 0.3.1 highlights
 
-- A refined Aurales design system now centralizes fluid typography, spacing,
-  surfaces, motion, focus states, overlays, and responsive card dimensions.
-- The cinematic interface gains a floating navigation capsule, full-bleed Home
-  hero, improved pagination, and artwork-aware ambient color accents.
-- Shelves, Continue Watching, cast, trailers, and episode tracks scale more
-  naturally and expose overflow with lightweight edge fades.
-- Settings, Collections, detail pages, Watch Together, and player surfaces now
-  share a more consistent hierarchy and interaction language.
-- Unified accessible select menus and switches improve keyboard navigation,
-  focus visibility, contrast, and Linux/WebKitGTK appearance.
-- Reduced-motion handling, safer window-chrome spacing, and platform-aware glass
-  fallbacks improve usability across compact, 4K, ultrawide, and Linux setups.
+- Fixed Focus and Dynamic Banner now share polished hero artwork handoffs,
+  configurable focus motion, consistent metadata, and service rating badges.
+- Ranked, feature, square, and standard shelves preserve their individual card
+  styles while gaining smoother focus previews, corrected spacing, and logos.
+- Search uses the app's metadata pipeline and a cleaner compact presentation
+  with centered controls, neutral surfaces, and streamlined recent searches.
+- The native mpv player gains a compact icon-based control layout, improved
+  chapter thumbnails, repaired fullscreen controls, and safer playback retry.
+- Continue Watching resumes through the correct player path and avoids the
+  stalled or duplicated Home/player presentation seen in earlier builds.
+- Library shelf layout controls, glass navigation, hero ratings, and responsive
+  Fixed Focus behavior receive a final consistency and accessibility pass.
 
 ### Windows
 
@@ -84,9 +84,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.0/Aurales_0.3.0_amd64.flatpak \
-  -o Aurales_0.3.0_amd64.flatpak
-flatpak install --user -y ./Aurales_0.3.0_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.3.1/Aurales_0.3.1_amd64.flatpak \
+  -o Aurales_0.3.1_amd64.flatpak
+flatpak install --user -y ./Aurales_0.3.1_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -104,7 +104,7 @@ Download Aurales directly from GitHub, install it for your user, and launch it:
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.0/Aurales_0.3.0_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.3.1/Aurales_0.3.1_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -225,7 +225,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.3.0`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.3.1`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

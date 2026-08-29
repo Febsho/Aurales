@@ -60,7 +60,7 @@ export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConf
 
       <div className="overflow-y-auto p-5">
         {error && <p className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</p>}
-        {passthroughConfigured && (
+        {passthroughConfigured && encodedOutput && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.07] px-3 py-2.5">
             <p className="text-xs leading-5 text-amber-100/80">No sound? Your receiver may not support this stream's bitstream. Switch to decoded audio for this device.</p>
             <button type="button" onClick={onUseDecodedAudio} className="shrink-0 rounded-lg bg-amber-300 px-3 py-1.5 text-label font-bold text-black transition-colors hover:bg-amber-200">Use decoded audio</button>
@@ -69,8 +69,8 @@ export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConf
         <section>
           <div className="mb-2 flex items-center justify-between">
             <h4 className="text-meta font-bold uppercase tracking-[0.18em] text-white/60">Audio formats</h4>
-            <span className={`rounded-full px-2 py-1 text-tag font-bold ${encodedOutput ? 'bg-emerald-400/15 text-emerald-300' : passthroughConfigured ? 'bg-amber-400/15 text-amber-300' : 'bg-white/7 text-white/60'}`}>
-              Passthrough: {encodedOutput ? 'active' : passthroughConfigured ? 'enabled, decoded output' : 'off'}
+            <span className={`rounded-full px-2 py-1 text-tag font-bold ${encodedOutput ? 'bg-emerald-400/15 text-emerald-300' : 'bg-white/7 text-white/60'}`}>
+              {encodedOutput ? 'Passthrough active' : passthroughConfigured ? 'Automatic decoded fallback' : 'Decoded audio'}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -98,7 +98,7 @@ export default function PlayerDebugPanel({ snapshot, sourceHint, passthroughConf
             <DebugRow label="Codec" value={snapshot?.videoCodec || selectedVideo?.codec} />
             <DebugRow label="Pixel format" value={snapshot?.videoFormat} />
             <DebugRow label="Video params" value={snapshot?.videoParams} />
-            <DebugRow label="Hardware decoder" value={snapshot?.hardwareDecoder || 'Software / unavailable'} />
+            <DebugRow label="Hardware decoder" value={snapshot?.hardwareDecoder} />
             <DebugRow label="FPS" value={snapshot?.estimatedFps} />
             <DebugRow label="Display FPS" value={snapshot?.displayFps} />
             <DebugRow label="Container" value={snapshot?.fileFormat} />

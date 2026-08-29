@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.1" date="2026-08-29">
+      <description>
+        <p>
+          Refines Dynamic Banner and Fixed Focus heroes, shelf focus previews,
+          search metadata, native player controls and chapters, fullscreen and
+          playback recovery, Continue Watching, hero ratings, and Library
+          layout controls.
+        </p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-23">
       <description>
         <p>
