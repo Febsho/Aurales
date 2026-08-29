@@ -935,6 +935,7 @@ export default function HomePage() {
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
   const homeHeroMode = useAppStore((s) => s.homeHeroMode)
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
 
@@ -949,6 +950,9 @@ export default function HomePage() {
   const activeShelfRef = useRef(0)
 
   useEffect(() => {
+    // Fixed Focus always hands the active shelf item to the hero. The motion
+    // preference only decides whether that handoff is animated; it must never
+    // disable selection, artwork replacement, or the focused metadata itself.
     if (homeHeroMode !== 'fixed') { setFocusedHeroItem(null); return }
     const handleFocus = (event: Event) => {
       const item = (event as CustomEvent<SearchResult>).detail
@@ -1039,6 +1043,28 @@ export default function HomePage() {
     }
   }, [cachePreloaded])
 
+  // Fixed Focus always has one authoritative selection. Moving to another
+  // shelf focuses its first card, which updates the full-screen artwork and
+  // opens the inline metadata panel without requiring an initial mouse move.
+  useEffect(() => {
+    if (homeHeroMode !== 'fixed' || isEditing || !cachePreloaded) return
+    const focusTimer = window.setTimeout(() => {
+      const firstCard = homeRootRef.current?.querySelector<HTMLElement>('.fixed-hero-row-active :is(.cinematic-row-track, .cw-track) > button')
+      if (!firstCard) {
+        const rows = Array.from(homeRootRef.current?.querySelectorAll<HTMLElement>('[data-fixed-hero-row]') || [])
+        const firstPopulatedShelf = rows.findIndex((row) => row.querySelector(':is(.cinematic-row-track, .cw-track) > button'))
+        if (firstPopulatedShelf >= 0 && firstPopulatedShelf !== activeShelfRef.current) {
+          activeShelfRef.current = firstPopulatedShelf
+          setPreviousShelfIndex(null)
+          setActiveShelfIndex(firstPopulatedShelf)
+        }
+        return
+      }
+      firstCard?.focus({ preventScroll: true })
+    }, 120)
+    return () => window.clearTimeout(focusTimer)
+  }, [activeShelfIndex, cachePreloaded, homeHeroMode, isEditing])
+
   // Startup stream prediction must not compete with Home's initial cache
   // hydration or first paint. ContinueWatchingRow independently marks its
   // enrichment complete; the manager starts only after both gates and idle.
@@ -1124,7 +1150,7 @@ export default function HomePage() {
   );
 
   return (
-    <div ref={homeRootRef} className={`pb-12 relative ${homeHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${homeHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
+    <div ref={homeRootRef} data-home-card-motion={homeCardAnimations ? 'on' : 'off'} className={`pb-12 relative ${homeHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${homeHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
 
       <CatalogKeyNotice />
 

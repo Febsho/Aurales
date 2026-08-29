@@ -3,8 +3,6 @@ import Switch from '../components/ui/Switch'
 import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
-import { tmdbProvider } from '../services/tmdb'
-import type { SearchResult } from '../types'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   DndContext,
@@ -93,6 +91,7 @@ const BACKUP_KEYS = [
   'orynt_saved_frames_count',
   'orynt_poster_size',
   'aurales_hero_trailer_delay',
+  'aurales_home_card_animations',
   'aurales_poster_trailer_previews',
   'aurales_poster_trailer_hover_delay_ms',
   'aurales_poster_trailer_sound',
@@ -1100,37 +1099,6 @@ const AUDIENCE_OPTIONS = [
   { mode: 'kid-safe', title: 'KID-SAFE', subtitle: 'Family-friendly only' },
 ] as const
 
-function ManualHeroPicker() {
-  const selected = useAppStore((s) => s.fixedHeroManualItem)
-  const setSelected = useAppStore((s) => s.setFixedHeroManualItem)
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (query.trim().length < 2) { setResults([]); return }
-    let cancelled = false
-    setLoading(true)
-    const timer = window.setTimeout(() => {
-      tmdbProvider.search(query.trim()).then((items) => {
-        if (!cancelled) setResults(items.filter((item) => Boolean(item.backdrop)).slice(0, 6))
-      }).catch(() => { if (!cancelled) setResults([]) }).finally(() => { if (!cancelled) setLoading(false) })
-    }, 300)
-    return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [query])
-
-  return <div className="w-80">
-    {selected && <div className="mb-2 flex items-center justify-between rounded-xl bg-white/[.05] px-3 py-2 text-xs"><span className="truncate">{selected.title}{selected.year ? ` (${selected.year})` : ''}</span><button onClick={() => setSelected(null)} className="ml-2 text-white/60 hover:text-white">Remove</button></div>}
-    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search movies and shows…" className="w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm outline-none focus:border-accent/50" />
-    {(loading || results.length > 0) && <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-white/[.08] bg-[#151515] p-1 shadow-2xl">
-      {loading ? <p className="px-3 py-2 text-xs text-white/60">Searching…</p> : results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => { setSelected(item); setQuery(''); setResults([]) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-white/[.08]">
-        {item.poster && <img src={item.poster} alt="" className="h-12 w-8 rounded object-cover" />}
-        <span className="min-w-0"><span className="block truncate text-sm font-semibold">{item.title}</span><span className="text-xs text-white/60">{item.year || 'Unknown year'} · {item.type === 'series' ? 'Show' : 'Movie'}</span></span>
-      </button>)}
-    </div>}
-  </div>
-}
-
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
@@ -2046,8 +2014,6 @@ export default function SettingsPage() {
   // Find the active category item for header info
   const activeItem = categories.flatMap(c => c.items).find(i => i.id === activeTab)
 
-  const cinematicTheme = store.interfaceTheme === 'cinematic'
-
   return (
     <div className="settings-page flex h-full">
       {/* ─── Left Sidebar ─── */}
@@ -2849,18 +2815,7 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'interface' && (
             <>
-              <SettingSection title="Interface Theme" description="Choose the classic Aurales layout or a cinematic TV-focused browsing experience.">
-                <SettingRow label="Theme" description="Cinematic TV uses larger focus targets and unified horizontal rows. Navigation is configured separately below.">
-                  <SettingSelect
-                    label="Interface theme"
-                    value={store.interfaceTheme}
-                    onChange={(value) => store.setInterfaceTheme(value as 'default' | 'cinematic')}
-                    options={[
-                      { value: 'default', label: 'Classic Aurales' },
-                      { value: 'cinematic', label: 'Cinematic TV' },
-                    ]}
-                  />
-                </SettingRow>
+              <SettingSection title="Appearance" description="Tune the unified Aurales interface to your screen and viewing setup.">
                 <SettingRow label="Background" description="Use the selected interface theme's intended background, or force pure OLED black.">
                   <SettingSelect
                     label="Interface background"
@@ -2906,19 +2861,21 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              <SettingSection title="Home Hero" description="Choose how the featured area behaves on the home page in both interface themes.">
-                <SettingRow label="Hero mode" description="Dynamic Focus rotates the current hero; Fixed Featured Hero stays stable for the visit.">
+              <SettingSection title="Home presentation" description="Choose how the unified Cinematic Home presents featured artwork and shelves.">
+                <SettingRow label="Hero layout" description="Dynamic Banner uses the inset carousel. Fixed Focus turns the active shelf into a full-screen TV browsing experience.">
                   <SettingSelect
-                    label="Home hero mode"
+                    label="Home hero layout"
                     value={store.homeHeroMode}
-                    onChange={(value) => store.setHomeHeroMode(value as typeof store.homeHeroMode)}
-                    className="w-56"
+                    onChange={(value) => store.setHomeHeroMode(value as 'dynamic' | 'fixed')}
+                    className="w-52"
                     options={[
-                      { value: 'dynamic', label: 'Dynamic Focus' },
-                      { value: 'fixed', label: 'Fixed Featured Hero' },
-                      { value: 'disabled', label: 'Disabled' },
+                      { value: 'dynamic', label: 'Dynamic Banner' },
+                      { value: 'fixed', label: 'Fixed Focus' },
                     ]}
                   />
+                </SettingRow>
+                <SettingRow label="Card focus animations" description="Animate focused-card expansion in Dynamic Banner and the artwork/detail handoff in Fixed Focus.">
+                  <SettingToggle checked={store.homeCardAnimations} onChange={(enabled) => store.setHomeCardAnimations(enabled)} />
                 </SettingRow>
               </SettingSection>
 
@@ -2930,7 +2887,7 @@ export default function SettingsPage() {
                 <SettingRow label="Show Genre on Media Cards" description="Display genre label on poster cards. Disabling can speed up catalog loading.">
                   <SettingToggle checked={store.showGenreOnCards} onChange={(v) => store.setShowGenreOnCards(v)} />
                 </SettingRow>
-                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards. Fixed Featured Hero keeps shelf cards static so trailers play only in the hero.">
+                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards.">
                   <SettingToggle checked={store.posterTrailerPreviews} onChange={(v) => store.setPosterTrailerPreviews(v)} />
                 </SettingRow>
                 <SettingRow label="Poster trailer hover delay" description="Choose how long to hover before poster trailers start.">

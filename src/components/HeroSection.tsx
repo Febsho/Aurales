@@ -108,6 +108,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
@@ -501,12 +502,15 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       ? (fixed ? 'var(--fixed-cinematic-hero-height, clamp(580px, 74vh, 900px))' : 'clamp(520px, 68vh, 820px)')
       : 'clamp(550px, 85vh, 1200px)'
 
-  const maskGradient = 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
+  const maskGradient = fixed && cinematic
+    ? 'linear-gradient(to bottom, black 0%, black 58%, rgba(0,0,0,.86) 72%, transparent 100%)'
+    : 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
+  const fixedStaticDetails = fixed && cinematic && !isSmall && !homeCardAnimations
 
   return (
     <div
       ref={heroRef}
-      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--bleed' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight }}
     >
       {!isSmall ? (
@@ -517,7 +521,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           {renderBackdrops()}
         </div>
       ) : renderBackdrops()}
-      {renderOverlay()}
+      {(!(fixed && cinematic && !isSmall) || fixedStaticDetails) && renderOverlay()}
     </div>
   )
 
@@ -534,7 +538,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           return (
             <div
               key={`${itm.id ?? i}-${i}`}
-              className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
+              className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${fixed && cinematic ? 'fixed-hero-backdrop' : ''}`}
               style={{
                 opacity: i === activeIndex ? 1 : 0,
                 pointerEvents: 'none',
@@ -679,7 +683,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         )}
 
         {/* Content — bottom-left */}
-        <div className={`hero-content-overlay absolute bottom-0 left-0 right-0 z-10 ${fixed && !cinematic && !isSmall ? 'fixed-default-hero-content' : ''} ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
+        <div className={`hero-content-overlay absolute bottom-0 left-0 right-0 z-10 ${fixed && !cinematic && !isSmall ? 'fixed-default-hero-content' : ''} ${fixedStaticDetails ? 'fixed-cinematic-static-content' : ''} ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
           {/* Title */}
           <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
             {item.logo && !logoError ? (
@@ -705,14 +709,15 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           )}
 
           {/* Compact colored rating badges */}
-          {!cinematic && <RatingsStrip
+          <RatingsStrip
             mediaType={type}
             imdbId={item.imdbId}
             tmdbId={item.tmdbId}
             tvdbId={item.tvdbId}
+            malId={item.malId}
             className={isSmall ? 'mb-2.5' : 'mb-3'}
             compact
-          />}
+          />
 
           {/* Overview */}
           {item.overview && (
@@ -744,7 +749,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           )}
 
           {/* Actions + dots */}
-          <div className="flex items-center gap-3">
+          {!fixedStaticDetails && <div className="flex items-center gap-3">
             {cinematic ? (
               <>
                 <Button variant="white" size="lg" onClick={() => nav(true)}>Play</Button>
@@ -787,7 +792,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                 </div>
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </>
     )
