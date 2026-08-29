@@ -7,12 +7,12 @@ describe('interface theme persistence', () => {
     expect(loadInterfaceTheme({ getItem: () => 'unknown' })).toBe('cinematic')
   })
 
-  it('persists and restores the default and cinematic themes', () => {
+  it('migrates every saved preference to the single cinematic interface', () => {
     const values = new Map<string, string>()
     const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
     persistInterfaceTheme('default', storage)
-    expect(values.get(INTERFACE_THEME_KEY)).toBe('default')
-    expect(loadInterfaceTheme(storage)).toBe('default')
+    expect(values.get(INTERFACE_THEME_KEY)).toBe('cinematic')
+    expect(loadInterfaceTheme(storage)).toBe('cinematic')
 
     persistInterfaceTheme('cinematic', storage)
     expect(values.get(INTERFACE_THEME_KEY)).toBe('cinematic')

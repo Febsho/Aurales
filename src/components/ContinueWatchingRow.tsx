@@ -40,7 +40,7 @@ const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
 ]
 
 function revealContinueCard(card: HTMLElement) {
-  const row = card.closest<HTMLElement>('.cinematic-row-track')
+  const row = card.closest<HTMLElement>('.cinematic-row-track, .cw-track')
   if (!row) return
   const cardRect = card.getBoundingClientRect()
   const rowRect = row.getBoundingClientRect()
@@ -104,6 +104,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed'
+  const [focusedFixedItemId, setFocusedFixedItemId] = useState<string | null>(null)
   const posterSize = useAppStore((s) => s.posterSize)
   // Landscape cards scale with the global poster-size setting so the Continue
   // Watching row fits the same way the poster rows do.
@@ -667,12 +669,18 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         {cinematic && items.map((item) => {
           const progressPercent = Math.min(100, Math.max(0, item.progressPct))
           const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
+          const fixedFocused = fixedHome && focusedFixedItemId === item.id
+          const artwork = item.backdrop || item.poster
           return (
             <button
               key={item.id}
               onClick={() => playItem(item)}
-              onMouseEnter={() => announceHeroFocus(item)}
+              onMouseEnter={() => {
+                setFocusedFixedItemId(item.id)
+                announceHeroFocus(item)
+              }}
               onFocus={(event) => {
+                setFocusedFixedItemId(item.id)
                 announceHeroFocus(item)
                 const card = event.currentTarget
                 window.setTimeout(() => revealContinueCard(card), 80)
@@ -681,13 +689,14 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 e.preventDefault()
                 setCwMenu({ x: e.clientX, y: e.clientY, item })
               }}
+              data-fixed-focused={fixedFocused || undefined}
               className="cw-card snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring"
             >
               <div className="cw-card__frame relative overflow-hidden bg-surface-elevated border border-white/[0.08] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
                 {/* 16:9 backdrop */}
-                {item.backdrop ? (
+                {artwork ? (
                   <img 
-                    src={item.backdrop} 
+                    src={artwork}
                     alt={item.title} 
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
                     loading="lazy" 

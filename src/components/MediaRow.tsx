@@ -1,9 +1,11 @@
-import React, { useCallback, useRef, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
+import { getTmdbCardMetadata } from '../services/tmdb'
+import RatingsStrip from './RatingsStrip'
 
 const CATALOG_PREVIEW_LIMIT = 25
 
@@ -22,12 +24,70 @@ interface MediaRowProps {
   cinematicExpand?: boolean
 }
 
+function FixedShelfDetails({ item }: { item: SearchResult }) {
+  const [resolvedLogo, setResolvedLogo] = useState(item.logo)
+  const genre = item.genres?.[0]
+  const genreLabel = typeof genre === 'object' && genre
+    ? (genre as { name?: string; title?: string }).name || (genre as { title?: string }).title
+    : genre
+  const rating = item.rating != null ? Number(item.rating).toFixed(1).replace(/\.0$/, '') : null
+
+  useEffect(() => {
+    let cancelled = false
+    setResolvedLogo(item.logo)
+    if (item.logo) return () => { cancelled = true }
+
+    ;(async () => {
+      let tmdbId = item.tmdbId || (/^tmdb[-:]/i.test(String(item.id)) ? String(item.id).replace(/^tmdb[-:]/i, '') : undefined)
+      if (!tmdbId && item.imdbId) {
+        const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+        const found = await tmdbFindByExternalId(item.imdbId, 'imdb_id')
+        tmdbId = found.tmdbId ? String(found.tmdbId) : undefined
+      }
+      if (!tmdbId || cancelled) return
+      const metadata = await getTmdbCardMetadata(item.type, tmdbId, item.imdbId)
+      if (!cancelled) setResolvedLogo(metadata.englishLogo || metadata.logo)
+    })().catch(() => undefined)
+
+    return () => { cancelled = true }
+  }, [item.id, item.imdbId, item.logo, item.tmdbId, item.type])
+
+  return (
+    <div className="fixed-focus-card__details fixed-focus-card__details--shelf flex-none self-center">
+      <div className="fixed-focus-card__details-inner">
+        {resolvedLogo ? (
+          <img src={resolvedLogo} alt={item.title} className="mb-3 max-h-20 max-w-[78%] object-contain object-left drop-shadow-xl" onError={() => setResolvedLogo(undefined)} />
+        ) : (
+          <h3 className="mb-2 text-2xl font-black tracking-tight text-white drop-shadow-xl">{item.title}</h3>
+        )}
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-white/72">
+          <span>{item.type === 'series' ? 'Series' : 'Movie'}</span>
+          {item.year && <><span className="text-white/30">•</span><span>{item.year}</span></>}
+          {genreLabel && <><span className="text-white/30">•</span><span>{String(genreLabel)}</span></>}
+          {rating && <><span className="text-white/30">•</span><span>★ {rating}</span></>}
+        </div>
+        <RatingsStrip
+          mediaType={item.type === 'series' ? 'series' : 'movie'}
+          imdbId={item.imdbId}
+          tmdbId={item.tmdbId}
+          tvdbId={item.tvdbId}
+          malId={item.malId}
+          className="mb-3"
+          compact
+        />
+        {item.overview && <p className="line-clamp-2 text-[13px] leading-relaxed text-white/62">{item.overview}</p>}
+      </div>
+    </div>
+  )
+}
+
 function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
   const posterSize = useAppStore((s) => s.posterSize)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
   // Layout is authoritative. Older shelf records may still carry showRank=true;
   // that must never turn a user-selected Poster shelf back into Ranked. Feature
@@ -173,28 +233,34 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {rowItems.map((item, idx) => (
-          <MediaCard
-            key={`${mediaIdentity(item)}:${idx}`}
-            item={item}
-            layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
-            disableArtOverride={disableArtOverride}
-            // Fixed-home shelves sit beneath the featured hero. Keep their
-            // artwork static so the hero remains the sole trailer surface.
-            disableTrailerPreview={disableTrailerPreview || fixedHome}
-            rank={effectiveLayout === 'ranked' ? idx + 1 : undefined}
-            cardIndex={idx}
-            onFocusItem={cinematic ? handleCardFocus : undefined}
-            onUnfocusItem={cinematic ? handleCardUnfocus : undefined}
-            cinematicMode={cinematic && !specialLayout}
-            cinematicFocused={cinematic && focusedCardIndex === idx}
-            cinematicExpand={cinematicExpand && !fixedHome}
-            fixedHome={fixedHome}
-          />
-        ))}
+        {rowItems.map((item, idx) => {
+          const focused = focusedCardIndex === idx || (fixedHome && focusedCardIndex == null && idx === 0)
+          return (
+            <React.Fragment key={`${mediaIdentity(item)}:${idx}`}>
+              <MediaCard
+                item={item}
+                layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
+                disableArtOverride={disableArtOverride}
+                // Fixed-home shelves sit beneath the featured hero. Keep their
+                // artwork static so the hero remains the sole trailer surface.
+                disableTrailerPreview={disableTrailerPreview || fixedHome}
+                rank={effectiveLayout === 'ranked' ? idx + 1 : undefined}
+                cardIndex={idx}
+                onFocusItem={cinematic ? handleCardFocus : undefined}
+                onUnfocusItem={cinematic && !fixedHome ? handleCardUnfocus : undefined}
+                cinematicMode={cinematic && !fixedHome}
+                cinematicFocused={cinematic && focused}
+                cinematicExpand={cinematicExpand && homeCardAnimations && !fixedHome}
+                fixedHome={fixedHome}
+              />
+              {fixedHome && homeCardAnimations && focused && <FixedShelfDetails item={item} />}
+            </React.Fragment>
+          )
+        })}
         {shouldShowAll && showAllPath && (
           <button
             onClick={openShowAll}
+            data-show-all-layout={effectiveLayout}
             className={`flex-shrink-0 bg-white/5 hover:bg-white/10 border border-white/10 flex flex-col items-center justify-center text-white transition-colors self-start ${
               cinematic
                 ? 'w-[clamp(10rem,13vw,13rem)] h-[clamp(15rem,19.5vw,19.5rem)] rounded-2xl focus-ring'

@@ -82,12 +82,9 @@ export default function RatingsStrip(props: RatingsStripProps) {
   if (visibleRatings.length === 0) return null
 
   if (props.variant === 'hero') {
-    // Section 5: metadata must be readable at a glance rather than becoming a
-    // dense row of unrelated icons. The previous compact strip showed six
-    // scores side by side -- /10, %, and /5 scales mixed together with no
-    // source names. Here the leading score is emphasised, the rest stay
-    // secondary, every score is named, and the row is capped so a
-    // well-covered title cannot sprawl.
+    // Keep the leading score prominent and cap secondary sources so a
+    // well-covered title cannot sprawl. Provider names remain available in
+    // tooltips; the visible row stays compact as icon + value only.
     const [lead, ...rest] = visibleRatings
     return (
       <div className={`ratings-hero ${props.className || ''}`}>
@@ -96,7 +93,6 @@ export default function RatingsStrip(props: RatingsStripProps) {
             ? <img src={lead.iconUrl} alt="" className="ratings-hero__icon" loading="lazy" />
             : <span className="ratings-hero__glyph">{lead.icon}</span>}
           <span className="ratings-hero__value">{lead.value}</span>
-          <span className="ratings-hero__label">{lead.label}</span>
         </div>
         {rest.length > 0 && (
           <div className="ratings-hero__rest">
@@ -110,7 +106,6 @@ export default function RatingsStrip(props: RatingsStripProps) {
                   ? <img src={rating.iconUrl} alt="" className="ratings-hero__icon" loading="lazy" />
                   : <span className="ratings-hero__glyph">{rating.icon}</span>}
                 <span className="ratings-hero__value">{rating.value}</span>
-                <span className="ratings-hero__label">{rating.label}</span>
               </div>
             ))}
           </div>
@@ -158,7 +153,6 @@ export default function RatingsStrip(props: RatingsStripProps) {
             )}
           </span>
           <span className="font-semibold text-white/90">{rating.value}</span>
-          <span className="text-white/60">{rating.label}</span>
         </div>
       ))}
     </div>

@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { searchTmdbPeople, tmdbProvider, type TmdbPersonSearchResult } from '../services/tmdb'
+import { searchTmdbPeople, type TmdbPersonSearchResult } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import { useAppStore } from '../stores/appStore'
 import { EmptyState } from '../components/ui'
@@ -185,16 +185,11 @@ export default function SearchPage() {
   const navigate = useNavigate()
   const query = searchParams.get('q')?.trim() || ''
   const [results, setResults] = useState<SearchResult[]>([])
-  const [aiResults, setAiResults] = useState<SearchResult[]>([])
   const [people, setPeople] = useState<TmdbPersonSearchResult[]>([])
   const [loading, setLoading] = useState(false)
-  const [aiLoading, setAiLoading] = useState(false)
   const [searched, setSearched] = useState(false)
-  const [aiRequested, setAiRequested] = useState(false)
   const [searchHistory, setSearchHistory] = useState(loadSearchHistory)
   const [typeFilter, setTypeFilter] = useState<'all' | 'movies' | 'series' | 'anime' | 'people'>('all')
-  const apiKey = useAppStore((state) => state.openrouterApiKey)
-  const model = useAppStore((state) => state.openrouterModel)
   const addons = useAppStore((state) => state.addons)
   const movieSearchEngine = useAppStore((s) => s.movieSearchEngine) as SearchEngineId
   const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine) as SearchEngineId
@@ -213,8 +208,6 @@ export default function SearchPage() {
   const series = useMemo(() => results.filter((item) => item.type === 'series' && !isAnime(item)).slice(0, 24), [results])
   const animeMovies = useMemo(() => dedupeAnimeResults(results.filter((item) => item.type === 'movie' && isAnime(item)), query).slice(0, 24), [results, query])
   const animeSeries = useMemo(() => dedupeAnimeResults(results.filter((item) => item.type === 'series' && isAnime(item)), query).slice(0, 24), [results, query])
-  const aiMovies = useMemo(() => aiResults.filter((item) => item.type === 'movie'), [aiResults])
-  const aiSeries = useMemo(() => aiResults.filter((item) => item.type === 'series'), [aiResults])
 
   const executeSearch = useCallback(async (text: string) => {
     const requestId = ++requestIdRef.current
@@ -230,9 +223,7 @@ export default function SearchPage() {
     }
     setLoading(true)
     setSearched(true)
-    setAiResults([])
     setPeople([])
-    setAiRequested(false)
 
     const allResults: SearchResult[] = []
     const pending: Promise<void>[] = []
@@ -329,50 +320,6 @@ export default function SearchPage() {
     }
   }, [addons, movieSearchEngine, seriesSearchEngine, animeSeriesSearchEngine, animeMovieSearchEngine, movieSearchEnabled, seriesSearchEnabled, animeSeriesSearchEnabled, animeMovieSearchEnabled])
 
-  const askAi = async () => {
-    if (!apiKey || !query || aiLoading) return
-    setAiRequested(true)
-    setAiLoading(true)
-    setAiResults([])
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-          'X-Title': 'Aurales Media Player',
-        },
-        body: JSON.stringify({
-          model: model || 'google/gemini-2.5-flash',
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'system',
-              content: 'Suggest up to 6 real movie or TV titles matching the request. Return JSON only: {"titles":["Exact title"]}.',
-            },
-            { role: 'user', content: query },
-          ],
-        }),
-      })
-      if (!response.ok) throw new Error('AI search failed')
-      const data = await response.json()
-      const parsed = JSON.parse(String(data.choices?.[0]?.message?.content || '').replace(/```json|```/gi, '').trim())
-      const titles = Array.isArray(parsed.titles) ? parsed.titles.slice(0, 6) : []
-
-      const aiEngine = searchEngines[movieSearchEngine] || tmdbProvider
-      const titleSearches = await Promise.allSettled(titles.map(async (title: string) => {
-        const found = await aiEngine.search(title)
-        return rankResults(found, title)[0]
-      }))
-      setAiResults(titleSearches.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []))
-    } catch (_) {
-      setAiResults([])
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
   useEffect(() => {
     requestIdRef.current += 1
     setTypeFilter('all')
@@ -466,32 +413,12 @@ export default function SearchPage() {
         </div>
       )}
 
-      {searched && !loading && (
-        <section className="search-ai mx-5 sm:mx-8 mt-9">
-          <div>
-            <p className="search-ai__label">Need a broader idea?</p>
-            <h2>Ask AI for title suggestions</h2>
-            <p>Optional and only runs when you ask. Uses your configured OpenRouter account.</p>
-            {!apiKey && <p className="search-ai__warning">Add an OpenRouter API key in Settings to enable this.</p>}
-          </div>
-          <button type="button" onClick={askAi} disabled={!apiKey || aiLoading}>
-            {aiLoading ? 'Searching…' : aiRequested ? 'Search again' : 'Ask AI'}
-          </button>
-        </section>
-      )}
-
-      {!aiLoading && aiMovies.length > 0 && <MediaRow title="AI · Movies" items={aiMovies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
-      {!aiLoading && aiSeries.length > 0 && <MediaRow title="AI · Series" items={aiSeries} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
-
       {!searched && !loading && (
-        <section className="search-start mx-5 sm:mx-8">
+        <section className={`search-start mx-5 sm:mx-8 ${searchHistory.length > 0 ? 'search-start--history' : ''}`}>
           {searchHistory.length > 0 ? (
             <>
               <div className="search-section-heading">
-                <div>
-                  <p className="search-eyebrow">Pick up where you left off</p>
-                  <h2>Recent searches</h2>
-                </div>
+                <h2>Recent searches</h2>
                 <button
                   type="button"
                   onClick={() => {
@@ -499,7 +426,7 @@ export default function SearchPage() {
                     setSearchHistory([])
                   }}
                 >
-                  Clear history
+                  Clear
                 </button>
               </div>
               <div className="search-history">
