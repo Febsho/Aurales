@@ -3,6 +3,7 @@ import { useAppStore } from '../../stores/appStore'
 import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from './preloadManager'
 import { canonicalStreamKey, streamUrlTtlSeconds } from './preloadUtils'
 import { rankStreams, type SmartPlayMode, type SmartScoreContext, type SmartStream } from './smartScoring'
+import type { PlaybackPreference } from './playbackMemory'
 import { getPlayableStreamUrl } from './playableUrl'
 import { loadReliabilityHistory } from './reliabilityHistory'
 import { probeStreamUrl, type StreamProbeResult } from './streamProbe'
@@ -54,7 +55,7 @@ function warmupScore(probe: StreamProbeResult | null): number {
 
 // Shared ranking context so StreamSelector, the prepared registry and the
 // Up-Next autoplay path score streams identically.
-export function buildSmartContext(opts: { title?: string; season?: number; episode?: number; subtitles?: SubtitleResult[]; mode?: SmartPlayMode } = {}): SmartScoreContext {
+export function buildSmartContext(opts: { title?: string; season?: number; episode?: number; subtitles?: SubtitleResult[]; mode?: SmartPlayMode; playbackMemories?: PlaybackPreference[] } = {}): SmartScoreContext {
   const store = useAppStore.getState()
   return {
     title: opts.title ?? '',
@@ -67,6 +68,7 @@ export function buildSmartContext(opts: { title?: string; season?: number; episo
     player: typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ ? 'mpv' : 'web',
     maxSizeGb: store.cacheBufferSize === 'default' ? 20 : store.cacheBufferSize === 'large' ? 45 : 80,
     history: loadReliabilityHistory(),
+    playbackMemories: opts.playbackMemories,
   }
 }
 

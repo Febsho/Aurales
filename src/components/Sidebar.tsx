@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { getAppVersion } from '../services/updater'
 import { prefetchRoute } from '../services/routePrefetch'
+import { getActiveProfile, getProfiles, PROFILE_CHANGED_EVENT, setActiveProfile } from '../services/profiles'
 
 const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
@@ -22,6 +23,8 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [, setProfileVersion] = useState(0)
   const location = useLocation()
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -38,6 +41,8 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
   useEffect(() => {
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
   }, [])
+  useEffect(() => { const refresh = () => setProfileVersion((value) => value + 1); window.addEventListener(PROFILE_CHANGED_EVENT, refresh); return () => window.removeEventListener(PROFILE_CHANGED_EVENT, refresh) }, [])
+  const activeProfile = getActiveProfile()
 
   // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
   const pinned = !autoHide
@@ -148,6 +153,12 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
 
       {/* Footer */}
       <div className="app-sidebar__footer p-3 border-t border-white/[0.04]">
+        <div className="relative mb-3">
+          <button onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} className="flex w-full items-center gap-2 rounded-xl bg-white/[.05] px-2.5 py-2 text-left transition hover:bg-white/[.1] focus:outline-none focus:ring-2 focus:ring-white/50">
+            <span className="grid h-7 w-7 place-items-center rounded-lg text-xs font-black text-white" style={{ background: `linear-gradient(145deg, ${activeProfile.accent || '#8b5cf6'}, #181818)` }}>{activeProfile.avatar || activeProfile.name[0]?.toUpperCase()}</span><span className="app-sidebar__label min-w-0 flex-1 truncate text-xs font-semibold text-white/80">{activeProfile.name}</span><span className="app-sidebar__label text-white/40">⌄</span>
+          </button>
+          {profileMenuOpen && <div role="menu" className="absolute bottom-11 left-0 z-50 w-full rounded-xl border border-white/15 bg-[#1b1b1b] p-1.5 shadow-2xl">{getProfiles().map((profile) => <button role="menuitem" key={profile.id} onClick={() => { setActiveProfile(profile.id); setProfileMenuOpen(false); setProfileVersion((value) => value + 1) }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-white/75 hover:bg-white/10"><span className="grid h-6 w-6 place-items-center rounded-md font-black text-white" style={{ backgroundColor: profile.accent || '#8b5cf6' }}>{profile.avatar || profile.name[0]?.toUpperCase()}</span><span className="min-w-0 flex-1 truncate">{profile.name}</span>{profile.id === activeProfile.id && <span>✓</span>}</button>)}<NavLink to="/settings" onClick={() => setProfileMenuOpen(false)} className="mt-1 block rounded-lg border-t border-white/[.08] px-2 py-2 text-xs font-semibold text-white/55 hover:bg-white/10 hover:text-white">Manage Profiles</NavLink></div>}
+        </div>
         <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>
 

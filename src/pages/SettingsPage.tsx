@@ -56,6 +56,8 @@ import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } fro
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
 import { clearTorBoxToken, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
+import ProfilesSettings from '../components/settings/ProfilesSettings'
+import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -1109,7 +1111,7 @@ const AUDIENCE_OPTIONS = [
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'profiles' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'>('accounts')
   
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
@@ -1868,6 +1870,14 @@ export default function SettingsPage() {
       title: 'CONNECTIONS',
       items: [
         {
+          id: 'profiles',
+          label: 'Profiles',
+          description: 'Separate history, watchlists, Discover taste, and playback preferences.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path strokeLinecap="round" strokeLinejoin="round" d="M19 8v6m-3-3h6" /></svg>
+          )
+        },
+        {
           id: 'accounts',
           label: 'Accounts',
           description: 'Manage connected services, API keys, and external integrations.',
@@ -2056,7 +2066,7 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
         <p className="text-sm text-white/60 mb-8">{activeItem?.description ?? ''}</p>
 
-        <div className="settings-page__content-inner space-y-6 max-w-3xl">
+        <div className="settings-page__content-inner space-y-6 max-w-6xl">
 
           {/* ═══════════════════════════════════════════════
               ACCOUNTS TAB
@@ -3139,8 +3149,11 @@ export default function SettingsPage() {
           {/* ═══════════════════════════════════════════════
               PROGRESS TAB
               ═══════════════════════════════════════════════ */}
+          {activeTab === 'profiles' && <ProfilesSettings />}
+
           {activeTab === 'progress' && (
             <>
+              <AuralesSyncSettings />
               {/* ─── Global Settings ─── */}
               <SettingSection title="Continue Watching" description="Every connected service has its own Continue Watching — switch between them directly on the Home row. Use each service's 'Save Resume Position' below to opt out.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">

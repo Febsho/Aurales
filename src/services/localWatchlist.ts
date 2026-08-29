@@ -1,4 +1,6 @@
 import type { SearchResult } from '../types'
+import { profileStorageKey, PROFILE_CHANGED_EVENT } from './profiles'
+import { enqueueSyncRecord } from './sync/auralesSync'
 
 const STORAGE_KEY = 'aurales_local_watchlist_v1'
 
@@ -19,14 +21,14 @@ function loadItems(): LocalWatchlistItem[] {
   if (cachedItems) return cachedItems
   if (typeof localStorage === 'undefined') return (cachedItems = [])
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+    const parsed = JSON.parse(localStorage.getItem(profileStorageKey(STORAGE_KEY)) || '[]')
     if (!Array.isArray(parsed)) return (cachedItems = [])
     cachedItems = parsed
       // Stremio's cloud library is a separate source. Older versions copied it
       // into this device-only list, so drop those imported records on load.
       .filter((item): item is LocalWatchlistItem => Boolean(item && item.provider !== 'stremio' && typeof item.id === 'string' && typeof item.title === 'string' && (item.type === 'movie' || item.type === 'series')))
       .sort((left, right) => (right.addedAt || 0) - (left.addedAt || 0))
-    if (cachedItems.length !== parsed.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedItems))
+    if (cachedItems.length !== parsed.length) localStorage.setItem(profileStorageKey(STORAGE_KEY), JSON.stringify(cachedItems))
     return cachedItems
   } catch {
     return (cachedItems = [])
@@ -35,7 +37,7 @@ function loadItems(): LocalWatchlistItem[] {
 
 function commit(items: LocalWatchlistItem[]): void {
   cachedItems = items
-  if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
+  if (typeof localStorage !== 'undefined') localStorage.setItem(profileStorageKey(STORAGE_KEY), JSON.stringify(items))
   listeners.forEach((listener) => listener())
 }
 
@@ -52,11 +54,13 @@ export function addToLocalWatchlist(item: SearchResult): void {
   const key = localWatchlistKey(item)
   const next: LocalWatchlistItem = { ...item, provider: 'local', addedAt: Date.now() }
   commit([next, ...loadItems().filter((entry) => localWatchlistKey(entry) !== key)])
+  enqueueSyncRecord('watchlist', key, { operation: 'add', item: next })
 }
 
 export function removeFromLocalWatchlist(item: Pick<SearchResult, 'id' | 'type' | 'imdbId' | 'tmdbId'>): void {
   const key = localWatchlistKey(item)
   commit(loadItems().filter((entry) => localWatchlistKey(entry) !== key))
+  enqueueSyncRecord('watchlist', key, { operation: 'remove', media: item })
 }
 
 export function toggleLocalWatchlist(item: SearchResult): boolean {
@@ -76,3 +80,5 @@ export function subscribeLocalWatchlist(listener: () => void): () => void {
 export function resetLocalWatchlistCacheForTests(): void {
   cachedItems = null
 }
+
+if (typeof window !== 'undefined') window.addEventListener(PROFILE_CHANGED_EVENT, () => { cachedItems = null; listeners.forEach((listener) => listener()) })

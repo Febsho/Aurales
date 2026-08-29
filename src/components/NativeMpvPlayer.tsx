@@ -453,8 +453,11 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
       <div className="absolute right-0 top-0 h-[var(--pip-top)] w-[calc(var(--pip-right)+var(--pip-w))] bg-black/35" />
       <div className="absolute right-0 top-[var(--pip-top)] h-[var(--pip-h)] w-[var(--pip-right)] bg-black/35" />
       <div className="absolute right-0 top-[calc(var(--pip-top)+var(--pip-h))] bottom-0 w-[calc(var(--pip-right)+var(--pip-w))] bg-gradient-to-t from-black/70 via-black/35 to-black/20" />
-      <div className="absolute right-[var(--pip-right)] top-[var(--pip-top)] w-[var(--pip-w)] h-[var(--pip-h)] rounded-2xl border border-white/20 shadow-2xl bg-transparent pointer-events-none">
-        <div className="absolute inset-0 rounded-2xl ring-1 ring-white/15 shadow-[0_0_80px_rgba(0,0,0,0.9)]" />
+      {/* The native video surface is a rectangle and cannot be clipped by the
+          WebView. Keep the frame square too, otherwise its transparent rounded
+          corners reveal black patches around the live player. */}
+      <div className="absolute right-[var(--pip-right)] top-[var(--pip-top)] w-[var(--pip-w)] h-[var(--pip-h)] border border-white/20 shadow-2xl bg-transparent pointer-events-none">
+        <div className="absolute inset-0 ring-1 ring-white/15 shadow-[0_0_80px_rgba(0,0,0,0.9)]" />
         <span className="absolute left-3 top-2 rounded-full bg-black/55 px-2 py-1 text-meta font-semibold uppercase tracking-[0.16em] text-white/65 backdrop-blur-sm">
           Now Playing
         </span>
@@ -469,9 +472,13 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
       <div className="relative z-10 pb-10 px-10" style={{ paddingRight: 'calc(var(--pip-right) + var(--pip-w) + 40px)' }}>
         <div className="flex items-end gap-6 max-w-5xl">
           {/* Episode still */}
-          {nextEp.stillPath && (
+          {backdrop && (
             <div className="flex-shrink-0 w-44 rounded-lg overflow-hidden aspect-video bg-white/10 shadow-2xl">
-              <img src={nextEp.stillPath} className="w-full h-full object-cover" draggable={false} />
+              <img
+                src={backdrop}
+                className="w-full h-full object-cover brightness-[.72] contrast-[.96]"
+                draggable={false}
+              />
             </div>
           )}
 
@@ -521,13 +528,15 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
           </div>
         </div>
 
-        {/* Countdown progress bar */}
-        <div className="mt-5 h-0.5 bg-white/15 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-white/70 rounded-full transition-all duration-1000 ease-linear"
-            style={{ width: `${((15 - countdown) / 15) * 100}%` }}
-          />
-        </div>
+      </div>
+
+      {/* Keep the countdown edge-to-edge. It must not inherit the content
+          column's right inset, which only exists to leave room for PiP. */}
+      <div className="absolute inset-x-0 bottom-0 z-10 h-0.5 bg-white/15 overflow-hidden">
+        <div
+          className="h-full bg-white/70 transition-all duration-1000 ease-linear"
+          style={{ width: `${((15 - countdown) / 15) * 100}%` }}
+        />
       </div>
     </div>
   )

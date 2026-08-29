@@ -9,6 +9,8 @@ import { v4 as uuid } from 'uuid'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
+import { profileStorageKey, PROFILE_CHANGED_EVENT } from '../services/profiles'
+import { enqueueSyncRecord } from '../services/sync/auralesSync'
 
 function invalidateCatalogData(): void {
   ;[
@@ -409,6 +411,7 @@ interface AppState {
   setImageQuality: (q: 'data-saver' | 'balanced' | 'high') => void
   setImageCacheSizeMb: (mb: number) => void
   setImageKeepDays: (days: number) => void
+  hydrateProfileState: () => void
 }
 
 function loadPersistedAddons(): InstalledAddon[] {
@@ -425,7 +428,7 @@ function persistAddons(addons: InstalledAddon[]): void {
 
 function loadPersistedHomeRows(): HomeRowConfig[] | null {
   try {
-    const raw = localStorage.getItem('aurales_home_rows')
+    const raw = localStorage.getItem(profileStorageKey('aurales_home_rows'))
     if (raw) {
       const rows = JSON.parse(raw) as HomeRowConfig[]
       const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
@@ -437,12 +440,12 @@ function loadPersistedHomeRows(): HomeRowConfig[] | null {
 }
 
 function persistHomeRows(rows: HomeRowConfig[]): void {
-  localStorage.setItem('aurales_home_rows', JSON.stringify(rows))
+  localStorage.setItem(profileStorageKey('aurales_home_rows'), JSON.stringify(rows))
 }
 
 function loadPersistedWatchProgress(): Map<string, WatchProgress> {
   try {
-    const raw = localStorage.getItem('aurales_watch_progress')
+    const raw = localStorage.getItem(profileStorageKey('aurales_watch_progress'))
     if (raw) {
       const parsed = JSON.parse(raw)
       return new Map(Object.entries(parsed))
@@ -465,26 +468,26 @@ function buildCompletedIds(map: Map<string, WatchProgress>): Set<string> {
 function persistWatchProgress(map: Map<string, WatchProgress>): void {
   try {
     const obj = Object.fromEntries(map.entries())
-    localStorage.setItem('aurales_watch_progress', JSON.stringify(obj))
+    localStorage.setItem(profileStorageKey('aurales_watch_progress'), JSON.stringify(obj))
   } catch (_) { /* ignore */ }
 }
 
 function loadPersistedPreferredSubtitles(): string[] {
   try {
-    const raw = localStorage.getItem('aurales_preferred_subtitles')
+    const raw = localStorage.getItem(profileStorageKey('aurales_preferred_subtitles'))
     if (raw) return JSON.parse(raw)
   } catch (_) { /* ignore */ }
   return ['en']
 }
 
 function loadPersistedSubtitleMode(): 'show' | 'forced' | 'hide' {
-  const mode = localStorage.getItem('aurales_subtitle_mode')
+  const mode = localStorage.getItem(profileStorageKey('aurales_subtitle_mode'))
   return mode === 'forced' || mode === 'hide' || mode === 'show' ? mode : 'show'
 }
 
 function loadPersistedPreferredAudio(): string[] {
   try {
-    const raw = localStorage.getItem('aurales_preferred_audio')
+    const raw = localStorage.getItem(profileStorageKey('aurales_preferred_audio'))
     if (raw) return JSON.parse(raw)
   } catch (_) { /* ignore */ }
   return ['en', 'ja']
@@ -492,7 +495,7 @@ function loadPersistedPreferredAudio(): string[] {
 
 function loadRecentlyViewed(): SearchResult[] {
   try {
-    const raw = localStorage.getItem('aurales_recently_viewed')
+    const raw = localStorage.getItem(profileStorageKey('aurales_recently_viewed'))
     return raw ? JSON.parse(raw) as SearchResult[] : []
   } catch (_) {
     return []
@@ -711,6 +714,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const map = new Map(s.watchProgress)
     map.set(id, progress)
     persistWatchProgress(map)
+    // The outbox compacts repeated checkpoints for the same episode, so mpv
+    // progress persistence stays local and cheap even during long playback.
+    enqueueSyncRecord('progress', id, progress)
     return { watchProgress: map, completedIds: buildCompletedIds(map) }
   }),
   removeWatchProgress: (mediaIds, season, episode) => set((s) => {
@@ -732,7 +738,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentlyWatched: loadRecentlyViewed(),
   addRecentlyWatched: (item) => set((s) => {
     const next = [item, ...s.recentlyWatched.filter((r) => r.id !== item.id)].slice(0, 30)
-    localStorage.setItem('aurales_recently_viewed', JSON.stringify(next))
+    localStorage.setItem(profileStorageKey('aurales_recently_viewed'), JSON.stringify(next))
     return { recentlyWatched: next }
   }),
 
@@ -740,7 +746,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   subtitleMode: loadPersistedSubtitleMode(),
   preferredAudio: loadPersistedPreferredAudio(),
   setPreferredSubtitles: (langs) => {
-    localStorage.setItem('aurales_preferred_subtitles', JSON.stringify(langs))
+    localStorage.setItem(profileStorageKey('aurales_preferred_subtitles'), JSON.stringify(langs))
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: langs,
+      preferredAudio: get().preferredAudio,
+      subtitleMode: get().subtitleMode,
+    })
     const updates: Partial<AppState> = { preferredSubtitles: langs }
     if (!localStorage.getItem('aurales_sub_translation_lang') && langs[0]) {
       updates.subtitleTranslationLang = langs[0]
@@ -748,11 +759,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(updates)
   },
   setSubtitleMode: (mode) => {
-    localStorage.setItem('aurales_subtitle_mode', mode)
+    localStorage.setItem(profileStorageKey('aurales_subtitle_mode'), mode)
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: get().preferredSubtitles,
+      preferredAudio: get().preferredAudio,
+      subtitleMode: mode,
+    })
     set({ subtitleMode: mode })
   },
   setPreferredAudio: (langs) => {
-    localStorage.setItem('aurales_preferred_audio', JSON.stringify(langs))
+    localStorage.setItem(profileStorageKey('aurales_preferred_audio'), JSON.stringify(langs))
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: get().preferredSubtitles,
+      preferredAudio: langs,
+      subtitleMode: get().subtitleMode,
+    })
     set({ preferredAudio: langs })
   },
 
@@ -1155,6 +1176,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ imageKeepDays: days })
     void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
   },
+  hydrateProfileState: () => {
+    const progress = loadPersistedWatchProgress()
+    set({
+      homeRows: loadPersistedHomeRows() || DEFAULT_HOME_ROWS,
+      watchProgress: progress,
+      completedIds: buildCompletedIds(progress),
+      recentlyWatched: loadRecentlyViewed(),
+      preferredSubtitles: loadPersistedPreferredSubtitles(),
+      subtitleMode: loadPersistedSubtitleMode(),
+      preferredAudio: loadPersistedPreferredAudio(),
+    })
+  },
 
   artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
   setArtProviders: (providers) => {
@@ -1237,3 +1270,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTranslationCuesAhead: (n) => { localStorage.setItem('aurales_translation_cues_ahead', String(n)); set({ translationCuesAhead: n }) },
   setContextAwareTranslation: (val) => { localStorage.setItem('aurales_context_aware_translation', String(val)); set({ contextAwareTranslation: val }) },
 }))
+
+// Profile switching is intentionally lightweight: global runtime/network
+// configuration stays alive while profile-owned views immediately rehydrate.
+if (typeof window !== 'undefined') {
+  window.addEventListener(PROFILE_CHANGED_EVENT, () => useAppStore.getState().hydrateProfileState())
+}

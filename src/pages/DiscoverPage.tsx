@@ -27,6 +27,7 @@ import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot
 import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { berlinDaySeed, getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
 import { DISCOVERY_ALGORITHM_VERSION, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
+import { getActiveProfileId } from '../services/profiles'
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
   28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
@@ -382,7 +383,9 @@ export default function DiscoverPage() {
   // silently reuse results fetched for the previous query.
   const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
   const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
-  const dailySnapshotScope = `${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
+  // Snapshots are durable per person and Berlin date.  Switching away and
+  // back therefore restores that profile's frozen daily Discover ranking.
+  const dailySnapshotScope = `${getActiveProfileId()}:${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
   const dailySnapshotKey = makeDailySnapshotKey(berlinDateKey, dailySnapshotScope)
   const dailySnapshot = persistedRankings[dailySnapshotKey]
   const hasDailySnapshot = Boolean(dailySnapshot?.length)

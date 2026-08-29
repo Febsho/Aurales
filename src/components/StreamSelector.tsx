@@ -23,6 +23,7 @@ import { canonicalStreamKey } from '../services/streams/preloadUtils'
 import { probeStreamUrl } from '../services/streams/streamProbe'
 import { cachedImage } from '../services/imageCache'
 import { annotateTorBoxStreams, isTorBoxCachedStream, isTorBoxConnected, resolveTorBoxStream } from '../services/torbox'
+import { loadPlaybackMemory, playbackMemoryKey, seriesPlaybackMemoryKey, recordPlaybackPreference } from '../services/streams/playbackMemory'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -142,9 +143,12 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const warmingStreamUrlsRef = useRef(new Set<string>())
   const resumeSmartFallbackRef = useRef<(failed: AddonStream) => void>(() => {})
   const hadPlaybackRef = useRef(false)
+  const playbackEvidenceTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const addons = useAppStore((s) => s.addons)
   const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
+  const preferredAudio = useAppStore((s) => s.preferredAudio)
+  const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
 
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
   const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') !== 'false')
@@ -176,6 +180,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   useEffect(() => {
     return () => {
+      if (playbackEvidenceTimerRef.current) window.clearTimeout(playbackEvidenceTimerRef.current)
       if (hadPlaybackRef.current && (window as any).__TAURI_INTERNALS__) {
         stopEmbeddedPlayer().catch(() => {})
       }
@@ -578,6 +583,12 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const rankSelectorStreams = (candidates: AddonStream[]): AddonStream[] =>
     rankStreams(candidates as SmartStream[], buildSmartContext({
       title, season: seasonEpisode?.season, episode: seasonEpisode?.episode, subtitles, mode: smartMode,
+      playbackMemories: (() => {
+        const memory = loadPlaybackMemory()
+        const exact = playbackMemoryKey(mediaType, String(tmdbId || mediaId), seasonEpisode?.season, seasonEpisode?.episode)
+        const series = mediaType === 'series' ? seriesPlaybackMemoryKey(String(tmdbId || mediaId)) : undefined
+        return [memory[exact], series ? memory[series] : undefined].filter((value): value is NonNullable<typeof value> => Boolean(value))
+      })(),
     })).filter((candidate) => candidate.score > -500).map((candidate) => candidate.stream as AddonStream)
 
   const selectorMediaKey = (): string => canonicalStreamKey({
@@ -621,7 +632,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   const handlePlaybackError = (message?: string) => {
     if (!playback) return
+    if (playbackEvidenceTimerRef.current) window.clearTimeout(playbackEvidenceTimerRef.current)
     recordReliabilityEvent(playback.stream, /buffer|stutter|unstable/i.test(message || '') ? 'unstable' : 'failed_start')
+    const key = playbackMemoryKey(mediaType, String(tmdbId || mediaId), seasonEpisode?.season, seasonEpisode?.episode)
+    recordPlaybackPreference(key, playback.stream, 'failure', { audioLanguage: preferredAudio[0], subtitleLanguage: preferredSubtitles[0] })
     if (!smartActiveRef.current) return
     if (!smartQueueRef.current) {
       // Fast path started before the addon fetch settled — build the fallback
@@ -638,6 +652,20 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
   const handlePlaybackStarted = () => {
     if (playback) recordReliabilityEvent(playback.stream, 'success')
+    // Player startup alone is weak evidence. A stream only becomes a durable
+    // preference after it has survived two minutes without Smart Play needing
+    // to fall back; URLs themselves are never retained.
+    if (playback) {
+      if (playbackEvidenceTimerRef.current) window.clearTimeout(playbackEvidenceTimerRef.current)
+      const observed = playback
+      playbackEvidenceTimerRef.current = window.setTimeout(() => {
+        if (playback !== observed) return
+        const prefs = { audioLanguage: preferredAudio[0], subtitleLanguage: preferredSubtitles[0] }
+        const exact = playbackMemoryKey(mediaType, String(tmdbId || mediaId), seasonEpisode?.season, seasonEpisode?.episode)
+        recordPlaybackPreference(exact, observed.stream, 'success', prefs)
+        if (mediaType === 'series') recordPlaybackPreference(seriesPlaybackMemoryKey(String(tmdbId || mediaId)), observed.stream, 'success', prefs)
+      }, 120_000)
+    }
     if (smartActiveRef.current) setSmartStatus(`Playing from ${playback?.stream.addonName || 'the best source'}`)
   }
 

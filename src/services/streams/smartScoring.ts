@@ -2,6 +2,7 @@ import type { StreamResult, SubtitleResult } from '../../types'
 import type { StreamReliabilityRecord } from './reliabilityHistory'
 import { getReliability, streamFingerprint } from './reliabilityHistory'
 import { getPlayableStreamUrl } from './playableUrl'
+import { playbackMemoryScore, type PlaybackPreference } from './playbackMemory'
 
 export type SmartPlayMode = 'best' | 'fastest' | 'highest-quality' | 'smallest-file'
 export interface SmartStream extends StreamResult { addonId: string; addonName: string }
@@ -16,6 +17,7 @@ export interface SmartScoreContext {
   player: 'mpv' | 'web'
   maxSizeGb?: number
   history?: Record<string, StreamReliabilityRecord>
+  playbackMemories?: PlaybackPreference[]
 }
 export interface ScoredStream { stream: SmartStream; score: number; reasons: string[] }
 
@@ -66,6 +68,9 @@ export function scoreStream(stream: SmartStream, context: SmartScoreContext): Sc
   score += Math.max(-240, Math.min(60, historyDelta))
   if (history.success) reasons.push(`${history.success} local success${history.success === 1 ? '' : 'es'}`)
   if (history.failedStart || history.unstable || history.reportedBad) reasons.push('local failure history')
+  const memory = playbackMemoryScore(stream, context.playbackMemories || [])
+  score += memory.score
+  reasons.push(...memory.reasons)
   return { stream, score: Math.round(score * 10) / 10, reasons }
 }
 
