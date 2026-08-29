@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { DiscoverConfig, SearchResult } from '../types'
 import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
@@ -17,8 +17,7 @@ import { getSimklWatchedMovies, getSimklWatchedEpisodes } from '../services/simk
 import { getSimklWatchlist } from '../services/simkl/lists'
 import { getStremioAuth, getStremioWatchHistory, type StremioLibraryEntry } from '../services/stremio'
 import type { AniListFullEntry } from '../services/anilist'
-import { useDiscoverPrefsStore, getDiscoverPrefs, excludeGenreIds, onlyGenreIds, candidatePassesPrefs, prefsSignature, prefsWeights, type DiscoverPrefs, DEFAULT_DISCOVER_PREFS } from '../stores/discoverPrefsStore'
-import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
+import { useDiscoverPrefsStore, getDiscoverPrefs, excludeGenreIds, onlyGenreIds, candidatePassesPrefs, prefsSignature, prefsWeights } from '../stores/discoverPrefsStore'
 import { loadRecommendationImpressions, recordRecommendationImpressions } from '../services/discovery/impressionStore'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import TrailerPreview from '../components/TrailerPreview'
@@ -326,7 +325,6 @@ export default function DiscoverPage() {
   ].filter(Boolean).join('|') || 'local', [traktConnected, simklConnected, anilistConnected, stremioAuthKey])
   const [mode, setMode] = useState<DiscoveryMode>(() => (localStorage.getItem('aurales_discovery_mode') as DiscoveryMode) || 'for-you')
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
-  const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
 
   const [feedback, setFeedback] = useState<RecommendationFeedback[]>(() => loadRecommendationFeedback())
   const [whyOpen, setWhyOpen] = useState(false)
@@ -344,6 +342,7 @@ export default function DiscoverPage() {
   const [heroIndex,setHeroIndex]=useState(0)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
+  const genreRequestRef = useRef(0)
 
   useEffect(() => {
     const refreshFeedback = () => setFeedback(loadRecommendationFeedback())
@@ -362,8 +361,13 @@ export default function DiscoverPage() {
   }), [fallback])
   const preferences = useMemo(() => ({ region, minRating, includeAdult }), [region, minRating, includeAdult])
   const preferenceKey = `${region}-${minRating}-${includeAdult}`
+  // Advanced preferences change the TMDB request itself. Include a compact
+  // signature in every row key so a provider/language/genre change cannot
+  // silently reuse results fetched for the previous query.
+  const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
+  const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
   const refreshNonce = refreshNonces[tab]
-  useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,preferenceKey])
+  useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode,refreshNonce])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const mood = useMemo(() => {
     const pool = tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS
@@ -380,7 +384,7 @@ export default function DiscoverPage() {
 
   const trending = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, animeOverrides),
-    `discover-trending-${tab}-${preferenceKey}`,
+    `discover-trending-${tab}-${discoveryQueryKey}`,
     fallback,
     true,
     refreshNonce,
@@ -390,7 +394,7 @@ export default function DiscoverPage() {
       voteCountMin: tab === 'anime' ? 150 : 500,
       ...animeOverrides
     }),
-    `discover-toprated-${tab}-${preferenceKey}`,
+    `discover-toprated-${tab}-${discoveryQueryKey}`,
     fallback,
     true,
     refreshNonce,
@@ -403,7 +407,7 @@ export default function DiscoverPage() {
       voteCountMin: tab === 'anime' ? 80 : 250,
       ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS })
     }),
-    `discover-mood-${tab}-${mood.title}-${preferenceKey}`,
+    `discover-mood-${tab}-${mood.title}-${discoveryQueryKey}`,
     fallbackVariants.mood,
     true,
     refreshNonce,
@@ -414,7 +418,7 @@ export default function DiscoverPage() {
       voteCountMin: tab === 'anime' ? 80 : 120,
       ...animeOverrides
     }),
-    `discover-gems-${tab}-${preferenceKey}`,
+    `discover-gems-${tab}-${discoveryQueryKey}`,
     fallbackVariants.gems,
     true,
     refreshNonce,
@@ -426,7 +430,7 @@ export default function DiscoverPage() {
       voteCountMin: tab === 'anime' ? 80 : 200,
       ...animeOverrides
     }),
-    `discover-quick-${tab}-${preferenceKey}`,
+    `discover-quick-${tab}-${discoveryQueryKey}`,
     fallbackVariants.quick,
     true,
     refreshNonce,
@@ -436,14 +440,14 @@ export default function DiscoverPage() {
   const animeMovieOverrides = { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND' as const, excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }
   const animeMovies = useDiscoverRow(
     makeConfig('movie', 'popularity.desc', preferences, { ...animeMovieOverrides, voteCountMin: 100 }),
-    `discover-anime-movies-${preferenceKey}`,
+    `discover-anime-movies-${discoveryQueryKey}`,
     fallback,
     tab === 'anime',
     refreshNonce,
   )
   const animeMoviesTop = useDiscoverRow(
     makeConfig('movie', 'vote_average.desc', preferences, { ...animeMovieOverrides, voteCountMin: 150, voteAverageMin: Math.max(7, minRating) }),
-    `discover-anime-movies-top-${preferenceKey}`,
+    `discover-anime-movies-top-${discoveryQueryKey}`,
     fallback,
     tab === 'anime',
     refreshNonce,
@@ -458,7 +462,7 @@ export default function DiscoverPage() {
       voteCountMin: tab === 'anime' ? 50 : 150,
       ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS })
     }),
-    `discover-for-you-${tab}-${tasteGenre || 'starter'}-${preferenceKey}`,
+    `discover-for-you-${tab}-${tasteGenre || 'starter'}-${discoveryQueryKey}`,
     fallbackVariants.taste,
     true,
     refreshNonce,
@@ -559,7 +563,7 @@ export default function DiscoverPage() {
 
   // Keep the last complete ranking across restarts/day changes. A settled refresh
   // replaces it only when the material catalog content actually changed.
-  const snapshotKey = `${tab}:${mode}:${preferenceKey}:${prefsSignature(prefs)}:${accountScope}`
+  const snapshotKey = `${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
   const rankedSnapshot = useDiscoverStore((s) => s.rankedSnapshots[snapshotKey])
   const setRankedSnapshot = useDiscoverStore((s) => s.setRankedSnapshot)
   const validRankedSnapshot = useMemo(
@@ -579,7 +583,7 @@ export default function DiscoverPage() {
   const heroRecommendation = heroPool[activeHeroIndex]
   const heroItem = heroRecommendation?.item
 
-  useEffect(() => { setHeroIndex(0) }, [tab, mode, preferenceKey])
+  useEffect(() => { setHeroIndex(0) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [activeHeroIndex])
 
   // Auto-advance the hero like the Home hero; pause while a dialog is open
@@ -631,12 +635,28 @@ export default function DiscoverPage() {
   const submitFeedback = (item: SearchResult, kind: Parameters<typeof saveRecommendationFeedback>[1]) => setFeedback(saveRecommendationFeedback(item, kind))
   const refreshDiscovery=()=>setRefreshNonces((current)=>({...current,[tab]:current[tab]+1}))
 
+  // A saved genre selection belongs to the query that produced it. Clear it
+  // when advanced preferences change, and invalidate any request still racing
+  // to publish results from the old query.
+  const previousDiscoveryQueryRef = useRef(discoveryQueryKey)
+  useEffect(() => {
+    if (previousDiscoveryQueryRef.current === discoveryQueryKey) return
+    previousDiscoveryQueryRef.current = discoveryQueryKey
+    genreRequestRef.current += 1
+    setSelectedGenre(null)
+    setGenreResults([])
+    setGenreLoading(false)
+  }, [discoveryQueryKey, setGenreLoading, setGenreResults, setSelectedGenre])
+
   const handleGenreClick = useCallback((genreId: number) => {
     if (selectedGenre === genreId) {
+      genreRequestRef.current += 1
       setSelectedGenre(null)
       setGenreResults([])
+      setGenreLoading(false)
       return
     }
+    const requestId = ++genreRequestRef.current
     setSelectedGenre(genreId)
     setGenreLoading(true)
     discoverTmdbWithCache(
@@ -645,17 +665,19 @@ export default function DiscoverPage() {
         genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
         ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS })
       }),
-      `discover-genre-${tab}-${genreId}-${preferenceKey}`,
+      `discover-genre-${tab}-${genreId}-${discoveryQueryKey}`,
     )
-      .then((results) => setGenreResults(results.map(applySearchResultArt)))
-      .catch(() => setGenreResults([]))
-      .finally(() => setGenreLoading(false))
-  }, [selectedGenre, contentType, preferences, preferenceKey, tab, setSelectedGenre, setGenreResults, setGenreLoading])
+      .then((results) => { if (genreRequestRef.current === requestId) setGenreResults(results.map(applySearchResultArt)) })
+      .catch(() => { if (genreRequestRef.current === requestId) setGenreResults([]) })
+      .finally(() => { if (genreRequestRef.current === requestId) setGenreLoading(false) })
+  }, [selectedGenre, contentType, preferences, discoveryQueryKey, tab, setSelectedGenre, setGenreResults, setGenreLoading])
 
   const handleTabChange = (nextTab: DiscoverTab) => {
+    genreRequestRef.current += 1
     setTab(nextTab)
     setSelectedGenre(null)
     setGenreResults([])
+    setGenreLoading(false)
   }
 
   const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) navigate(heroRecommendation.item.type === 'movie' ? `/movie/${heroRecommendation.item.id}` : `/series/${heroRecommendation.item.id}`, { state: { ...heroRecommendation.item, autoPlay } }) }

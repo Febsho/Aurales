@@ -226,7 +226,7 @@ export default function Layout() {
 
   const topControlLeft = !sidebarPinned && sidebarOverlayVisible ? 'left-[14.75rem]' : 'left-4'
   const searchInput = (
-    <div className="global-search relative w-full max-w-lg">
+    <div className="global-search relative mx-auto w-full">
       <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
         <svg className="w-4 h-4 text-white/60" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8" />
@@ -330,7 +330,7 @@ export default function Layout() {
           onMouseEnter={usesTopNav ? undefined : showSearchBar}
           onMouseLeave={usesTopNav ? undefined : scheduleHideSearchBar}
           className={[
-            'absolute left-1/2 z-[9998]',
+            `${usesTopNav ? 'fixed' : 'absolute'} left-1/2 z-[9998]`,
             'w-[min(38rem,calc(100vw-2rem))]',
             'transition-all duration-300 ease-expo',
             usesTopNav || searchBarVisible || searchFocused || isSearchPage

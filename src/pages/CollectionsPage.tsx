@@ -3877,7 +3877,7 @@ function CompactShelfRow({
         <SelectMenu
           value={row.layout}
           onChange={(event) => onUpdate({ layout: event.target.value as HomeRowConfig['layout'] })}
-          className="hidden h-9 rounded-xl border border-white/[0.07] bg-white/[0.04] px-3 text-xs font-semibold text-white/60 outline-none hover:bg-white/[0.07] md:block"
+          className="library-shelf-layout-select hidden md:block"
           aria-label={`Layout for ${row.title}`}
         >
           <option value="poster" className="bg-[#111318]">Poster</option>
@@ -3912,7 +3912,8 @@ function CompactShelfRow({
           <SelectMenu
             value={row.layout}
             onChange={(event) => onUpdate({ layout: event.target.value as HomeRowConfig['layout'] })}
-            className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.07] bg-white/[0.04] px-3 text-xs font-semibold text-white/60 outline-none"
+            className="library-shelf-layout-select min-w-0 flex-1"
+            aria-label={`Layout for ${row.title}`}
           >
             <option value="poster" className="bg-[#111318]">Poster</option>
             <option value="ranked" className="bg-[#111318]">Ranked posters</option>

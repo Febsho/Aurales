@@ -669,6 +669,7 @@ interface PlayerSession {
 }
 
 let latestFullPlayerSessionId: string | null = null
+let fullPlayerMountCount = 0
 
 // True when we're a watch-together guest without playback-control rights.
 // Local transport actions (pause, seek) are blocked so the guest doesn't
@@ -855,6 +856,7 @@ function FullNativeMpvPlayer({
   const isFullscreenRef = useRef(false)
   useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
   const fullscreenTransitionRef = useRef(0)
+  const fullscreenTransitionPendingRef = useRef(false)
   useEffect(() => {
     let disposed = false
     const syncFullscreenState = async () => {
@@ -914,7 +916,8 @@ function FullNativeMpvPlayer({
   const chapterThumbsRef = useRef<Record<string, string>>({})
   const chapterThumbRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const chapterStripRef = useRef<HTMLDivElement | null>(null)
-  const chapterPanscanRef = useRef(0)
+  const videoOutputFallbackAttemptedRef = useRef(false)
+  const restartPlaybackRef = useRef<(resumeTime: number, options?: { hwdecMode?: 'no'; decodedAudio?: boolean }) => void>(() => {})
   const [showMediaInfo, setShowMediaInfo] = useState(false)
   const [showPlayerDebug, setShowPlayerDebug] = useState(false)
   const [playerDebugSnapshot, setPlayerDebugSnapshot] = useState<NativePlayerDebugSnapshot | null>(null)
@@ -1396,24 +1399,11 @@ function FullNativeMpvPlayer({
     }
   }, [showChapters])
 
-  // Chapter browsing uses a softly animated cover-style presentation,
-  // matching TV players without snapping between contain and fill.
+  // Chapter browsing is an overlay only. Never crop or zoom the actual video;
+  // also reset panscan in case a reused mpv session came from an older build.
   useEffect(() => {
     if (!playerReady) return
-    let animationFrame = 0
-    const from = chapterPanscanRef.current
-    const target = showChapters ? 1 : 0
-    const startedAt = performance.now()
-    const animatePanscan = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / 320)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      const value = from + (target - from) * eased
-      chapterPanscanRef.current = value
-      sendPlayerCommand('set_property', ['panscan', Number(value.toFixed(3))]).catch(() => {})
-      if (progress < 1) animationFrame = requestAnimationFrame(animatePanscan)
-    }
-    animationFrame = requestAnimationFrame(animatePanscan)
-    return () => cancelAnimationFrame(animationFrame)
+    sendPlayerCommand('set_property', ['panscan', 0]).catch(() => {})
   }, [playerReady, showChapters])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
@@ -1873,23 +1863,11 @@ function FullNativeMpvPlayer({
 
   // ─ Background init effects ───────────────────────────────────────────────
   useLayoutEffect(() => {
-    const origHtml = document.documentElement.style.background
-    const origBody = document.body.style.background
+    fullPlayerMountCount += 1
     document.documentElement.classList.add('full-player-active')
-    document.body.style.background = 'transparent'
-    document.documentElement.style.background = 'transparent'
     return () => {
-      document.documentElement.classList.remove('full-player-active')
-      document.body.style.background = origBody
-      document.documentElement.style.background = origHtml
-    }
-  }, [])
-
-  useEffect(() => {
-    const root = document.getElementById('root')
-    if (root) { root.style.visibility = 'hidden'; root.style.pointerEvents = 'none' }
-    return () => {
-      if (root) { root.style.visibility = ''; root.style.pointerEvents = '' }
+      fullPlayerMountCount = Math.max(0, fullPlayerMountCount - 1)
+      if (fullPlayerMountCount === 0) document.documentElement.classList.remove('full-player-active')
     }
   }, [])
 
@@ -1953,24 +1931,41 @@ function FullNativeMpvPlayer({
   }, [applyFullVideoViewport])
 
   const toggleFullscreen = useCallback(async () => {
-    const actualFullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
-    isFullscreenRef.current = actualFullscreen
-    setIsFullscreen(actualFullscreen)
-    if (actualFullscreen) {
-      await exitFullscreenWindow()
-    } else {
-      // Flip state up front so the window-drag strip is gated off immediately —
-      // otherwise it lingers over the top of the video until the next re-render.
-      ++fullscreenTransitionRef.current
-      isFullscreenRef.current = true
-      setIsFullscreen(true)
-      try {
+    // Tauri's isFullscreen() can lag behind the compositor during a transition.
+    // Deriving the next state from that delayed value made both the F hotkey and
+    // button occasionally issue the same request twice. The ref is updated
+    // optimistically and a lock rejects repeat input until the request settles.
+    if (fullscreenTransitionPendingRef.current) return
+    fullscreenTransitionPendingRef.current = true
+    // Native window calls can occasionally wait on the compositor. Never let
+    // that leave the button and F hotkey locked for the rest of playback.
+    const forceUnlockTimer = window.setTimeout(() => {
+      fullscreenTransitionPendingRef.current = false
+    }, 900)
+    const targetFullscreen = !isFullscreenRef.current
+    try {
+      if (targetFullscreen) {
+        // Flip state up front so the window-drag strip disappears immediately.
+        ++fullscreenTransitionRef.current
+        isFullscreenRef.current = true
+        setIsFullscreen(true)
         await invoke('set_native_player_fullscreen', { fullscreen: true })
-      } catch (e) {
+      } else {
+        await exitFullscreenWindow()
+      }
+    } catch (e) {
+      if (targetFullscreen) {
         isFullscreenRef.current = false
         setIsFullscreen(false)
-        setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`)
       }
+      setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      window.clearTimeout(forceUnlockTimer)
+      // Keep the lock through the first compositor frame; otherwise a key-repeat
+      // or click followed by F can race the native window-state notification.
+      window.setTimeout(() => {
+        fullscreenTransitionPendingRef.current = false
+      }, 180)
     }
     // Re-sync the mpv child to the new client size (retries as the transition settles).
     const linux = document.documentElement.dataset.platform === 'linux'
@@ -2052,7 +2047,7 @@ function FullNativeMpvPlayer({
           dismissPlayerOptions()
           return
         }
-        if (isFullscreen) {
+        if (isFullscreenRef.current) {
           e.preventDefault()
           e.stopPropagation()
           toggleFullscreen()
@@ -2117,7 +2112,7 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, isFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, showPlayerDebug, dismissPlayerOptions])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, showPlayerDebug, dismissPlayerOptions])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2352,6 +2347,7 @@ function FullNativeMpvPlayer({
       playerReadyRef.current = true
       setPlayerRunning(true)
       setPlayerReady(true)
+      setError('')
       showControls()
       syncSurfaceLayer()
 
@@ -2376,7 +2372,23 @@ function FullNativeMpvPlayer({
       const { reason, error: endError } = event.payload
       logEvent('MPV DEBUG', `end-file reason=${reason}${endError ? ` error=${endError}` : ''}`)
       if (reason === 'error') {
-        setError(`Playback failed: ${endError || 'the stream ended with an unknown error'}. Go back and choose another stream.`)
+        const message = `Playback failed: ${endError || 'the stream ended with an unknown error'}. Trying another stream…`
+        if (/video output initialization failed/i.test(endError || '') && !videoOutputFallbackAttemptedRef.current) {
+          videoOutputFallbackAttemptedRef.current = true
+          setError('')
+          restartPlaybackRef.current(Math.max(progressRef.current.currentTime || 0, startTime || 0), { hwdecMode: 'no' })
+          return
+        }
+        setError(message)
+        // Startup failures are forwarded by the error/playerReady effect, but
+        // an end-file error usually happens after readiness and would otherwise
+        // strand Smart Play on a dead source. Watch Together must remain manual
+        // so one guest cannot independently advance the room's stream.
+        if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+          unstableStreamNotifiedRef.current = true
+          smartErrorNotifiedRef.current = true
+          onPlaybackErrorRef.current?.(message)
+        }
       }
     }).then((fn) => {
       if (disposed) fn()
@@ -2386,7 +2398,7 @@ function FullNativeMpvPlayer({
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [startTime])
 
   useEffect(() => {
     if (playerReady || error) return
@@ -2436,6 +2448,7 @@ function FullNativeMpvPlayer({
     let disposed = false
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
     let clickThroughTimer: ReturnType<typeof setTimeout> | undefined
+    let fullscreenSyncTimer: ReturnType<typeof setTimeout> | undefined
     const onResize = () => {
       clearTimeout(resizeTimer)
       resizeTimer = setTimeout(() => {
@@ -2446,6 +2459,14 @@ function FullNativeMpvPlayer({
           if (!disposed) invoke('setup_player_click_through').catch(() => {})
         }, 300)
       }, 50)
+      clearTimeout(fullscreenSyncTimer)
+      fullscreenSyncTimer = setTimeout(async () => {
+        if (disposed || fullscreenTransitionPendingRef.current) return
+        const actualFullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
+        if (disposed) return
+        isFullscreenRef.current = actualFullscreen
+        setIsFullscreen(actualFullscreen)
+      }, 220)
     }
     let unlistenMoved: (() => void) | undefined
     let unlistenResized: (() => void) | undefined
@@ -2462,6 +2483,7 @@ function FullNativeMpvPlayer({
       disposed = true
       clearTimeout(resizeTimer)
       clearTimeout(clickThroughTimer)
+      clearTimeout(fullscreenSyncTimer)
       window.removeEventListener('resize', onResize)
       unlistenMoved?.()
       unlistenResized?.()
@@ -2569,36 +2591,47 @@ function FullNativeMpvPlayer({
     return () => clearInterval(sync)
   }, [discordRichPresence, paused, title, playbackItem, poster])
 
-  const triggerRestart = useCallback(async (resumeTime: number) => {
+  const triggerRestart = useCallback(async (resumeTime: number, options?: { hwdecMode?: 'no'; decodedAudio?: boolean }) => {
     logEvent('PLAYER DEBUG', `Restarting player session at position ${resumeTime}s...`)
+    playerReadyRef.current = false
+    setPlayerReady(false)
+    setBuffering(true)
+    setError('')
+    lastTimePosValRef.current = -1
+    lastTimePosUpdateRef.current = Date.now()
     try {
       await stopEmbeddedPlayer()
       const storeState = useAppStore.getState()
+      const launchState = options?.decodedAudio ? { ...storeState, audioPassthrough: false } : storeState
       await launchEmbeddedPlayer({
         url,
         title,
         startTime: resumeTime,
         volume: volumeRef.current,
         viewport: buildVideoViewport(),
-        hwdecMode: storeState.hwdecMode,
+        hwdecMode: options?.hwdecMode || storeState.hwdecMode,
         cacheBufferSize: storeState.cacheBufferSize,
         mpvCacheSecs: storeState.mpvCacheSecs,
         mpvNetworkTimeout: storeState.mpvNetworkTimeout,
-        mpvCustomArgs: buildMpvExtraArgs(storeState)
+        mpvCustomArgs: buildMpvExtraArgs(launchState)
       })
       applySavedVolume()
       logEvent('PLAYER DEBUG', `Player restarted successfully`)
     } catch (err) {
+      setBuffering(false)
+      setError('Playback recovery failed. Choose another stream and try again.')
       logEvent('PLAYER DEBUG', `Auto-restart failed: ${err}`)
     }
   }, [url, title, applySavedVolume])
+
+  restartPlaybackRef.current = (resumeTime, options) => { void triggerRestart(resumeTime, options) }
 
   const useDecodedAudio = useCallback(() => {
     const storeState = useAppStore.getState()
     if (!storeState.audioPassthrough) return
     storeState.setAudioPassthrough(false)
     logEvent('PLAYER DEBUG', 'Passthrough disabled; restarting with decoded audio output.')
-    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0))
+    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0), { decodedAudio: true })
   }, [startTime, triggerRestart])
 
   // ─ Polling ───────────────────────────────────────────────────────────────
@@ -2722,9 +2755,9 @@ function FullNativeMpvPlayer({
         // Stall detection
         const PLAYER_STALL_TIMEOUT_MS = 12000
         const PLAYER_RESTART_COOLDOWN_MS = 15000
-        const MAX_AUTO_RESTARTS = 0
+        const MAX_AUTO_RESTARTS = 1
 
-        const isPlaying = pos !== null && !isPause && !isBuffering
+        const isPlaying = playerReadyRef.current && pos !== null && !isPause && !isBuffering
         if (isPlaying) {
           if (pos !== lastTimePosValRef.current) {
             lastTimePosValRef.current = pos
@@ -2733,17 +2766,17 @@ function FullNativeMpvPlayer({
             const timeSinceLastPosUpdate = nowMs - lastTimePosUpdateRef.current
             if (timeSinceLastPosUpdate >= PLAYER_STALL_TIMEOUT_MS) {
               logEvent('PLAYER DEBUG', `Playback stall detected! No position update for ${Math.round(timeSinceLastPosUpdate / 1000)}s while playing.`)
-              if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
-                unstableStreamNotifiedRef.current = true
-                const message = 'Playback stalled on this source. Trying a more stable stream…'
-                setError(message)
-                onPlaybackErrorRef.current?.(message)
-              } else if (autoRestartCountRef.current < MAX_AUTO_RESTARTS && nowMs - lastRestartTimeRef.current >= PLAYER_RESTART_COOLDOWN_MS) {
+              if (autoRestartCountRef.current < MAX_AUTO_RESTARTS && nowMs - lastRestartTimeRef.current >= PLAYER_RESTART_COOLDOWN_MS) {
                 logEvent('PLAYER DEBUG', `Triggering player auto-restart (attempt ${autoRestartCountRef.current + 1})`)
                 autoRestartCountRef.current++
                 lastRestartTimeRef.current = nowMs
                 lastTimePosUpdateRef.current = nowMs
                 triggerRestart(pos)
+              } else if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+                unstableStreamNotifiedRef.current = true
+                const message = 'Playback stalled on this source. Trying a more stable stream…'
+                setError(message)
+                onPlaybackErrorRef.current?.(message)
               } else {
                 logEvent('PLAYER DEBUG', `Stall auto-restart skipped: max auto-restarts exceeded or within cooldown.`)
               }
@@ -3039,6 +3072,32 @@ function FullNativeMpvPlayer({
     currentPosterRef.current = nextEp.stillPath ?? currentPosterRef.current
     currentBackdropRef.current = nextEp.stillPath ?? currentBackdropRef.current
 
+    // Reset readiness before replacing the file. libmpv can emit
+    // PLAYBACK_RESTART before launchEmbeddedPlayer resolves; resetting after the
+    // await would clobber that event and leave the new episode behind a loading
+    // overlay. Recovery counters are per stream and must not leak across episodes.
+    playerReadyRef.current = false
+    pausedRef.current = false
+    setPlayerReady(false)
+    setPlayerRunning(false)
+    setBuffering(true)
+    setError('')
+    setCurrentTime(0)
+    setDuration(0)
+    setPaused(false)
+    progressRef.current = { currentTime: 0, duration: 0 }
+    lastTimePosValRef.current = -1
+    lastTimePosUpdateRef.current = Date.now()
+    lastSavedTimeRef.current = 0
+    lastSimklPlaybackSaveRef.current = 0
+    lastPmdbPlaybackSaveRef.current = 0
+    lastAniListPlaybackSaveRef.current = 0
+    autoRestartCountRef.current = 0
+    lastRestartTimeRef.current = 0
+    unstableStreamNotifiedRef.current = false
+    bufferingStartedAtRef.current = null
+    eofClosedRef.current = false
+
     try {
       const storeState = useAppStore.getState()
       await launchEmbeddedPlayer({
@@ -3052,6 +3111,7 @@ function FullNativeMpvPlayer({
         mpvNetworkTimeout: storeState.mpvNetworkTimeout,
         mpvCustomArgs: buildMpvExtraArgs(storeState)
       })
+      setPlayerRunning(true)
       applySavedVolume()
       // Feed the same reliability history the stream selector uses (paths 1/2
       // only — the lenient fallback has no addon identity attached).
@@ -3063,19 +3123,13 @@ function FullNativeMpvPlayer({
       setCurrentDisplaySubtitle(`${epCode} · ${nextEp.title}`)
       setCurrentMeta(null) // refetch paused-overlay metadata for the new episode
 
-      // Reset progress state
-      setCurrentTime(0); setDuration(0); setPaused(false); setPlayerReady(false)
+      // Reset episode-specific controls and metadata.
       setTracksLoaded(false); setAudioTracks([]); setSubTracks([])
       setSkips([]); setActiveSkip(null); setSkipType(null)
       setShowUpNext(false)
       upNextTriggeredRef.current = false
       upNextCancelledRef.current = false
       nextPrepareTriggeredRef.current = false
-      progressRef.current = { currentTime: 0, duration: 0 }
-      lastSavedTimeRef.current = 0
-      lastSimklPlaybackSaveRef.current = 0
-      lastPmdbPlaybackSaveRef.current = 0
-      lastAniListPlaybackSaveRef.current = 0
       hasAutoSelectedAudioRef.current = false
       hasAutoSelectedSubRef.current = false
       autoSelectAttemptsRef.current = 0
@@ -3148,6 +3202,8 @@ function FullNativeMpvPlayer({
         }
       }, 1000)
     } catch (e) {
+      setPlayerRunning(false)
+      setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout])
@@ -3530,23 +3586,6 @@ function FullNativeMpvPlayer({
         />
       )}
 
-      {/* Center play/pause indicator — hidden while the paused info panel is up */}
-      {controlsVisible && playerReady && !buffering && (
-        <div className={`absolute inset-0 z-[4] flex items-center justify-center pointer-events-none transition-all duration-250 ease-out ${showChapters ? 'scale-95 opacity-0' : 'scale-100 opacity-100'}`}>
-          <div className={`flex items-center gap-5 ${showChapters ? 'pointer-events-none' : 'pointer-events-auto'}`}>
-            <button onClick={(event) => { event.stopPropagation(); seekBy(-seekStepSeconds) }} className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white/90 shadow-2xl backdrop-blur-xl transition-transform hover:scale-105 hover:bg-white/15" aria-label={`Back ${seekStepSeconds} seconds`}>
-              <svg className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 7v5h5M5.5 11a7 7 0 1 1 1.2 6.7" strokeLinecap="round" strokeLinejoin="round"/><text x="12" y="15" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor" stroke="none">{seekStepSeconds}</text></svg>
-            </button>
-            <button onClick={(event) => { event.stopPropagation(); togglePlay() }} className="flex h-20 w-20 items-center justify-center rounded-full border border-white/12 bg-black/55 text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-transform hover:scale-105 hover:bg-white/20" aria-label={paused ? 'Play' : 'Pause'}>
-              {paused ? <svg className="ml-1 h-9 w-9" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg> : <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>}
-            </button>
-            <button onClick={(event) => { event.stopPropagation(); seekBy(seekStepSeconds) }} className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white/90 shadow-2xl backdrop-blur-xl transition-transform hover:scale-105 hover:bg-white/15" aria-label={`Forward ${seekStepSeconds} seconds`}>
-              <svg className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 7v5h-5M18.5 11a7 7 0 1 0-1.2 6.7" strokeLinecap="round" strokeLinejoin="round"/><text x="12" y="15" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor" stroke="none">{seekStepSeconds}</text></svg>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Keyboard Seek HUD */}
       {accumulatedSeek !== null && (
         <div className="absolute inset-0 z-[20] flex items-center justify-center pointer-events-none">
@@ -3601,13 +3640,6 @@ function FullNativeMpvPlayer({
         </div>
       )}
 
-      {/* Transient playback notices */}
-      {error && playerReady && (
-        <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 max-w-md rounded-2xl border border-red-500/25 bg-red-900/60 backdrop-blur-xl px-5 py-3 text-sm text-red-200">
-          {error}
-        </div>
-      )}
-
       {/* Track loading spinner */}
       {!tracksLoaded && !error && (
         <div className="absolute left-1/2 bottom-32 z-20 -translate-x-1/2 flex items-center gap-2 text-xs text-white/60 pointer-events-none">
@@ -3626,29 +3658,34 @@ function FullNativeMpvPlayer({
         className={`absolute inset-x-0 bottom-0 z-[10] transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[clamp(11rem,28vh,20rem)] bg-gradient-to-t from-black/95 via-black/55 to-transparent" />
         <div
-          className={`player-controls mx-[clamp(12px,4vw,72px)] px-[clamp(8px,2vw,32px)] py-[clamp(6px,1.1vh,12px)] transition-[margin] duration-300 ease-expo ${showChapters ? 'mb-[clamp(28px,7vh,76px)]' : 'mb-[clamp(10px,2.5vh,36px)]'}`}
+          className="player-controls relative mx-[clamp(26px,4.5vw,92px)] mb-[clamp(18px,3vh,42px)] flex flex-col"
         >
 
-          {/* Info row: title + track icons */}
-          <div className={`player-controls__info flex items-center justify-between transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 -translate-y-2 overflow-hidden opacity-0' : 'mb-4 max-h-28 translate-y-0 overflow-visible opacity-100'}`}>
-            <div className="min-w-0 pr-4">
-              <h2 className="text-lg font-semibold leading-tight truncate text-white/95">{currentDisplayTitle}</h2>
-              {currentDisplaySubtitle && (
-                <p className="text-xs text-white/60 mt-1 truncate">{currentDisplaySubtitle}</p>
-              )}
-              {mediaBadges.length > 0 && (
-                <div className="mt-3 flex items-center gap-1.5">
-                  {mediaBadges.map((badge) => (
-                    <span key={badge} className="rounded border border-white/25 bg-black/25 px-2 py-0.5 text-meta font-semibold tracking-wide text-white/80 backdrop-blur-sm">
-                      {badge}
-                    </span>
-                  ))}
-                </div>
+          {/* Compact TV-style control row */}
+          <div className={`player-controls__info order-3 flex items-center justify-between transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mt-1 min-h-12 max-h-16 translate-y-0 overflow-visible opacity-100'}`}>
+            <div className="flex items-center gap-1">
+              <button type="button" aria-label="Media information" title="Info" onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`grid h-10 w-10 place-items-center rounded-full transition-all ${showMediaInfo ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6M12 7.4h.01" strokeLinecap="round"/></svg>
+              </button>
+              <button type="button" aria-label="Chapters" title="Chapters" disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false); setShowPlayerDebug(false) }} className={`grid h-10 w-10 place-items-center rounded-full transition-all disabled:cursor-not-allowed disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 5v14M8 9h12M8 15h12" strokeLinecap="round"/></svg>
+              </button>
+              {import.meta.env.DEV && (
+                <button
+                  type="button"
+                  aria-label="Player diagnostics"
+                  title="Player diagnostics"
+                  onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo(false); setShowChapters(false); setShowPlayerDebug((value) => !value) }}
+                  className={`grid h-10 w-10 place-items-center rounded-full transition-all ${showPlayerDebug ? 'bg-amber-300 text-black shadow-lg' : 'text-amber-200/65 hover:bg-amber-300/10 hover:text-amber-100'}`}
+                >
+                  <svg className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M9 9h6v7a3 3 0 0 1-6 0V9Z"/><path d="M10 9V7a2 2 0 0 1 4 0v2M6 11h3M15 11h3M6 15h3M15 15h3M8 4l2 2M16 4l-2 2" strokeLinecap="round"/></svg>
+                </button>
               )}
             </div>
 
-            <div className="player-controls__secondary flex flex-shrink-0 items-center gap-3">
+            <div className="player-controls__secondary flex flex-shrink-0 items-center gap-2">
               {activeSkip && (
                 <button
                   onClick={(e) => {
@@ -3677,7 +3714,7 @@ function FullNativeMpvPlayer({
                 </button>
               )}
 
-              <div className="flex h-11 items-center gap-0.5 rounded-full border border-white/10 bg-black/45 p-1 shadow-[0_8px_28px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+              <div className="flex items-center gap-0.5">
               {/* Subtitle button */}
               <div className="relative" data-player-popover>
                 {trackMenu === 'subs' && (
@@ -3773,7 +3810,7 @@ function FullNativeMpvPlayer({
               </div>
 
               {/* Volume */}
-              <div className="flex items-center gap-1.5 ml-1 group/vol">
+              <div className="group/vol ml-1 flex items-center gap-1.5">
                 <button
                   onClick={() => {
                     const newVol = volume > 0 ? 0 : (volumeRef.current > 0 ? volumeRef.current : 100)
@@ -3815,25 +3852,14 @@ function FullNativeMpvPlayer({
                     localStorage.setItem('orynt_volume', String(v))
                     changeVolume(v)
                   }}
-                  className="w-20 accent-white cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
+                  className="w-0 cursor-pointer accent-white opacity-0 transition-all duration-200 group-hover/vol:w-20 group-hover/vol:opacity-80 focus:w-20 focus:opacity-100"
                 />
               </div>
 
-              {/* Pick another */}
-              <button
-                onClick={pickAnother}
-                title="Pick another stream"
-                className="ml-0.5 flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-                  <path d="M1 4v6h6M23 20v-6h-6" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M20.49 9A9 9 0 005.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 013.51 15" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-
               {/* Fullscreen */}
               <button
-                onClick={toggleFullscreen}
+                type="button"
+                onClick={(event) => { event.stopPropagation(); toggleFullscreen() }}
                 title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
                 className="flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
@@ -3847,12 +3873,26 @@ function FullNativeMpvPlayer({
                   </svg>
                 )}
               </button>
+
+              {/* Primary playback action */}
+              <button
+                onClick={(event) => { event.stopPropagation(); togglePlay() }}
+                title={paused ? 'Play (Space)' : 'Pause (Space)'}
+                aria-label={paused ? 'Play' : 'Pause'}
+                className="ml-2 grid h-12 w-12 place-items-center rounded-full bg-white text-black shadow-[0_10px_32px_rgba(0,0,0,0.35)] transition-transform duration-150 hover:scale-105 active:scale-95"
+              >
+                {paused ? (
+                  <svg className="ml-0.5 h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>
+                )}
+              </button>
               </div>
             </div>
           </div>
 
           {/* Seek bar + playback controls row */}
-          <div className={`flex flex-wrap items-center justify-end gap-2.5 transition-all duration-250 ease-out ${showChapters ? 'pointer-events-none mb-0 max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mb-2 max-h-10 translate-y-0 overflow-visible opacity-100'}`}>
+          <div className={`order-1 flex flex-wrap items-center justify-end gap-2.5 transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 overflow-hidden opacity-0' : 'max-h-8 overflow-visible opacity-100'}`}>
             {/* Play/Pause */}
             <button
               onClick={(e) => { e.stopPropagation(); togglePlay() }}
@@ -3895,7 +3935,7 @@ function FullNativeMpvPlayer({
             </button>
 
             <div
-              className="order-1 relative h-1.5 w-full flex-none group cursor-pointer transition-[height] duration-150 hover:h-2"
+              className="order-1 relative h-[3px] w-full flex-none cursor-pointer group transition-[height] duration-150 hover:h-1"
               onPointerMove={showTimelinePreviewFromPointer}
               onPointerLeave={hideTimelinePreview}
             >
@@ -3973,8 +4013,8 @@ function FullNativeMpvPlayer({
               />
               {/* Thumb dot */}
               <div
-                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-80 group-hover:opacity-100 transition-opacity"
-                style={{ left: `calc(${displayProgressPct}% - 8px)` }}
+                className="absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full bg-white opacity-75 shadow-lg transition-opacity group-hover:opacity-100"
+                style={{ left: `calc(${displayProgressPct}% - 5px)` }}
               />
               <input
                 type="range"
@@ -4047,27 +4087,11 @@ function FullNativeMpvPlayer({
           </div>
 
           {/* Timestamps row */}
-          <div className="relative flex items-center justify-between text-label text-white/50" data-player-popover>
-            <div className="flex items-center gap-5">
-              <button onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${showMediaInfo ? 'bg-white text-black' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Info</button>
-              <button disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false); setShowPlayerDebug(false) }} className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>Chapters</button>
-              {import.meta.env.DEV && (
-                <button
-                  type="button"
-                  onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo(false); setShowChapters(false); setShowPlayerDebug((value) => !value) }}
-                  className={`rounded-xl border px-3 py-2 text-meta font-black uppercase tracking-wider transition-colors ${showPlayerDebug ? 'border-amber-300 bg-amber-300 text-black' : 'border-amber-300/25 text-amber-200/70 hover:bg-amber-300/10 hover:text-amber-100'}`}
-                >
-                  Debug
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-3 tabular-nums">
-              <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
-              <span className="text-white/25">/</span>
-              <button onClick={() => setShowTimeRemaining((r) => !r)} className="hover:text-white/70 transition-colors">
-                {duration > 0 ? showTimeRemaining ? `-${formatTime(displayRemaining)}` : formatTime(duration) : '--:--'}
-              </button>
-            </div>
+          <div className={`relative order-2 flex items-center justify-between text-xs font-medium tabular-nums text-white/58 transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 overflow-hidden opacity-0' : 'mt-2 max-h-8 overflow-visible opacity-100'}`} data-player-popover>
+            <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
+            <button onClick={() => setShowTimeRemaining((r) => !r)} className="transition-colors hover:text-white/80">
+              {duration > 0 ? showTimeRemaining ? `-${formatTime(displayRemaining)}` : formatTime(duration) : '--:--'}
+            </button>
 
             {showMediaInfo && (
               <div className="absolute bottom-full left-0 mb-4 w-[min(34rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/90 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl">
@@ -4114,17 +4138,36 @@ function FullNativeMpvPlayer({
             )}
           </div>
 
-          {/* Chapter strip: tabs above, clean thumbnail row below (Apple TV style) */}
+          {/* Chapter strip: compact tabs and a continuous thumbnail rail. */}
           {displayChapters.length > 0 && (
             <div
               aria-hidden={!showChapters}
               data-player-popover
-              className={`grid transition-[grid-template-rows,opacity,transform] duration-300 ease-expo ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
+              className={`order-0 grid transition-[grid-template-rows,opacity,transform] duration-300 ease-expo ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
             >
               <div className="min-h-0 overflow-hidden">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white/78">
+                  <button
+                    type="button"
+                    onClick={() => { setShowChapters(false); setShowMediaInfo(true); setShowPlayerDebug(false) }}
+                    className="rounded-full px-3 py-2 transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    Info
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowChapters(false)}
+                    className="flex items-center gap-2 rounded-full bg-white px-4 py-2 font-bold text-black shadow-[0_8px_24px_rgba(0,0,0,.35)] transition-transform hover:scale-[1.02] active:scale-[.98]"
+                  >
+                    <span>Chapters</span>
+                    <span className="h-4 w-px bg-black/20" />
+                    <span className="tabular-nums">{displayChapters.length}</span>
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 13 3.5-3.5 3.5 3.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                </div>
                 <div
                   ref={chapterStripRef}
-                  className="mt-[clamp(8px,1.5vh,16px)] -mx-[clamp(8px,2vw,32px)] flex gap-3 overflow-x-auto px-[clamp(8px,2vw,32px)] pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                  className="flex gap-2 overflow-x-auto px-0.5 pb-1.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 >
                   {displayChapters.map((chapter, index) => {
                     const next = displayChapters[index + 1]
@@ -4145,17 +4188,21 @@ function FullNativeMpvPlayer({
                           command('seek', [chapter.time, 'absolute+exact'])
                           sendWatchTogetherSeek(chapter.time)
                         }}
-                        className="group/chapter flex-none text-left focus:outline-none"
+                        className="group/chapter flex-none rounded-lg text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-white/70"
                       >
-                        <div className={`relative aspect-video w-[clamp(11rem,min(18vw,27vh),19rem)] overflow-hidden rounded-xl bg-white/5 transition-all duration-150 ${isActive ? 'ring-2 ring-white shadow-[0_10px_36px_rgba(0,0,0,0.65)]' : 'ring-1 ring-white/12 hover:ring-white/70'}`}>
+                        <div className={`relative aspect-video w-[clamp(12.5rem,min(17vw,27vh),18rem)] overflow-hidden rounded-lg border bg-white/5 transition-all duration-150 ${isActive ? 'border-white/65 shadow-[0_8px_28px_rgba(0,0,0,0.55)]' : 'border-white/10 hover:border-white/35'}`}>
                           {thumb ? (
                             <img src={thumb} alt="" draggable={false} className="h-full w-full object-cover" />
                           ) : (
                             <div className="h-full w-full animate-pulse bg-white/10" />
                           )}
-                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-3 pb-2 pt-7 opacity-0 transition-opacity duration-150 group-hover/chapter:opacity-100">
-                            <p className="truncate text-xs font-semibold text-white">{chapter.title}</p>
-                            <p className="font-mono text-meta text-white/60">{formatTime(chapter.time)}</p>
+                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2.5 pb-2 pt-8">
+                            <div className="flex items-end justify-between gap-2">
+                              <span className={`grid h-6 w-6 place-items-center rounded bg-black/65 text-white transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover/chapter:opacity-80'}`}>
+                                <svg className="ml-px h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                              </span>
+                              <span className="rounded bg-black/65 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-white/95">{formatTime(chapter.time)}</span>
+                            </div>
                           </div>
                         </div>
                       </button>

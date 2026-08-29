@@ -522,6 +522,13 @@ html.full-player-active,
 html.full-player-active body {
   background: transparent !important;
 }
+/* Native video is rendered behind the transparent WebView. Hide the mounted
+   route while any full player owns that surface so Home shelves cannot bleed
+   through around controls or during a smart-stream remount. */
+html.full-player-active #root {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 html.full-player-active .hero-mpv-shell-backdrop {
   display: none !important;
 }
@@ -810,6 +817,50 @@ select option {
   box-shadow: 0 0 10px var(--color-accent);
 }
 
+/* Home-shelf layout picker. The SelectMenu wrapper owns positioning only;
+   visual control styles belong on its trigger. Keeping those responsibilities
+   separate avoids the nested/double pill that previously clipped labels such
+   as “Ranked posters”. */
+.library-shelf-layout-select {
+  width: 9.375rem;
+}
+
+.library-shelf-layout-select .select-menu__trigger {
+  min-height: 2.25rem;
+  height: 2.25rem;
+  padding-inline: 0.8rem 0.65rem;
+  border-color: rgba(255, 255, 255, 0.08);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.library-shelf-layout-select .select-menu__trigger:hover:not(:disabled),
+.library-shelf-layout-select .select-menu__trigger[data-open] {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.075);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.library-shelf-layout-select .select-menu__list {
+  right: 0;
+  left: auto;
+  width: max(100%, 12rem);
+}
+
+@media (max-width: 767px) {
+  .library-shelf-layout-select {
+    width: auto;
+  }
+
+  .library-shelf-layout-select .select-menu__list {
+    right: auto;
+    left: 0;
+  }
+}
+
 @keyframes settings-select-enter {
   from {
     opacity: 0;
@@ -974,14 +1025,16 @@ html[data-interface-theme="cinematic"] .global-search__input {
   min-height: 3.25rem;
   padding-left: 2.85rem;
   border-radius: 999px;
-  background: rgba(25, 22, 18, .96);
-  border-color: rgba(232, 204, 166, .2);
+  background: linear-gradient(180deg, rgba(82, 88, 102, .52), rgba(27, 30, 38, .58)), rgba(12, 14, 18, .54);
+  border-color: rgba(255, 255, 255, .24);
   font-size: .95rem;
-  box-shadow: 0 16px 42px rgba(0, 0, 0, .42);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .22), inset 0 -1px rgba(255, 255, 255, .04), 0 16px 42px rgba(0, 0, 0, .42);
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
 }
 html[data-interface-theme="cinematic"] .global-search__input:focus {
-  background: #201b16;
-  border-color: rgba(244, 221, 187, .42);
+  background: linear-gradient(180deg, rgba(92, 99, 116, .58), rgba(31, 35, 44, .64)), rgba(14, 16, 21, .6);
+  border-color: rgba(255, 255, 255, .36);
 }
 
 .search-page {
@@ -1205,29 +1258,17 @@ html[data-interface-theme="cinematic"] .global-search__input:focus {
 .search-start__empty p { margin-top: .4rem; color: var(--search-muted); font-size: .82rem; }
 .search-start__examples { display: flex; flex-wrap: wrap; justify-content: center; gap: .45rem; margin-top: 1.2rem; }
 .search-start__examples span { padding: .42rem .65rem; border-radius: .6rem; background: rgba(255, 255, 255, .045); color: rgba(255, 255, 255, .38); font-size: .68rem; }
-.search-ai {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-  padding: 1.2rem 1.35rem;
-  border: 1px solid rgba(168, 85, 247, .16);
-  border-radius: 1rem;
-  background: rgba(28, 18, 35, .82);
-}
-.search-ai__label { color: rgb(216, 180, 254); font-size: .62rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.search-ai h2 { margin-top: .15rem; color: rgba(255, 255, 255, .9); font-size: .93rem; font-weight: 750; }
-.search-ai p:not(.search-ai__label) { margin-top: .25rem; color: rgba(255, 255, 255, .38); font-size: .7rem; }
-.search-ai .search-ai__warning { color: rgba(253, 230, 138, .7); }
-.search-ai > button { flex: 0 0 auto; padding: .62rem .9rem; border: 1px solid rgba(216, 180, 254, .2); border-radius: .7rem; background: rgba(168, 85, 247, .15); color: rgb(233, 213, 255); font-size: .75rem; font-weight: 700; cursor: pointer; }
-.search-ai > button:disabled { opacity: .35; cursor: default; }
 .search-loading { padding-top: .5rem; }
 
 html[data-interface-theme="cinematic"] .search-page {
-  --search-surface: rgba(28, 24, 19, .96);
-  --search-surface-raised: rgba(38, 31, 24, .98);
-  --search-border: rgba(232, 204, 166, .14);
-  --search-muted: rgba(238, 220, 196, .48);
+  --search-surface: rgba(17, 20, 25, .76);
+  --search-surface-raised: rgba(25, 29, 36, .88);
+  --search-border: rgba(255, 255, 255, .1);
+  --search-muted: rgba(218, 224, 235, .46);
+  background:
+    radial-gradient(ellipse at 50% -8%, rgba(91, 107, 137, .1), transparent 38%),
+    radial-gradient(ellipse at 4% 62%, rgba(48, 75, 69, .08), transparent 34%),
+    linear-gradient(180deg, #0b0d11 0%, #080a0e 54%, #07090c 100%);
 }
 html[data-interface-theme="cinematic"] .search-overview {
   padding: 1.35rem .25rem 1.75rem;
@@ -1237,15 +1278,56 @@ html[data-interface-theme="cinematic"] .search-overview {
   box-shadow: none;
 }
 html[data-interface-theme="cinematic"] .search-title { font-size: clamp(2rem, 4.3vw, 3.5rem); font-weight: 650; letter-spacing: -.045em; }
-html[data-interface-theme="cinematic"] .search-eyebrow { color: rgba(235, 200, 157, .75); letter-spacing: .2em; }
-html[data-interface-theme="cinematic"] .search-filter { border-radius: 999px; background: rgba(24, 20, 16, .82); }
-html[data-interface-theme="cinematic"] .search-filter--active { border-color: rgba(241, 214, 180, .32); background: rgba(232, 204, 166, .14); color: rgb(244, 222, 194); }
+html[data-interface-theme="cinematic"] .search-eyebrow { color: rgba(203, 212, 228, .62); letter-spacing: .2em; }
+html[data-interface-theme="cinematic"] .search-filter { border-radius: 999px; background: rgba(255, 255, 255, .035); }
+html[data-interface-theme="cinematic"] .search-filter--active { border-color: rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .11); color: rgba(255, 255, 255, .94); }
 html[data-interface-theme="cinematic"] .people-results { padding-inline: 2rem; }
 html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: .85rem; }
 html[data-interface-theme="cinematic"] .person-search-card { border-radius: .7rem; }
 html[data-interface-theme="cinematic"] .person-search-card__photo { border-radius: .4rem; }
 html[data-interface-theme="cinematic"] .search-start,
-html[data-interface-theme="cinematic"] .search-empty { background: rgba(25, 21, 17, .92); }
+html[data-interface-theme="cinematic"] .search-empty { background: var(--search-surface); }
+
+.search-page > .search-start--history {
+  width: fit-content !important;
+  max-width: calc(100% - (2 * var(--space-page-inline)));
+  margin-inline: var(--space-page-inline) auto !important;
+  padding: .75rem .8rem;
+  border-color: rgba(255, 255, 255, .09);
+  border-radius: 1rem;
+  background: rgba(17, 20, 26, .62);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .045), 0 12px 34px rgba(0, 0, 0, .2);
+}
+.search-start--history .search-section-heading {
+  align-items: center;
+  margin: 0 .15rem .6rem;
+}
+.search-start--history .search-section-heading h2 {
+  font-size: .78rem;
+  font-weight: 720;
+  letter-spacing: .01em;
+}
+.search-start--history .search-section-heading > button {
+  font-size: .66rem;
+}
+.search-start--history .search-history { gap: .4rem; }
+.search-start--history .search-history__item {
+  border-color: rgba(255, 255, 255, .1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .045);
+}
+.search-start--history .search-history__item > button:first-child {
+  gap: .38rem;
+  padding: .4rem .15rem .4rem .62rem;
+  font-size: .72rem;
+}
+.search-start--history .search-history__item > button:last-child {
+  padding: .4rem .52rem .4rem .38rem;
+}
+.search-start--history .search-history__item svg {
+  width: .75rem;
+  height: .75rem;
+}
 
 html[data-theme-background="oled"] .search-page {
   --search-surface: #050505;
@@ -1259,7 +1341,6 @@ html[data-theme-background="oled"] .global-search__input { background: #080808; 
   .people-results { padding-inline: 1.25rem; }
   .people-results__grid,
   html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: 1fr; }
-  .search-ai { align-items: flex-start; flex-direction: column; }
 }
 
 /* Watch Together follows the selected interface instead of rendering as an
@@ -1419,9 +1500,7 @@ html[data-window-chrome='custom'] {
 }
 
 /* ── Detail hero ratings ────────────────────────────────────────────────────
-   One score leads, the others follow at secondary weight, and each is named.
-   The divider separates "the headline number" from "corroborating sources",
-   which is the hierarchy the old flat icon row was missing. */
+   Every provider has equal visual weight: one brand mark and one score. */
 .ratings-hero {
   display: flex;
   align-items: center;
@@ -1432,18 +1511,14 @@ html[data-window-chrome='custom'] {
 .ratings-hero__lead,
 .ratings-hero__item {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.4rem;
   min-width: 0;
+  font-size: var(--text-lg);
 }
 
 .ratings-hero__rest {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem 0.9rem;
-  padding-left: 1rem;
-  border-left: 1px solid var(--glass-border);
+  display: contents;
 }
 
 .ratings-hero__icon,
@@ -1466,44 +1541,10 @@ html[data-window-chrome='custom'] {
   font-weight: 900;
 }
 
-.ratings-hero__lead {
-  font-size: var(--text-lg);
-}
-
-.ratings-hero__item {
-  font-size: var(--text-sm);
-}
-
 .ratings-hero__value {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, var(--text-alpha-primary));
-}
-
-/* Providers return their names in whatever casing they please -- "trakt",
-   "metacritic", "POPCORN". Rendering secondary labels in uppercase at a
-   consistent tracking makes the row read as one designed system instead of
-   four differently-styled words. The lead keeps its source's own casing so
-   brand marks like "IMDb" stay correct. */
-.ratings-hero__label {
-  font-size: 0.66em;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, var(--text-alpha-tertiary));
-  white-space: nowrap;
-}
-
-.ratings-hero__rest .ratings-hero__label {
-  font-size: var(--text-tag);
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
-@media (max-width: 700px) {
-  .ratings-hero__rest {
-    padding-left: 0;
-    border-left: 0;
-  }
 }
 
 /* ── Ranked shelf numerals ──────────────────────────────────────────────────
@@ -1521,58 +1562,58 @@ html[data-window-chrome='custom'] {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  /* Slight overhang past the column keeps the optical weight of round glyphs
-     consistent with flat-sided ones without letting them escape the gutter. */
-  padding-right: 0.02em;
+  padding-inline: 0.01em;
   font-weight: 900;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.13);
   -webkit-text-stroke: 1px rgba(255, 255, 255, 0.15);
   pointer-events: none;
-  /* Long ranks (100+) compress into the column instead of pushing the poster. */
   overflow: hidden;
 }
 
-/* ── Home hero ──────────────────────────────────────────────────────────────
-   The hero used to sit in an inset rounded card (mx-8, rounded-[2rem], border,
-   drop shadow), which read as a widget placed on the page rather than as the
-   page itself. It is now full-bleed and dissolves into the background through
-   the artwork mask, so the artwork -- not a container -- defines the top of
-   the page. Content keeps its own gutters via .hero-content-overlay. */
-.home-hero--bleed {
-  width: 100%;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+.media-rank__value {
+  display: block;
+  transform-origin: right center;
 }
 
-/* Fixed Featured mode is the exception. There the hero is deliberately an
-   inset banner with shelves beneath it, so it keeps its rounded panel -- the
-   de-carding above targets the full-bleed Dynamic Focus hero, where the
-   artwork is meant to become the top of the page. */
-.fixed-cinematic-hero.home-hero--bleed {
+/* Keep every rank the same optical height. Multi-digit values compress only
+   on the horizontal axis, so 10 and 11 fit the same gutter as 1 without
+   becoming visibly shorter or colliding with the poster. */
+.media-rank__value[data-digits='2'] {
+  letter-spacing: -0.1em;
+  transform: scaleX(0.62);
+}
+
+.media-rank__value[data-digits='3'] {
+  letter-spacing: -0.12em;
+  transform: scaleX(0.44);
+}
+
+/* ── Home hero ──────────────────────────────────────────────────────────────
+   Cinematic Home deliberately uses the inset banner treatment in both Dynamic
+   and Fixed modes. It is a distinct presentation from Classic Aurales, and
+   keeping that frame prevents the hero variant shown in the Home settings from
+   silently turning into a full-bleed page after a design-token update. */
+.home-hero--inset {
+  width: calc(100% - (2 * var(--space-page-inline)));
+  margin-inline: var(--space-page-inline);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-2xl);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
 }
 
-/* The artwork runs up behind the floating nav rather than starting below it,
-   which is what makes the bar read as floating over the image. Only the hero's
-   copy is inset, and that inset is derived from the nav tokens. */
+/* Let the navigation overlap the top edge slightly, matching the original
+   floating-banner composition while keeping the hero clear of window chrome. */
 .home-hero--under-nav {
-  margin-top: 0;
+  margin-top: calc(var(--layout-nav-offset) + var(--layout-nav-height));
 }
 
-/* Hero copy shares the shelves' content frame rather than hugging the page
-   gutter. Artwork stays full-bleed, but on a 4K display the shelves are
-   centred inside --layout-content-max, so gutter-aligned hero text would sit
-   ~700px left of the first poster. Constraining both to one frame is what
-   makes the hero and the shelves below it read as the same page. */
+/* Copy is inset from the banner edge, not re-centred against the viewport. */
 .home-hero--under-nav .hero-content-overlay {
-  width: min(calc(100% - (2 * var(--space-page-inline))), var(--layout-content-max));
-  margin-inline: auto;
-  padding-inline: 0;
+  width: auto;
+  margin-inline: 0;
+  padding-inline: clamp(2rem, 2.1vw, 5rem);
 }
 
 /* ── Hero pagination ────────────────────────────────────────────────────────
@@ -1666,10 +1707,8 @@ html[data-window-chrome='custom'] {
   opacity: 0;
 }
 
-/* The capsule previously declared `background: transparent` and relied purely
-   on backdrop-filter for its surface, which left it completely invisible on
-   Linux where blur is disabled -- nav labels sat directly on hero artwork.
-   It now uses the standard glass background with blur as enhancement. */
+/* Keep the capsule itself colorless: the artwork beneath supplies the glass
+   tone while blur, the fine edge, and restrained highlights define its shape. */
 .cinematic-nav-capsule {
   position: relative;
   display: flex;
@@ -1679,13 +1718,22 @@ html[data-window-chrome='custom'] {
      extend under the window controls at narrow widths. */
   max-width: min(100%, calc(100vw - 2 * var(--window-safe-inline)));
   padding: 0.375rem;
-  border: 1px solid var(--glass-border);
+  border: 1px solid rgba(255, 255, 255, .2);
   border-radius: var(--radius-full);
-  background: var(--glass-bg);
-  box-shadow: var(--glass-shadow), var(--glass-highlight);
-  backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
-  -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
+  background-color: transparent;
+  background-image: none;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .2), inset 0 -1px rgba(255, 255, 255, .04), 0 14px 36px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(28px) saturate(1.55);
+  -webkit-backdrop-filter: blur(28px) saturate(1.55);
   pointer-events: auto;
+}
+
+/* These two compact, fixed surfaces are cheap enough to keep real frosting on
+   WebKitGTK. The broad Linux blur opt-out still applies to the rest of the UI. */
+html[data-platform="linux"] .cinematic-nav-capsule,
+html[data-platform="linux"] .global-search__input {
+  backdrop-filter: blur(24px) saturate(1.45) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.45) !important;
 }
 
 /* Restrained active state: a soft filled pill rather than a ring or outline.
@@ -1837,7 +1885,20 @@ html[data-window-chrome='custom'] {
   overflow-y: hidden !important;
   overflow-anchor: none;
   contain: layout paint;
-  padding-bottom: 5.5rem !important;
+  /* Expanded cards render metadata beneath the artwork. Reserve enough room
+     for two full description lines at every card size so the following shelf
+     never clips the second line. */
+  padding-bottom: 8rem !important;
+}
+/* Ranked cards now share the focus-detail expansion with ordinary cinematic
+   cards. Fixed Focus and motion-disabled Home do not open that panel, so only
+   those variants collapse the reserved detail band. */
+html[data-interface-theme="cinematic"] .media-row--ranked .cinematic-row-track {
+  padding-bottom: 8rem !important;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--ranked .cinematic-row-track,
+html[data-interface-theme="cinematic"] [data-home-card-motion="off"] .media-row--ranked .cinematic-row-track {
+  padding-bottom: 1rem !important;
 }
 .cinematic-row-track > button { overflow-anchor: none; }
 .cinematic-row-track > button { scroll-snap-align: start; }
@@ -1849,8 +1910,8 @@ html[data-window-chrome='custom'] {
 /* Fixed Home hero: preserve the Cinematic banner while shelves move through
    the viewport one at a time underneath it. */
 .fixed-hero-home {
-  --fixed-cinematic-card-width: clamp(9.25rem, min(11.5vw, 14vh), 22rem);
-  --fixed-cinematic-card-height: clamp(13.875rem, min(17.25vw, 21vh), 33rem);
+  --fixed-cinematic-card-height: clamp(9.75rem, min(17.25vw, 21vh), 33rem);
+  --fixed-cinematic-card-width: calc(var(--fixed-cinematic-card-height) * 2 / 3);
   --fixed-cinematic-landscape-width: clamp(18.5rem, min(22vw, 27.5vh), 42rem);
   --fixed-cinematic-landscape-height: clamp(10.5rem, min(12.4vw, 15.5vh), 24rem);
   /* Header, negative track margin, and track padding all live above the card.
@@ -1866,8 +1927,10 @@ html[data-window-chrome='custom'] {
   inset: 0;
   z-index: 5;
   display: flex;
+  flex-direction: column;
   width: 100%;
-  align-items: flex-end;
+  align-items: stretch;
+  justify-content: flex-end;
   padding-bottom: clamp(.5rem, 1vh, 1rem);
   opacity: 0;
   visibility: hidden;
@@ -1897,9 +1960,25 @@ html[data-interface-theme="cinematic"] .fixed-hero-home {
   padding-bottom: 0 !important;
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-cinematic-hero {
-  width: auto;
-  margin-top: var(--fixed-cinematic-top-offset);
-  margin-inline: clamp(1.5rem, 1.67vw, 4rem);
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100vh !important;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-hero-backdrop {
+  animation: fixed-hero-backdrop-in 680ms cubic-bezier(.16, 1, .3, 1) both;
+  transform-origin: 55% 35%;
+  will-change: opacity, transform;
+}
+@keyframes fixed-hero-backdrop-in {
+  from { opacity: .12; transform: scale(1.018); }
+  55% { opacity: .92; }
+  to { opacity: 1; transform: scale(1); }
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-cinematic-hero .hero-content-overlay {
   padding-inline: clamp(1.5rem, 2.1vw, 5rem);
@@ -1910,6 +1989,24 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-cinematic-hero .h
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-cinematic-hero .hero-title-text {
   font-size: clamp(2.75rem, 4.2vh, 5.5rem);
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="off"] .fixed-cinematic-hero .fixed-cinematic-static-content {
+  right: auto;
+  bottom: var(--fixed-cinematic-shelf-height);
+  width: min(36rem, 48vw);
+  padding-inline: clamp(2rem, 2.6vw, 5rem);
+  padding-bottom: clamp(.75rem, 1.5vh, 1.5rem);
+  pointer-events: none;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, .9);
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="off"] .fixed-cinematic-static-content .hero-title-logo {
+  width: auto;
+  max-width: min(26rem, 38vw) !important;
+  max-height: clamp(4.25rem, 8vh, 7rem) !important;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="off"] .fixed-cinematic-static-content .hero-title-text {
+  max-width: 32rem;
+  font-size: clamp(2rem, 3.5vw, 3.75rem);
 }
 .fixed-hero-home [data-home-shelves] > div {
   position: relative;
@@ -1923,11 +2020,11 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .fixed-cinematic-hero .h
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .row-contain:has(.media-row) {
   bottom: 0;
-  align-items: flex-start;
+  justify-content: flex-start;
   padding-bottom: clamp(.25rem, .75vh, 1rem);
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .row-contain:has(.cinematic-media-row:not(.media-row)) {
-  align-items: flex-start;
+  justify-content: flex-start;
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .media-row > div:first-child {
   padding-inline: clamp(1.5rem, 1.67vw, 4rem);
@@ -1945,6 +2042,78 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--poster .cine
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--poster .cinematic-row-track > button > [data-hero-viewport] {
   height: var(--fixed-cinematic-card-height) !important;
+}
+.fixed-focus-card__details {
+  animation: fixed-focus-detail-in 520ms cubic-bezier(.16, 1, .3, 1) both;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, .9);
+  transform-origin: left center;
+  will-change: width, opacity, transform;
+}
+.fixed-focus-card__details--shelf {
+  --fixed-focus-details-width: clamp(15rem, 20vw, 26rem);
+  width: var(--fixed-focus-details-width);
+  max-height: var(--fixed-cinematic-card-height);
+  overflow: hidden;
+}
+.fixed-focus-card__details-inner {
+  width: var(--fixed-focus-details-width);
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--landscape .cinematic-row-track > button {
+  width: var(--fixed-cinematic-landscape-width) !important;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--landscape .cinematic-row-track > button > [data-hero-viewport] {
+  width: var(--fixed-cinematic-landscape-width) !important;
+  height: var(--fixed-cinematic-landscape-height) !important;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="poster"] {
+  width: var(--fixed-cinematic-card-width) !important;
+  height: var(--fixed-cinematic-card-height) !important;
+  border-radius: 1rem;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="feature"] {
+  width: calc(var(--fixed-cinematic-card-height) * .8) !important;
+  height: var(--fixed-cinematic-card-height) !important;
+  border-radius: 1.6rem;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="ranked"] {
+  width: calc(var(--fixed-cinematic-card-height) * 1.01) !important;
+  height: var(--fixed-cinematic-card-height) !important;
+  border-radius: 1rem;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="landscape"] {
+  width: var(--fixed-cinematic-landscape-width) !important;
+  height: var(--fixed-cinematic-landscape-height) !important;
+  border-radius: 1rem;
+}
+@keyframes fixed-focus-detail-in {
+  from { width: 0; opacity: 0; transform: translate3d(-.35rem, .2rem, 0); }
+  45% { opacity: .18; }
+  to { width: var(--fixed-focus-details-width); opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.fixed-hero-home .cinematic-row-track > button[data-fixed-focused="true"] {
+  z-index: 3;
+  animation: fixed-focus-card-pop 520ms cubic-bezier(.16, 1, .3, 1) both;
+  transform-origin: center bottom;
+  backface-visibility: hidden;
+}
+@keyframes fixed-focus-card-pop {
+  from { transform: translate3d(0, .35rem, 0) scale(.985); opacity: .82; }
+  55% { opacity: 1; }
+  to { transform: translate3d(0, -.22rem, 0) scale(1.012); opacity: 1; }
+}
+
+/* The preference intentionally controls card-focus motion in both Home modes:
+   Dynamic cards stop widening, while Fixed Focus keeps the same selection and
+   backdrop behavior but changes it without the pop/detail settle animation. */
+[data-home-card-motion="off"] .fixed-hero-backdrop,
+[data-home-card-motion="off"] .fixed-focus-card__details,
+.fixed-hero-home[data-home-card-motion="off"] .cinematic-row-track > button[data-fixed-focused="true"],
+.fixed-hero-home[data-home-card-motion="off"] .cw-card[data-fixed-focused="true"],
+.fixed-hero-home[data-home-card-motion="off"] .cw-card[data-fixed-focused="true"] .cw-card__frame > img {
+  animation: none !important;
+}
+[data-home-card-motion="off"] .fixed-hero-backdrop {
+  transition: none !important;
 }
 .fixed-hero-home .row-contain:has(.cinematic-media-row:not(.media-row)) {
   padding-bottom: 2.5rem;
@@ -1966,16 +2135,16 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--poster .cine
 .fixed-hero-home .row-contain.fixed-hero-row-active > * {
   pointer-events: auto;
 }
-@keyframes fixed-row-enter-up { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes fixed-row-enter-up { from { transform: translateY(2.75rem) scale(.985); opacity: 0; filter: blur(9px); } to { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } }
 /* Exit rows fade out fast (opacity gone by ~40%) so they don't clip through the
    hero content/trailer while sliding away. */
-@keyframes fixed-row-exit-up { 0% { transform: translateY(0); opacity: 1; } 40% { opacity: 0; } 100% { transform: translateY(-100%); opacity: 0; } }
-@keyframes fixed-row-enter-down { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-@keyframes fixed-row-exit-down { 0% { transform: translateY(0); opacity: 1; } 40% { opacity: 0; } 100% { transform: translateY(100%); opacity: 0; } }
-.fixed-hero-row-enter-up { animation: fixed-row-enter-up 520ms cubic-bezier(.16,1,.3,1) both; }
-.fixed-hero-row-exit-up { animation: fixed-row-exit-up 520ms cubic-bezier(.16,1,.3,1) both; }
-.fixed-hero-row-enter-down { animation: fixed-row-enter-down 520ms cubic-bezier(.16,1,.3,1) both; }
-.fixed-hero-row-exit-down { animation: fixed-row-exit-down 520ms cubic-bezier(.16,1,.3,1) both; }
+@keyframes fixed-row-exit-up { from { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } to { transform: translateY(-1.75rem) scale(.99); opacity: 0; filter: blur(7px); } }
+@keyframes fixed-row-enter-down { from { transform: translateY(-2.75rem) scale(.985); opacity: 0; filter: blur(9px); } to { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } }
+@keyframes fixed-row-exit-down { from { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } to { transform: translateY(1.75rem) scale(.99); opacity: 0; filter: blur(7px); } }
+.fixed-hero-row-enter-up { animation: fixed-row-enter-up 480ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-row-exit-up { animation: fixed-row-exit-up 260ms ease-out both; }
+.fixed-hero-row-enter-down { animation: fixed-row-enter-down 480ms cubic-bezier(.16,1,.3,1) both; }
+.fixed-hero-row-exit-down { animation: fixed-row-exit-down 260ms ease-out both; }
 .fixed-hero-home .row-contain > * { width: 100%; }
 .fixed-hero-home .row-contain .media-row,
 .fixed-hero-home .row-contain .cinematic-media-row { margin-bottom: 0 !important; }
@@ -1993,7 +2162,8 @@ html[data-nav="sidebar-pinned"][data-interface-theme="default"] .fixed-hero-home
 }
 html[data-interface-theme="default"] .fixed-hero-home .row-contain:has(.media-row) {
   bottom: 0;
-  padding-bottom: 0;
+  justify-content: flex-end;
+  padding-bottom: clamp(.5rem, 1vh, 1rem);
 }
 html[data-interface-theme="default"] .fixed-hero-home .media-row > div:first-child {
   padding-inline: 2vw;
@@ -2020,16 +2190,32 @@ html[data-interface-theme="default"] .fixed-hero-home .cw-fixed > div:nth-of-typ
   padding-right: 2vw !important;
 }
 html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content {
-  max-width: 58rem;
+  max-width: min(42rem, 58vw);
   /* The fixed shelf owns the lower 44vh of the viewport. Keep hero copy
      entirely above it so feature-card headers and posters never collide with
      synopsis text or primary actions. */
-  bottom: calc(44vh + clamp(.75rem, 1.5vh, 1.5rem));
+  /* The shelf's upper band contains its heading rather than artwork. Use that
+     band for the bottom of the hero copy; reserving the entire 44vh shelf made
+     the content start above the viewport on ordinary 720p/768p windows. */
+  bottom: calc(44vh - clamp(5rem, 12vh, 8.5rem));
   /* The fixed shelf uses a higher layer for its cards. Raise the hero copy
      above that layer, but only let its real controls receive pointer input so
      the transparent full-width overlay never blocks the poster row. */
   z-index: 40;
   pointer-events: none;
+}
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content .hero-title-logo {
+  width: auto;
+  max-width: min(34rem, 46vw) !important;
+  max-height: clamp(5rem, 12vh, 8.5rem) !important;
+}
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content .hero-title-text {
+  max-width: min(34rem, 46vw);
+  font-size: clamp(2.5rem, 5vw, 4.75rem);
+}
+html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content > div:first-child {
+  min-height: 0;
+  margin-bottom: clamp(.5rem, 1vh, .8rem);
 }
 html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content button,
 html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content a {
@@ -2043,7 +2229,7 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
     height: 18rem;
   }
   html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-content {
-    bottom: calc(18rem + .75rem);
+    bottom: calc(18rem - 6rem);
   }
   html[data-interface-theme="default"] .fixed-hero-home .cinematic-media-row:not(.media-row) > div:last-of-type {
     height: 218px !important;
@@ -2316,6 +2502,41 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
     background-color var(--duration-normal) var(--ease-standard);
 }
 
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-track {
+  height: calc(var(--fixed-cinematic-landscape-height) + 2rem);
+  align-items: flex-start;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card {
+  width: var(--fixed-cinematic-landscape-width);
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card__frame {
+  width: var(--fixed-cinematic-landscape-width);
+  height: var(--fixed-cinematic-landscape-height);
+  aspect-ratio: 16 / 9;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card__frame > img {
+  object-fit: cover;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focused="true"] .cw-card__frame {
+  border-color: rgba(255, 255, 255, .72);
+  box-shadow: 0 16px 45px rgba(0, 0, 0, .58), 0 0 0 1px rgba(255, 255, 255, .16);
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focused="true"] {
+  z-index: 4;
+  animation: fixed-cw-card-focus 440ms cubic-bezier(.16, 1, .3, 1) both;
+}
+html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focused="true"] .cw-card__frame > img {
+  animation: fixed-cw-art-settle 700ms cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes fixed-cw-card-focus {
+  from { opacity: .72; transform: translateY(.6rem) scale(.97); }
+  to { opacity: 1; transform: translateY(-.4rem) scale(1.02); }
+}
+@keyframes fixed-cw-art-settle {
+  from { transform: scale(1.06); }
+  to { transform: scale(1.015); }
+}
+
 /* Progress is the card's most scannable signal, so it gets a real hover
    response -- but via transform, which never triggers layout. */
 .cw-progress {
@@ -2330,6 +2551,20 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .fixed-hero-backdrop,
+  .fixed-focus-card__details,
+  .fixed-hero-home .cinematic-row-track > button[data-fixed-focused="true"],
+  .fixed-hero-home .cw-card[data-fixed-focused="true"],
+  .fixed-hero-home .cw-card[data-fixed-focused="true"] .cw-card__frame > img,
+  .fixed-hero-row-enter-up,
+  .fixed-hero-row-enter-down {
+    animation: none !important;
+  }
+  .fixed-hero-row-exit-up,
+  .fixed-hero-row-exit-down {
+    animation: none !important;
+    opacity: 0 !important;
+  }
   .cw-card,
   .cw-card__frame,
   .cw-progress {
@@ -2461,7 +2696,7 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
 }
 
 .media-row > div,
-.search-page > :where(.search-overview, .search-filters, .search-empty, .search-ai, .search-start),
+.search-page > :where(.search-overview, .search-filters, .search-empty, .search-start),
 .people-results {
   width: min(calc(100% - (2 * var(--space-page-inline))), var(--layout-content-max));
   margin-inline: auto !important;
@@ -2623,9 +2858,9 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
   }
 
   .fixed-hero-home {
-    --fixed-cinematic-card-width: clamp(7.5rem, 24vw, 10rem);
+    --fixed-cinematic-card-width: clamp(6.5rem, 18vw, 8.5rem);
     --fixed-cinematic-card-height: calc(var(--fixed-cinematic-card-width) * 1.5);
-    --fixed-cinematic-landscape-width: clamp(14rem, 52vw, 20rem);
+    --fixed-cinematic-landscape-width: clamp(12rem, 44vw, 17rem);
     --fixed-cinematic-landscape-height: calc(var(--fixed-cinematic-landscape-width) * .5625);
   }
 
@@ -2648,7 +2883,6 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
 
   .player-controls {
     margin-inline: clamp(.5rem, 2vw, 1rem);
-    padding-inline: clamp(.25rem, 1vw, .75rem);
   }
 
   .player-controls__info {
@@ -2656,11 +2890,7 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
   }
 
   .player-controls__info > div:first-child {
-    max-width: min(42vw, 24rem);
-  }
-
-  .player-controls__info > div:first-child > div {
-    display: none;
+    flex-shrink: 0;
   }
 }
 
@@ -2703,17 +2933,24 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
     max-width: 100%;
   }
 
-  .player-controls__info > div:first-child {
-    display: none;
-  }
-
   .player-controls__secondary {
-    width: 100%;
+    min-width: 0;
     justify-content: flex-end;
   }
 
   .player-controls__info {
-    justify-content: flex-end;
+    gap: .5rem;
+  }
+}
+
+@media (max-width: 700px) {
+  .player-controls__info {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+  }
+
+  .player-controls__secondary {
+    width: 100%;
   }
 }
 
@@ -2726,14 +2963,9 @@ html.hero-bg-active[style*='--ambient-rgb']::after {
     width: 100%;
   }
 
-  .search-overview,
-  .search-ai {
+  .search-overview {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .search-ai > button {
-    width: 100%;
   }
 }
 
