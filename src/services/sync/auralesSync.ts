@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid'
 import { applySyncedProfile, getActiveProfileId, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
+import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
 
 export const AURALES_SYNC_SCHEMA_VERSION = 1
 const DEVICE_KEY = 'aurales_sync_device_v1'
@@ -9,7 +10,7 @@ const CONFIG_KEY = 'aurales_sync_config_v1'
 export interface SyncRecord {
   recordId: string
   profileId: string
-  type: 'profile' | 'progress' | 'watchlist' | 'discovery-feedback' | 'playback-memory' | 'profile-preferences'
+  type: 'profile' | 'progress' | 'watchlist' | 'discovery-feedback' | 'playback-memory' | 'profile-preferences' | 'encrypted-vault'
   payload: unknown
   updatedAt: string
   deviceId: string
@@ -87,6 +88,9 @@ export function applyRemoteRecords(records: SyncRecord[]): void {
       if (preferences.preferredSubtitles) writeProfileValue('aurales_preferred_subtitles', record.profileId, preferences.preferredSubtitles)
       if (preferences.subtitleMode) localStorage.setItem(profileStorageKey('aurales_subtitle_mode', record.profileId), preferences.subtitleMode)
       activeChanged ||= record.profileId === getActiveProfileId()
+    }
+    if (record.type === 'encrypted-vault' && record.payload && typeof record.payload === 'object' && isSyncVaultUnlocked()) {
+      void restoreEncryptedVault(record.payload as EncryptedVault).then(() => window.location.reload()).catch(() => {})
     }
   }
   if (activeChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
