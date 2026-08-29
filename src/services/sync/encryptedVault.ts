@@ -28,9 +28,9 @@ async function vaultKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey
   return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: bufferSource(salt), iterations: ITERATIONS }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
 }
 
-/** Keeps the passphrase only in memory; it is never written to local or remote storage. */
+/** Keeps the Sync-account password only in memory; it is never written to local or remote storage. */
 export function unlockSyncVault(passphrase: string): void {
-  if (passphrase.length < 12) throw new Error('Use a vault passphrase of at least 12 characters.')
+  if (passphrase.length < 12) throw new Error('Use a Sync account password of at least 12 characters.')
   vaultPassphrase = passphrase
 }
 export function isSyncVaultUnlocked(): boolean { return Boolean(vaultPassphrase) }

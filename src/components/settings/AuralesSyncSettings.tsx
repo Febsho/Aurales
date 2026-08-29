@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { getSyncConfig, getSyncOutbox, setSyncConfig, syncNow } from '../../services/sync/auralesSync'
 import EncryptedVaultSettings from './EncryptedVaultSettings'
+import { unlockSyncVault } from '../../services/sync/encryptedVault'
 
 export default function AuralesSyncSettings() {
   const [config, setConfig] = useState(() => getSyncConfig()); const [message, setMessage] = useState(''); const [email, setEmail] = useState(''); const [password, setPassword] = useState('')
   const save = () => { setSyncConfig(config); setMessage('Saved on this device') }
-  const authenticate = async (action: 'register' | 'login') => { try { if (!config.endpoint) throw new Error('Enter the Sync service URL first'); const response = await fetch(`${config.endpoint.replace(/\/$/, '')}/v1/auth/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }); const result = await response.json() as { accessToken?: string; error?: string }; if (!response.ok || !result.accessToken) throw new Error(result.error || 'Authentication failed'); const next = { ...config, accessToken: result.accessToken }; setConfig(next); setSyncConfig(next); setPassword(''); setMessage(action === 'register' ? 'Account created and connected' : 'Connected') } catch (error) { setMessage(error instanceof Error ? error.message : 'Authentication failed') } }
+  const authenticate = async (action: 'register' | 'login') => { try { if (!config.endpoint) throw new Error('Enter the Sync service URL first'); const response = await fetch(`${config.endpoint.replace(/\/$/, '')}/v1/auth/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }); const result = await response.json() as { accessToken?: string; error?: string }; if (!response.ok || !result.accessToken) throw new Error(result.error || 'Authentication failed'); unlockSyncVault(password); const next = { ...config, accessToken: result.accessToken }; setConfig(next); setSyncConfig(next); setPassword(''); setMessage(action === 'register' ? 'Account created and connected' : 'Connected — account backup unlocked') } catch (error) { setMessage(error instanceof Error ? error.message : 'Authentication failed') } }
   const sync = () => {
     if (!config.accessToken) { setMessage('Create an account, sign in, or paste an access token first.'); return }
     setSyncConfig(config)
