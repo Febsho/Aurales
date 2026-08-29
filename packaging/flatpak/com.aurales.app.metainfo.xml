@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.2" date="2026-08-29">
+      <description>
+        <p>
+          Improves instant Home loading and daily Discover recommendations,
+          corrects watched-status and anime mapping behavior, and refines
+          detail controls, Fixed Focus motion, navigation, and release card
+          metadata.
+        </p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-08-29">
       <description>
         <p>

@@ -839,7 +839,7 @@ export default function MovieDetailPage() {
             <Button
               variant="secondary"
               size="lg"
-              className="h-12 rounded-xl border-white/45 !bg-black/80 !text-white shadow-[0_10px_28px_rgba(0,0,0,0.42)] hover:!bg-black/95 hover:border-white/70 disabled:!opacity-80"
+    className="h-11 rounded-full !border-white !bg-white !text-black shadow-[0_8px_22px_rgba(0,0,0,0.32)] hover:!bg-white/90 hover:shadow-[0_10px_26px_rgba(0,0,0,0.42)] disabled:!opacity-75"
               loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">

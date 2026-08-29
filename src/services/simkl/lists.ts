@@ -595,6 +595,7 @@ function toWatchlistItems(raw: any): SimklWatchlistItem[] {
       malId: ids.mal,
       poster,
       backdrop,
+      overview: media.overview || media.description,
       status: (r.status || 'plantowatch') as SimklWatchStatus,
       addedAt: undefined,
       watchedAt: r.last_watched_at,

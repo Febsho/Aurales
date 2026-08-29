@@ -72,13 +72,13 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
           'app-sidebar flex flex-col',
           'transition-all duration-300 ease-expo',
           pinned
-            ? 'relative z-30 w-52 flex-shrink-0 bg-white/[0.08] backdrop-blur-2xl saturate-150 border-r border-white/[0.1] shadow-[8px_0_40px_rgba(0,0,0,0.35)]'
+            ? 'relative z-30 w-52 flex-shrink-0 bg-[rgba(15,17,15,0.94)] backdrop-blur-2xl saturate-150 border-r border-white/[0.12] shadow-[8px_0_40px_rgba(0,0,0,0.42)]'
             : [
                 // z-40 so the floating sidebar sits above the fixed hero shelf
                 // (z-30) instead of the posters bleeding over it.
                 'absolute top-3 bottom-3 z-40 rounded-2xl overflow-hidden',
                 visible
-                  ? 'left-3 w-52 bg-white/[0.08] backdrop-blur-2xl saturate-150 border border-white/[0.1] shadow-[0_8px_40px_rgba(0,0,0,0.5)] opacity-100'
+                  ? 'left-3 w-52 bg-[rgba(15,17,15,0.96)] backdrop-blur-2xl saturate-150 border border-white/[0.14] shadow-[0_8px_40px_rgba(0,0,0,0.58)] opacity-100'
                   : '-left-56 w-52 opacity-0 pointer-events-none',
               ].join(' '),
         ].join(' ')}
@@ -128,13 +128,13 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
                 'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5',
                 isActive
                   ? 'bg-white/[0.12] text-white'
-                  : 'text-white/50 hover:text-white hover:bg-white/[0.06]',
+                  : 'text-white/70 hover:text-white hover:bg-white/[0.08]',
               ].join(' ')}
             >
               <item.icon
                 className={[
                   'w-[18px] h-[18px] flex-shrink-0 transition-colors duration-200',
-                  isActive ? 'text-white' : 'text-white/50 group-hover:text-white',
+                  isActive ? 'text-white' : 'text-white/65 group-hover:text-white',
                 ].join(' ')}
                 filled={isActive}
               />

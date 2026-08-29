@@ -33,10 +33,12 @@ export function useEdgeFade<T extends HTMLElement = HTMLDivElement>(
     const el = ref.current
     const host = el?.parentElement
     if (!el || !host) return
-    // A 2px tolerance absorbs sub-pixel scroll positions, which would otherwise
-    // leave the end fade visible on a track that is already fully scrolled.
+    // Browsers can retain a few pixels of scroll-snap/restore drift. Treat that
+    // as the start: otherwise the left fade paints over the first card's corner
+    // (especially the next unwatched episode) even though it is effectively
+    // the first visible item.
     const overflows = el.scrollWidth > el.clientWidth + 2
-    const atStart = el.scrollLeft <= 2
+    const atStart = el.scrollLeft <= 12
     const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
     host.toggleAttribute('data-fade-start', overflows && !atStart)
     host.toggleAttribute('data-fade-end', overflows && !atEnd)
