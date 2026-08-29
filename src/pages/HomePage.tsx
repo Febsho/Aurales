@@ -125,6 +125,7 @@ function simklItemToSearchResult(item: SimklWatchlistItem): SearchResult {
     year: item.year,
     poster: item.poster,
     backdrop: item.backdrop,
+    overview: item.overview,
     provider: 'simkl',
     imdbId: item.imdbId,
     tmdbId: item.tmdbId,
@@ -211,7 +212,10 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
             : (listId === 'history' ? await getSimklWatchedMovies() : await getSimklWatchStatusList(listId)).map(simklItemToSearchResult)
           const canonicalized = await canonicalizeCatalogItemsWithTvdb(rawResults)
           const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-          const results = await enrichSearchResultsWithAppMetadata(canonicalized)
+          // SIMKL's list payload is intentionally compact and often has no
+          // synopsis. Resolve missing metadata here so expanded cards do not
+          // need a detail-page visit before they can display a description.
+          const results = await enrichSearchResultsWithAppMetadata(canonicalized, { mode: 'visible-card' })
           if (row.sortBy === 'alphabetical') {
             results.sort((a, b) => a.title.localeCompare(b.title))
           }

@@ -70,6 +70,7 @@ export interface SimklWatchlistItem {
   malId?: number
   poster?: string
   backdrop?: string
+  overview?: string
   status: SimklWatchStatus
   addedAt?: string
   watchedAt?: string
@@ -145,6 +146,8 @@ export interface SimklApiMediaItem {
   }
   poster?: string
   fanart?: string
+  overview?: string
+  description?: string
 }
 
 // ─── Scrobble types ────────────────────────────────────────────────────────────

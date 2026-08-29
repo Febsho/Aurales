@@ -562,8 +562,9 @@ function AnimeIdMappingsSection() {
   const [lookupCacheCount, setLookupCacheCount] = useState<number | null>(null)
   const [animeListCount, setAnimeListCount] = useState<number | null>(null)
   const [aniBridgeCount, setAniBridgeCount] = useState<number | null>(null)
+  const [aniBridgeLoading, setAniBridgeLoading] = useState(false)
 
-  const refresh = () => {
+  const refresh = (loadAniBridge = false) => {
     cacheStats().then((stats) => {
       setLookupCacheCount(stats.byCategory[CACHE_CATEGORIES.ANIME_MAPPING] || 0)
     })
@@ -571,13 +572,18 @@ function AnimeIdMappingsSection() {
       .then(({ getStoredAnimeListEntryCount }) => getStoredAnimeListEntryCount())
       .then(setAnimeListCount)
       .catch(() => setAnimeListCount(0))
+    if (loadAniBridge) setAniBridgeLoading(true)
     import('../services/anime-mapping/anibridgeMappings')
-      .then(({ getStoredAniBridgeEntryCount }) => getStoredAniBridgeEntryCount())
+      .then(({ getStoredAniBridgeEntryCount, preloadAniBridgeMappings }) => loadAniBridge ? preloadAniBridgeMappings() : getStoredAniBridgeEntryCount())
       .then(setAniBridgeCount)
       .catch(() => setAniBridgeCount(0))
+      .finally(() => setAniBridgeLoading(false))
   }
 
-  useEffect(() => { refresh() }, [])
+  // Load the public episode index when this section is opened. Previously the
+  // UI only counted an already-populated cache, so a first-time user always
+  // saw a misleading zero despite the mapping being available on demand.
+  useEffect(() => { refresh(true) }, [])
 
   return (
     <SettingSection>
@@ -587,36 +593,37 @@ function AnimeIdMappingsSection() {
             {animeListCount == null ? 'Loading...' : animeListCount.toLocaleString()}
           </span>
           <button
-            onClick={refresh}
+            onClick={() => refresh()}
             className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
           >
             Refresh
           </button>
         </div>
       </SettingRow>
-      <SettingRow label="AniBridge episode mappings" description="Episode-level mappings across AniList, MAL, TMDB, TVDB, IMDB, and AniDB stored in browser cache.">
+      <SettingRow label="AniBridge episode mappings" description="Episode-level mappings across AniList, MAL, TMDB, TVDB, IMDB, and AniDB. Loaded automatically and refreshed daily.">
         <div className="flex items-center gap-3">
           <span className="text-sm font-bold text-white tabular-nums">
-            {aniBridgeCount == null ? 'Loading...' : aniBridgeCount.toLocaleString()}
+            {aniBridgeLoading || aniBridgeCount == null ? 'Loading...' : aniBridgeCount.toLocaleString()}
           </span>
           <button
-            onClick={refresh}
+            onClick={() => refresh(true)}
+            disabled={aniBridgeLoading}
             className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
           >
-            Refresh
+            {aniBridgeLoading ? 'Loading...' : 'Refresh'}
           </button>
         </div>
       </SettingRow>
-      <SettingRow label="Anime lookup cache" description="Cached results from anime ID lookup services.">
+      <SettingRow label="Anime lookup cache" description="Resolved provider mappings created when anime watch status or sync needs them.">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-bold text-white tabular-nums">
-            {lookupCacheCount == null ? 'Loading...' : lookupCacheCount.toLocaleString()}
+          <span className="text-sm font-bold text-white/80 tabular-nums">
+            {lookupCacheCount == null ? 'Loading...' : lookupCacheCount === 0 ? 'No entries yet' : lookupCacheCount.toLocaleString()}
           </span>
           <button
-            onClick={refresh}
+            onClick={() => refresh()}
             className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
           >
-            Refresh
+            Check
           </button>
         </div>
       </SettingRow>
@@ -2838,27 +2845,6 @@ export default function SettingsPage() {
                     ]}
                   />
                 </SettingRow>
-                <SettingRow label="Poster size" description="Scale posters and cards across Home, Discover, and your library.">
-                  <div className="flex flex-wrap gap-2">
-                    {(['compact', 'default', 'large', 'huge'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { compact: 'Compact', default: 'Default', large: 'Large', huge: 'Huge' }
-                      const active = store.posterSize === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setPosterSize(opt)}
-                          className={`flex h-8 items-center justify-center rounded-full border px-3.5 text-xs font-bold transition-all cursor-pointer ${
-                            active
-                              ? 'border-white/25 bg-white/12 text-white shadow-[inset_0_1px_rgba(255,255,255,0.08),0_8px_20px_rgba(0,0,0,0.16)]'
-                              : 'border-white/5 bg-white/5 text-white/60 hover:border-white/12 hover:bg-white/9 hover:text-white'
-                          }`}
-                        >
-                          {labelMap[opt]}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </SettingRow>
               </SettingSection>
 
               <SettingSection title="Home presentation" description="Choose how the unified Cinematic Home presents featured artwork and shelves.">
@@ -3180,23 +3166,6 @@ export default function SettingsPage() {
                 <div className="px-6 py-4">
                   <ResumePriorityList />
                 </div>
-              </SettingSection>
-
-              {/* ─── Anime Tracking ─── */}
-              <SettingSection title="Anime Tracking" description="Choose your anime progress provider and watched source.">
-                <SettingRow label="Provider" description="Where anime watch progress is tracked.">
-                  <SelectMenu
-                    value={store.animeTrackingProvider}
-                    onChange={(e) => store.setAnimeTrackingProvider(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="anilist">AniList</option>
-                    <option value="simkl">Simkl</option>
-                    <option value="trakt">Trakt</option>
-                    <option value="local">Local Only</option>
-                  </SelectMenu>
-                </SettingRow>
-
               </SettingSection>
 
               {/* ─── Per-Service Settings ─── */}

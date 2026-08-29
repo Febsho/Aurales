@@ -29,6 +29,12 @@ export async function getStoredAniBridgeEntryCount(): Promise<number> {
   return countMappingEntries(data)
 }
 
+/** Fetch the mapping index ahead of its first episode-sync request. */
+export async function preloadAniBridgeMappings(): Promise<number> {
+  const data = await loadAniBridgeMappings()
+  return countMappingEntries(data)
+}
+
 export async function mapTvdbEpisodeWithAniBridge(
   input: TvdbEpisodeMappingInput,
 ): Promise<ProviderEpisodeMapping | null> {

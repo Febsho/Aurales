@@ -140,6 +140,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   }, [displayItem.rating])
 
   const getDisplayProvider = (item: SearchResult) => {
+    let provider: string | undefined
     if (item.provider === 'addon') {
       const genres = item.genres?.map((g) => g.toLowerCase()) || []
       const isAnime = item.isAnime || 
@@ -147,14 +148,20 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
                       genres.includes('anime') || 
                       ((item.genreIds?.includes(16) || genres.includes('animation')) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || ''))
       if (isAnime) {
-        return useAppStore.getState().animeMetadataSource ?? 'tvdb'
+        provider = useAppStore.getState().animeMetadataSource ?? 'tvdb'
+      } else if (item.type === 'movie') {
+        provider = useAppStore.getState().movieMetadataSource ?? 'tmdb'
+      } else {
+        provider = useAppStore.getState().seriesMetadataSource ?? 'tmdb'
       }
-      if (item.type === 'movie') {
-        return useAppStore.getState().movieMetadataSource ?? 'tmdb'
-      }
-      return useAppStore.getState().seriesMetadataSource ?? 'tmdb'
+    } else {
+      provider = item.provider
     }
-    return item.provider
+
+    // TMDB and TVDB are metadata backends, not viewer-facing catalog labels.
+    // Keep them visible during development for diagnostics, but omit them from
+    // release cards without changing the underlying source/ID resolution.
+    return import.meta.env.PROD && /^(tmdb|tvdb)$/i.test(provider || '') ? null : provider
   }
 
   const widthClass = useMemo(() => {
