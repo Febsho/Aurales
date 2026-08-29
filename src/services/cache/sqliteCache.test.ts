@@ -24,7 +24,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 import { invoke } from '@tauri-apps/api/core'
-import { cacheClearCategory, cacheGet, cachedFetch } from './sqliteCache'
+import { cacheClearCategory, cacheGet, cacheRuntimeStats, cachedFetch } from './sqliteCache'
 
 describe('sqlite catalog cache behavior', () => {
   beforeEach(() => rows.clear())
@@ -121,5 +121,21 @@ describe('sqlite catalog cache behavior', () => {
     })).resolves.toEqual(['addon-result'])
 
     invokeMock.mockImplementation(normalInvoke)
+  })
+
+  it('bounds the in-memory cache and evicts least-recently-used entries', async () => {
+    const prefix = `lru-${Math.random()}-`
+    for (let index = 0; index < 405; index += 1) {
+      await cachedFetch(`${prefix}${index}`, async () => [index], {
+        category: 'lru-test',
+        ttlSeconds: 60,
+      })
+    }
+
+    expect(cacheRuntimeStats().memoryEntries).toBeLessThanOrEqual(400)
+    // The first entry was evicted from memory, but remains durable and can be
+    // restored without refetching.
+    expect((await cacheGet<number[]>(`${prefix}0`))?.data).toEqual([0])
+    await cacheClearCategory('lru-test')
   })
 })

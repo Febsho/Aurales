@@ -837,9 +837,9 @@ export default function MovieDetailPage() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              variant="white"
+              variant="secondary"
               size="lg"
-              className="h-12 rounded-full px-6 shadow-none"
+              className="h-12 rounded-xl border-white/45 !bg-black/80 !text-white shadow-[0_10px_28px_rgba(0,0,0,0.42)] hover:!bg-black/95 hover:border-white/70 disabled:!opacity-80"
               loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">

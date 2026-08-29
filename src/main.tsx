@@ -4,6 +4,9 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { ToastProvider } from './components/ui/Toast'
 import './index.css'
+import { markPerformance, performanceSnapshot } from './services/performanceMetrics'
+
+markPerformance('bootstrap-start')
 
 const ContextMenu = lazy(() => import('./components/ContextMenu'))
 const ArtworkDebugOverlay = lazy(() => import('./components/ArtworkDebugOverlay'))
@@ -44,3 +47,7 @@ createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </StrictMode>,
 )
+
+if (import.meta.env.DEV) {
+  Object.assign(window, { auralesPerformance: performanceSnapshot })
+}

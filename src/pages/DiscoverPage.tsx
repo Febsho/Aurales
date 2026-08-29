@@ -25,6 +25,8 @@ import { discoveryViewState } from '../services/discovery/viewState'
 import { collectCandidateSources } from '../services/discovery/candidatePipeline'
 import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot'
 import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
+import { berlinDaySeed, getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
+import { DISCOVERY_ALGORITHM_VERSION, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
   28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
@@ -114,7 +116,6 @@ function matchesDiscoverTab(entry: SearchResult, tab: DiscoverTab): boolean {
   if (tab === 'movies') return entry.type === 'movie' && !isAnimeLike(entry)
   return entry.type === 'series' && !isAnimeLike(entry)
 }
-const DISCOVERY_DAY = Math.floor(Date.now() / 86_400_000)
 const FORCED_DISCOVERY_REFRESHES = new Set<string>()
 
 function makeConfig(
@@ -306,6 +307,7 @@ export default function DiscoverPage() {
   const genreLoading = useDiscoverStore((s) => s.genreLoading)
   const setGenreLoading = useDiscoverStore((s) => s.setGenreLoading)
   const discoveryCachedRows = useDiscoverStore((s)=>s.cachedRows)
+  const persistedRankings = useDiscoverStore((s) => s.rankedSnapshots)
   const catalogSetCache = useCatalogStore((s) => s.setCache)
 
   const region = useAppStore((s) => s.discoveryRegion)
@@ -336,13 +338,27 @@ export default function DiscoverPage() {
   const [initialWaitComplete, setInitialWaitComplete] = useState(false)
   // Rank against the start of the day, not the exact mount time, so recency scoring
   // is identical on every visit within a day (a source of visit-to-visit reshuffling)
-  const rankingNow = DISCOVERY_DAY * 86_400_000
+  const [berlinDateKey, setBerlinDateKey] = useState(() => getBerlinDateKey())
+  const rankingNow = Date.parse(`${berlinDateKey}T00:00:00.000Z`)
   const [starterGenres,setStarterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
-  const [refreshNonces,setRefreshNonces]=useState<Record<DiscoverTab,number>>({movies:0,series:0,anime:0})
   const [heroIndex,setHeroIndex]=useState(0)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
   const genreRequestRef = useRef(0)
+
+  useEffect(() => {
+    const refreshDate = () => setBerlinDateKey((current) => {
+      const next = getBerlinDateKey()
+      return next === current ? current : next
+    })
+    const delay = Math.max(1_000, getNextBerlinMidnight().getTime() - Date.now() + 250)
+    const timer = window.setTimeout(refreshDate, delay)
+    window.addEventListener('focus', refreshDate)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('focus', refreshDate)
+    }
+  }, [berlinDateKey])
 
   useEffect(() => {
     const refreshFeedback = () => setFeedback(loadRecommendationFeedback())
@@ -366,13 +382,17 @@ export default function DiscoverPage() {
   // silently reuse results fetched for the previous query.
   const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
   const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
-  const refreshNonce = refreshNonces[tab]
-  useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode,refreshNonce])
+  const dailySnapshotScope = `${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
+  const dailySnapshotKey = makeDailySnapshotKey(berlinDateKey, dailySnapshotScope)
+  const dailySnapshot = persistedRankings[dailySnapshotKey]
+  const hasDailySnapshot = Boolean(dailySnapshot?.length)
+  const refreshNonce = 0
+  useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const mood = useMemo(() => {
     const pool = tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS
-    return pool[DISCOVERY_DAY % pool.length]
-  }, [tab])
+    return pool[berlinDaySeed() % pool.length]
+  }, [tab, berlinDateKey])
 
   const animeOverrides = tab === 'anime' ? {
     originalLanguage: 'ja',
@@ -386,7 +406,7 @@ export default function DiscoverPage() {
     makeConfig(contentType, 'popularity.desc', preferences, animeOverrides),
     `discover-trending-${tab}-${discoveryQueryKey}`,
     fallback,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
   const topRated = useDiscoverRow(
@@ -396,7 +416,7 @@ export default function DiscoverPage() {
     }),
     `discover-toprated-${tab}-${discoveryQueryKey}`,
     fallback,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
   const moodItems = useDiscoverRow(
@@ -409,7 +429,7 @@ export default function DiscoverPage() {
     }),
     `discover-mood-${tab}-${mood.title}-${discoveryQueryKey}`,
     fallbackVariants.mood,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
   const hiddenGems = useDiscoverRow(
@@ -420,7 +440,7 @@ export default function DiscoverPage() {
     }),
     `discover-gems-${tab}-${discoveryQueryKey}`,
     fallbackVariants.gems,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
   const quickWatches = useDiscoverRow(
@@ -432,7 +452,7 @@ export default function DiscoverPage() {
     }),
     `discover-quick-${tab}-${discoveryQueryKey}`,
     fallbackVariants.quick,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
   // Anime movies — the anime tab's discover rows are series-only, so without these
@@ -442,14 +462,14 @@ export default function DiscoverPage() {
     makeConfig('movie', 'popularity.desc', preferences, { ...animeMovieOverrides, voteCountMin: 100 }),
     `discover-anime-movies-${discoveryQueryKey}`,
     fallback,
-    tab === 'anime',
+    tab === 'anime' && !hasDailySnapshot,
     refreshNonce,
   )
   const animeMoviesTop = useDiscoverRow(
     makeConfig('movie', 'vote_average.desc', preferences, { ...animeMovieOverrides, voteCountMin: 150, voteAverageMin: Math.max(7, minRating) }),
     `discover-anime-movies-top-${discoveryQueryKey}`,
     fallback,
-    tab === 'anime',
+    tab === 'anime' && !hasDailySnapshot,
     refreshNonce,
   )
   const forYou = useDiscoverRow(
@@ -464,7 +484,7 @@ export default function DiscoverPage() {
     }),
     `discover-for-you-${tab}-${tasteGenre || 'starter'}-${discoveryQueryKey}`,
     fallbackVariants.taste,
-    true,
+    !hasDailySnapshot,
     refreshNonce,
   )
 
@@ -478,6 +498,7 @@ export default function DiscoverPage() {
   }, [watchProgress, connectedActivity.items])
 
   useEffect(() => {
+    if (hasDailySnapshot) return
     setSimilarCandidates([]) // Reset immediately to prevent stale candidates from previous tab
     // Seeds and candidates must match the active tab: movies seed movies, series seed
     // non-anime series, and the anime tab only seeds/keeps anime titles (movies included).
@@ -494,9 +515,10 @@ export default function DiscoverPage() {
       setSimilarCandidates(result.items.filter((candidate) => matchesTab(candidate.item)).slice(0, 50))
     })
     return () => { cancelled = true }
-  }, [watchedForSeeds, tab, contentType])
+  }, [watchedForSeeds, tab, contentType, hasDailySnapshot])
 
   useEffect(() => {
+    if (hasDailySnapshot) return
     if (!traktConnected && !simklConnected && !stremioAuthKey && !anilistConnected) { const timer=window.setTimeout(()=>setConnectedActivity({items:[],progress:[],ratings:[],watchlist:[],rewatches:[],bingeItems:[]}),0); return()=>window.clearTimeout(timer) }
     let cancelled = false
     Promise.allSettled([
@@ -524,7 +546,7 @@ export default function DiscoverPage() {
       setConnectedActivity({items:enriched,ratings:rawRatings,watchlist,rewatches,bingeItems,progress:enriched.map((item,index)=>({id:`connected:${index}`,mediaType:item.type,mediaId:item.id,progressSeconds:1,durationSeconds:1,completed:true,title:item.title,poster:item.poster,backdrop:item.backdrop,tmdbId:item.tmdbId,imdbId:item.imdbId}))})
     }).catch(()=>undefined)
     return()=>{cancelled=true}
-  },[traktConnected,simklConnected,stremioAuthKey,anilistConnected])
+  },[traktConnected,simklConnected,stremioAuthKey,anilistConnected,hasDailySnapshot])
 
   const starterTasteItems=useMemo<SearchResult[]>(()=>starterGenres.map((genreId)=>({id:`taste-genre-${genreId}`,title:genreMap[genreId]||`Genre ${genreId}`,type:contentType,provider:'preference',genreIds:[genreId]})),[starterGenres,genreMap,contentType])
   const activity = useMemo(() => ({ progress: [...Array.from(watchProgress.values()),...connectedActivity.progress], recent: [...starterTasteItems,...recentlyViewed,...connectedActivity.items], ratings:connectedActivity.ratings,watchlist:connectedActivity.watchlist,rewatches:connectedActivity.rewatches,bingeItems:connectedActivity.bingeItems }), [watchProgress, recentlyViewed, connectedActivity,starterTasteItems])
@@ -563,20 +585,33 @@ export default function DiscoverPage() {
 
   // Keep the last complete ranking across restarts/day changes. A settled refresh
   // replaces it only when the material catalog content actually changed.
-  const snapshotKey = `${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
-  const rankedSnapshot = useDiscoverStore((s) => s.rankedSnapshots[snapshotKey])
   const setRankedSnapshot = useDiscoverStore((s) => s.setRankedSnapshot)
-  const validRankedSnapshot = useMemo(
-    () => rankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab)),
-    [rankedSnapshot, tab],
+  const fallbackRankedSnapshot = useMemo(
+    () => latestSnapshotForScope(persistedRankings, dailySnapshotScope),
+    [persistedRankings, dailySnapshotScope],
   )
-  const snapshotIsValid = Boolean(rankedSnapshot && validRankedSnapshot?.length === rankedSnapshot.length && rankedSnapshot.length > 0)
-  const ranked = snapshotIsValid ? validRankedSnapshot! : liveRanked
-  const liveRankedFingerprint = catalogContentFingerprint(liveRanked.map((entry) => entry.item))
-  const snapshotFingerprint = catalogContentFingerprint((validRankedSnapshot || []).map((entry) => entry.item))
+  const validRankedSnapshot = useMemo(
+    () => dailySnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab)),
+    [dailySnapshot, tab],
+  )
+  const snapshotIsValid = Boolean(dailySnapshot && validRankedSnapshot?.length === dailySnapshot.length && dailySnapshot.length > 0)
+  const ranked = snapshotIsValid
+    ? validRankedSnapshot!
+    : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab))?.length
+      ? fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab))
+      : liveRanked
   useEffect(() => {
-    if (initialWaitComplete && liveRanked.length > 0 && liveRankedFingerprint !== snapshotFingerprint) setRankedSnapshot(snapshotKey, liveRanked)
-  }, [initialWaitComplete, liveRanked, liveRankedFingerprint, snapshotFingerprint, snapshotKey, setRankedSnapshot])
+    // Today's snapshot is immutable once committed. History, feedback and
+    // provider refreshes influence tomorrow instead of reshuffling the page.
+    if (!initialWaitComplete || snapshotIsValid || liveRanked.length === 0) return
+    const profileFingerprint = catalogContentFingerprint(activity.recent)
+    setRankedSnapshot(dailySnapshotKey, liveRanked, {
+      dateKey: berlinDateKey,
+      generatedAt: Date.now(),
+      profileFingerprint,
+      algorithmVersion: DISCOVERY_ALGORITHM_VERSION,
+    })
+  }, [activity.recent, berlinDateKey, dailySnapshotKey, initialWaitComplete, liveRanked, setRankedSnapshot, snapshotIsValid])
   const personalizedSections = useMemo(() => generateDiscoverySections(ranked.slice(1), tasteProfile, mode), [ranked, tasteProfile, mode])
   const heroPool = useMemo(() => ranked.slice(0, 6), [ranked])
   const activeHeroIndex = heroPool.length ? heroIndex % heroPool.length : 0
@@ -624,16 +659,15 @@ export default function DiscoverPage() {
   },[heroItem])
 
   useEffect(() => {
-    const key = `${DISCOVERY_DAY}:${tab}:${mode}`
+    const key = `${berlinDateKey}:${tab}:${mode}`
     if (!ranked.length || IMPRESSIONS_RECORDED.has(key)) return
     IMPRESSIONS_RECORDED.add(key)
     recordRecommendationImpressions(ranked.slice(0,40).map((entry)=>entry.item))
-  }, [ranked, tab, mode])
+  }, [ranked, tab, mode, berlinDateKey])
 
   const changeMode = (next: DiscoveryMode) => { try { localStorage.setItem('aurales_discovery_mode', next) } catch { /* keep live mode */ } setMode(next) }
   const toggleStarterGenre=(genreId:number)=>setStarterGenres((current)=>{const next=current.includes(genreId)?current.filter((id)=>id!==genreId):[...current,genreId].slice(-8);try{localStorage.setItem('aurales_discovery_starter_genres',JSON.stringify(next))}catch{/* keep live selection */}return next})
   const submitFeedback = (item: SearchResult, kind: Parameters<typeof saveRecommendationFeedback>[1]) => setFeedback(saveRecommendationFeedback(item, kind))
-  const refreshDiscovery=()=>setRefreshNonces((current)=>({...current,[tab]:current[tab]+1}))
 
   // A saved genre selection belongs to the query that produced it. Clear it
   // when advanced preferences change, and invalidate any request still racing
@@ -693,7 +727,7 @@ export default function DiscoverPage() {
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Discover</h1>
             <p className="text-sm text-white/60">Daily moods, quality picks, and recommendations shaped by what you open</p>
           </div>
-          <div className="flex items-center gap-2"><button onClick={refreshDiscovery} className="focus-ring rounded-full border border-white/10 bg-white/[.04] px-3 py-1.5 text-xs font-bold text-white/60">Refresh</button><span className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-white/60">Region {region} · {minRating > 0 ? `${minRating}+ rating` : 'all ratings'}</span></div>
+          <div className="flex items-center gap-2"><span className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-3 py-1.5 text-xs text-white/45">Updated daily · Region {region} · {minRating > 0 ? `${minRating}+ rating` : 'all ratings'}</span></div>
         </div>
 
         <div className="flex items-center gap-2 mt-5">

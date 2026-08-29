@@ -35,6 +35,7 @@ import { streamPreloadManager } from '../services/streams/preloadManager'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 import { catalogContentFingerprint, readHeroStartupSnapshot, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
 import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
+import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -1006,6 +1007,12 @@ export default function HomePage() {
       .map(homeRowCacheKey)
       .every((key) => !key || state.get(key))
   })
+
+  useEffect(() => {
+    if (!cachePreloaded) return
+    markPerformance('home-content-visible')
+    measurePerformance('shell-to-home-content', 'app-shell-visible', 'home-content-visible')
+  }, [cachePreloaded])
   useEffect(() => {
     if (cachePreloaded) return
     let cancelled = false

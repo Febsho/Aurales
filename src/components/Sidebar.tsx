@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { getAppVersion } from '../services/updater'
+import { prefetchRoute } from '../services/routePrefetch'
 
 const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
@@ -121,6 +122,8 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
             <NavLink
               key={item.path}
               to={item.path}
+              onMouseEnter={() => prefetchRoute(item.path)}
+              onFocus={() => prefetchRoute(item.path)}
               className={[
                 'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5',
                 isActive

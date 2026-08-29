@@ -48,6 +48,7 @@ function ageMs(entry: RawCacheEntry): number {
 export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
   const memory = sessionCache.get(key)
   if (memory) {
+    rememberSession(key, memory)
     requestCoordinator.recordCacheHit()
     return memory as CacheResult<T>
   }
@@ -62,8 +63,7 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
     }
     const data = JSON.parse(entry.value) as T
     const result = { data, stale: isExpired(entry), age: ageMs(entry) }
-    sessionCache.set(key, result)
-    sessionCategories.set(key, entry.category)
+    rememberSession(key, result, entry.category)
     requestCoordinator.recordCacheHit()
     return result
   } catch (_) {
@@ -73,8 +73,7 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
 }
 
 export async function cacheSet(key: string, value: unknown, options: CacheOptions): Promise<void> {
-  sessionCache.set(key, { data: value, stale: false, age: 0 })
-  sessionCategories.set(key, options.category)
+  rememberSession(key, { data: value, stale: false, age: 0 }, options.category)
   refreshErrors.delete(key)
   try {
     await invoke('cache_entry_set', {
@@ -99,8 +98,7 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
     for (const entry of entries) {
       const data = JSON.parse(entry.value) as T
       map.set(entry.key, { data, stale: isExpired(entry), age: ageMs(entry) })
-      sessionCache.set(entry.key, map.get(entry.key)!)
-      sessionCategories.set(entry.key, entry.category)
+      rememberSession(entry.key, map.get(entry.key)!, entry.category)
     }
     for (let index = 0; index < entries.length; index += 1) requestCoordinator.recordCacheHit()
     for (let index = entries.length; index < keys.length; index += 1) requestCoordinator.recordCacheMiss()
@@ -162,6 +160,26 @@ const sessionCategories = new Map<string, string>()
 const refreshedThisSession = new Set<string>()
 const refreshErrors = new Map<string, { message: string; at: number }>()
 let lastRefreshTime = 0
+
+// Session cache entries are deliberately small, hot presentation data.  Keep
+// it bounded: a long browsing session must not retain every catalog/detail
+// payload that happened to be opened. Map insertion order gives us an
+// inexpensive LRU implementation without adding a runtime dependency.
+const MAX_SESSION_CACHE_ENTRIES = 400
+
+function rememberSession<T>(key: string, value: CacheResult<T>, category?: string): void {
+  sessionCache.delete(key) // refresh recency for an existing key
+  sessionCache.set(key, value as CacheResult<unknown>)
+  if (category) sessionCategories.set(key, category)
+  while (sessionCache.size > MAX_SESSION_CACHE_ENTRIES) {
+    const oldest = sessionCache.keys().next().value as string | undefined
+    if (!oldest) break
+    sessionCache.delete(oldest)
+    sessionCategories.delete(oldest)
+    refreshedThisSession.delete(oldest)
+    refreshErrors.delete(oldest)
+  }
+}
 
 export function cacheRuntimeStats() {
   let approximateBytes = 0

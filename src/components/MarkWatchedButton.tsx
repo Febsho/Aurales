@@ -458,11 +458,11 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
           'h-12 px-3.5 rounded-full flex items-center justify-center gap-2 transition-[transform,background-color,border-color,color] duration-200 cursor-pointer active:scale-[0.97]',
           'border',
           allDone
-            ? 'border-white/16 bg-white/10 text-white hover:bg-white/14'
-            : 'border-white/10 bg-[#171717] text-white/62 hover:border-white/20 hover:bg-[#222] hover:text-white',
+            ? 'border-accent/45 bg-accent/15 text-white hover:border-accent/70 hover:bg-accent/22'
+            : 'border-white/15 bg-[#171717]/95 text-white/80 hover:border-white/30 hover:bg-[#242424] hover:text-white',
         ].join(' ')}
       >
-        <span className={`grid h-5 w-5 place-items-center rounded-full ${allDone ? 'bg-white text-black' : 'border border-white/25 text-white/65'}`}>
+        <span className={`grid h-5 w-5 place-items-center rounded-full ${allDone ? 'bg-accent/25 text-accent ring-1 ring-accent/40' : 'border border-white/30 text-white/80'}`}>
           <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.7" viewBox="0 0 24 24">
             <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
           </svg>

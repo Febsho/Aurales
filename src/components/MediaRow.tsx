@@ -8,6 +8,8 @@ import { getTmdbCardMetadata } from '../services/tmdb'
 import RatingsStrip from './RatingsStrip'
 
 const CATALOG_PREVIEW_LIMIT = 25
+const INITIAL_RENDERED_CARDS = 30
+const CARD_RENDER_BATCH = 18
 
 interface MediaRowProps {
   title: string
@@ -98,6 +100,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
   // legitimately contain duplicate/canonicalized entries with the same ID.
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
+  const [renderedCount, setRenderedCount] = useState(INITIAL_RENDERED_CARDS)
   const handleCardFocus = useCallback((_item: SearchResult, cardIndex?: number) => {
     if (cardIndex != null) setFocusedCardIndex(cardIndex)
   }, [])
@@ -156,9 +159,22 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     () => shouldShowAll ? visibleItems.slice(0, CATALOG_PREVIEW_LIMIT) : visibleItems,
     [shouldShowAll, visibleItems],
   )
+  const renderedItems = useMemo(
+    () => rowItems.slice(0, renderedCount),
+    [rowItems, renderedCount],
+  )
+  useEffect(() => setRenderedCount(INITIAL_RENDERED_CARDS), [rowItems])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
   const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: visibleItems } }) }
+  const renderMoreCards = useCallback((element: HTMLDivElement) => {
+    if (renderedCount >= rowItems.length) return
+    // Grow only when the user approaches the rendered edge. This preserves
+    // keyboard/controller navigation while avoiding an unbounded initial DOM.
+    if (element.scrollLeft + element.clientWidth >= element.scrollWidth - element.clientWidth * 1.5) {
+      setRenderedCount((count) => Math.min(rowItems.length, count + CARD_RENDER_BATCH))
+    }
+  }, [renderedCount, rowItems.length])
 
   if (visibleItems.length === 0) return null
 
@@ -175,7 +191,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           </div>
         </div>
         <div className="space-y-2">
-          {rowItems.map((item, index) => (
+          {renderedItems.map((item, index) => (
             <MediaCard key={`${mediaIdentity(item)}:${index}`} item={item} layout="landscape" disableTrailerPreview={disableTrailerPreview} />
           ))}
         </div>
@@ -230,10 +246,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
+        onScroll={(event) => renderMoreCards(event.currentTarget)}
         className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {rowItems.map((item, idx) => {
+        {renderedItems.map((item, idx) => {
           const focused = focusedCardIndex === idx || (fixedHome && focusedCardIndex == null && idx === 0)
           return (
             <React.Fragment key={`${mediaIdentity(item)}:${idx}`}>

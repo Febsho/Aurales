@@ -80,6 +80,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [cleanTmdbLogo, setCleanTmdbLogo] = useState<string | undefined>(undefined)
   const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
+  // Provider artwork is enrichment, not a prerequisite for a usable card.
+  // This becomes true on deliberate focus/hover, so a shelf of already
+  // artwork-rich catalog items does not fan out into dozens of requests.
+  const [detailIntent, setDetailIntent] = useState(false)
   const providerWatched = useWatchedCacheStore((s) => {
     const keys = s.watchedKeys
     if (item.imdbId && keys.has(`imdb:${item.imdbId}`)) return true
@@ -302,7 +306,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     const needsPoster = layout !== 'landscape' && !displayItem.poster
     const needsBackdrop = layout === 'landscape' && !displayItem.backdrop
     const needsGenre = showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length
-    const wantsProviderArt = !disableArtOverride
+    const hasInitialArtwork = layout === 'landscape'
+      ? Boolean(initialArtItem.backdrop || initialArtItem.poster)
+      : Boolean(initialArtItem.poster || initialArtItem.backdrop)
+    const wantsProviderArt = !disableArtOverride && (!hasInitialArtwork || detailIntent)
 
     if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt) {
       if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
@@ -376,7 +383,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       } catch (_) { /* ignore */ }
     })()
     return () => { cancelled = true }
-  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, appManagedMetadata])
+  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, appManagedMetadata, detailIntent, initialArtItem.poster, initialArtItem.backdrop])
 
   const pickWorkingUrl = (...urls: Array<string | undefined>) =>
     urls.find((url) => url && !failedImageUrls.has(url))
@@ -404,6 +411,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     if (!retryImageFromSource(event.currentTarget, url)) markImageFailed(url)
   }
   const warmDetailArtwork = useCallback(() => {
+    setDetailIntent(true)
     void warmCachedImage(backdropUrl)
     void warmCachedImage(logoUrl)
   }, [backdropUrl, logoUrl])

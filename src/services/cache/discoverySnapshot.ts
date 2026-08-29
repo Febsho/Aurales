@@ -1,5 +1,6 @@
 import type { SearchResult } from '../../types'
 import type { RankedRecommendation } from '../discovery/types'
+import type { DailySnapshotMeta } from '../discovery/dailySnapshot'
 
 export interface DiscoveryRowSnapshot {
   items: SearchResult[]
@@ -7,9 +8,10 @@ export interface DiscoveryRowSnapshot {
 }
 
 export interface DiscoveryScreenSnapshot {
-  version: 2
+  version: 3
   cachedRows: Record<string, DiscoveryRowSnapshot>
   rankedSnapshots: Record<string, RankedRecommendation[]>
+  dailySnapshotMeta: Record<string, DailySnapshotMeta>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -24,7 +26,7 @@ function isSearchResult(value: unknown): value is SearchResult {
 }
 
 /** Durable snapshots intentionally survive age/day boundaries until replaced. */
-export function retainDiscoverySnapshot(saved?: (Partial<Omit<DiscoveryScreenSnapshot, 'version'>> & { version?: 2 }) | null) {
+export function retainDiscoverySnapshot(saved?: (Partial<Omit<DiscoveryScreenSnapshot, 'version'>> & { version?: 2 | 3 }) | null) {
   const cachedRows: Record<string, DiscoveryRowSnapshot> = {}
   if (isRecord(saved?.cachedRows)) {
     for (const [key, value] of Object.entries(saved.cachedRows)) {
@@ -48,8 +50,18 @@ export function retainDiscoverySnapshot(saved?: (Partial<Omit<DiscoveryScreenSna
     }
   }
 
+  const dailySnapshotMeta: Record<string, DailySnapshotMeta> = {}
+  if (isRecord(saved?.dailySnapshotMeta)) {
+    for (const [key, value] of Object.entries(saved.dailySnapshotMeta)) {
+      if (!isRecord(value) || typeof value.dateKey !== 'string' || typeof value.generatedAt !== 'number'
+        || typeof value.profileFingerprint !== 'string' || typeof value.algorithmVersion !== 'number') continue
+      dailySnapshotMeta[key] = value as DailySnapshotMeta
+    }
+  }
+
   return {
     cachedRows,
     rankedSnapshots,
+    dailySnapshotMeta,
   }
 }

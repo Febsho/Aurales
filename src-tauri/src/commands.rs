@@ -4499,30 +4499,41 @@ pub fn cache_entry_get(key: String, db: State<Database>) -> Option<CacheEntry> {
 
 #[tauri::command]
 pub fn cache_entry_get_many(keys: Vec<String>, db: State<Database>) -> Vec<CacheEntry> {
+    if keys.is_empty() {
+        return vec![];
+    }
     let conn = match db.conn.lock() {
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut results = Vec::new();
-    for key in &keys {
-        if let Ok(entry) = conn.query_row(
-            "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
-            rusqlite::params![key],
-            |row| {
-                Ok(CacheEntry {
-                    key: row.get(0)?,
-                    value: row.get(1)?,
-                    category: row.get(2)?,
-                    created_at: row.get(3)?,
-                    expires_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            },
-        ) {
-            results.push(entry);
-        }
-    }
-    results
+    // One prepared IN query avoids an IPC-triggered N+1 scan when Home seeds
+    // several shelf caches at startup. The primary-key lookup remains indexed.
+    let placeholders = std::iter::repeat("?")
+        .take(keys.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key IN ({})",
+        placeholders
+    );
+    let mut statement = match conn.prepare(&sql) {
+        Ok(statement) => statement,
+        Err(_) => return vec![],
+    };
+    let rows = match statement.query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+        Ok(CacheEntry {
+            key: row.get(0)?,
+            value: row.get(1)?,
+            category: row.get(2)?,
+            created_at: row.get(3)?,
+            expires_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return vec![],
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[tauri::command]
