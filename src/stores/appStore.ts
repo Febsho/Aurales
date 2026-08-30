@@ -9,7 +9,7 @@ import { v4 as uuid } from 'uuid'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
-import { profileStorageKey, PROFILE_CHANGED_EVENT } from '../services/profiles'
+import { getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
 import { enqueueSyncRecord } from '../services/sync/auralesSync'
 
 function invalidateCatalogData(): void {
@@ -800,14 +800,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   blurTitles: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_titles') !== 'false',
   blurDescriptions: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_descriptions') !== 'false',
   keepNextEpisodeVisible: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
-  posterSize: (localStorage.getItem('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
+  posterSize: (getProfileSetting('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
-  heroTrailerDelay: Number(localStorage.getItem('aurales_hero_trailer_delay') || '3'),
-  homeHeroMode: (localStorage.getItem('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic') as HomeHeroMode,
-  homeCardAnimations: localStorage.getItem('aurales_home_card_animations') !== 'false',
-  fixedHeroSource: (localStorage.getItem('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
+  heroTrailerDelay: Number(getProfileSetting('aurales_hero_trailer_delay') || '3'),
+  homeHeroMode: (getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic') as HomeHeroMode,
+  homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
+  fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
   fixedHeroManualItem: (() => {
-    try { return JSON.parse(localStorage.getItem('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null }
+    try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null }
     catch { return null }
   })(),
   resumePriorityOrder: (() => {
@@ -927,26 +927,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBlurTitles: (val) => { localStorage.setItem('aurales_blur_titles', String(val)); set({ blurTitles: val }) },
   setBlurDescriptions: (val) => { localStorage.setItem('aurales_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
   setKeepNextEpisodeVisible: (val) => { localStorage.setItem('aurales_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
-  setPosterSize: (size) => { localStorage.setItem('aurales_poster_size', size); set({ posterSize: size }) },
+  setPosterSize: (size) => { setProfileSetting('aurales_poster_size', size); set({ posterSize: size }) },
   setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
   setHeroTrailerDelay: (seconds) => {
     const safe = [0, 3, 5, 10, 15, 30].includes(seconds) ? seconds : 0
-    localStorage.setItem('aurales_hero_trailer_delay', String(safe))
+    setProfileSetting('aurales_hero_trailer_delay', String(safe))
     set({ heroTrailerDelay: safe })
   },
   setHomeHeroMode: (mode) => {
     const safeMode: HomeHeroMode = mode === 'fixed' ? 'fixed' : 'dynamic'
-    localStorage.setItem('aurales_home_hero_mode', safeMode)
+    setProfileSetting('aurales_home_hero_mode', safeMode)
     set({ homeHeroMode: safeMode })
   },
   setHomeCardAnimations: (enabled) => {
-    localStorage.setItem('aurales_home_card_animations', String(enabled))
+    setProfileSetting('aurales_home_card_animations', String(enabled))
     set({ homeCardAnimations: enabled })
   },
-  setFixedHeroSource: (source) => { localStorage.setItem('aurales_fixed_hero_source', source); set({ fixedHeroSource: source }) },
+  setFixedHeroSource: (source) => { setProfileSetting('aurales_fixed_hero_source', source); set({ fixedHeroSource: source }) },
   setFixedHeroManualItem: (item) => {
-    if (item) localStorage.setItem('aurales_fixed_hero_manual_item', JSON.stringify(item))
-    else localStorage.removeItem('aurales_fixed_hero_manual_item')
+    if (item) setProfileSetting('aurales_fixed_hero_manual_item', JSON.stringify(item))
+    else localStorage.removeItem(profileStorageKey('aurales_fixed_hero_manual_item'))
     set({ fixedHeroManualItem: item })
   },
   setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
@@ -1186,6 +1186,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       preferredSubtitles: loadPersistedPreferredSubtitles(),
       subtitleMode: loadPersistedSubtitleMode(),
       preferredAudio: loadPersistedPreferredAudio(),
+      posterSize: (getProfileSetting('aurales_poster_size') || 'default') as AppState['posterSize'],
+      heroTrailerDelay: Number(getProfileSetting('aurales_hero_trailer_delay') || '3'),
+      homeHeroMode: getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic',
+      homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
+      fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
+      fixedHeroManualItem: (() => { try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null } catch { return null } })(),
     })
   },
 

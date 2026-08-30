@@ -9,6 +9,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
 
+const SYNC_KEYRING_SERVICE: &str = "com.aurales.app.sync";
+
+fn sync_keyring_entry(email: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SYNC_KEYRING_SERVICE, email).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn sync_password_store(email: String, password: String) -> Result<(), String> {
+    sync_keyring_entry(&email)?.set_password(&password).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn sync_password_load(email: String) -> Result<Option<String>, String> {
+    match sync_keyring_entry(&email)?.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn sync_password_delete(email: String) -> Result<(), String> {
+    match sync_keyring_entry(&email)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 // ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
 
 #[cfg(target_os = "windows")]

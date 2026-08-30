@@ -6,6 +6,7 @@ export const AURALES_SYNC_SCHEMA_VERSION = 1
 const DEVICE_KEY = 'aurales_sync_device_v1'
 const OUTBOX_KEY = 'aurales_sync_outbox_v1'
 const CONFIG_KEY = 'aurales_sync_config_v1'
+export const DEFAULT_SYNC_ENDPOINT = 'https://sync.febsho.me'
 
 export interface SyncRecord {
   recordId: string
@@ -18,17 +19,26 @@ export interface SyncRecord {
   schemaVersion: number
   revision?: number
 }
-export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string }
+export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string }
 export function getDeviceId(): string { let id = localStorage.getItem(DEVICE_KEY); if (!id) { id = uuid(); localStorage.setItem(DEVICE_KEY, id) } return id }
-export function getSyncConfig(): AuralesSyncConfig { try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}') } catch { return {} } }
+export function getSyncConfig(): AuralesSyncConfig {
+  try { return { ...JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'), endpoint: DEFAULT_SYNC_ENDPOINT } }
+  catch { return { endpoint: DEFAULT_SYNC_ENDPOINT } }
+}
 export function setSyncConfig(config: AuralesSyncConfig): void { localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...getSyncConfig(), ...config })) }
 export function getSyncOutbox(): SyncRecord[] { try { const value = JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } }
+let scheduledSync: ReturnType<typeof setTimeout> | undefined
+export function scheduleAutomaticSync(delayMs = 1200): void {
+  if (scheduledSync) clearTimeout(scheduledSync)
+  scheduledSync = setTimeout(() => { scheduledSync = undefined; void syncIfConfigured().catch(() => {}) }, delayMs)
+}
 /** Local-first, compacted outbox. The caller supplies an identity stable across devices (provider IDs where available). */
 export function enqueueSyncRecord(type: SyncRecord['type'], identity: string, payload: unknown, profileId = getActiveProfileId()): SyncRecord {
   const recordId = `${profileId}:${type}:${identity}`
   const record: SyncRecord = { recordId, profileId, type, payload, updatedAt: new Date().toISOString(), deviceId: getDeviceId(), version: 1, schemaVersion: AURALES_SYNC_SCHEMA_VERSION }
   const next = [...getSyncOutbox().filter((item) => item.recordId !== recordId), record].slice(-1000)
   localStorage.setItem(OUTBOX_KEY, JSON.stringify(next))
+  if (type !== 'encrypted-vault') scheduleAutomaticSync()
   return record
 }
 function readProfileArray<T>(key: string, profileId: string): T[] { try { const value = JSON.parse(localStorage.getItem(profileStorageKey(key, profileId)) || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } }
@@ -90,7 +100,13 @@ export function applyRemoteRecords(records: SyncRecord[]): void {
       activeChanged ||= record.profileId === getActiveProfileId()
     }
     if (record.type === 'encrypted-vault' && record.payload && typeof record.payload === 'object' && isSyncVaultUnlocked()) {
-      void restoreEncryptedVault(record.payload as EncryptedVault).then(() => window.location.reload()).catch(() => {})
+      // Pre-profile releases stored one account vault under a synthetic global
+      // profile ID. Restore that legacy backup into the currently selected
+      // profile so existing users do not lose their provider setup on upgrade.
+      const targetProfileId = record.profileId === '00000000-0000-0000-0000-000000000000' ? getActiveProfileId() : record.profileId
+      void restoreEncryptedVault(record.payload as EncryptedVault, targetProfileId).then(() => {
+        if (targetProfileId === getActiveProfileId()) window.location.reload()
+      }).catch(() => {})
     }
   }
   if (activeChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
@@ -99,6 +115,13 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
   const config = getSyncConfig()
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
   if (config.cursor == null) queueInitialSnapshot()
+  // On later syncs, the password-derived vault is available only for the
+  // current signed-in session. Do not create a new vault before the first
+  // pull, which could replace an existing device's backup.
+  if (config.cursor != null && isSyncVaultUnlocked()) {
+    const { queueEncryptedVault } = await import('./encryptedVault')
+    await queueEncryptedVault()
+  }
   const outbox = getSyncOutbox()
   const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor: config.cursor, records: outbox }) })
   if (!response.ok) { setSyncConfig({ lastError: `Sync failed (${response.status})` }); throw new Error(`Sync failed (${response.status})`) }
@@ -107,4 +130,10 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
   localStorage.setItem(OUTBOX_KEY, '[]')
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
   return { uploaded: outbox.length, downloaded: body.records?.length || 0 }
+}
+
+/** Safe for lifecycle hooks: does nothing until an Aurales account is configured. */
+export async function syncIfConfigured(): Promise<void> {
+  if (!getSyncConfig().accessToken) return
+  await syncNow()
 }

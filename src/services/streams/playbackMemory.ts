@@ -44,7 +44,7 @@ export function playbackPreferenceFromStream(stream: StreamResult & { addonId?: 
     cached: stream.behaviorHints?.torboxCached === true, successCount: 0, failureCount: 0,
   }
 }
-export function loadPlaybackMemory(): PlaybackMemory { try { return JSON.parse(localStorage.getItem(profileStorageKey(KEY)) || '{}') } catch { return {} } }
+export function loadPlaybackMemory(profileId?: string): PlaybackMemory { try { return JSON.parse(localStorage.getItem(profileStorageKey(KEY, profileId)) || '{}') } catch { return {} } }
 function save(memory: PlaybackMemory) { localStorage.setItem(profileStorageKey(KEY), JSON.stringify(memory)) }
 export function recordPlaybackPreference(key: string, stream: StreamResult & { addonId?: string }, outcome: 'success' | 'failure', preferences?: { audioLanguage?: string; subtitleLanguage?: string }): void {
   const memory = loadPlaybackMemory(); const current = memory[key] || playbackPreferenceFromStream(stream, preferences)

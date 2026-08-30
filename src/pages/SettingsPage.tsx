@@ -2073,6 +2073,7 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
+              <AuralesSyncSettings />
               {/* Trakt */}
               <SettingSection title="Trakt" description="Device authorization for watch history and lists.">
                 <div className="px-6 py-4">
@@ -3153,7 +3154,6 @@ export default function SettingsPage() {
 
           {activeTab === 'progress' && (
             <>
-              <AuralesSyncSettings />
               {/* ─── Global Settings ─── */}
               <SettingSection title="Continue Watching" description="Every connected service has its own Continue Watching — switch between them directly on the Home row. Use each service's 'Save Resume Position' below to opt out.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">

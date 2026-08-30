@@ -1,4 +1,4 @@
-import { useEffect, lazy, Suspense } from 'react'
+import { useEffect, lazy, Suspense, useState } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import UpdatePrompt from './components/UpdatePrompt'
@@ -7,6 +7,7 @@ import { useAppStore } from './stores/appStore'
 import type { ProgressProvider } from './stores/appStore'
 import { prefetchLikelyRoutes } from './services/routePrefetch'
 import { markPerformance, measurePerformance } from './services/performanceMetrics'
+import WhoWatching from './components/WhoWatching'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -49,6 +50,11 @@ function scheduleIdleWork(callback: () => void, timeout = 1500) {
 }
 
 export default function App() {
+  const [chooseProfile, setChooseProfile] = useState(() => {
+    const switched = sessionStorage.getItem('aurales_profile_switched_v1')
+    if (switched) sessionStorage.removeItem('aurales_profile_switched_v1')
+    return !switched
+  })
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)
@@ -94,6 +100,58 @@ export default function App() {
   useEffect(() => {
     markPerformance('app-shell-visible')
     measurePerformance('bootstrap-to-shell', 'bootstrap-start', 'app-shell-visible')
+  }, [])
+
+  // Pull durable account state soon after startup, then make a best-effort
+  // checkpoint when the window is hidden or closed. Local state remains the
+  // source of truth if the network is unavailable.
+  useEffect(() => {
+    const runSync = () => {
+      void import('./services/sync/auralesSync').then(({ syncIfConfigured }) => {
+        return import('./services/sync/secureLogin').then(async ({ loadSyncPassword }) => {
+          const { getSyncConfig } = await import('./services/sync/auralesSync')
+          const email = getSyncConfig().email
+          if (email) {
+            const password = await loadSyncPassword(email).catch(() => null)
+            if (password) {
+              const { unlockSyncVault } = await import('./services/sync/encryptedVault')
+              unlockSyncVault(password)
+            }
+          }
+          return syncIfConfigured()
+        }).catch(() => {})
+      }).catch(() => {})
+    }
+    const cancelIdle = scheduleIdleWork(runSync, 3000)
+    const onPageHide = () => runSync()
+    const onVisibility = () => { if (document.visibilityState === 'hidden') runSync() }
+    window.addEventListener('pagehide', onPageHide)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      cancelIdle()
+      window.removeEventListener('pagehide', onPageHide)
+      document.removeEventListener('visibilitychange', onVisibility)
+      runSync()
+    }
+  }, [])
+
+  // Most settings and provider clients are intentionally local-first and
+  // write directly to storage. Observe the active profile's durable state so
+  // every small setting/account change is backed up without a manual button.
+  useEffect(() => {
+    let fingerprint = ''
+    let stopped = false
+    const checkForChanges = () => {
+      void Promise.all([import('./services/sync/encryptedVault'), import('./services/sync/auralesSync')]).then(([vault, sync]) => {
+        if (stopped) return
+        const next = vault.profileSyncFingerprint()
+        if (!fingerprint) { fingerprint = next; return }
+        if (next !== fingerprint) { fingerprint = next; sync.scheduleAutomaticSync(700) }
+      }).catch(() => {})
+    }
+    checkForChanges()
+    const interval = window.setInterval(checkForChanges, 1500)
+    return () => { stopped = true; window.clearInterval(interval) }
   }, [])
 
   // Route chunks stay off the critical path, but likely first destinations are
@@ -259,6 +317,7 @@ export default function App() {
 
   return (
     <ErrorBoundary label="App">
+      {chooseProfile && <WhoWatching onComplete={() => setChooseProfile(false)} />}
       <Suspense
         fallback={
           <div className="flex items-center justify-center h-screen bg-black">
