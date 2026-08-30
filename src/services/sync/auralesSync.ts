@@ -1,10 +1,10 @@
 import { v4 as uuid } from 'uuid'
 import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
 import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
+import { getOutboxRecords, outboxReady, putOutboxRecord, removeOutboxRecords } from './outbox'
 
 export const AURALES_SYNC_SCHEMA_VERSION = 1
 const DEVICE_KEY = 'aurales_sync_device_v1'
-const OUTBOX_KEY = 'aurales_sync_outbox_v1'
 const CONFIG_KEY = 'aurales_sync_config_v1'
 export const DEFAULT_SYNC_ENDPOINT = 'https://sync.febsho.me'
 
@@ -25,8 +25,13 @@ export function getSyncConfig(): AuralesSyncConfig {
   try { return { ...JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'), endpoint: DEFAULT_SYNC_ENDPOINT } }
   catch { return { endpoint: DEFAULT_SYNC_ENDPOINT } }
 }
-export function setSyncConfig(config: AuralesSyncConfig): void { localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...getSyncConfig(), ...config })) }
-export function getSyncOutbox(): SyncRecord[] { try { const value = JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } }
+export function setSyncConfig(config: AuralesSyncConfig): void {
+  // A failed write here would abort a sync that had already succeeded on the
+  // server, so it is reported rather than thrown.
+  try { localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...getSyncConfig(), ...config })) }
+  catch (error) { console.error('[sync] could not persist the sync config', error) }
+}
+export function getSyncOutbox(): SyncRecord[] { return getOutboxRecords() }
 let scheduledSync: ReturnType<typeof setTimeout> | undefined
 export function scheduleAutomaticSync(delayMs = 1200): void {
   if (scheduledSync) clearTimeout(scheduledSync)
@@ -36,8 +41,7 @@ export function scheduleAutomaticSync(delayMs = 1200): void {
 export function enqueueSyncRecord(type: SyncRecord['type'], identity: string, payload: unknown, profileId = getActiveProfileId()): SyncRecord {
   const recordId = `${profileId}:${type}:${identity}`
   const record: SyncRecord = { recordId, profileId, type, payload, updatedAt: new Date().toISOString(), deviceId: getDeviceId(), version: 1, schemaVersion: AURALES_SYNC_SCHEMA_VERSION }
-  const next = [...getSyncOutbox().filter((item) => item.recordId !== recordId), record].slice(-1000)
-  localStorage.setItem(OUTBOX_KEY, JSON.stringify(next))
+  putOutboxRecord(record)
   if (type !== 'encrypted-vault') scheduleAutomaticSync()
   return record
 }
@@ -113,6 +117,7 @@ export function applyRemoteRecords(records: SyncRecord[]): void {
   if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
 }
 export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
+  await outboxReady()
   const config = getSyncConfig()
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
   if (config.cursor == null) queueInitialSnapshot()
@@ -131,7 +136,7 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
   const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
   applyRemoteRecords(body.records || [])
   const sent = new Set(outbox.map((record) => record.recordId))
-  localStorage.setItem(OUTBOX_KEY, JSON.stringify(getSyncOutbox().filter((record) => !sent.has(record.recordId))))
+  removeOutboxRecords(sent)
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
   return { uploaded: outbox.length, downloaded: body.records?.length || 0 }
 }
@@ -139,18 +144,25 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
 /** Explicit Push rebuilds the durable snapshot for every profile, including
  * profiles that existed before this device first enabled Sync. */
 export async function uploadSyncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
+  await outboxReady()
   const pendingDeletions = getPendingProfileDeletions()
   for (const deletion of pendingDeletions) enqueueSyncRecord('profile', deletion.id, { id: deletion.id, deleted: true }, deletion.id)
   queueInitialSnapshot()
+  let uploaded = 0; let downloaded = 0
+  const drain = async () => {
+    do {
+      const result = await syncNow(fetcher)
+      uploaded += result.uploaded; downloaded += result.downloaded
+    } while (getSyncOutbox().length > 0)
+  }
+  await drain()
   if (isSyncVaultUnlocked()) {
     const { queueEncryptedVault } = await import('./encryptedVault')
-    for (const profile of getProfiles()) await queueEncryptedVault(profile.id)
+    // One vault per pass. Each is an encrypted copy of that profile's entire
+    // stored state, so queueing every profile's vault before uploading any of
+    // them would hold the whole account in the queue at once.
+    for (const profile of getProfiles()) { await queueEncryptedVault(profile.id); await drain() }
   }
-  let uploaded = 0; let downloaded = 0
-  do {
-    const result = await syncNow(fetcher)
-    uploaded += result.uploaded; downloaded += result.downloaded
-  } while (getSyncOutbox().length > 0)
   if (pendingDeletions.length) clearPendingProfileDeletions()
   return { uploaded, downloaded }
 }
