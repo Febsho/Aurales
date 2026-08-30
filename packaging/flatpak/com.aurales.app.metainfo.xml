@@ -19,6 +19,17 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.5" date="2026-08-30">
+      <description>
+        <p>
+          Adds an Upcoming page and Home shelf for tracking release dates,
+          keeps Continue Watching free of accidental starts and stale entries,
+          can automatically recover from a stream that stops playing back
+          healthily, and fixes detail-page hero artwork that could stay blank
+          after the image cache stalled.
+        </p>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-08-30">
       <description>
         <p>
