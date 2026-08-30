@@ -435,6 +435,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       getTrailerSource({
         type,
         tmdbId,
+        imdbId: item.imdbId,
         title: item.title,
         year: item.year,
         language: trailerLanguage,
@@ -463,6 +464,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       preloadTrailerSource({
         type: candidate.type === 'series' ? 'series' : 'movie',
         tmdbId: candidateTmdbId,
+        imdbId: candidate.imdbId,
         title: candidate.title,
         year: candidate.year,
         language: trailerLanguage,

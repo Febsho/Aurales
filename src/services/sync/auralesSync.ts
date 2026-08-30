@@ -1,7 +1,7 @@
 import { v4 as uuid } from 'uuid'
 import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
 import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
-import { getOutboxRecords, outboxReady, putOutboxRecord, removeOutboxRecords } from './outbox'
+import { getOutboxRecords, outboxReady, putOutboxRecord, removeOutboxRecords, takeOutboxBatch } from './outbox'
 
 export const AURALES_SYNC_SCHEMA_VERSION = 1
 const DEVICE_KEY = 'aurales_sync_device_v1'
@@ -128,9 +128,11 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
     const { queueEncryptedVault } = await import('./encryptedVault')
     await queueEncryptedVault()
   }
-  // The service intentionally bounds requests at 250 records. Keep the rest
-  // of a large profile/library snapshot in the local outbox for the next pass.
-  const outbox = getSyncOutbox().slice(0, 250)
+  // The service bounds a request by both record count and body size. Batching
+  // by count alone overflows the body limit as soon as an encrypted vault is
+  // queued, so the batch is capped by bytes too. The rest of a large snapshot
+  // stays in the outbox for the next pass.
+  const outbox = takeOutboxBatch()
   const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor: config.cursor, records: outbox }) })
   if (!response.ok) { setSyncConfig({ lastError: `Sync failed (${response.status})` }); throw new Error(`Sync failed (${response.status})`) }
   const body = await response.json() as { cursor?: string; records?: SyncRecord[] }

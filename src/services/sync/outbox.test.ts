@@ -126,6 +126,55 @@ describe('sync outbox storage', () => {
     expect(records[0].payload).toEqual({ seconds: 49 })
   })
 
+  it('bounds the queue by size rather than record count', async () => {
+    const { getOutboxBytes, getOutboxRecords, outboxReady, putOutboxRecord } = await import('./outbox')
+    await outboxReady()
+
+    // 2000 small records: twice the old 1000-record cap, but tiny in bytes, so
+    // none of them should be evicted.
+    for (let index = 0; index < 2000; index += 1) putOutboxRecord({ ...vaultRecord(index, 10), type: 'progress' })
+    expect(getOutboxRecords()).toHaveLength(2000)
+    expect(getOutboxBytes()).toBeLessThan(1_000_000)
+  })
+
+  it('refuses a record the service could never accept', async () => {
+    const { MAX_RECORD_BYTES, getOutboxError, getOutboxRecords, outboxReady, putOutboxRecord } = await import('./outbox')
+    await outboxReady()
+
+    expect(putOutboxRecord(vaultRecord(0, MAX_RECORD_BYTES + 1))).toBe(false)
+    expect(getOutboxRecords()).toHaveLength(0)
+    expect(getOutboxError()).toMatch(/larger than the sync service accepts/)
+    // A record that does fit is still queued normally.
+    expect(putOutboxRecord(vaultRecord(1, 1_000))).toBe(true)
+    expect(getOutboxRecords()).toHaveLength(1)
+  })
+
+  it('caps an upload batch by bytes as well as by record count', async () => {
+    const { MAX_BATCH_BYTES, outboxReady, putOutboxRecord, takeOutboxBatch } = await import('./outbox')
+    await outboxReady()
+
+    // Four 2 MB vaults: under the 250-record cap, but over the 5 MB body limit.
+    for (let index = 0; index < 4; index += 1) putOutboxRecord(vaultRecord(index, 2_000_000))
+    const batch = takeOutboxBatch()
+    expect(batch.length).toBeLessThan(4)
+    expect(JSON.stringify(batch).length).toBeLessThanOrEqual(MAX_BATCH_BYTES)
+  })
+
+  it('still fills a batch to the record cap when the records are small', async () => {
+    const { outboxReady, putOutboxRecord, takeOutboxBatch } = await import('./outbox')
+    await outboxReady()
+    for (let index = 0; index < 400; index += 1) putOutboxRecord({ ...vaultRecord(index, 10), type: 'progress' })
+    expect(takeOutboxBatch()).toHaveLength(250)
+  })
+
+  it('always returns at least one record so the queue cannot stall', async () => {
+    const { MAX_BATCH_BYTES, outboxReady, putOutboxRecord, takeOutboxBatch } = await import('./outbox')
+    await outboxReady()
+    putOutboxRecord(vaultRecord(0, MAX_BATCH_BYTES - 500))
+    putOutboxRecord(vaultRecord(1, 1_000))
+    expect(takeOutboxBatch()).toHaveLength(1)
+  })
+
   it('survives a storage write failure instead of aborting the sync', async () => {
     vi.stubGlobal('indexedDB', { open: () => { const request: Record<string, unknown> = {}; queueMicrotask(() => (request.onerror as (() => void) | null)?.()); return request } })
     const { getOutboxRecords, outboxReady, putOutboxRecord } = await import('./outbox')

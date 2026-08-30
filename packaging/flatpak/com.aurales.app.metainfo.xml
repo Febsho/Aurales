@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.4" date="2026-08-30">
+      <description>
+        <p>
+          Fixes Aurales Sync storage quotas and safely batches uploads, restores
+          manual stream selection, improves retry behavior when sources are
+          temporarily unavailable, and makes trailer selection and release
+          playback more reliable.
+        </p>
+      </description>
+    </release>
     <release version="0.3.3" date="2026-08-30">
       <description>
         <p>

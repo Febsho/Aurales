@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.3-white?style=flat-square" alt="Version 0.3.3" />
+  <img src="https://img.shields.io/badge/version-0.3.4-white?style=flat-square" alt="Version 0.3.4" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -23,18 +23,16 @@ Aurales is an elegant, offline-first desktop media hub that aggregates streaming
 
 ## Download & Install
 
-Download version **0.3.3** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.3.4** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
-### Version 0.3.3 highlights
+### Version 0.3.4 highlights
 
-- Profiles now keep separate settings, connected accounts, watch state, and
-  recommendations, with Aurales Sync backing up every profile.
-- Switching profiles opens the selected profile's Home through a polished
-  identity transition.
-- Dynamic Banner and Fixed Focus receive clearer card metadata, steadier
-  hover behavior, and refined navigation/search layering.
-- Detail pages, profile controls, and Sync settings have improved spacing and
-  visual consistency.
+- Aurales Sync now avoids local storage quota failures and uploads large
+  account snapshots in safe batches.
+- Stream sources remain manually selectable, retry quickly after a temporary
+  empty addon response, and no longer let optional history storage block play.
+- Trailer matching uses the complete title, with a browser-player fallback
+  when native trailer playback is unavailable.
 
 ### Windows
 
@@ -80,9 +78,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.3/Aurales_0.3.3_amd64.flatpak \
-  -o Aurales_0.3.3_amd64.flatpak
-flatpak install --user -y ./Aurales_0.3.3_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.3.4/Aurales_0.3.4_amd64.flatpak \
+  -o Aurales_0.3.4_amd64.flatpak
+flatpak install --user -y ./Aurales_0.3.4_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -100,7 +98,7 @@ Download Aurales directly from GitHub, install it for your user, and launch it:
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.3/Aurales_0.3.3_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.3.4/Aurales_0.3.4_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -221,7 +219,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.3.3`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.3.4`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

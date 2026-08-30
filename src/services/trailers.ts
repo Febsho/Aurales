@@ -179,8 +179,28 @@ function decodeHtml(value: string): string {
 // foreign-language trailer uploads unless the title itself is CJK.
 const containsCjk = (value: string) => /[぀-ヿ㐀-䶿一-鿿가-힯]/.test(value)
 
-function extractYoutubeFallback(html: string, title: string): TrailerSource | null {
-  const lowerTitle = title.toLowerCase()
+function normalizeTrailerTitle(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+/**
+ * Search results must identify the whole title, not merely the franchise.
+ * Matching only the portion before a colon made "Spider-Man: Brand New Day"
+ * eligible for trailers from every older Spider-Man film.
+ */
+function matchesTrailerTitle(candidateTitle: string, title: string): boolean {
+  const expected = normalizeTrailerTitle(title)
+  const candidate = normalizeTrailerTitle(candidateTitle)
+  return expected.length > 0 && candidate.includes(expected)
+}
+
+export function extractYoutubeFallback(html: string, title: string): TrailerSource | null {
   const seen = new Set<string>()
   const matches = [...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"[\s\S]{0,2200}?"title":\{"runs":\[\{"text":"([^"]+)"/g)]
 
@@ -190,18 +210,16 @@ function extractYoutubeFallback(html: string, title: string): TrailerSource | nu
     if (!isValidYoutubeKey(key) || seen.has(key)) continue
     seen.add(key)
     if (!candidateTitle.includes('trailer')) continue
-    if (!candidateTitle.includes(lowerTitle.split(':')[0])) continue
+    if (!matchesTrailerTitle(candidateTitle, title)) continue
     if (containsCjk(candidateTitle) && !containsCjk(title)) continue
     if (REJECT_YOUTUBE_TERMS.some((term) => candidateTitle.includes(term))) continue
     if (candidateTitle.includes('teaser') && matches.length > 1) continue
     return makeYoutubeSource(key, 'youtube', undefined, candidateTitle.includes('official'))
   }
 
-  for (const match of html.matchAll(/watch\?v=([a-zA-Z0-9_-]{11})/g)) {
-    const key = match[1]
-    if (isValidYoutubeKey(key) && !seen.has(key)) return makeYoutubeSource(key, 'youtube')
-  }
-
+  // Do not fall back to an unlabelled watch URL. Search pages contain links to
+  // related and recommended videos, so accepting one here can play a trailer
+  // for a different entry in the same franchise.
   return null
 }
 
@@ -255,9 +273,9 @@ async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource 
 export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const tmdbId = input.tmdbId ? String(input.tmdbId).replace('tmdb-', '') : ''
   const cacheKey = [
-    // v7 invalidates v6 entries, which could persist a transient failed/null
-    // lookup for seven days and disable both Hero and poster trailers.
-    'trailer_source_v7',
+    // v8 invalidates older loose YouTube matches, which could retain a trailer
+    // from another movie in the same franchise for seven days.
+    'trailer_source_v8',
     mediaTypeForTmdb(input.type),
     tmdbId || 'no-tmdb',
     input.imdbId || 'no-imdb',

@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { TrailerSource } from '../services/trailers'
 import { resolveHeroStreams } from '../services/heroTrailerStreams'
+import TrailerPreview from './TrailerPreview'
 import {
   getEmbeddedPlayerOwner,
   launchEmbeddedPlayer,
@@ -16,7 +17,7 @@ import { useAppStore } from '../stores/appStore'
 // child window renders behind the transparent webview, so while the video is
 // visible this component (and HeroSection via onPlayingChange) must keep the
 // pixels above the hero rect transparent. If native playback is unavailable,
-// the attempt ends without exposing a YouTube iframe or thumbnail.
+// fall back to the browser player instead of silently losing the trailer.
 
 interface HeroMpvTrailerProps {
   trailer: TrailerSource
@@ -201,14 +202,13 @@ export default function HeroMpvTrailer({
     return () => window.clearTimeout(timeout)
   }, [mode, videoVisible, trailer.directUrl, maxHeight])
 
-  // Native resolution already tried the same YouTube source. End the Hero
-  // trailer attempt instead of hiding its artwork behind another pending
-  // browser fallback (which can remain black for blocked/restricted videos).
+  // Native resolution can fail in a packaged release when yt-dlp is missing,
+  // out of date, or rejected by YouTube. Let TrailerPreview use its direct
+  // resolver and iframe fallback before declaring the trailer unavailable.
   useEffect(() => {
     if (mode !== 'fallback') return
     onPlayingChange?.(false)
-    onUnavailable?.()
-  }, [mode, onPlayingChange, onUnavailable])
+  }, [mode, onPlayingChange])
 
   // The transparent-hole compositing only holds while the app window is
   // focused — unfocused, the hole exposes the desktop. End the trailer on
@@ -328,6 +328,19 @@ export default function HeroMpvTrailer({
       {/* HeroSection keeps its normal artwork visible until mpv renders the
           first frame, so there is no thumbnail or error-frame flash. */}
       <div ref={containerRef} className={`relative h-full w-full ${className}`} />
+      {mode === 'fallback' && (
+        <TrailerPreview
+          trailer={trailer}
+          title="Trailer"
+          muted={muted}
+          eager
+          highQuality
+          showShade={false}
+          className={`absolute inset-0 ${className}`}
+          onEnded={onEnded}
+          onUnavailable={onUnavailable}
+        />
+      )}
     </>
   )
 }

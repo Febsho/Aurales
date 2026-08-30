@@ -72,7 +72,10 @@ interface AggregateFlight {
 
 const MAX_CONCURRENCY = 4
 const ADDON_TIMEOUT_MS = 8_000
-const NEGATIVE_TTL_SECONDS = 7 * 60
+// Addons occasionally answer before their upstream index has caught up. Keep
+// a tiny cooldown to prevent retry storms, but retry soon when the user opens
+// the selector again.
+const NEGATIVE_TTL_SECONDS = 60
 const EPISODE_TTL_SECONDS = 45 * 60
 const MOVIE_TTL_SECONDS = 12 * 60 * 60
 const STALE_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -101,7 +104,9 @@ function allStreamAddons(type: 'movie' | 'series'): InstalledAddon[] {
 }
 
 function cacheKey(mediaKey: string, addon: InstalledAddon, streamId: string): string {
-  return `stream_preload:v1:${mediaKey}:${addon.manifest.id}:${streamId}`
+  // v2 drops the old seven-minute negative cache. A temporary empty result
+  // from an addon must not make a title look unavailable for an entire session.
+  return `stream_preload:v2:${mediaKey}:${addon.manifest.id}:${streamId}`
 }
 
 export async function resolveNextEpisode(
@@ -335,7 +340,13 @@ class StreamPreloadManager {
       ...(success ? { lastSuccessAt: Date.now() } : { lastFailureAt: Date.now() }),
     }
     this.performance[addonId] = next
-    if (typeof localStorage !== 'undefined') localStorage.setItem(PERF_STORAGE_KEY, JSON.stringify(this.performance))
+    // Performance ranking is optional. A WebView storage quota must not turn
+    // a successfully fetched stream list into an apparent addon failure.
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(PERF_STORAGE_KEY, JSON.stringify(this.performance))
+    } catch (error) {
+      console.warn('[streams] could not persist preload performance stats', error)
+    }
   }
 
   private addonScore(addonId: string): number {

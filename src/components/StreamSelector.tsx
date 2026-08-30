@@ -687,8 +687,6 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     ? `${title} S${seasonEpisode.season}E${seasonEpisode.episode}`
     : title
 
-  if (autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (loading || streams.length > 0)) return null
-
   if (playback) {
     if (nativePlayerAvailable === undefined) return null
     const isAnimePlayback = Boolean(anilistId || malId)
@@ -836,6 +834,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           </div>
 
           <div className="flex-1 space-y-2 overflow-y-auto pr-1" style={{ scrollbarWidth: 'none' }}>
+          {autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (
+            <p className="px-2 pt-1 text-xs text-white/50">Smart Play is preparing a source. You can choose one manually below.</p>
+          )}
           {loading && (
             <div className="col-span-full flex flex-col items-center justify-center gap-3 py-12">
               <div className="w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -869,7 +870,15 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
               key={`${stream.addonId}-${i}`}
               onMouseEnter={() => warmManualStream(stream)}
               onFocus={() => warmManualStream(stream)}
-              onClick={() => { smartActiveRef.current = false; recordReliabilityEvent(stream, 'preferred'); handlePlay(stream, streams.indexOf(stream)) }}
+              onClick={() => {
+                // A user choice must win over a background Smart Play probe.
+                // Without this, the picker was hidden while automatic playback
+                // was enabled, leaving no way to select a stream by hand.
+                manualSelectionRequestedRef.current = true
+                smartActiveRef.current = false
+                recordReliabilityEvent(stream, 'preferred')
+                handlePlay(stream, streams.indexOf(stream))
+              }}
               aria-label={`Play ${getStreamHeading(stream, i)}`}
               className="group flex min-h-[82px] w-full items-start gap-4 rounded-2xl border border-white/[0.07] bg-[#151719]/90 px-4 py-3.5 text-left shadow-[0_10px_30px_rgba(0,0,0,0.22)] transition-all hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-[#1d2023] focus-visible:border-accent/50 focus-visible:outline-none"
             >

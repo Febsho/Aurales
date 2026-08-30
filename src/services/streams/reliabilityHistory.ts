@@ -49,6 +49,13 @@ export function recordReliabilityEvent(
   if (event === 'reported_bad') next.reportedBad += 1
   if (event === 'preferred') next.preferred += 1
   history[key] = next
-  target?.setItem(STORAGE_KEY, JSON.stringify(history))
+  // Playback must never depend on optional analytics. In particular, a full
+  // WebView localStorage quota used to throw here before StreamSelector could
+  // start the chosen stream, making every source button appear unresponsive.
+  try {
+    target?.setItem(STORAGE_KEY, JSON.stringify(history))
+  } catch (error) {
+    console.warn('[streams] could not persist reliability history', error)
+  }
   return next
 }
