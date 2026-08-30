@@ -330,7 +330,9 @@ export default function Layout() {
           onMouseEnter={usesTopNav ? undefined : showSearchBar}
           onMouseLeave={usesTopNav ? undefined : scheduleHideSearchBar}
           className={[
-            `${usesTopNav ? 'fixed' : 'absolute'} left-1/2 z-[9998]`,
+            // A top-bar search belongs beneath the navigation capsule and its
+            // profile menu. Sidebar search remains above its own content.
+            `${usesTopNav ? 'fixed z-[60]' : 'absolute z-[9998]'} left-1/2`,
             'w-[min(38rem,calc(100vw-2rem))]',
             'transition-all duration-300 ease-expo',
             usesTopNav || searchBarVisible || searchFocused || isSearchPage

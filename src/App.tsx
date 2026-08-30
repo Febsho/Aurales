@@ -8,6 +8,7 @@ import type { ProgressProvider } from './stores/appStore'
 import { prefetchLikelyRoutes } from './services/routePrefetch'
 import { markPerformance, measurePerformance } from './services/performanceMetrics'
 import WhoWatching from './components/WhoWatching'
+import ProfileSwitchTransition from './components/ProfileSwitchTransition'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -122,6 +123,9 @@ export default function App() {
         }).catch(() => {})
       }).catch(() => {})
     }
+    // Profiles must be fetched before/while the startup chooser is visible so
+    // a new device immediately shows every profile from this account.
+    runSync()
     const cancelIdle = scheduleIdleWork(runSync, 3000)
     const onPageHide = () => runSync()
     const onVisibility = () => { if (document.visibilityState === 'hidden') runSync() }
@@ -318,6 +322,7 @@ export default function App() {
   return (
     <ErrorBoundary label="App">
       {chooseProfile && <WhoWatching onComplete={() => setChooseProfile(false)} />}
+      <ProfileSwitchTransition />
       <Suspense
         fallback={
           <div className="flex items-center justify-center h-screen bg-black">

@@ -1,6 +1,7 @@
 import BaseSelectMenu from '../components/ui/SelectMenu'
 import Switch from '../components/ui/Switch'
 import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
@@ -26,7 +27,6 @@ import {
   pollForToken,
   clearTokens,
   isAuthenticated,
-  hasBundledTraktClientCredentials,
   hasTraktClientCredentials,
 } from '../services/trakt/auth'
 import {
@@ -58,6 +58,7 @@ import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsS
 import { clearTorBoxToken, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
 import ProfilesSettings from '../components/settings/ProfilesSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
+import AccountsHub from '../components/settings/AccountsHub'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -286,6 +287,21 @@ function ServiceIcon({ service, className = 'w-4.5 h-4.5' }: { service: string; 
     <span className={`${className} inline-flex items-center justify-center rounded bg-white/10 text-tag font-black text-white/70 flex-shrink-0`}>
       {service.slice(0, 2).toUpperCase()}
     </span>
+  )
+}
+
+function PresenceToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label="Enable Discord Rich Presence"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${checked ? 'border-emerald-300/30 bg-emerald-400/10' : 'border-white/12 bg-black/20 hover:bg-white/[.07]'}`}
+    >
+      <span className={`h-5 w-5 rounded-full shadow-[0_2px_8px_rgba(0,0,0,.35)] transition-transform duration-200 ${checked ? 'translate-x-5 bg-emerald-200' : 'translate-x-0 bg-white/45'}`} />
+    </button>
   )
 }
 
@@ -1111,7 +1127,14 @@ const AUDIENCE_OPTIONS = [
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'profiles' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'>('accounts')
+  const [searchParams] = useSearchParams()
+  type SettingsTab = 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'accounts')
+
+  useEffect(() => {
+    if (requestedTab === 'profiles') setActiveTab('profiles')
+  }, [requestedTab])
   
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
@@ -1143,7 +1166,6 @@ export default function SettingsPage() {
   const [traktCode, setTraktCode] = useState<TraktDeviceCode | null>(null)
   const [traktPolling, setTraktPolling] = useState(false)
   const [traktError, setTraktError] = useState('')
-  const [showTraktAdvanced, setShowTraktAdvanced] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1474,7 +1496,6 @@ export default function SettingsPage() {
   const handleTraktConnect = async () => {
     if (!hasTraktClientCredentials()) {
       setTraktError('Trakt requires app credentials for device authorization. Add your Trakt Client ID and Client Secret below.')
-      setShowTraktAdvanced(true)
       return
     }
     setTraktError('')
@@ -1863,8 +1884,6 @@ export default function SettingsPage() {
   }
 
   const isConnected = store.traktConnected || isAuthenticated()
-  const hasBundledTrakt = hasBundledTraktClientCredentials()
-  const canConnectTrakt = hasTraktClientCredentials() && !traktPolling
   const categories = [
     {
       title: 'CONNECTIONS',
@@ -1875,6 +1894,14 @@ export default function SettingsPage() {
           description: 'Separate history, watchlists, Discover taste, and playback preferences.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path strokeLinecap="round" strokeLinejoin="round" d="M19 8v6m-3-3h6" /></svg>
+          )
+        },
+        {
+          id: 'sync',
+          label: 'Aurales Sync',
+          description: 'Sync profiles, settings, and connected services across devices.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 12a8 8 0 0113.657-5.657M20 12a8 8 0 01-13.657 5.657" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 3v4h-4M7 21v-4h4" /></svg>
           )
         },
         {
@@ -2063,8 +2090,8 @@ export default function SettingsPage() {
 
       {/* ─── Right Content ─── */}
       <div className="settings-page__content flex-1 min-w-0 overflow-y-auto p-8 pt-32">
-        <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
-        <p className="text-sm text-white/60 mb-8">{activeItem?.description ?? ''}</p>
+        {activeTab !== 'accounts' && <><h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
+        <p className="text-sm text-white/60 mb-8">{activeItem?.description ?? ''}</p></>}
 
         <div className="settings-page__content-inner space-y-6 max-w-6xl">
 
@@ -2073,683 +2100,65 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
-              <AuralesSyncSettings />
-              {/* Trakt */}
-              <SettingSection title="Trakt" description="Device authorization for watch history and lists.">
-                <div className="px-6 py-4">
-                  {isConnected ? (
-                    <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                      <div className="flex items-center gap-3">
-                        {store.traktAccount?.avatar ? (
-                          <img src={store.traktAccount.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-accent/35" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center text-accent text-sm font-bold">
-                            {(store.traktAccount?.name ?? store.traktAccount?.username ?? 'T')[0].toUpperCase()}
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-sm font-bold text-white">
-                            {store.traktAccount?.name ?? store.traktAccount?.username ?? 'Trakt User'}
-                          </p>
-                          <p className="text-xs text-white/60 mt-0.5">Connected to Trakt</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleTraktDisconnect}
-                        className="px-3.5 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {hasBundledTrakt ? (
-                        <p className="text-sm text-white/60">Connect your Trakt account with device authorization.</p>
-                      ) : (
-                        <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-                          <p className="text-sm text-yellow-200">
-                            Trakt's device token flow requires a client secret. Aurales does not bundle that secret, so add your own Trakt app credentials to connect.
-                          </p>
-                        </div>
-                      )}
+              <AccountsHub integrations={[
+                {
+                  id: 'trakt', name: 'Trakt', iconService: 'trakt', group: 'history', wide: true,
+                  description: 'Watch history · Ratings · Lists',
+                  state: isConnected ? 'connected' : traktPolling ? 'syncing' : traktError || !hasTraktClientCredentials() ? 'needs-attention' : 'not-connected',
+                  account: store.traktAccount?.name ?? store.traktAccount?.username,
+                  message: !isConnected && !hasTraktClientCredentials() ? 'Custom application credentials are required.' : (traktError || undefined),
+                  primaryLabel: hasTraktClientCredentials() ? 'Connect Trakt' : 'Set up Trakt', onPrimary: handleTraktConnect, primaryOpensManage: !hasTraktClientCredentials(), showAdvancedLink: true, isAccount: true,
+                  onDisconnect: handleTraktDisconnect,
+                  setup: <div className="space-y-3"><p className="text-sm leading-relaxed text-white/60">Aurales uses your own Trakt application credentials for device authorization.</p><label className="block text-xs font-semibold text-white/60">Client ID<input type="text" value={store.traktClientId} onChange={(e) => store.setTraktClientId(e.target.value)} placeholder="Paste your Trakt app Client ID" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label><label className="block text-xs font-semibold text-white/60">Client Secret<input type="password" value={store.traktClientSecret} onChange={(e) => store.setTraktClientSecret(e.target.value)} placeholder="Paste your Trakt app Client Secret" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label>{traktCode && <div className="rounded-xl border border-white/[.08] bg-white/[.04] p-3 text-sm text-white/70">Open <a className="text-accent underline" href={traktCode.verificationUrl} target="_blank" rel="noreferrer">{traktCode.verificationUrl}</a> and enter <strong className="ml-1 font-mono text-white">{traktCode.userCode}</strong>.</div>}</div>,
+                },
+                {
+                  id: 'simkl', name: 'Simkl', iconService: 'simkl', group: 'history', description: 'Watchlist · Watching · History',
+                  state: simklLoading ? 'syncing' : (simklStatus.connected || store.simklConnected) ? 'connected' : simklError && !simklError.startsWith('Waiting') ? 'needs-attention' : 'not-connected',
+                  account: simklStatus.account?.username ?? store.simklAccount?.username, detail: simklLastSync ? `Last synced ${new Date(simklLastSync).toLocaleString()}` : undefined, message: simklError || undefined,
+                  primaryLabel: 'Connect Simkl', onPrimary: handleSimklConnect, showAdvancedLink: true, isAccount: true, onSync: handleSimklSync, onDisconnect: handleSimklDisconnect,
+                  setup: simklAuthStarted ? <div className="space-y-3"><p className="text-sm text-white/60">Aurales opened Simkl in your browser. Confirm the code to finish connecting.</p>{simklVerificationUrl && <a href={simklVerificationUrl} target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Open Simkl verification</a>}<div className="flex gap-2"><input value={simklCode} onChange={(e) => setSimklCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()} className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" aria-label="Simkl authorization code" /><button type="button" onClick={handleSimklCodeSubmit} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Check now</button></div></div> : undefined,
+                },
+                {
+                  id: 'anilist', name: 'AniList', iconService: 'anilist', group: 'history', description: 'Anime progress · Lists · History',
+                  state: anilistLoading ? 'syncing' : store.anilistConnected ? 'connected' : anilistMessage && /failed|missing/i.test(anilistMessage) ? 'needs-attention' : 'not-connected',
+                  account: store.anilistAccount ? `@${store.anilistAccount.name}` : undefined, message: anilistMessage || undefined,
+                  primaryLabel: store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList', onPrimary: handleAnilistConnect, showAdvancedLink: true, isAccount: true, onSync: syncAniListNow, syncLabel: 'Sync Now', onDisconnect: handleAnilistDisconnect,
+                  setup: <div className="space-y-3"><p className="text-sm text-white/60">Use a personal access token only if browser authorization is unavailable.</p><div className="flex gap-2"><input type="password" value={anilistTokenInput} onChange={(e) => setAnilistTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && connectAniListManual()} placeholder="Manual access token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={connectAniListManual} disabled={anilistLoading || !anilistTokenInput} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save token</button></div></div>,
+                },
+                {
+                  id: 'torbox', name: 'TorBox', iconService: 'torbox', group: 'streaming', description: 'Cached streaming',
+                  state: torBoxLoading ? 'syncing' : torBoxUser ? 'connected' : torBoxMessage && /error|failed|expired|invalid/i.test(torBoxMessage) ? 'needs-attention' : 'not-connected',
+                  account: torBoxUser?.email, detail: torBoxUser ? (['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`) : undefined, message: torBoxMessage || undefined,
+                  primaryLabel: 'Connect TorBox', onPrimary: handleTorBoxConnect, showAdvancedLink: true, isAccount: true, onDisconnect: handleTorBoxDisconnect,
+                  setup: <div className="space-y-3">{torBoxDevice && <div className="rounded-xl border border-accent/20 bg-accent/[.06] p-3 text-sm text-white/70">Finish device authorization with code <strong className="font-mono text-white">{torBoxDevice.code}</strong>.</div>}<p className="text-sm text-white/60">Paste a personal TorBox API token instead of using device authorization.</p><div className="flex gap-2"><input type="password" value={torBoxTokenInput} onChange={(e) => setTorBoxTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleTorBoxManualConnect()} placeholder="TorBox API token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save</button></div></div>,
+                },
+                {
+                  id: 'stremio', name: 'Stremio', iconService: 'stremio', group: 'ecosystem', wide: true, description: 'Library · Addons · History',
+                  state: stremioLoading ? 'syncing' : stremioAuth ? 'connected' : stremioError ? 'needs-attention' : 'not-connected', account: stremioAuth?.email, message: stremioError || undefined,
+                  primaryLabel: 'Connect Stremio', onPrimary: handleStremioLogin, primaryOpensManage: true, isAccount: true, onSync: handleStremioSync, onDisconnect: handleStremioDisconnect,
+                  setup: <div className="space-y-3"><div className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold text-white/60">Email<input type="email" value={stremioEmail} onChange={(e) => setStremioEmail(e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label><label className="text-xs font-semibold text-white/60">Password<input type="password" value={stremioPassword} onChange={(e) => setStremioPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label></div><button type="button" onClick={handleStremioLogin} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Login & import addons</button><label className="block text-xs font-semibold text-white/60">Or use an AuthKey<div className="mt-1.5 flex gap-2"><input type="password" value={stremioAuthKey} onChange={(e) => setStremioAuthKey(e.target.value)} className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleStremioAuthKeyImport} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white">Import</button></div></label></div>,
+                },
+                {
+                  id: 'mdblist', name: 'MDBList', iconService: 'mdblist', group: 'history', description: 'Ratings · Watchlist · Lists · History',
+                  state: mdblistOAuthPolling || mdblistConnChecking ? 'syncing' : getStoredMdblistTokens() ? 'connected' : mdblistConnStatus && !mdblistConnStatus.connected ? 'needs-attention' : 'not-connected',
+                  statusLabel: getStoredMdblistTokens() ? 'Connected' : store.mdblistApiKey ? 'Key configured' : undefined, isAccount: true, isConfigured: Boolean(store.mdblistApiKey), account: mdblistConnStatus?.user?.username ? `@${mdblistConnStatus.user.username}` : undefined, message: mdblistConnStatus?.error,
+                  primaryLabel: getStoredMdblistTokens() ? 'Manage' : 'Connect MDBList', onPrimary: handleMdblistOAuthConnect, showAdvancedLink: true, onDisconnect: handleMdblistOAuthDisconnect,
+                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
+                },
+                {
+                  id: 'pmdb', name: 'PublicMetaDB', iconService: 'pmdb', group: 'history', description: 'History · Scrobbles · Skip data',
+                  state: pmdbConnChecking ? 'syncing' : pmdbConnStatus && !pmdbConnStatus.connected ? 'needs-attention' : store.pmdbApiKey ? 'connected' : 'not-connected', statusLabel: store.pmdbApiKey ? (pmdbConnStatus?.connected ? 'Connection healthy' : 'Key configured') : 'Not configured', isConfigured: Boolean(store.pmdbApiKey), message: pmdbConnStatus?.connected ? undefined : pmdbConnStatus?.error,
+                  primaryLabel: store.pmdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true,
+                  setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.pmdbApiKey} onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }} placeholder="pm-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testPmdbConnection} disabled={!store.pmdbApiKey || pmdbConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{pmdbConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div>{pmdbConnStatus && <p className={`text-xs ${pmdbConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{pmdbConnStatus.connected ? '✓ Connection successful' : `⚠ ${pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}`}</p>}</div>,
+                },
+                { id: 'introdb', name: 'IntroDB', iconService: 'introdb', group: 'playback', description: 'Intro · Recap · Credits', state: store.introdbApiKey ? 'connected' : 'not-connected', statusLabel: store.introdbApiKey ? 'Key configured' : 'Using Aurales key', isConfigured: Boolean(store.introdbApiKey), primaryLabel: store.introdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its default IntroDB key unless you provide a personal key.</p><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.introdbApiKey} onChange={(e) => store.setIntrodbApiKey(e.target.value)} placeholder="Optional personal API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex gap-3 text-xs text-white/60"><span>Intro</span><span>Recap</span><span>Credits</span></div><a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div> },
+                { id: 'discord', name: 'Discord Rich Presence', iconService: 'discord', group: 'playback', description: 'Show what you’re watching on Discord', state: store.discordRichPresence ? 'connected' : 'not-connected', statusLabel: store.discordRichPresence ? 'Enabled' : 'Disabled', isConfigured: store.discordRichPresence, primaryLabel: 'Manage', onPrimary: () => undefined, hidePrimaryAction: true, inlineControl: <PresenceToggle checked={store.discordRichPresence} onChange={store.setDiscordRichPresence} /> },
+                { id: 'fanart', name: 'Fanart.tv', iconService: 'fanart', group: 'metadata', description: 'Poster · Backdrop · Logo artwork', state: store.fanartApiKey ? 'connected' : 'not-connected', statusLabel: store.fanartApiKey ? 'Key configured' : 'No personal key', isConfigured: Boolean(store.fanartApiKey), primaryLabel: store.fanartApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.fanartApiKey} onChange={(e) => store.setFanartApiKey(e.target.value)} placeholder="Optional Fanart.tv API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://fanart.tv/get-an-api-key" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div> },
+                { id: 'tmdb', name: 'TMDB', iconService: 'tmdb', group: 'metadata', description: 'Movies · Series metadata', state: 'connected', statusLabel: store.tmdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tmdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TMDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tmdbApiKey} onChange={(e) => store.setTmdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tmdbApiKey && <button type="button" onClick={() => store.setTmdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
+                { id: 'tvdb', name: 'TheTVDB', iconService: 'tvdb', group: 'metadata', description: 'TV metadata · Episode data', state: 'connected', statusLabel: store.tvdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tvdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TVDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tvdbApiKey} onChange={(e) => store.setTvdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tvdbApiKey && <button type="button" onClick={() => store.setTvdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
+                { id: 'openrouter', name: 'OpenRouter', iconService: 'openrouter', group: 'ai', wide: true, description: 'AI search · Subtitle translation', state: store.openrouterApiKey ? 'connected' : 'not-connected', statusLabel: store.openrouterApiKey ? 'Key configured' : 'Not configured', isConfigured: Boolean(store.openrouterApiKey), detail: store.openrouterApiKey ? store.openrouterModel : undefined, primaryLabel: store.openrouterApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.openrouterApiKey} onChange={(e) => store.setOpenrouterApiKey(e.target.value)} placeholder="sk-or-v1-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a><label className="block text-xs font-semibold text-white/60">Model<select value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'} onChange={(e) => store.setOpenrouterModel(e.target.value === 'custom' ? 'custom-model-id' : e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-[#171714] px-3 py-2 text-sm text-white outline-none focus:border-accent/50"><option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option><option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option><option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option><option value="deepseek/deepseek-chat">DeepSeek V3</option><option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option><option value="custom">Custom model</option></select></label>{!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && <label className="block text-xs font-semibold text-white/60">Custom model ID<input value={store.openrouterModel === 'custom-model-id' ? '' : store.openrouterModel} onChange={(e) => store.setOpenrouterModel(e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>}</div> },
+              ]} />
 
-                      {!traktCode ? (
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={handleTraktConnect}
-                            disabled={!canConnectTrakt}
-                            className="px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                          >
-                            Authorize with Trakt
-                          </button>
-                          {!hasBundledTrakt && (
-                            <button
-                              onClick={() => setShowTraktAdvanced((value) => !value)}
-                              className="px-4 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-semibold text-white transition-colors cursor-pointer"
-                            >
-                              {showTraktAdvanced ? 'Hide Credentials' : 'Add Client Credentials'}
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.06]">
-                          <p className="text-sm text-white/60 mb-3">
-                            1. Go to{' '}
-                            <a href={traktCode.verificationUrl} target="_blank" rel="noopener noreferrer" className="text-accent underline font-medium">
-                              {traktCode.verificationUrl}
-                            </a>
-                          </p>
-                          <p className="text-sm text-white/60 mb-4">2. Enter this PIN code:</p>
-                          <div className="flex items-center gap-3 mb-4">
-                            <span className="font-mono text-3xl font-bold text-accent tracking-widest select-all">{traktCode.userCode}</span>
-                            <button
-                              onClick={() => navigator.clipboard.writeText(traktCode.userCode)}
-                              className="px-2.5 py-1 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-white transition-colors cursor-pointer"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          {traktPolling && (
-                            <div className="flex items-center gap-2">
-                              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                              <span className="text-xs text-white/60">Waiting for you to authorize...</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {(!hasBundledTrakt || showTraktAdvanced) && (
-                        <div className="space-y-4 pt-4 border-t border-white/[0.06]">
-                          <div>
-                            <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">Client ID</label>
-                            <input
-                              type="text"
-                              value={store.traktClientId}
-                              onChange={(e) => store.setTraktClientId(e.target.value)}
-                              placeholder="Paste your Trakt app Client ID"
-                              className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">Client Secret</label>
-                            <input
-                              type="password"
-                              value={store.traktClientSecret}
-                              onChange={(e) => store.setTraktClientSecret(e.target.value)}
-                              placeholder="Paste your Trakt app Client Secret"
-                              className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                            />
-                            <p className="text-xs text-white/60 mt-1.5">
-                              This is stored locally on this device. Bundling a shared Trakt client secret would expose it in the released app.
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                      {traktError && <p className="text-xs text-red-400">{traktError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* Simkl */}
-              <SettingSection title="Simkl" description="Sync watchlist, watching, and watch history.">
-                <div className="px-6 py-4">
-                  {simklStatus.connected || store.simklConnected ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          {(simklStatus.account?.avatar || store.simklAccount?.avatar) ? (
-                            <img src={simklStatus.account?.avatar || store.simklAccount?.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-[#2ecc71]/20 flex items-center justify-center text-[#2ecc71] text-sm font-bold">
-                              {(simklStatus.account?.username ?? store.simklAccount?.username ?? 'S')[0].toUpperCase()}
-                            </div>
-                          )}
-                          <div>
-                            <p className="text-sm font-bold text-white">
-                              {simklStatus.account?.username ?? store.simklAccount?.username ?? 'Simkl User'}
-                            </p>
-                            <p className="text-xs text-white/60 mt-0.5">
-                              {simklLastSync ? `Last sync: ${new Date(simklLastSync).toLocaleString()}` : 'Never synced'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleSimklSync}
-                            disabled={simklLoading}
-                            className="px-3.5 py-2 bg-[#2ecc71]/10 hover:bg-[#2ecc71]/20 text-[#2ecc71] rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {simklLoading ? 'Syncing...' : 'Sync Now'}
-                          </button>
-                          <button
-                            onClick={handleSimklDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
-                          {simklError}
-                        </p>
-                      )}
-                    </div>
-                  ) : simklAuthStarted ? (
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
-                        <p className="text-xs text-white/60 leading-relaxed">
-                          Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="text"
-                          value={simklCode}
-                          onChange={(e) => setSimklCode(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()}
-                          placeholder="Simkl code"
-                          className="min-w-40 flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm font-mono tracking-wider text-white focus:outline-none focus:border-[#2ecc71]/50"
-                        />
-                        <button
-                          onClick={handleSimklCodeSubmit}
-                          disabled={simklLoading}
-                          className="px-4 py-2 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                        >
-                          Check Now
-                        </button>
-                      </div>
-                      {simklVerificationUrl && (
-                        <p className="text-xs text-white/60">
-                          Verification page: <span className="font-mono text-white/80">{simklVerificationUrl}</span>
-                        </p>
-                      )}
-                      <button onClick={cancelSimklAuth} className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer">Cancel</button>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/60' : 'text-red-400'}`}>{simklError}</p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-sm text-white/60">
-                        Connect your Simkl account to sync your watchlist, watching, and watch history.
-                      </p>
-                      <button
-                        onClick={handleSimklConnect}
-                        disabled={simklLoading}
-                        className="px-5 py-2.5 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {simklLoading ? 'Opening Simkl...' : 'Connect Simkl'}
-                      </button>
-                      {simklError && <p className="text-xs text-red-400">{simklError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* AniList */}
-              <SettingSection title="AniList" description="Track anime watch progress, manage lists, and sync history.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleAnilistConnect}
-                      disabled={anilistLoading}
-                      className="px-3.5 py-2 bg-accent text-black rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
-                    >
-                      {anilistLoading ? 'Connecting...' : store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList'}
-                    </button>
-                    <button
-                      onClick={syncAniListNow}
-                      disabled={anilistLoading || !store.anilistConnected}
-                      className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 text-white rounded-xl text-xs font-semibold cursor-pointer"
-                    >
-                      {anilistLoading ? 'Syncing…' : 'Sync from AniList'}
-                    </button>
-                    {store.anilistConnected && (
-                      <button
-                        onClick={handleAnilistDisconnect}
-                        className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                      >
-                        Disconnect
-                      </button>
-                    )}
-                  </div>
-
-                  {store.anilistAccount && (
-                    <div className="flex items-center gap-3 bg-white/[0.03] rounded-xl p-3 border border-white/[0.06]">
-                      {store.anilistAccount.avatar ? (
-                        <img src={store.anilistAccount.avatar} alt="" className="w-8 h-8 rounded-full object-cover" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-accent text-xs font-bold">
-                          {store.anilistAccount.name[0].toUpperCase()}
-                        </div>
-                      )}
-                      <div>
-                        <p className="text-xs text-white/60">Connected as</p>
-                        <p className="text-sm font-semibold text-white">{store.anilistAccount.name}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/60'}`}>{anilistMessage}</p>}
-
-                  {/* Manual Token Fallback */}
-                  <div className="pt-4 border-t border-white/[0.06]">
-                    <details className="group">
-                      <summary className="text-xs text-white/50 hover:text-white/50 cursor-pointer select-none font-semibold">
-                        Advanced: Manual Token Entry
-                      </summary>
-                      <div className="mt-3 space-y-3">
-                        <label className="text-xs text-white/60 block font-semibold uppercase tracking-wider">Manual Access Token</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={anilistTokenInput}
-                            onChange={(e) => setAnilistTokenInput(e.target.value)}
-                            placeholder="Paste manual AniList access token"
-                            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={connectAniListManual}
-                            disabled={anilistLoading || !anilistTokenInput}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-xs font-semibold cursor-pointer text-white"
-                          >
-                            Save Manual Token
-                          </button>
-                        </div>
-                        <p className="text-label text-white/50 leading-relaxed">
-                          Alternatively, you can generate a token via AniList's developer portal/client authorization flow and paste it here directly.
-                        </p>
-                      </div>
-                    </details>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* TorBox */}
-              <SettingSection title="TorBox" description="Turn cached torrent results into fast, directly playable streams.">
-                <div className="px-6 py-4 space-y-4">
-                  {torBoxUser ? (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="h-3.5 w-3.5 rounded-full bg-accent" />
-                        <div>
-                          <p className="text-sm font-semibold text-white">{torBoxUser.email}</p>
-                          <p className="mt-0.5 text-xs text-white/60">Connected · {['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`}</p>
-                        </div>
-                      </div>
-                      <button onClick={handleTorBoxDisconnect} className="rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/20">
-                        Disconnect
-                      </button>
-                    </div>
-                  ) : torBoxDevice ? (
-                    <div className="space-y-3 rounded-xl border border-accent/20 bg-accent/[0.05] p-4">
-                      <p className="text-sm font-semibold text-white">Authorize Aurales in TorBox</p>
-                      <p className="text-xs leading-relaxed text-white/60">The TorBox page opened in your browser. Enter this code if requested:</p>
-                      <div className="font-mono text-2xl font-black tracking-[0.3em] text-accent">{torBoxDevice.code}</div>
-                      <a href={torBoxDevice.friendly_verification_url} target="_blank" rel="noreferrer" className="block text-xs text-accent hover:underline">{torBoxDevice.friendly_verification_url}</a>
-                      <button onClick={handleTorBoxDisconnect} className="text-xs text-white/60 hover:text-white">Cancel</button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-sm leading-relaxed text-white/60">Aurales checks torrent hashes in the TorBox cache and only prepares cached files. Uncached downloads are never started automatically.</p>
-                      <button onClick={handleTorBoxConnect} disabled={torBoxLoading} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent/80 disabled:opacity-50">
-                        {torBoxLoading ? 'Connecting…' : 'Connect TorBox'}
-                      </button>
-                      <details className="border-t border-white/[0.06] pt-3">
-                        <summary className="cursor-pointer select-none text-xs font-semibold text-white/50 hover:text-white/50">Advanced: Manual API Token</summary>
-                        <div className="mt-3 flex gap-2">
-                          <input type="password" value={torBoxTokenInput} onChange={(event) => setTorBoxTokenInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && handleTorBoxManualConnect()} placeholder="Paste TorBox API token" className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" />
-                          <button onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-40">Save</button>
-                        </div>
-                      </details>
-                    </div>
-                  )}
-                  {torBoxMessage && <p className={`text-xs ${/error|failed|expired|invalid/i.test(torBoxMessage) ? 'text-red-400' : 'text-white/60'}`}>{torBoxMessage}</p>}
-                </div>
-              </SettingSection>
-
-              {/* Stremio */}
-              <SettingSection title="Stremio Account" description="Import addons, watched history, Continue Watching, and your Stremio Library into Aurales.">
-                <div className="px-6 py-4">
-                  {stremioAuth ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
-                          <div>
-                            <span className="text-sm font-semibold text-white">Connected</span>
-                            <p className="text-xs text-white/60 mt-0.5">{stremioAuth.email}</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleStremioSync}
-                            disabled={stremioLoading}
-                            className="px-3.5 py-2 bg-accent/10 hover:bg-accent/20 text-accent rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {stremioLoading ? 'Syncing...' : 'Sync Stremio'}
-                          </button>
-                          <button
-                            onClick={handleStremioDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {stremioError && <p className="text-xs text-white/60">{stremioError}</p>}
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
-                          <input
-                            type="email"
-                            value={stremioEmail}
-                            onChange={(e) => setStremioEmail(e.target.value)}
-                            placeholder="your@email.com"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
-                          <input
-                            type="password"
-                            value={stremioPassword}
-                            onChange={(e) => setStremioPassword(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()}
-                            placeholder="Your Stremio password"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleStremioLogin}
-                        disabled={stremioLoading}
-                        className="px-5 py-2.5 bg-accent hover:bg-accent/80 disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
-                      </button>
-                      <div className="pt-4 border-t border-white/[0.06]">
-                        <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={stremioAuthKey}
-                            onChange={(e) => setStremioAuthKey(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioAuthKeyImport()}
-                            placeholder="AuthKey from web.stremio.com"
-                            className="flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={handleStremioAuthKeyImport}
-                            disabled={stremioLoading}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-sm transition-colors cursor-pointer text-white font-semibold"
-                          >
-                            Import
-                          </button>
-                        </div>
-                        <p className="text-xs text-white/60 mt-1.5 leading-relaxed">
-                          Use this if your Stremio account uses social login or Stremio rejects the password with "Wrong passphrase".
-                        </p>
-                      </div>
-                      {stremioError && <p className="text-xs text-red-400">{stremioError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* Discord Rich Presence */}
-              <SettingSection title="Discord Rich Presence" description="Show what you're watching on your Discord profile.">
-                <SettingRow label="Enable Discord Rich Presence" description="Requires Discord desktop app to be running.">
-                  <SettingToggle checked={store.discordRichPresence} onChange={(v) => store.setDiscordRichPresence(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* PublicMetaDB */}
-              <SettingSection title="PublicMetaDB (PMDB)" description="Sync watch history, scrobbles, skip timestamps, and continue watching.">
-                <div className="px-6 py-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">PublicMetaDB API Key</label>
-                    <input
-                      type="password"
-                      value={store.pmdbApiKey}
-                      onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }}
-                      placeholder="pm-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-label text-white/50 mt-1">
-                      Get your API key at{' '}
-                      <a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-accent hover:underline">publicmetadb.com</a>
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={testPmdbConnection}
-                      disabled={!store.pmdbApiKey || pmdbConnChecking}
-                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {pmdbConnChecking ? (
-                        <>
-                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
-                          Testing...
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          Test Connection
-                        </>
-                      )}
-                    </button>
-
-                    {pmdbConnStatus && !pmdbConnChecking && (
-                      pmdbConnStatus.connected ? (
-                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          Connected
-                          {pmdbConnStatus.resumeCount != null && <span className="text-white/50 ml-1">({pmdbConnStatus.resumeCount} resume points)</span>}
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1.5 text-sm text-red-400">
-                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
-                          </svg>
-                          <span>{pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}</span>
-                        </span>
-                      )
-                    )}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* IntroDB */}
-              <SettingSection title="IntroDB" description="Intro, recap, and credits skip timestamps for TV episodes.">
-                <div className="px-6 py-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">IntroDB API Key</label>
-                    <input
-                      type="password"
-                      value={store.introdbApiKey}
-                      onChange={(e) => store.setIntrodbApiKey(e.target.value)}
-                      placeholder="Enter your IntroDB API key"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-label text-white/50 mt-1">
-                      Get your API key at{' '}
-                      <a href="https://introdb.app" target="_blank" rel="noreferrer" className="text-accent hover:underline">introdb.app</a>
-                      {' '}-- docs:{' '}
-                      <a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-accent hover:underline">introdb.app/docs/api</a>
-                    </p>
-                  </div>
-                  <div className="flex gap-3 text-xs">
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Intro</span>
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Recap</span>
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Credits</span>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* MDBList */}
-              <SettingSection title="MDBList" description="Ratings, watchlist, lists, continue watching, watched history, and scrobbling.">
-                <div className="px-6 py-4 space-y-3">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <button
-                      onClick={handleMdblistOAuthConnect}
-                      disabled={mdblistConnChecking || mdblistOAuthPolling || !mdblistClientIdInput}
-                      className="px-4 py-2 bg-accent text-black hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {mdblistOAuthPolling ? 'Waiting for MDBList...' : getStoredMdblistTokens() ? 'Reconnect MDBList' : 'Connect MDBList'}
-                    </button>
-                    {getStoredMdblistTokens() && (
-                      <button
-                        onClick={handleMdblistOAuthDisconnect}
-                        className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-sm font-semibold transition-colors"
-                      >
-                        Disconnect OAuth
-                      </button>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-white/60 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
-                    <input
-                      type="password"
-                      value={store.mdblistApiKey}
-                      onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }}
-                      placeholder="Enter your MDBList API key"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-label text-white/50 mt-1">
-                      Optional fallback. Empty key still uses Aurales' built-in MDBList key for ratings only. Account features use OAuth or your own key. API docs:{' '}
-                      <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={testMdblistConnection}
-                      disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking}
-                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {mdblistConnChecking ? (
-                        <>
-                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
-                          Testing...
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          Test Connection
-                        </>
-                      )}
-                    </button>
-
-                    {mdblistConnStatus && !mdblistConnChecking && (
-                      mdblistConnStatus.connected ? (
-                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          Connected
-                          {mdblistConnStatus.user?.username && <span className="text-white/50 ml-1">({mdblistConnStatus.user.username}{mdblistConnStatus.user.plan ? `, ${mdblistConnStatus.user.plan}` : ''})</span>}
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1.5 text-sm text-red-400">
-                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
-                          </svg>
-                          <span>{mdblistConnStatus.error}</span>
-                        </span>
-                      )
-                    )}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Fanart.tv */}
-              <SettingSection title="Fanart.tv" description="High-quality poster, backdrop, and logo artwork from the Fanart.tv community.">
-                <SettingRow label="API Key" description="Get a free personal key at fanart.tv/get-an-api-key">
-                  <input
-                    type="password"
-                    value={store.fanartApiKey}
-                    onChange={(e) => store.setFanartApiKey(e.target.value)}
-                    placeholder="Enter your Fanart.tv API key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Metadata Providers */}
-              <SettingSection title="Metadata Providers" description="API keys for movie and show detail pages.">
-                <SettingRow label="TMDB API Key" description="Optional. Leave empty to use the app's built-in TMDB key.">
-                  <input
-                    type="text"
-                    value={store.tmdbApiKey}
-                    onChange={(e) => store.setTmdbApiKey(e.target.value)}
-                    placeholder="Using built-in app key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <SettingRow label="TVDB API Key" description="Optional. Leave empty to use the app's built-in TVDB key.">
-                  <input
-                    type="text"
-                    value={store.tvdbApiKey}
-                    onChange={(e) => store.setTvdbApiKey(e.target.value)}
-                    placeholder="Using built-in app key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* OpenRouter AI */}
-              <SettingSection title="OpenRouter AI" description="AI-powered natural language searches and subtitle translation.">
-                <SettingRow label="API Key" description="Get your API key at openrouter.ai">
-                  <input
-                    type="password"
-                    value={store.openrouterApiKey}
-                    onChange={(e) => store.setOpenrouterApiKey(e.target.value)}
-                    placeholder="sk-or-v1-..."
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <SettingRow label="Model" description="Select the AI model for search and translation.">
-                  <SelectMenu
-                    value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'}
-                    onChange={(e) => {
-                      if (e.target.value === 'custom') {
-                        store.setOpenrouterModel('custom-model-id')
-                      } else {
-                        store.setOpenrouterModel(e.target.value)
-                      }
-                    }}
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
-                    <option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
-                    <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-                    <option value="deepseek/deepseek-chat">DeepSeek V3</option>
-                    <option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option>
-                    <option value="custom">Custom Model</option>
-                  </SelectMenu>
-                </SettingRow>
-                {!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && (
-                  <SettingRow label="Custom Model ID" description="Enter any valid OpenRouter model identifier.">
-                    <input
-                      type="text"
-                      value={store.openrouterModel === 'custom-model-id' ? '' : store.openrouterModel}
-                      onChange={(e) => store.setOpenrouterModel(e.target.value)}
-                      placeholder="e.g. anthropic/claude-3.5-sonnet"
-                      className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                  </SettingRow>
-                )}
-              </SettingSection>
             </>
           )}
 
@@ -3151,6 +2560,8 @@ export default function SettingsPage() {
               PROGRESS TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'profiles' && <ProfilesSettings />}
+
+          {activeTab === 'sync' && <AuralesSyncSettings />}
 
           {activeTab === 'progress' && (
             <>

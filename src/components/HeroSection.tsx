@@ -522,6 +522,20 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         </div>
       ) : renderBackdrops()}
       {(!(fixed && cinematic && !isSmall) || fixedStaticDetails) && renderOverlay()}
+      {enableTrailers && heroTrailerPlaying && heroTrailer && !isSmall && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            setHeroTrailerMuted((value) => !value)
+          }}
+          className="absolute right-6 top-6 z-30 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white/75 shadow-xl backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white"
+          aria-label={heroTrailerMuted ? 'Unmute hero trailer' : 'Mute hero trailer'}
+          title={heroTrailerMuted ? 'Unmute trailer' : 'Mute trailer'}
+        >
+          {heroTrailerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+        </button>
+      )}
     </div>
   )
 
@@ -642,22 +656,6 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   function renderOverlay() {
     return (
       <>
-        {/* Prev / Next */}
-        {enableTrailers && heroTrailerPlaying && heroTrailer && !isSmall && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setHeroTrailerMuted((value) => !value)
-            }}
-            className="absolute right-6 top-6 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white/75 shadow-xl backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white"
-            aria-label={heroTrailerMuted ? 'Unmute hero trailer' : 'Mute hero trailer'}
-            title={heroTrailerMuted ? 'Unmute trailer' : 'Mute trailer'}
-          >
-            {heroTrailerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-          </button>
-        )}
-
         {/* Prev / Next */}
         {count > 1 && (
           <>

@@ -44,6 +44,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const hoverTimerRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const hoverRequestRef = useRef(0)
+  const mouseFollowFrameRef = useRef<number | null>(null)
+  const mouseFollowPointerRef = useRef<{ card: HTMLButtonElement; x: number; y: number } | null>(null)
   const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
   const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
@@ -94,6 +96,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     return false
   })
   const posterSize = useAppStore((s) => s.posterSize)
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const compactSpecialLayouts = useAppStore((s) => s.interfaceTheme) === 'default'
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
@@ -110,6 +113,33 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
   const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+  const mouseFollowEnabled = !homeCardAnimations && !reducedMotion
+  const handleMouseFollow = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!mouseFollowEnabled) return
+    mouseFollowPointerRef.current = { card: event.currentTarget, x: event.clientX, y: event.clientY }
+    if (mouseFollowFrameRef.current) return
+    mouseFollowFrameRef.current = window.requestAnimationFrame(() => {
+      mouseFollowFrameRef.current = null
+      const pointer = mouseFollowPointerRef.current
+      if (!pointer) return
+      const bounds = pointer.card.getBoundingClientRect()
+      const horizontal = ((pointer.x - bounds.left) / bounds.width - 0.5) * 2
+      const vertical = ((pointer.y - bounds.top) / bounds.height - 0.5) * 2
+      pointer.card.style.setProperty('--mouse-card-tilt-x', `${(-vertical * 2).toFixed(2)}deg`)
+      pointer.card.style.setProperty('--mouse-card-tilt-y', `${(horizontal * 2).toFixed(2)}deg`)
+      pointer.card.style.setProperty('--mouse-card-shift-x', `${(horizontal * 1.5).toFixed(1)}px`)
+      pointer.card.style.setProperty('--mouse-card-shift-y', `${(vertical * 1).toFixed(1)}px`)
+    })
+  }
+  const resetMouseFollow = (card: HTMLButtonElement) => {
+    mouseFollowPointerRef.current = null
+    if (mouseFollowFrameRef.current) window.cancelAnimationFrame(mouseFollowFrameRef.current)
+    mouseFollowFrameRef.current = null
+    card.style.removeProperty('--mouse-card-tilt-x')
+    card.style.removeProperty('--mouse-card-tilt-y')
+    card.style.removeProperty('--mouse-card-shift-x')
+    card.style.removeProperty('--mouse-card-shift-y')
+  }
 
   const localCompleted = useAppStore((s) => {
     const ci = s.completedIds
@@ -138,6 +168,14 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     const formatted = n % 1 === 0 ? String(n) : n.toFixed(1)
     return formatted.replace(/\/10$/, '').trim()
   }, [displayItem.rating])
+  const landscapeGenre = useMemo(() => {
+    const rawGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : undefined)
+      || resolvedGenre
+    return typeof rawGenre === 'object' && rawGenre
+      ? (rawGenre as { name?: string; title?: string }).name || (rawGenre as { title?: string }).title
+      : rawGenre
+  }, [displayItem.genreIds, displayItem.genres, resolvedGenre])
 
   const getDisplayProvider = (item: SearchResult) => {
     let provider: string | undefined
@@ -527,7 +565,11 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
   const openHoverPreview = useCallback(() => {
     setSuppressPosterHover(false)
-    if (disableTrailerPreview || fixedHome || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
+    // "Card focus animations" is the static-card mode as well as the
+    // expansion preference. Keep feature cards in their complete poster state
+    // in that mode: artwork, logo/title, and metadata must not disappear when
+    // a hover trailer takes ownership of the card.
+    if (disableTrailerPreview || !homeCardAnimations || fixedHome || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
     if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
 
@@ -548,7 +590,13 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         setHoverPreviewOpen(true)
       }).catch(() => undefined)
     }, posterTrailerHoverDelayMs)
-  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, homeCardAnimations, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+
+  useEffect(() => {
+    // Turning the preference off while a card is hovered should restore its
+    // static presentation immediately rather than waiting for pointer leave.
+    if (!homeCardAnimations) closeHoverPreview()
+  }, [closeHoverPreview, homeCardAnimations])
 
   const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
 
@@ -600,8 +648,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onFocus={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onBlur={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
-        onMouseLeave={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
         data-cinematic-expanded={expanded || undefined}
         className={`relative flex-shrink-0 cursor-pointer overflow-visible text-left focus-ring transition-[width] duration-[var(--duration-card)] ease-expo ${cinematicOuterWidth}`}
         style={cinematicStyle}
@@ -632,8 +682,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           ))}
           {!cinematicPoster && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
           <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
-          {!expanded && cinematicFeature && (
-            <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-3 pt-16">
+          {cinematicFeature && (
+            <div data-feature-overlay className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-3 pt-16">
               {cinematicLogo ? (
                 <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1.5 max-h-14 max-w-[78%] object-contain object-left drop-shadow-xl" loading="lazy" decoding="async" onError={(event) => handleImageError(event, cinematicLogo)} />
               ) : (
@@ -659,7 +709,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
                 {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
                 {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
               </div>
-              {displayItem.overview && <p className="line-clamp-2 max-w-md text-base leading-relaxed text-white/60 h-[3.25rem]">{displayItem.overview}</p>}
+              {displayItem.overview && <p className="line-clamp-3 max-w-none text-base leading-relaxed text-white/60">{displayItem.overview}</p>}
             </div>
           </div>
         </div>
@@ -675,6 +725,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     const featureTrailer = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
     const featureUsesNativeTrailer = Boolean(featureTrailer && useNativeTrailerPlayer)
     const featureTrailerVisible = featureUsesNativeTrailer ? nativeTrailerVisible : Boolean(featureTrailer)
+    // The Home preference applies when this row is rendered through the
+    // standard Feature branch too (for example with Cinematic navigation but
+    // another interface theme). Its static state must look identical to the
+    // Dynamic Banner cinematic branch.
+    const staticFeaturePresentation = !homeCardAnimations
+    const featureOverlayVisible = staticFeaturePresentation || !featureTrailerVisible
     const rawFeatureGenre = displayItem.genres?.[0]
       || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
       || resolvedGenre
@@ -689,8 +745,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
         onBlur={closeHoverPreview}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
-        onMouseLeave={closeHoverPreview}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); closeHoverPreview() }}
         data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
         className={`group relative flex-shrink-0 cursor-pointer text-left focus-ring ${widthClass}`}
       >
         <div data-hero-viewport className={`relative aspect-[4/5] overflow-hidden rounded-[1.6rem] border border-white/10 shadow-[0_16px_45px_rgba(0,0,0,.28)] transition-[border-color,box-shadow,transform] duration-300 group-hover:border-white/25 group-hover:shadow-[0_24px_60px_rgba(0,0,0,.45)] ${featureTrailer ? '' : 'group-hover:-translate-y-1.5'} ${nativeTrailerVisible ? 'native-trailer-hole bg-transparent' : 'bg-surface-elevated'}`}>
@@ -717,8 +775,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               onUnavailable={closeHoverPreview}
             />
           ))}
-          {!nativeTrailerVisible && <div className={`absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent transition-opacity duration-200 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`} />}
-          {!nativeTrailerVisible && <div className={`absolute inset-x-0 bottom-0 p-5 transition-opacity duration-200 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`}>
+          {(!nativeTrailerVisible || staticFeaturePresentation) && <div className={`absolute inset-0 z-10 bg-gradient-to-t from-black via-black/25 to-transparent transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`} />}
+          {(!nativeTrailerVisible || staticFeaturePresentation) && <div data-feature-overlay className={`absolute inset-x-0 bottom-0 z-30 p-5 transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`}>
             {cleanTmdbLogo ? <img src={cachedImage(cleanTmdbLogo)} alt={displayItem.title} className="mb-3 max-h-16 max-w-[72%] object-contain object-left drop-shadow-xl" /> : <h3 className="mb-2 line-clamp-2 text-xl font-black leading-tight text-white drop-shadow-xl">{displayItem.title}</h3>}
             <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white/75">
               <span>{displayItem.type === 'series' ? 'Series' : 'Movie'}</span>
@@ -744,7 +802,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         onContextMenu={handleContextMenu}
         onFocus={() => { warmDetailArtwork(); announceFocus() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => resetMouseFollow(event.currentTarget)}
         data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[var(--duration-card)] ease-expo ${cinematicWidth}`}
       >
         <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[var(--duration-slow)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
@@ -801,12 +862,15 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
                 {displayItem.title}
               </h3>
             )}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-white/75 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+              {showGenreOnCards && landscapeGenre && <span className="truncate">{String(landscapeGenre)}</span>}
+              {showGenreOnCards && landscapeGenre && displayItem.year && <span className="text-white/45">•</span>}
               {displayItem.year && (
-                <span className="text-xs text-gray-300 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                <span className="text-gray-300">
                   {displayItem.year}
                 </span>
               )}
+              {ratingStr && <><span className="text-white/45">•</span><span className="flex items-center gap-0.5 text-yellow-300"><svg className="h-3 w-3 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{ratingStr}</span></>}
             </div>
           </div>
         </div>
@@ -822,7 +886,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
               {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
             </div>
-            {displayItem.overview && <p className="line-clamp-2 max-w-xl text-base leading-relaxed text-white/60 h-[3.25rem]">{displayItem.overview}</p>}
+            {displayItem.overview && <p className="line-clamp-3 max-w-none text-base leading-relaxed text-white/60">{displayItem.overview}</p>}
           </div>
         )}
       </button>
@@ -903,10 +967,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
-      onMouseLeave={closeHoverPreview}
+      onMouseMove={handleMouseFollow}
+      onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); closeHoverPreview() }}
       onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onBlur={closeHoverPreview}
       data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+      data-mouse-follow={mouseFollowEnabled || undefined}
       className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[var(--duration-card)] ease-expo ${cardWidthClass} ${cardSlotHeightClass}`}
       style={rankedStyle}
     >

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { buildYoutubeEmbedUrl, youtubeThumbnailUrl, type TrailerSource } from '../services/trailers'
 import { getDirectYoutubeStream, proxyAdaptiveYoutubeStream, type DirectStream } from '../services/youtubeDirect'
@@ -45,6 +45,7 @@ export default function TrailerPreview({
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const trailerVolume = useAppStore((s) => s.trailerVolume)
   const [embedLoadedKey, setEmbedLoadedKey] = useState<string | null>(null)
   const [embedPlaying, setEmbedPlaying] = useState(false)
@@ -53,7 +54,18 @@ export default function TrailerPreview({
   // undefined = resolving, null = no direct stream (use iframe fallback)
   const [directStream, setDirectStream] = useState<DirectStream | null | undefined>(undefined)
   const [videoPlaying, setVideoPlaying] = useState(false)
+  const [embedRevealKey, setEmbedRevealKey] = useState<string | null>(null)
+  const [containerAspect, setContainerAspect] = useState(16 / 9)
+  // WebKitGTK can keep decoding the adaptive audio stream while the <video>
+  // compositing surface freezes on the first frame. The privacy-enhanced
+  // YouTube iframe uses a separate, stable compositor path. Keep direct URLs
+  // (for non-YouTube studio trailers) intact, but use that fallback by default
+  // for YouTube previews in the packaged Linux app.
+  const forceIframeOnLinux = !!(window as any).__TAURI_INTERNALS__
+    && navigator.userAgent.includes('Linux')
+  const shouldForceIframe = forceIframe || forceIframeOnLinux
   const embedLoaded = embedLoadedKey === trailer.key
+  const embedVisible = embedRevealKey === trailer.key
   const thumbnailFailed = thumbnailFailedKey === trailer.key
   const placeholderFailed = placeholderFailedKey === trailer.key
   const thumbnailSrc = useMemo(
@@ -68,12 +80,27 @@ export default function TrailerPreview({
     [trailer.key],
   )
 
+  useLayoutEffect(() => {
+    const element = containerRef.current
+    if (!element) return
+    const updateAspect = () => {
+      const { width, height } = element.getBoundingClientRect()
+      if (width > 0 && height > 0) setContainerAspect(width / height)
+    }
+    updateAspect()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(updateAspect)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     setDirectStream(undefined)
     setVideoPlaying(false)
     setEmbedPlaying(false)
-    if (forceIframe && !trailer.directUrl) {
+    setEmbedRevealKey(null)
+    if (shouldForceIframe && !trailer.directUrl) {
       setDirectStream(null)
       return () => { cancelled = true }
     }
@@ -101,7 +128,7 @@ export default function TrailerPreview({
     return () => {
       cancelled = true
     }
-  }, [trailer.key, trailer.directUrl, highQuality, forceIframe])
+  }, [trailer.key, trailer.directUrl, highQuality, shouldForceIframe])
 
   useEffect(() => {
     if (directStream === null && !allowIframeFallback) onUnavailable?.()
@@ -186,7 +213,21 @@ export default function TrailerPreview({
     return () => window.removeEventListener('message', handleMessage)
   }, [embedLoaded, trailer.key, onEnded, onUnavailable])
 
-  const showMedia = directStream ? videoPlaying : embedPlaying
+  // YouTube briefly paints its own centre pause glyph when autoplay begins.
+  // Keep the existing artwork in place until that transient control fades.
+  useEffect(() => {
+    if (!embedPlaying) {
+      setEmbedRevealKey(null)
+      return
+    }
+    const timer = window.setTimeout(() => setEmbedRevealKey(trailer.key), 900)
+    return () => window.clearTimeout(timer)
+  }, [embedPlaying, trailer.key])
+
+  const showMedia = directStream ? videoPlaying : embedVisible
+  const iframeCoverStyle: CSSProperties = containerAspect >= 16 / 9
+    ? { left: '50%', top: '50%', width: '118%', height: 'auto', aspectRatio: '16 / 9', transform: 'translate(-50%, -50%)' }
+    : { left: '50%', top: '50%', width: 'auto', height: '118%', aspectRatio: '16 / 9', transform: 'translate(-50%, -50%)' }
   // Callers that place the preview over artwork pass an explicit position
   // class. Do not also emit `relative`: Tailwind orders `.relative` after
   // `.absolute`, which moved the playing preview below the poster where the
@@ -194,7 +235,7 @@ export default function TrailerPreview({
   const hasExplicitPosition = /(?:^|\s)(?:absolute|fixed|sticky|relative)(?:\s|$)/.test(className)
 
   return (
-    <div className={`${hasExplicitPosition ? '' : 'relative'} h-full w-full overflow-hidden bg-black ${className}`}>
+    <div ref={containerRef} className={`${hasExplicitPosition ? '' : 'relative'} h-full w-full overflow-hidden bg-black ${className}`}>
       {thumbnailSrc && <img
           src={thumbnailSrc}
           alt=""
@@ -246,12 +287,13 @@ export default function TrailerPreview({
           )}
         </>
       ) : directStream === null && allowIframeFallback ? (
-        <div className={`absolute inset-0 overflow-hidden bg-black transition-opacity duration-200 ${embedPlaying ? 'opacity-100' : 'opacity-0'}`}>
+        <div className={`absolute inset-0 overflow-hidden bg-black transition-opacity duration-300 ${embedVisible ? 'opacity-100' : 'opacity-0'}`}>
           <iframe
             ref={iframeRef}
             src={embedUrl}
             title={`${title} trailer`}
-            className="pointer-events-none absolute -inset-[9%] h-[118%] w-[118%] border-0"
+            className="pointer-events-none absolute max-w-none border-0"
+            style={iframeCoverStyle}
             allow="autoplay; encrypted-media; picture-in-picture"
             allowFullScreen={false}
             referrerPolicy="strict-origin-when-cross-origin"

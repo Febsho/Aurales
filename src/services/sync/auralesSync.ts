@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid'
-import { applySyncedProfile, getActiveProfileId, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
+import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
 import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
 
 export const AURALES_SYNC_SCHEMA_VERSION = 1
@@ -19,7 +19,7 @@ export interface SyncRecord {
   schemaVersion: number
   revision?: number
 }
-export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string }
+export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string; autoSync?: boolean }
 export function getDeviceId(): string { let id = localStorage.getItem(DEVICE_KEY); if (!id) { id = uuid(); localStorage.setItem(DEVICE_KEY, id) } return id }
 export function getSyncConfig(): AuralesSyncConfig {
   try { return { ...JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'), endpoint: DEFAULT_SYNC_ENDPOINT } }
@@ -73,9 +73,10 @@ function queueInitialSnapshot(): void {
 /** Applies known durable record types without emitting a new outbox mutation. */
 export function applyRemoteRecords(records: SyncRecord[]): void {
   let activeChanged = false
+  let profilesChanged = false
   for (const record of records) {
     if (record.schemaVersion && record.schemaVersion !== AURALES_SYNC_SCHEMA_VERSION) continue
-    if (record.type === 'profile' && record.payload && typeof record.payload === 'object') applySyncedProfile(record.payload as AuralesProfile | { id: string; deleted: true })
+    if (record.type === 'profile' && record.payload && typeof record.payload === 'object') { applySyncedProfile(record.payload as AuralesProfile | { id: string; deleted: true }); profilesChanged = true }
     if (record.type === 'progress' && record.payload && typeof record.payload === 'object') {
       const map = readProfileObject<unknown>('aurales_watch_progress', record.profileId)
       map[record.recordId.replace(`${record.profileId}:progress:`, '')] = record.payload
@@ -109,7 +110,7 @@ export function applyRemoteRecords(records: SyncRecord[]): void {
       }).catch(() => {})
     }
   }
-  if (activeChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
+  if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
 }
 export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
   const config = getSyncConfig()
@@ -122,18 +123,61 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
     const { queueEncryptedVault } = await import('./encryptedVault')
     await queueEncryptedVault()
   }
-  const outbox = getSyncOutbox()
+  // The service intentionally bounds requests at 250 records. Keep the rest
+  // of a large profile/library snapshot in the local outbox for the next pass.
+  const outbox = getSyncOutbox().slice(0, 250)
   const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor: config.cursor, records: outbox }) })
   if (!response.ok) { setSyncConfig({ lastError: `Sync failed (${response.status})` }); throw new Error(`Sync failed (${response.status})`) }
   const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
   applyRemoteRecords(body.records || [])
-  localStorage.setItem(OUTBOX_KEY, '[]')
+  const sent = new Set(outbox.map((record) => record.recordId))
+  localStorage.setItem(OUTBOX_KEY, JSON.stringify(getSyncOutbox().filter((record) => !sent.has(record.recordId))))
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
   return { uploaded: outbox.length, downloaded: body.records?.length || 0 }
 }
 
+/** Explicit Push rebuilds the durable snapshot for every profile, including
+ * profiles that existed before this device first enabled Sync. */
+export async function uploadSyncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
+  const pendingDeletions = getPendingProfileDeletions()
+  for (const deletion of pendingDeletions) enqueueSyncRecord('profile', deletion.id, { id: deletion.id, deleted: true }, deletion.id)
+  queueInitialSnapshot()
+  if (isSyncVaultUnlocked()) {
+    const { queueEncryptedVault } = await import('./encryptedVault')
+    for (const profile of getProfiles()) await queueEncryptedVault(profile.id)
+  }
+  let uploaded = 0; let downloaded = 0
+  do {
+    const result = await syncNow(fetcher)
+    uploaded += result.uploaded; downloaded += result.downloaded
+  } while (getSyncOutbox().length > 0)
+  if (pendingDeletions.length) clearPendingProfileDeletions()
+  return { uploaded, downloaded }
+}
+
+/** Pull the complete account state without first uploading local changes.
+ * Useful when setting up a fresh device or explicitly restoring a profile. */
+export async function downloadSyncNow(fetcher: typeof fetch = fetch): Promise<{ downloaded: number }> {
+  const config = getSyncConfig()
+  if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
+  let cursor = '0'; let downloaded = 0
+  do {
+    const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor, records: [] }) })
+    if (!response.ok) { setSyncConfig({ lastError: `Download failed (${response.status})` }); throw new Error(`Download failed (${response.status})`) }
+    const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
+    const records = body.records || []
+    applyRemoteRecords(records); downloaded += records.length
+    const nextCursor = body.cursor || cursor
+    if (records.length < 500 || nextCursor === cursor) { cursor = nextCursor; break }
+    cursor = nextCursor
+  } while (true)
+  setSyncConfig({ cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
+  return { downloaded }
+}
+
 /** Safe for lifecycle hooks: does nothing until an Aurales account is configured. */
 export async function syncIfConfigured(): Promise<void> {
-  if (!getSyncConfig().accessToken) return
+  const config = getSyncConfig()
+  if (!config.accessToken || config.autoSync === false) return
   await syncNow()
 }

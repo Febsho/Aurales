@@ -154,11 +154,11 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
 
       {/* Footer */}
       <div className="app-sidebar__footer p-3 border-t border-white/[0.04]">
-        <div className="relative mb-3">
-          <button onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} className="flex w-full items-center gap-2 rounded-xl bg-white/[.05] px-2.5 py-2 text-left transition hover:bg-white/[.1] focus:outline-none focus:ring-2 focus:ring-white/50">
-            <ProfileAvatar {...activeProfile} size="sm" /><span className="app-sidebar__label min-w-0 flex-1 truncate text-xs font-semibold text-white/80">{activeProfile.name}</span><span className="app-sidebar__label text-white/40">⌄</span>
+        <div className="sidebar-profile-switcher mb-3" data-open={profileMenuOpen || undefined}>
+          <button onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} className="sidebar-profile-trigger">
+            <ProfileAvatar {...activeProfile} size="sm" className="!h-8 !w-8 !rounded-full" /><span className="sidebar-profile-name">{activeProfile.name}</span><svg className="sidebar-profile-chevron h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
-          {profileMenuOpen && <div role="menu" className="absolute bottom-11 left-0 z-50 w-full rounded-xl border border-white/15 bg-[#1b1b1b] p-1.5 shadow-2xl">{getProfiles().map((profile) => <button role="menuitem" key={profile.id} onClick={() => { void setActiveProfile(profile.id); setProfileMenuOpen(false); setProfileVersion((value) => value + 1) }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-white/75 hover:bg-white/10"><ProfileAvatar {...profile} size="sm" /><span className="min-w-0 flex-1 truncate">{profile.name}</span>{profile.id === activeProfile.id && <span>✓</span>}</button>)}<NavLink to="/settings" onClick={() => setProfileMenuOpen(false)} className="mt-1 block rounded-lg border-t border-white/[.08] px-2 py-2 text-xs font-semibold text-white/55 hover:bg-white/10 hover:text-white">Manage Profiles</NavLink></div>}
+          {profileMenuOpen && <div role="menu" className="sidebar-profile-menu">{getProfiles().map((profile) => <button role="menuitem" key={profile.id} onClick={() => { void setActiveProfile(profile.id); setProfileMenuOpen(false); setProfileVersion((value) => value + 1) }} className="sidebar-profile-menu-item"><ProfileAvatar {...profile} size="sm" /><span className="min-w-0 flex-1 truncate">{profile.name}</span>{profile.id === activeProfile.id && <span>✓</span>}</button>)}<NavLink to="/settings?tab=profiles" onClick={() => setProfileMenuOpen(false)} className="sidebar-profile-manage">Manage Profiles</NavLink></div>}
         </div>
         <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>

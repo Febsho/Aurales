@@ -17,7 +17,9 @@ const ACTIVE_KEY = 'aurales_active_profile_v1'
 const PROFILE_STATE_PREFIX = 'aurales_profile_state_v1:'
 const PROFILE_STATE_DB = 'aurales-profile-state-v1'
 const PROFILE_STATE_STORE = 'states'
+const PENDING_DELETIONS_KEY = 'aurales_sync_profile_deletions_v1'
 export const PROFILE_CHANGED_EVENT = 'aurales:profile-changed'
+export const PROFILE_SWITCH_TRANSITION_KEY = 'aurales_profile_switch_transition_v1'
 
 // User-owned legacy keys which are safely copied to the initial profile.  Keep
 // credentials and addon configuration global; those must never be silently
@@ -105,6 +107,10 @@ function readProfiles(): AuralesProfile[] {
   } catch { return [] }
 }
 function writeProfiles(profiles: AuralesProfile[]) { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)) }
+export function getPendingProfileDeletions(): Array<{ id: string; deletedAt: string }> {
+  try { const value = JSON.parse(localStorage.getItem(PENDING_DELETIONS_KEY) || '[]'); return Array.isArray(value) ? value.filter((item): item is { id: string; deletedAt: string } => Boolean(item?.id && item?.deletedAt)) : [] } catch { return [] }
+}
+export function clearPendingProfileDeletions(): void { localStorage.removeItem(PENDING_DELETIONS_KEY) }
 function queueProfileRecord(profileId: string, payload: AuralesProfile | { id: string; deleted: true }): void {
   // Keep profiles usable when the optional transport has not loaded yet, and
   // avoid making the profile store depend on a transport implementation.
@@ -166,7 +172,12 @@ export async function setActiveProfile(profileId: string): Promise<boolean> {
   // marker the reload immediately opens the same chooser again and makes the
   // switch appear to have done nothing.
   sessionStorage.setItem('aurales_profile_switched_v1', profileId)
-  window.location.reload()
+  const nextProfile = getProfiles().find((profile) => profile.id === profileId)
+  if (nextProfile) sessionStorage.setItem(PROFILE_SWITCH_TRANSITION_KEY, JSON.stringify(nextProfile))
+  // A profile is a separate Aurales user space. Always begin its fresh session
+  // at Home rather than leaving it on a detail/settings screen from another
+  // profile.
+  window.location.assign('/')
   return true
 }
 export function createProfile(name: string, avatar?: string, accent?: string, avatarRef?: ProfileAvatarRef): AuralesProfile {
@@ -188,9 +199,19 @@ export function updateProfile(profileId: string, update: Pick<Partial<AuralesPro
 export function deleteProfile(profileId: string): boolean {
   const profiles = getProfiles()
   if (profiles.length <= 1 || !profiles.some((profile) => profile.id === profileId)) return false
+  const wasActive = getActiveProfileId() === profileId
   writeProfiles(profiles.filter((profile) => profile.id !== profileId))
-  queueProfileRecord(profileId, { id: profileId, deleted: true })
-  if (getActiveProfileId() === profileId) void setActiveProfile(getProfiles()[0].id)
+  // Deleting a profile on one device must not destroy the only cloud copy.
+  // A later Pull is intentionally able to bring it back (including its
+  // settings and connected accounts). Cloud-wide deletion needs a separate,
+  // explicit destructive action rather than an incidental local deletion.
+  // The pending marker is sent only by the manual Push action.
+  localStorage.setItem(PENDING_DELETIONS_KEY, JSON.stringify([...getPendingProfileDeletions().filter((item) => item.id !== profileId), { id: profileId, deletedAt: now() }]))
+  if (wasActive) {
+    const nextProfileId = getProfiles()[0].id
+    localStorage.setItem(ACTIVE_KEY, nextProfileId)
+    void loadProfileState(nextProfileId).then(() => window.location.reload()).catch(() => window.location.reload())
+  }
   return true
 }
 
