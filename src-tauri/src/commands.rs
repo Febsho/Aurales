@@ -595,9 +595,9 @@ pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
         .unwrap_or(false);
     if should_clear {
         if let Some(mut player) = state.take() {
-            if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
+            if let NativePlayerBackend::LibMpv { player: _libmpv } = &mut player.backend {
                 #[cfg(target_os = "linux")]
-                crate::linux_render_surface::detach(libmpv);
+                crate::linux_render_surface::detach(_libmpv);
             }
             cleanup_player_windows(player.host_hwnd, player.video_hwnd);
         }
@@ -1354,7 +1354,7 @@ pub async fn ytdlp_resolve(
 /// player, launch options differ, or the in-place swap failed).
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn try_reuse_libmpv_player(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     url: &str,
     title: Option<&str>,
     start_time: Option<f64>,
@@ -1432,7 +1432,7 @@ fn try_reuse_libmpv_player(
                 h,
             );
             #[cfg(target_os = "linux")]
-            crate::linux_render_surface::resize(app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
+            crate::linux_render_surface::resize(_app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
         }
     }
 

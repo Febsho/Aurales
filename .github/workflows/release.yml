@@ -11,6 +11,10 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      # Both builds update the same draft release and its latest.json updater
+      # manifest. Running them concurrently can make one upload delete or
+      # replace the asset while the other is updating it.
+      max-parallel: 1
       matrix:
         include:
           - platform: windows-latest
