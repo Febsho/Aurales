@@ -31,3 +31,5 @@ docs/
 *.njsproj
 *.sln
 *.sw?
+aurales-sync-server/
+watch-together-server/
