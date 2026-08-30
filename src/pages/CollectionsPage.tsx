@@ -333,7 +333,7 @@ function PosterMosaic({ posters, loading }: { posters: string[]; loading: boolea
 }
 
 function shelfSourceLabel(row: HomeRowConfig): string {
-  if (row.layout === 'continue') return 'Built-in'
+  if (row.layout === 'continue' || row.layout === 'upcoming') return 'Built-in'
   if (row.sourceType === 'simkl') return 'Simkl'
   if (row.sourceType === 'trakt') return 'Trakt'
   if (row.sourceType === 'anilist') return 'AniList'
@@ -351,6 +351,7 @@ function shelfLayoutLabel(row: HomeRowConfig): string {
     case 'landscape': return 'Landscape'
     case 'list': return 'List'
     case 'continue': return 'Continue'
+    case 'upcoming': return 'Upcoming'
     case 'hero': return 'Hero'
     default: return row.layout || 'Poster'
   }
@@ -364,7 +365,7 @@ function sourceColor(row: HomeRowConfig): string {
   if (row.sourceType === 'pmdb-picks') return 'bg-fuchsia-500/15 text-fuchsia-300'
   if (row.sourceType === 'mdblist') return 'bg-green-500/15 text-green-400'
   if (row.sourceType === 'discover') return 'bg-amber-500/15 text-amber-400'
-  if (row.layout === 'continue') return 'bg-accent/15 text-accent'
+  if (row.layout === 'continue' || row.layout === 'upcoming') return 'bg-accent/15 text-accent'
   return 'bg-white/[0.06] text-white/50'
 }
 
@@ -387,12 +388,13 @@ function SortableShelfCard({
   onOpen?: () => void
   draggable?: boolean
 }) {
-  const locked = row.layout === 'continue'
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id, disabled: locked || !draggable })
+  const locked = row.layout === 'continue' || row.layout === 'upcoming'
+  const movable = row.layout !== 'continue'
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id, disabled: !movable || !draggable })
   const { posters, count, loading } = useRowPosters(row, addons)
 
   const style = {
-    transform: locked ? undefined : CSS.Transform.toString(transform),
+    transform: !movable ? undefined : CSS.Transform.toString(transform),
     transition: isDragging ? 'none' : transition,
     zIndex: isDragging ? 50 : undefined,
   }
@@ -401,8 +403,8 @@ function SortableShelfCard({
     <div
       ref={setNodeRef}
       style={style}
-      {...(!locked && draggable ? attributes : {})}
-      {...(!locked && draggable ? listeners : {})}
+      {...(movable && draggable ? attributes : {})}
+      {...(movable && draggable ? listeners : {})}
       onClick={onOpen}
       className={`group relative overflow-hidden rounded-2xl border aspect-[4/3] transition-all duration-200 ${
         locked
@@ -1765,6 +1767,8 @@ function AddWidgetOverlay({
     const items: CatalogPickerItem[] = []
     const continueRow: ShelfDraft = { title: 'Continue Watching', sourceType: 'local', layout: 'continue', enabled: true }
     items.push({ key: 'builtin:continue', source: 'builtin', group: 'Built-in', title: 'Continue Watching', subtitle: 'Resume where you left off', contentType: 'unknown', row: continueRow, added: homeRows.some((row) => row.layout === 'continue') })
+    const upcomingRow: ShelfDraft = { title: 'Upcoming', sourceType: 'local', layout: 'upcoming', enabled: true }
+    items.push({ key: 'builtin:upcoming', source: 'builtin', group: 'Built-in', title: 'Upcoming', subtitle: 'Personalized releases coming soon', contentType: 'unknown', row: upcomingRow, added: homeRows.some((row) => row.layout === 'upcoming') })
 
     homeRows.filter((row) => row.sourceType === 'discover').forEach((row) => {
       items.push({ key: `existing:${row.id}`, source: 'smart', group: 'Smart Collections', title: row.title, subtitle: 'Dynamic collection', contentType: row.discoverConfig?.contentType === 'movie' ? 'movie' : 'series', row: { ...row, layout: 'poster', enabled: true }, existingId: row.id, added: row.enabled })
@@ -2189,7 +2193,9 @@ function AddWidgetOverlay({
                       </div>
                       {(() => {
                         const added = homeRows.some((r) => r.layout === 'continue')
+                        const upcomingAdded = homeRows.some((r) => r.layout === 'upcoming')
                         return (
+                          <div className="space-y-2">
                           <button
                             disabled={added}
                             onClick={() => {
@@ -2215,6 +2221,16 @@ function AddWidgetOverlay({
                               <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>
                             )}
                           </button>
+                          <button
+                            disabled={upcomingAdded}
+                            onClick={() => queueShelf({ title: 'Upcoming', layout: 'upcoming', enabled: true, sourceType: 'local' })}
+                            className={`group w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.06] backdrop-blur-sm transition-all text-left ${upcomingAdded ? 'bg-white/[0.025] opacity-55 cursor-default' : 'bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.12] hover:translate-y-[-1px] cursor-pointer'}`}
+                          >
+                            <div className={`w-9 h-9 rounded-xl ${sourceColors.builtin.bg} flex items-center justify-center flex-shrink-0`}><svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4m8-4v4M3 10h18" /></svg></div>
+                            <div className="flex-1 min-w-0"><p className="text-sm font-medium text-white/80">Upcoming</p><p className="text-meta text-white/25 mt-0.5">Personalized releases coming soon</p></div>
+                            {upcomingAdded ? <span className="text-meta text-emerald-400/80 font-semibold">Added</span> : <svg className="w-4 h-4 text-white/10 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" /></svg>}
+                          </button>
+                          </div>
                         )
                       })()}
                     </div>
@@ -3494,6 +3510,8 @@ export default function CollectionsPage() {
   const allHomeShelfRows = getHomeShelfRows(allWidgetRows)
   const activeRows = activeTab === 'collections' ? smartCollectionRows : allHomeShelfRows
   const enabledWidgetRows = activeRows
+  // Upcoming is a protected built-in shelf, but unlike Continue Watching it
+  // may be reordered with the rest of the shelves.
   const fixedWidgetRows = enabledWidgetRows.filter((r) => r.layout === 'continue')
   const movableWidgetRows = enabledWidgetRows.filter((r) => r.layout !== 'continue')
   const widgetRows = [...fixedWidgetRows, ...movableWidgetRows]
@@ -3544,8 +3562,8 @@ export default function CollectionsPage() {
     const additions = selections.map((selection) => {
       const existing = selection.existingId ? current.find((row) => row.id === selection.existingId) : undefined
       return existing
-        ? { ...existing, enabled: true, layout: 'poster' as const }
-        : { ...selection.row, id: uuid(), order: 0, enabled: true, layout: selection.row.layout === 'continue' ? 'continue' as const : 'poster' as const }
+        ? { ...existing, enabled: true, layout: (existing.layout === 'continue' || existing.layout === 'upcoming') ? existing.layout : 'poster' as const }
+        : { ...selection.row, id: uuid(), order: 0, enabled: true, layout: (selection.row.layout === 'continue' || selection.row.layout === 'upcoming') ? selection.row.layout : 'poster' as const }
     })
     setHomeRows([...base, ...additions].map((row, index) => ({ ...row, order: index })))
   }
@@ -3818,8 +3836,9 @@ function CompactShelfRow({
   onUpdate: (updates: Partial<HomeRowConfig>) => void
   onRemove: () => void
 }) {
-  const locked = row.layout === 'continue'
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id, disabled: locked })
+  const locked = row.layout === 'continue' || row.layout === 'upcoming'
+  const movable = row.layout !== 'continue'
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id, disabled: !movable })
   const { posters, loading } = useRowPosters(row, addons)
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(row.title)
@@ -3840,14 +3859,14 @@ function CompactShelfRow({
       className={`group grid grid-cols-[36px_88px_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2.5 transition-all sm:grid-cols-[36px_104px_minmax(0,1fr)_auto] md:grid-cols-[36px_104px_minmax(0,1fr)_150px_48px_40px] ${isDragging ? 'z-50 border-accent/35 bg-surface-elevated shadow-2xl' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.13] hover:bg-white/[0.045]'} ${!row.enabled ? 'opacity-60' : ''}`}
     >
       <button
-        {...(!locked ? attributes : {})}
-        {...(!locked ? listeners : {})}
+        {...(movable ? attributes : {})}
+        {...(movable ? listeners : {})}
         type="button"
-        disabled={locked}
-        className={`grid h-9 w-9 place-items-center rounded-xl text-xs font-black ${locked ? 'cursor-default bg-accent/10 text-accent/70' : 'cursor-grab bg-white/[0.045] text-white/50 hover:bg-white/[0.09] hover:text-white/65 active:cursor-grabbing'}`}
-        aria-label={locked ? 'Fixed shelf' : `Drag shelf ${index + 1}`}
+        disabled={!movable}
+        className={`grid h-9 w-9 place-items-center rounded-xl text-xs font-black ${!movable ? 'cursor-default bg-accent/10 text-accent/70' : 'cursor-grab bg-white/[0.045] text-white/50 hover:bg-white/[0.09] hover:text-white/65 active:cursor-grabbing'}`}
+        aria-label={!movable ? 'Fixed shelf' : `Drag shelf ${index + 1}`}
       >
-        {locked ? <span>•</span> : <span>{index + 1}</span>}
+        {!movable ? <span>•</span> : <span>{index + 1}</span>}
       </button>
 
       <CompactPosterStack posters={posters} loading={loading} fallback={shelfSourceLabel(row)} />

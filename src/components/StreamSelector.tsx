@@ -13,17 +13,20 @@ import type { PlaybackItem } from '../services/simkl/playback'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { getBestKnownTime as wtBestKnownTime, play as wtPlay, useManualLocalSource as wtUseManualLocalSource } from '../services/watch-together/wsClient'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
-import { stopEmbeddedPlayer } from '../services/player'
+import { getPlayerSnapshot, stopEmbeddedPlayer } from '../services/player'
 import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
 import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
 import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { classifyPlaybackFailure, diagnosticForStream, recoveryCandidates, type SourceDiagnostic } from '../services/streams/playbackHealth'
 import { buildSmartContext, preparedStreamRegistry, type PreparedStream } from '../services/streams/preparedStreams'
 import { canonicalStreamKey } from '../services/streams/preloadUtils'
 import { probeStreamUrl } from '../services/streams/streamProbe'
 import { cachedImage } from '../services/imageCache'
 import { annotateTorBoxStreams, isTorBoxCachedStream, isTorBoxConnected, resolveTorBoxStream } from '../services/torbox'
 import { loadPlaybackMemory, playbackMemoryKey, seriesPlaybackMemoryKey, recordPlaybackPreference } from '../services/streams/playbackMemory'
+import { cacheClearCategory } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -127,16 +130,18 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const [loading, setLoading] = useState(true)
   const [playError, setPlayError] = useState('')
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
-  const [playback, setPlayback] = useState<{ url: string; stream: AddonStream } | null>(null)
+  const [playback, setPlayback] = useState<{ url: string; stream: AddonStream; startTime?: number } | null>(null)
   const [smartMode, setSmartMode] = useState<SmartPlayMode>(() => (localStorage.getItem('aurales_smart_play_mode') as SmartPlayMode) || 'best')
   const [smartStatus, setSmartStatus] = useState('')
+  const [sourceDiagnostics, setSourceDiagnostics] = useState<Record<string, SourceDiagnostic>>({})
   const [selectedProvider, setSelectedProvider] = useState<string>('all')
+  const [refreshRevision, setRefreshRevision] = useState(0)
   const smartQueueRef = useRef<SmartFallbackQueue<AddonStream> | null>(null)
   const smartActiveRef = useRef(false)
   const autoSmartStartedRef = useRef(false)
   const manualSelectionRequestedRef = useRef(false)
   const startSmartPlayRef = useRef<() => void>(() => {})
-  const handlePlayRef = useRef<(stream: AddonStream, index: number, urlOverride?: string) => void>(() => {})
+  const handlePlayRef = useRef<(stream: AddonStream, index: number, urlOverride?: string, recoveryStartTime?: number) => void>(() => {})
   const fastPathTriedRef = useRef(false)
   const pendingSmartFallbackRef = useRef<AddonStream | null>(null)
   const warmedStreamUrlsRef = useRef(new Map<string, string>())
@@ -149,6 +154,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
+  const automaticStreamRecovery = useAppStore((s) => s.automaticStreamRecovery)
+  const sessionFailedSourcesRef = useRef(new Set<string>())
+  const sessionFailedAddonsRef = useRef(new Map<string, number>())
 
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
   const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') !== 'false')
@@ -196,6 +204,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     setPlayingIndex(null)
     setPlayback(null)
     setSubtitles([])
+    setSourceDiagnostics({})
+    sessionFailedSourcesRef.current.clear()
+    sessionFailedAddonsRef.current.clear()
 
     const cleanMediaId = String(mediaId).trim().replace(/:(\d+):(\d+)$/, '')
     if (!cleanMediaId) {
@@ -274,7 +285,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       )
       setSubtitles(unique)
     })
-  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, playback])
+  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, playback, refreshRevision])
 
   useEffect(() => {
     const unchecked = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
@@ -519,12 +530,12 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     manualSelectionRequestedRef.current = false
     fastPathTriedRef.current = false
     pendingSmartFallbackRef.current = null
-  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
+  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode, refreshRevision])
 
   if (!open) return null
 
 
-  const handlePlay = async (stream: AddonStream, index: number, urlOverride?: string) => {
+  const handlePlay = async (stream: AddonStream, index: number, urlOverride?: string, recoveryStartTime?: number) => {
     const originalUrl = getPlayableUrl(stream)
     setPlayingIndex(index)
     setPlayError('')
@@ -567,7 +578,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       return
     }
 
-    setPlayback({ url, stream })
+    setPlayback({ url, stream, startTime: recoveryStartTime ?? startTime })
     setPlayingIndex(null)
   }
 
@@ -616,12 +627,22 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     setSmartStatus(`Smart Play selected ${first.addonName}`)
     handlePlay(first, streams.indexOf(first), urlOverride)
   }
+  const retryFailedSources = () => {
+    const addonIds = Object.values(sourceDiagnostics).filter((diagnostic) => diagnostic.failureReason).map((diagnostic) => diagnostic.addonId)
+    if (!addonIds.length) return
+    setSmartStatus('Retrying failed sources…')
+    void streamPreloadManager.retryAddons({ mediaType, mediaId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''), tmdbId, seasonEpisode, sourceAddonId, sourceAddonItemId }, addonIds).then((fresh) => {
+      setStreams((current) => [...current.filter((stream) => !addonIds.includes(stream.addonId)), ...fresh])
+      setSourceDiagnostics((current) => Object.fromEntries(Object.entries(current).filter(([addonId]) => !addonIds.includes(addonId))))
+      setSmartStatus(fresh.length ? 'Failed sources responded with fresh results.' : 'Failed sources did not return playable results.')
+    })
+  }
   startSmartPlayRef.current = startSmartPlay
   handlePlayRef.current = handlePlay
 
   const resumeSmartFallback = (failed: AddonStream) => {
     if (!smartActiveRef.current) return
-    const ranked = rankSelectorStreams(providerStreams).filter((candidate) => candidate.url !== failed.url)
+    const ranked = recoveryCandidates(rankSelectorStreams(providerStreams), sessionFailedSourcesRef.current, sessionFailedAddonsRef.current)
     smartQueueRef.current = new SmartFallbackQueue(ranked)
     const next = smartQueueRef.current.next()
     if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
@@ -630,13 +651,19 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
   resumeSmartFallbackRef.current = resumeSmartFallback
 
-  const handlePlaybackError = (message?: string) => {
+  const handlePlaybackError = (message?: string, positionSeconds?: number) => {
     if (!playback) return
     if (playbackEvidenceTimerRef.current) window.clearTimeout(playbackEvidenceTimerRef.current)
-    recordReliabilityEvent(playback.stream, /buffer|stutter|unstable/i.test(message || '') ? 'unstable' : 'failed_start')
+    const reason = classifyPlaybackFailure(message)
+    const state = /buffer|stutter|unstable/i.test(message || '') ? 'UNSTABLE' : 'FAILED'
+    const diagnostic = diagnosticForStream(playback.stream, state, reason, undefined, sourceDiagnostics[playback.stream.addonId])
+    setSourceDiagnostics((current) => ({ ...current, [playback.stream.addonId]: diagnostic }))
+    sessionFailedSourcesRef.current.add(diagnostic.sourceFingerprint)
+    sessionFailedAddonsRef.current.set(playback.stream.addonId, (sessionFailedAddonsRef.current.get(playback.stream.addonId) || 0) + 1)
+    recordReliabilityEvent(playback.stream, state === 'UNSTABLE' ? 'unstable' : 'failed_start')
     const key = playbackMemoryKey(mediaType, String(tmdbId || mediaId), seasonEpisode?.season, seasonEpisode?.episode)
     recordPlaybackPreference(key, playback.stream, 'failure', { audioLanguage: preferredAudio[0], subtitleLanguage: preferredSubtitles[0] })
-    if (!smartActiveRef.current) return
+    if (!smartActiveRef.current || !automaticStreamRecovery) return
     if (!smartQueueRef.current) {
       // Fast path started before the addon fetch settled — build the fallback
       // queue now, or wait for results if none have arrived yet.
@@ -646,12 +673,16 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     }
     const next = smartQueueRef.current.next()
     if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
-    setSmartStatus(`Stream failed — trying ${next.addonName}`)
-    handlePlay(next, streams.indexOf(next))
+    setSmartStatus('Stream interrupted — switching source…')
+    const resumeAt = Math.max(0, positionSeconds ?? playback.startTime ?? startTime ?? 0)
+    void getPlayerSnapshot().then((snapshot) => handlePlay(next, streams.indexOf(next), undefined, Math.max(resumeAt, snapshot.timePos ?? 0))).catch(() => handlePlay(next, streams.indexOf(next), undefined, resumeAt))
   }
 
   const handlePlaybackStarted = () => {
-    if (playback) recordReliabilityEvent(playback.stream, 'success')
+    if (playback) {
+      recordReliabilityEvent(playback.stream, 'success')
+      setSourceDiagnostics((current) => ({ ...current, [playback.stream.addonId]: diagnosticForStream(playback.stream, 'HEALTHY', undefined, undefined, current[playback.stream.addonId]) }))
+    }
     // Player startup alone is weak evidence. A stream only becomes a durable
     // preference after it has survived two minutes without Smart Play needing
     // to fall back; URLs themselves are never retained.
@@ -666,7 +697,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         if (mediaType === 'series') recordPlaybackPreference(seriesPlaybackMemoryKey(String(tmdbId || mediaId)), observed.stream, 'success', prefs)
       }, 120_000)
     }
-    if (smartActiveRef.current) setSmartStatus(`Playing from ${playback?.stream.addonName || 'the best source'}`)
+    if (smartActiveRef.current) setSmartStatus(`Playback resumed · ${playback?.stream.addonName || 'the best source'}`)
   }
 
   const reportBad = () => {
@@ -723,7 +754,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
           playbackItem={playbackItem}
-          startTime={startTime}
+          startTime={playback.startTime}
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
           onClose={onClose}
@@ -745,7 +776,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
           playbackItem={playbackItem}
-          startTime={startTime}
+        startTime={playback.startTime}
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
           onClose={onClose}
@@ -802,11 +833,13 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
               <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === 'all' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All ({filteredStreams.length})</button>
               {providerOptions.map(([id, name]) => (
-                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} ({streams.filter((stream) => stream.addonId === id).length})</button>
+                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} {sourceDiagnostics[id]?.failureReason ? '⚠' : '✓'} ({streams.filter((stream) => stream.addonId === id).length})</button>
               ))}
             </div>
             <div className="hidden h-6 w-px bg-white/[0.08] lg:block" />
             <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
+            <button onClick={retryFailedSources} disabled={loading || !Object.values(sourceDiagnostics).some((diagnostic) => diagnostic.failureReason)} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Retry failed</button>
+            <button onClick={() => { setSmartStatus('Refreshing sources…'); void cacheClearCategory(CACHE_CATEGORIES.STREAM_PRELOAD).finally(() => setRefreshRevision((value) => value + 1)) }} disabled={loading} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Refresh sources</button>
             {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
               <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
             ))}
@@ -831,6 +864,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
               </button>
             ))}
             {smartStatus && <span className="w-full px-2 pb-1 text-xs text-white/50">{smartStatus}</span>}
+            {Object.values(sourceDiagnostics).filter((diagnostic): diagnostic is SourceDiagnostic & { failureReason: NonNullable<SourceDiagnostic['failureReason']> } => Boolean(diagnostic.failureReason)).map((diagnostic) => (
+              <span key={diagnostic.sourceFingerprint} className="w-full px-2 pb-1 text-xs text-amber-200/70">{diagnostic.addonId}: {diagnostic.failureReason.replaceAll('_', ' ').toLowerCase()} {diagnostic.retryable ? '· retryable' : '· skipped for this session'}</span>
+            ))}
           </div>
 
           <div className="flex-1 space-y-2 overflow-y-auto pr-1" style={{ scrollbarWidth: 'none' }}>

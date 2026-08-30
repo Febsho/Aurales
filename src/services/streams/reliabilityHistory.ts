@@ -16,7 +16,13 @@ const EMPTY: StreamReliabilityRecord = { success: 0, failedStart: 0, unstable: 0
 
 export function streamFingerprint(stream: StreamResult & { addonId?: string }): string {
   if (stream.infoHash) return `${stream.addonId || 'unknown'}:torrent:${stream.infoHash.toLowerCase()}:${stream.fileIdx || 0}`
-  if (stream.url) return `${stream.addonId || 'unknown'}:url:${stream.url}`
+  // Signed URLs and addon URLs can contain credentials and are short-lived.
+  // A stable origin/path is enough to distinguish direct-source families and
+  // prevents secrets from ever becoming durable diagnostic state.
+  if (stream.url) {
+    try { const url = new URL(stream.url); return `${stream.addonId || 'unknown'}:url:${url.origin}${url.pathname}` }
+    catch { /* fall through to non-URL metadata */ }
+  }
   const label = `${stream.name || ''}|${stream.title || ''}|${stream.filename || ''}`.toLowerCase()
   let hash = 2166136261
   for (let i = 0; i < label.length; i += 1) hash = Math.imul(hash ^ label.charCodeAt(i), 16777619)

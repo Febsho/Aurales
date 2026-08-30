@@ -2,10 +2,10 @@ import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffec
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
-import { refreshSimklPlaybackCache, removeSimklPlaybackProgress } from '../services/simkl/playback'
-import { getPlaybackProgress as getTraktPlaybackProgress, removePlaybackItem as removeTraktPlaybackItem } from '../services/trakt/sync'
-import { getPMDBPlaybackProgress, deletePMDBResumePoint } from '../services/pmdb'
-import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth, scrobbleMdblist } from '../services/mdblist'
+import { refreshSimklPlaybackCache } from '../services/simkl/playback'
+import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
+import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { tmdbProvider } from '../services/tmdb'
 // Lazy: StreamSelector pulls in the full player stack; only load it on demand
@@ -27,6 +27,7 @@ import {
 } from '../services/cache/homeStartupSnapshot'
 import { markContinueWatchingSettled, waitForHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
+import { continueWatchingKey, continueWatchingVisibility, suppressContinueWatching } from '../services/continueWatchingPolicy'
 
 type SourceType = ContinueWatchingSource
 
@@ -100,9 +101,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
   const navigate = useNavigate()
   const watchProgress = useAppStore((s) => s.watchProgress)
+  const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const updateHomeRow = useAppStore((s) => s.updateHomeRow)
   const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
-  const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed'
   const [focusedFixedItemId, setFocusedFixedItemId] = useState<string | null>(null)
@@ -465,7 +466,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         }
 
         if (!cancelled) {
-          const candidate = list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit)
+          // Presentation cleanup is local/profile-scoped. It deliberately
+          // hides noise without mutating provider history or watchlists.
+          const candidate = list.filter((i) => i.backdrop || i.poster).filter((i) => continueWatchingVisibility({
+            id: i.id, mediaId: i.mediaId, mediaType: i.mediaType, season: i.season, episode: i.episode,
+            progressSeconds: i.progressSeconds, durationSeconds: i.durationSeconds, completed: false, updatedAt: i.updatedAt,
+          }).visible).slice(0, continueWatchingLimit)
           const visible = source !== 'local' && candidate.length === 0 && cached?.length ? cached : candidate
           if (accountScope && visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
           const previous = cwItemsCache.get(cwKey) || cached || []
@@ -832,27 +838,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           source={source}
           onClose={() => setCwMenu(null)}
           onRemove={(removedItem) => {
-            // Remove at the source, not just from local component state —
-            // otherwise the item reappears on the next load.
-            if (source === 'local') {
-              removeWatchProgress([removedItem.mediaId, removedItem.imdbId].filter(Boolean) as string[], removedItem.season, removedItem.episode)
-            } else if (source === 'trakt') {
-              removeTraktPlaybackItem(removedItem.id).catch((e) => console.warn('[CW] Trakt remove failed:', e))
-            } else if (source === 'simkl') {
-              removeSimklPlaybackProgress(Number(removedItem.id)).catch((e) => console.warn('[CW] Simkl remove failed:', e))
-            } else if (source === 'pmdb') {
-              deletePMDBResumePoint(removedItem.id).catch((e) => console.warn('[CW] PMDB remove failed:', e))
-            } else if (source === 'mdblist' && removedItem.id.startsWith('mdblist-pb-')) {
-              scrobbleMdblist(
-                'clear',
-                removedItem.tmdbId,
-                removedItem.mediaType,
-                0,
-                removedItem.season,
-                removedItem.episode,
-                removedItem.imdbId,
-              ).catch((e) => console.warn('[CW] MDBList remove failed:', e))
-            }
+            // A removal is a visibility preference, never a destructive
+            // provider/history mutation. A meaningful replay clears it.
+            suppressContinueWatching(continueWatchingKey({ mediaId: removedItem.mediaId, season: removedItem.season, episode: removedItem.episode }))
             setItems((prev) => {
               const next = prev.filter((i) => i.id !== removedItem.id)
               cwItemsCache.set(cwKey, next)
@@ -889,6 +877,18 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             })
             setCwMenu(null)
           }}
+          onRestart={(item) => {
+            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId })
+            setCwMenu(null)
+          }}
+          onMarkWatched={(item) => {
+            if (source === 'local') {
+              const key = item.season != null && item.episode != null ? `${item.mediaId}:${item.season}:${item.episode}` : item.mediaId
+              setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId })
+            }
+            suppressContinueWatching(continueWatchingKey({ mediaId: item.mediaId, season: item.season, episode: item.episode }))
+            setItems((items) => items.filter((candidate) => candidate.id !== item.id)); setCwMenu(null)
+          }}
         />
       )}
     </section>
@@ -906,8 +906,10 @@ const ContinueWatchingMenu = forwardRef<
     onRemove: (item: ContinueWatchingItem) => void
     onGoTo: (item: ContinueWatchingItem) => void
     onPlay: (item: ContinueWatchingItem) => void
+    onRestart: (item: ContinueWatchingItem) => void
+    onMarkWatched: (item: ContinueWatchingItem) => void
   }
->(({ x, y, item, source, onClose, onRemove, onGoTo, onPlay }, ref) => {
+>(({ x, y, item, source, onClose, onRemove, onGoTo, onPlay, onRestart, onMarkWatched }, ref) => {
   const [adjusted, setAdjusted] = useState({ x, y })
   const innerRef = useRef<HTMLDivElement>(null)
   const menuRef = (ref as React.RefObject<HTMLDivElement>) || innerRef
@@ -970,6 +972,8 @@ const ContinueWatchingMenu = forwardRef<
               </svg>
               <span className="text-sm text-white/70">Resume Playing</span>
             </button>
+            <button onClick={() => onRestart(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer"><span className="w-4 text-center text-white/50">↺</span><span className="text-sm text-white/70">Restart</span></button>
+            <button onClick={() => onMarkWatched(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer"><span className="w-4 text-center text-accent">✓</span><span className="text-sm text-white/70">Mark Watched</span></button>
             <button onClick={() => onGoTo(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
               <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />

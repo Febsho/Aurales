@@ -133,7 +133,7 @@ export interface RoomSettings {
 }
 
 export type WatchTogetherEvent =
-  | { type: 'ROOM_JOIN'; roomCode: string; name: string; clientId?: string; roomSettings?: RoomSettings }
+  | { type: 'ROOM_JOIN'; roomCode: string; name: string; avatar?: string; clientId?: string; roomSettings?: RoomSettings }
   | { type: 'ROOM_LEAVE'; roomId: string; userId: string }
   | { type: 'READY'; roomId: string; userId: string; ready: boolean }
   | { type: 'MEDIA_SELECTED'; roomId: string; senderUserId: string; media: RoomMedia; episode?: RoomEpisode; stream?: RoomStream; sentAt: number }

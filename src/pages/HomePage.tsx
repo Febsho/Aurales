@@ -6,6 +6,7 @@ import { EmptyState } from '../components/ui'
 import HeroSection from '../components/HeroSection'
 import MediaRow from '../components/MediaRow'
 import ContinueWatchingRow from '../components/ContinueWatchingRow'
+import UpcomingHomeRow from '../components/UpcomingHomeRow'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
@@ -851,6 +852,8 @@ function SortableRowContainer({
 function buildRowElement(row: HomeRowConfig): React.ReactNode {
   if (row.layout === 'continue') {
     return <ContinueWatchingRow key={row.id} row={row} />;
+  } else if (row.layout === 'upcoming') {
+    return <UpcomingHomeRow key={row.id} />;
   } else if (row.sourceType === 'simkl') {
     return <SimklRow key={row.id} row={row} />;
   } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {

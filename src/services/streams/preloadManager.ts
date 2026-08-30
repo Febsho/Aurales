@@ -158,6 +158,24 @@ class StreamPreloadManager {
     return flight.promise
   }
 
+  /** Re-query only the providers that failed in the current selector session. */
+  async retryAddons(request: StreamPreloadRequest, addonIds: string[]): Promise<PreloadedStream[]> {
+    const wanted = new Set(addonIds)
+    if (!wanted.size) return []
+    const mediaKey = canonicalStreamKey(request)
+    const candidates = allStreamAddons(request.mediaType).filter((addon) => wanted.has(addon.manifest.id))
+    const responses = await Promise.all(candidates.map(async (addon) => {
+      const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId ? request.sourceAddonItemId : cleanId(request.mediaId)
+      if (!baseId) return [] as PreloadedStream[]
+      const streamId = request.seasonEpisode ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
+      try {
+        const entry = await this.fetchAddon(request, mediaKey, addon, streamId, StreamPreloadPriority.PLAYBACK)
+        return this.decorate(entry.streams, addon)
+      } catch { return [] as PreloadedStream[] }
+    }))
+    return responses.flat()
+  }
+
   markHomeReady(): void {
     this.homeReady = true
     this.maybeScheduleStartup()

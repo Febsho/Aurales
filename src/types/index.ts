@@ -296,7 +296,7 @@ export interface HomeRowConfig {
   catalogType?: string
   catalogId?: string
   catalogExtra?: Record<string, string>
-  layout: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list' | 'continue' | 'hero'
+  layout: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list' | 'continue' | 'upcoming' | 'hero'
   enabled: boolean
   order: number
   /** Determines which data source drives this row */

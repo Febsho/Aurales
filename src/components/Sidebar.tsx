@@ -10,6 +10,7 @@ const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
   { path: '/search', label: 'Search', icon: SearchIcon },
   { path: '/discover', label: 'Discover', icon: CompassIcon },
+  { path: '/upcoming', label: 'Upcoming', icon: CalendarIcon },
   { path: '/watch-together', label: 'Watch Together', icon: TogetherIcon },
   { path: '/collections', label: 'Library', icon: LibraryIcon },
   { path: '/settings', label: 'Settings', icon: SettingsIcon },
@@ -176,6 +177,10 @@ function TogetherIcon({ className, filled }: { className?: string; filled?: bool
       <path d="M7 21h10" />
     </svg>
   )
+}
+
+function CalendarIcon({ className, filled }: { className?: string; filled?: boolean }) {
+  return <svg className={className} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" /></svg>
 }
 
 function HomeIcon({ className, filled }: { className?: string; filled?: boolean }) {

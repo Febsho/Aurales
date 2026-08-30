@@ -59,6 +59,7 @@ import { clearTorBoxToken, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken,
 import ProfilesSettings from '../components/settings/ProfilesSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
+import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -1128,7 +1129,7 @@ export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [searchParams] = useSearchParams()
-  type SettingsTab = 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  type SettingsTab = 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
   const requestedTab = searchParams.get('tab')
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'accounts')
 
@@ -1139,6 +1140,15 @@ export default function SettingsPage() {
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
   const [localPrefs, setLocalPrefs] = useState<DiscoverPrefs>(prefs)
+  const [upcomingPrefs, setUpcomingPrefs] = useState(() => getUpcomingPreferences())
+  const updateUpcomingPrefs = (patch: Partial<typeof upcomingPrefs>) => {
+    setUpcomingPreferences(patch)
+    if (typeof patch.showOnHome === 'boolean') {
+      const shelf = store.homeRows.find((row) => row.layout === 'upcoming')
+      if (shelf) store.updateHomeRow(shelf.id, { enabled: patch.showOnHome })
+    }
+    setUpcomingPrefs(getUpcomingPreferences())
+  }
 
   useEffect(() => {
     setLocalPrefs(prefs)
@@ -1982,6 +1992,16 @@ export default function SettingsPage() {
           )
         },
         {
+          id: 'upcoming',
+          label: 'Upcoming',
+          description: 'Choose which watchlists and active services power release reminders.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="3" y="4.5" width="18" height="16" rx="2" /><path strokeLinecap="round" d="M7 2.5v4M17 2.5v4M3 9h18M8 13h3M8 17h7" />
+            </svg>
+          )
+        },
+        {
           id: 'subtitles',
           label: 'Audio & Subtitles',
           description: 'Language preferences, subtitle styling, and live translation.',
@@ -2159,6 +2179,21 @@ export default function SettingsPage() {
                 { id: 'openrouter', name: 'OpenRouter', iconService: 'openrouter', group: 'ai', wide: true, description: 'AI search · Subtitle translation', state: store.openrouterApiKey ? 'connected' : 'not-connected', statusLabel: store.openrouterApiKey ? 'Key configured' : 'Not configured', isConfigured: Boolean(store.openrouterApiKey), detail: store.openrouterApiKey ? store.openrouterModel : undefined, primaryLabel: store.openrouterApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.openrouterApiKey} onChange={(e) => store.setOpenrouterApiKey(e.target.value)} placeholder="sk-or-v1-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a><label className="block text-xs font-semibold text-white/60">Model<select value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'} onChange={(e) => store.setOpenrouterModel(e.target.value === 'custom' ? 'custom-model-id' : e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-[#171714] px-3 py-2 text-sm text-white outline-none focus:border-accent/50"><option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option><option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option><option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option><option value="deepseek/deepseek-chat">DeepSeek V3</option><option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option><option value="custom">Custom model</option></select></label>{!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && <label className="block text-xs font-semibold text-white/60">Custom model ID<input value={store.openrouterModel === 'custom-model-id' ? '' : store.openrouterModel} onChange={(e) => store.setOpenrouterModel(e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>}</div> },
               ]} />
 
+            </>
+          )}
+
+          {activeTab === 'upcoming' && (
+            <>
+              <SettingSection title="Home shelf" description="Show release dates that matter to your current library without changing connected-service data.">
+                <SettingRow label="Show Upcoming on Home" description="Adds the landscape Upcoming shelf alongside Continue Watching."><SettingToggle checked={upcomingPrefs.showOnHome} onChange={(showOnHome) => updateUpcomingPrefs({ showOnHome })} /></SettingRow>
+                <SettingRow label="Look ahead" description="Only show releases within this window."><SettingSelect value={upcomingPrefs.horizonDays} onChange={(value) => updateUpcomingPrefs({ horizonDays: Number(value) })} options={[3, 7, 14, 30, 60, 90].map((value) => ({ value, label: `${value} days` }))} /></SettingRow>
+              </SettingSection>
+              <SettingSection title="Release sources" description="Upcoming combines your local library with connected services. Connected lists are read-only.">
+                <SettingRow label="Local Plan to Watch / Watchlist" description="Include titles saved in Aurales."><SettingToggle checked={upcomingPrefs.includeLocalWatchlist} onChange={(includeLocalWatchlist) => updateUpcomingPrefs({ includeLocalWatchlist })} /></SettingRow>
+                <SettingRow label="Local Continue Watching" description="Prioritize new episodes and seasons for titles you are actively watching."><SettingToggle checked={upcomingPrefs.includeContinueWatching} onChange={(includeContinueWatching) => updateUpcomingPrefs({ includeContinueWatching })} /></SettingRow>
+                <SettingRow label="Connected Plan to Watch / Watchlists" description="Include Trakt and Simkl watchlists when those accounts are connected."><SettingToggle checked={upcomingPrefs.includeConnectedWatchlists} onChange={(includeConnectedWatchlists) => updateUpcomingPrefs({ includeConnectedWatchlists })} /></SettingRow>
+                <SettingRow label="Connected Currently Watching" description="Prioritize Trakt, Simkl, and AniList titles that are in progress."><SettingToggle checked={upcomingPrefs.includeConnectedWatching} onChange={(includeConnectedWatching) => updateUpcomingPrefs({ includeConnectedWatching })} /></SettingRow>
+              </SettingSection>
             </>
           )}
 
@@ -3392,6 +3427,9 @@ export default function SettingsPage() {
               <SettingSection>
                 <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
                   <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
+                </SettingRow>
+                <SettingRow label="Automatic Stream Recovery" description="When a Smart Play source fails, preserve your playback session and continue with the next compatible source.">
+                  <SettingToggle checked={store.automaticStreamRecovery} onChange={(v) => store.setAutomaticStreamRecovery(v)} />
                 </SettingRow>
                 <SettingRow label="Playback source preload" description="Smart checks one Continue Watching title and up to three healthy addons. Aggressive keeps five titles warm.">
                   <SettingSelect

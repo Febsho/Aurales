@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Award } from 'lucide-react'
 import type { CastMember, CrewMember } from '../../types'
-import { cachedImage, retryImageFromSource } from '../../services/imageCache'
+import { cachedImage, retryImageFromSource, watchStalledImage } from '../../services/imageCache'
 import type { StreamFeature } from '../../services/streams/streamFeatures'
 import { editorialAccolade, fetchTitleAccolade, isGenericAwardAccolade } from '../../services/accolades'
 
@@ -146,9 +146,16 @@ export default function DetailHero({
   const [failedBackdropUrl, setFailedBackdropUrl] = useState<string | null>(null)
   const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
   const [accolade, setAccolade] = useState<string | null | undefined>(undefined)
+  const backdropRef = useRef<HTMLImageElement>(null)
+  const logoRef = useRef<HTMLImageElement>(null)
   const backdropLoaded = Boolean(backdrop && loadedBackdropUrl === backdrop)
   const backdropError = Boolean(backdrop && failedBackdropUrl === backdrop)
   const logoError = Boolean(logo && failedLogoUrl === logo)
+
+  // The hero is the one place a stalled artwork request is unmissable: both
+  // images are full-bleed and there is nothing else to look at behind them.
+  useEffect(() => watchStalledImage(backdropRef.current, backdrop), [backdrop])
+  useEffect(() => watchStalledImage(logoRef.current, logo), [logo])
 
   useEffect(() => {
     setAccolade(undefined)
@@ -223,6 +230,7 @@ export default function DetailHero({
       {/* Backdrop image */}
       {backdrop && !backdropError ? (
         <img
+          ref={backdropRef}
           src={cachedImage(backdrop)}
           alt=""
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded ? 'opacity-100' : 'opacity-0'}`}
@@ -275,6 +283,7 @@ export default function DetailHero({
         <div className="detail-hero-panel__brand">
           {logo && !logoError ? (
             <img
+              ref={logoRef}
               src={cachedImage(logo)}
               alt={title}
               className="detail-hero-panel__logo"

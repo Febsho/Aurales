@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use tauri::Manager;
@@ -33,6 +33,11 @@ const SWEEP_EVERY_WRITES: u32 = 25;
 const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024;
 const MAX_CONCURRENT_DOWNLOADS: usize = 6;
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+// A request that cannot get a worker slot in this long stops queueing and falls
+// back to the origin. An <img> has no timeout of its own: if this handler never
+// responds, the element stays `complete === false` forever with no error event
+// and the artwork is simply blank, so waiting must always be bounded.
+const SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(6);
 
 struct DownloadState {
     active: usize,
@@ -51,6 +56,38 @@ fn download_state() -> &'static Mutex<DownloadState> {
             recent_failures: HashMap::new(),
         })
     })
+}
+
+/// Recover the guard after a panicking download rather than propagating the
+/// poison. Poisoning this mutex would make every later cache miss panic inside
+/// its worker, and a panicked worker never responds — one bad download would
+/// silently blank all uncached artwork for the rest of the session.
+fn lock_download_state() -> MutexGuard<'static, DownloadState> {
+    download_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Releases the worker slot on every exit path, including an unwind out of the
+/// download. Bookkeeping done by hand leaks a slot whenever a path returns
+/// early, and six leaked slots wedge the pool permanently.
+struct SlotGuard {
+    path: PathBuf,
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        let mut state = lock_download_state();
+        state.active = state.active.saturating_sub(1);
+        state.in_flight.remove(&self.path);
+        DOWNLOAD_READY.notify_all();
+    }
+}
+
+/// Same poison tolerance as the download state: a panic while holding the
+/// config must not turn every later artwork request into a panicking worker.
+fn lock_config() -> MutexGuard<'static, CacheConfig> {
+    CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -127,8 +164,23 @@ fn is_expired(path: &PathBuf, keep_secs: u64) -> bool {
         .unwrap_or(false)
 }
 
+/// ureq applies the overall `timeout` to connect and body reads, but explicitly
+/// not to DNS resolution, which can block a worker indefinitely on a flaky
+/// resolver. The per-phase timeouts below bound the parts the deadline misses.
+fn download_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(8))
+            .timeout_read(Duration::from_secs(12))
+            .timeout_write(Duration::from_secs(8))
+            .build()
+    })
+}
+
 fn download(url: &str) -> Result<Vec<u8>, String> {
-    let response = ureq::get(url)
+    let response = download_agent()
+        .get(url)
         // A failed artwork origin must not occupy one of the small bounded
         // worker pool slots long enough to starve the visible Home row.
         .timeout(Duration::from_secs(12))
@@ -150,8 +202,10 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
 /// deduplication. Requests waiting for the same poster read the file written by
 /// the first request instead of opening duplicate HTTP connections.
 fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
-    loop {
-        let mut state = download_state().lock().unwrap();
+    let queue_deadline = Instant::now() + SLOT_WAIT_TIMEOUT;
+
+    let _slot = loop {
+        let mut state = lock_download_state();
 
         // Another request may have completed while this one waited.
         if path.exists() {
@@ -167,16 +221,24 @@ fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
         }
 
         if state.in_flight.contains(path) || state.active >= MAX_CONCURRENT_DOWNLOADS {
-            state = DOWNLOAD_READY.wait(state).unwrap();
-            drop(state);
+            let Some(remaining) = queue_deadline.checked_duration_since(Instant::now()) else {
+                return Err("timed out waiting for a download slot".into());
+            };
+            // wait_timeout, not wait: a lost notification or a worker wedged in
+            // a syscall the timeouts above cannot interrupt must not strand this
+            // request — the caller can still serve the origin URL instead.
+            let (guard, _) = DOWNLOAD_READY
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(guard);
             continue;
         }
 
         state.active += 1;
         state.in_flight.insert(path.clone());
         drop(state);
-        break;
-    }
+        break SlotGuard { path: path.clone() };
+    };
 
     let result = download(url).and_then(|bytes| {
         let tmp = path.with_extension(format!("{}.part", file_extension(url)));
@@ -185,22 +247,22 @@ fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
         Ok(bytes)
     });
 
-    let mut state = download_state().lock().unwrap();
-    state.active = state.active.saturating_sub(1);
-    state.in_flight.remove(path);
-    if result.is_err() {
-        state.recent_failures.insert(path.clone(), Instant::now());
-    } else {
-        state.recent_failures.remove(path);
+    {
+        let mut state = lock_download_state();
+        if result.is_err() {
+            state.recent_failures.insert(path.clone(), Instant::now());
+        } else {
+            state.recent_failures.remove(path);
+        }
     }
-    DOWNLOAD_READY.notify_all();
+    // `_slot` releases the worker and wakes the queue as it drops here.
     result
 }
 
 /// Delete expired entries, then oldest-first until under the size cap.
 fn enforce_limits(dir: &PathBuf) {
     let (max_bytes, keep_secs) = {
-        let config = CONFIG.lock().unwrap();
+        let config = lock_config();
         (config.max_bytes, config.keep_secs)
     };
     let Ok(entries) = fs::read_dir(dir) else {
@@ -270,7 +332,7 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
         return respond_redirect(&url);
     };
     let path = cache_path(&dir, &url);
-    let keep_secs = CONFIG.lock().unwrap().keep_secs;
+    let keep_secs = lock_config().keep_secs;
 
     let bytes = if path.exists() && !is_expired(&path, keep_secs) {
         match fs::read(&path) {
@@ -317,14 +379,24 @@ pub fn handle_request(
 ) {
     let path = request.uri().path().to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        responder.respond(serve(&app, &path));
+        // An unanswered responder is worse than any error response: the <img>
+        // never fires load or error, so the artwork stays blank with no retry
+        // path. Catch the unwind so a panic still produces a reply.
+        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&app, &path)))
+            .unwrap_or_else(|_| {
+                tauri::http::Response::builder()
+                    .status(500)
+                    .body(Vec::new())
+                    .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+            });
+        responder.respond(response);
     });
 }
 
 #[tauri::command]
 pub fn image_cache_configure(app: tauri::AppHandle, max_mb: u64, keep_days: u64) {
     {
-        let mut config = CONFIG.lock().unwrap();
+        let mut config = lock_config();
         config.max_bytes = max_mb.max(10) * 1024 * 1024;
         config.keep_secs = keep_days.max(1) * 24 * 60 * 60;
     }

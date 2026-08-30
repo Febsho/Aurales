@@ -4,6 +4,7 @@ import * as wsClient from '../../services/watch-together/wsClient'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
+import { getActiveProfile } from '../../services/profiles'
 
 interface JoinRoomModalProps {
   open: boolean
@@ -25,7 +26,7 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
   useEffect(() => {
     if (open) {
       setRoomCode('')
-      setNickname(defaultNickname)
+      setNickname(defaultNickname || getActiveProfile().name)
       setError('')
       setTimeout(() => codeInputRef.current?.focus(), 100)
     }

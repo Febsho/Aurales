@@ -11,6 +11,8 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import { resolveLocalSourceCandidates } from './streamMatcher'
 import type { LocalSourceCandidate, PendingRoomSync } from '../../stores/watchTogetherStore'
 import { estimateRoomPosition, estimateServerTiming, serverTimestampToLocal } from './clockSync'
+import { getActiveProfile } from '../profiles'
+import { getProfileAvatar } from '../../data/profileAvatars'
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -25,6 +27,10 @@ let sourceResolveController: AbortController | null = null
 // pause, seek), so the sync loop must NOT use it as the host position —
 // that would rubber-band every guest back to the last event timestamp.
 let localPlayback: { time: number; isPlaying: boolean; updatedAt: number } | null = null
+
+function activeProfileAvatar(): string | undefined {
+  return getProfileAvatar(getActiveProfile().avatarRef)?.imageUrl
+}
 
 export function reportLocalPlayback(time: number, isPlaying: boolean): void {
   if (!Number.isFinite(time)) return
@@ -193,6 +199,7 @@ export async function createRoom(name: string): Promise<void> {
     type: 'ROOM_JOIN',
     roomCode: '',
     name,
+    avatar: activeProfileAvatar(),
     roomSettings: {
       everyoneCanControl: store.defaultControlMode === 'everyone',
       requireReadyCheck: store.requireReadyCheck,
@@ -230,6 +237,7 @@ export async function joinRoom(code: string, name: string): Promise<void> {
     type: 'ROOM_JOIN',
     roomCode: code,
     name,
+    avatar: activeProfileAvatar(),
     clientId: store.currentUserId || undefined,
   })
   return new Promise<void>((resolve, reject) => {
@@ -695,6 +703,7 @@ function attemptReconnect(): void {
           type: 'ROOM_JOIN',
           roomCode: store.currentRoom.code,
           name: store.defaultNickname || 'Reconnecting...',
+          avatar: activeProfileAvatar(),
           clientId: store.currentUserId,
         })
       }

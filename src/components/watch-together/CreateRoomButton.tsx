@@ -4,6 +4,7 @@ import * as wsClient from '../../services/watch-together/wsClient'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
+import { getActiveProfile } from '../../services/profiles'
 
 export default function CreateRoomButton({ label, variant = 'nav' }: { label?: string; variant?: 'nav' | 'hero' }) {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
@@ -22,7 +23,9 @@ export default function CreateRoomButton({ label, variant = 'nav' }: { label?: s
       setRoomPanelOpen(true)
       return
     }
-    setNickname(defaultNickname)
+    // Profile identity is the sensible room default; the editable nickname
+    // remains a deliberate privacy boundary for people who prefer an alias.
+    setNickname(defaultNickname || getActiveProfile().name)
     setError('')
     setShowModal(true)
   }

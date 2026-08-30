@@ -70,7 +70,7 @@ interface NativeMpvPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
-  onPlaybackError?: (message: string) => void
+  onPlaybackError?: (message: string, positionSeconds?: number) => void
   onPlaybackStarted?: () => void
   onReportBad?: () => void
 }
@@ -1423,7 +1423,11 @@ function FullNativeMpvPlayer({
       ? `${item.localId}:${item.season}:${item.episode}`
       : item.localId
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
-    const isCompleted = completedFlag || progressPct >= 85
+    // Credit boundaries are stronger evidence than a generic percentage. If
+    // they are unavailable, keep the fallback conservative so a long credit
+    // roll is not left as an accidental Continue Watching entry.
+    const reachedCredits = skips.some((segment) => segment.credits_start_ms != null && time * 1000 >= segment.credits_start_ms)
+    const isCompleted = completedFlag || reachedCredits || progressPct >= 90
     logEvent('PLAYBACK SYNC DEBUG', `Save watch progress local DB: ${Math.round(time)}s / ${Math.round(dur)}s (Completed: ${isCompleted})`)
     useAppStore.getState().setWatchProgress(key, {
       id: key,
@@ -1441,7 +1445,7 @@ function FullNativeMpvPlayer({
       imdbId: item.imdbId,
       tmdbId: item.tmdbId,
     })
-  }, [])
+  }, [skips])
 
   /**
    * Save resume position to PMDB and (only on explicit close/end) scrobble.
@@ -2396,7 +2400,7 @@ function FullNativeMpvPlayer({
         if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
           unstableStreamNotifiedRef.current = true
           smartErrorNotifiedRef.current = true
-          onPlaybackErrorRef.current?.(message)
+          onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
         }
       }
     }).then((fn) => {
@@ -2696,7 +2700,7 @@ function FullNativeMpvPlayer({
             unstableStreamNotifiedRef.current = true
             const message = 'This source keeps buffering. Trying a more stable stream…'
             setError(message)
-            onPlaybackErrorRef.current?.(message)
+            onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
           }
         } else {
           bufferingStartedAtRef.current = null
@@ -2785,7 +2789,7 @@ function FullNativeMpvPlayer({
                 unstableStreamNotifiedRef.current = true
                 const message = 'Playback stalled on this source. Trying a more stable stream…'
                 setError(message)
-                onPlaybackErrorRef.current?.(message)
+                onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
               } else {
                 logEvent('PLAYER DEBUG', `Stall auto-restart skipped: max auto-restarts exceeded or within cooldown.`)
               }

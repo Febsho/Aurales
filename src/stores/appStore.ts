@@ -245,6 +245,7 @@ interface AppState {
   audioPassthrough: boolean
   autoSkipSegments: boolean
   autoPlayFirstStream: boolean
+  automaticStreamRecovery: boolean
   playbackPreloadMode: PlaybackPreloadMode
   subtitleFontSize: number
   subtitleBgOpacity: string
@@ -367,6 +368,7 @@ interface AppState {
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
   setAutoPlayFirstStream: (val: boolean) => void
+  setAutomaticStreamRecovery: (val: boolean) => void
   setPlaybackPreloadMode: (mode: PlaybackPreloadMode) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
@@ -432,8 +434,18 @@ function loadPersistedHomeRows(): HomeRowConfig[] | null {
     if (raw) {
       const rows = JSON.parse(raw) as HomeRowConfig[]
       const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
-      if (sanitized.length !== rows.length) persistHomeRows(sanitized)
-      return sanitized
+      // Upcoming is a core built-in shelf, like Continue Watching. Existing
+      // profiles receive it once without replacing or reordering their layout.
+      const migrated = sanitized.some((row) => row.layout === 'upcoming')
+        ? sanitized
+        : (() => {
+            const ordered = [...sanitized].sort((a, b) => a.order - b.order)
+            const continueIndex = ordered.findIndex((row) => row.layout === 'continue')
+            ordered.splice(continueIndex >= 0 ? continueIndex + 1 : 0, 0, { id: 'upcoming', title: 'Upcoming', layout: 'upcoming' as const, enabled: true, order: 0, sourceType: 'local' as const })
+            return ordered.map((row, index) => ({ ...row, order: index }))
+          })()
+      if (migrated.length !== rows.length || migrated !== sanitized) persistHomeRows(migrated)
+      return migrated
     }
   } catch (_) { /* ignore */ }
   return null
@@ -692,6 +704,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { homeRows: next }
   }),
   removeHomeRow: (id) => set((s) => {
+    if (s.homeRows.some((row) => row.id === id && (row.layout === 'continue' || row.layout === 'upcoming'))) return s
     const next = s.homeRows.filter((r) => r.id !== id)
     persistHomeRows(next)
     return { homeRows: next }
@@ -711,6 +724,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   watchProgress: loadPersistedWatchProgress(),
   completedIds: buildCompletedIds(loadPersistedWatchProgress()),
   setWatchProgress: (id, progress) => set((s) => {
+    void import('../services/continueWatchingPolicy').then(({ reconcileContinueWatchingSuppression }) => reconcileContinueWatchingSuppression(progress))
     const map = new Map(s.watchProgress)
     map.set(id, progress)
     persistWatchProgress(map)
@@ -849,6 +863,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Default ON: instant playback (detail-page prepare + startup preload) is
   // the expected experience; users who want the manual picker opt out.
   autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') !== 'false',
+  automaticStreamRecovery: localStorage.getItem('aurales_automatic_stream_recovery') !== 'false',
   playbackPreloadMode: (() => {
     const saved = localStorage.getItem('aurales_playback_preload_mode')
     if (saved === 'off' || saved === 'smart' || saved === 'aggressive') return saved
@@ -981,6 +996,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
   setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
+  setAutomaticStreamRecovery: (val) => { localStorage.setItem('aurales_automatic_stream_recovery', String(val)); set({ automaticStreamRecovery: val }) },
   setPlaybackPreloadMode: (mode) => {
     localStorage.setItem('aurales_playback_preload_mode', mode)
     localStorage.removeItem('aurales_preload_playback_sources')

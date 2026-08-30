@@ -53,6 +53,24 @@ export function retryImageFromSource(image: HTMLImageElement, url: string | unde
   return true
 }
 
+/** Watch an image that is already rendering and fall back to its origin URL if
+ * the custom protocol stalls. A hung protocol response fires neither `load` nor
+ * `error`, so `retryImageFromSource` alone never runs and the element stays
+ * blank indefinitely — a deadline is the only way out of that state.
+ * Returns a cleanup function for the caller's effect. */
+export function watchStalledImage(
+  image: HTMLImageElement | null,
+  url: string | undefined,
+  timeoutMs = 5000,
+): () => void {
+  if (!image || !url) return () => {}
+  const timer = window.setTimeout(() => {
+    if (image.complete && image.naturalWidth > 0) return
+    retryImageFromSource(image, url)
+  }, timeoutMs)
+  return () => window.clearTimeout(timer)
+}
+
 const imageWarmups = new Map<string, Promise<void>>()
 
 /** Warm the same URL the destination component will render. Concurrent card

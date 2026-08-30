@@ -41,7 +41,7 @@ interface InAppPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
-  onPlaybackError?: (message: string) => void
+  onPlaybackError?: (message: string, positionSeconds?: number) => void
   onPlaybackStarted?: () => void
   onReportBad?: () => void
 }
@@ -345,7 +345,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         const message = 'The embedded WebView player could not start this stream.'
         setPaused(true)
         setError(message)
-        onPlaybackError?.(message)
+        onPlaybackError?.(message, video.currentTime)
       })
     }, 50)
     const startupTimer = setTimeout(() => {
@@ -354,7 +354,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       setLoading(false)
       setPaused(true)
       setError(message)
-      onPlaybackError?.(message)
+      onPlaybackError?.(message, video.currentTime)
     }, 15_000)
     return () => {
       clearTimeout(playTimer)
@@ -785,7 +785,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
           const message = 'This stream could not be played by the embedded WebView player. Pick another stream or use a direct HTTP/HLS source.'
           setLoading(false)
           setError(message)
-          onPlaybackError?.(message)
+          onPlaybackError?.(message, videoRef.current?.currentTime)
         }}
       >
         <source src={url} />

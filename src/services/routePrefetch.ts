@@ -4,6 +4,7 @@
 const routeLoaders: Record<string, () => Promise<unknown>> = {
   '/search': () => import('../pages/SearchPage'),
   '/discover': () => import('../pages/DiscoverPage'),
+  '/upcoming': () => import('../pages/UpcomingPage'),
   '/collections': () => import('../pages/CollectionsPage'),
   '/settings': () => import('../pages/SettingsPage'),
   '/watch-together': () => import('../pages/WatchTogetherPage'),
