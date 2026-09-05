@@ -55,8 +55,8 @@ export default function RoomStreamStatus() {
               ].join(' ')}
             >
               <div className="flex items-center gap-2 min-w-0">
-                <div className="watch-together-avatar w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 text-meta font-bold text-white/50">
-                  {p.name.charAt(0).toUpperCase()}
+                <div className="watch-together-avatar w-5 h-5 rounded-md overflow-hidden flex items-center justify-center flex-shrink-0 text-meta font-bold text-white/50">
+                  {p.avatar ? <img src={p.avatar} alt="" className="w-full h-full object-cover" /> : p.name.charAt(0).toUpperCase()}
                 </div>
                 <span className="text-xs text-white/60 truncate">
                   {p.name}

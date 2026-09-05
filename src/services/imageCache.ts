@@ -72,6 +72,17 @@ export function watchStalledImage(
 }
 
 const imageWarmups = new Map<string, Promise<void>>()
+const queuedImageWarmups = new Map<string, Promise<void>>()
+const imageWarmupQueue: Array<() => void> = []
+const IMAGE_WARMUP_CONCURRENCY = 3
+let activeImageWarmups = 0
+
+function runNextImageWarmup(): void {
+  while (activeImageWarmups < IMAGE_WARMUP_CONCURRENCY && imageWarmupQueue.length > 0) {
+    activeImageWarmups += 1
+    imageWarmupQueue.shift()?.()
+  }
+}
 
 /** Warm the same URL the destination component will render. Concurrent card
  * focus/click requests share one browser/custom-protocol fetch. */
@@ -95,6 +106,36 @@ export function warmCachedImage(url: string | undefined): Promise<void> {
   })
   imageWarmups.set(source, request)
   return request
+}
+
+/**
+ * Warm a shelf's artwork at a deliberately small concurrency. This fills the
+ * native disk cache during idle time without competing with the images the
+ * person is currently looking at. Repeated shelves and route visits share the
+ * same queued request.
+ */
+export function warmCachedImages(urls: Array<string | undefined>): Promise<void> {
+  const uniqueUrls = [...new Set(urls.filter((url): url is string => Boolean(url)))]
+  return Promise.all(uniqueUrls.map((url) => {
+    const source = cachedImage(url)
+    if (!source) return Promise.resolve()
+    const existing = queuedImageWarmups.get(source)
+    if (existing) return existing
+
+    let resolve!: () => void
+    const request = new Promise<void>((done) => { resolve = done })
+    queuedImageWarmups.set(source, request)
+    imageWarmupQueue.push(() => {
+      void warmCachedImage(url).finally(() => {
+        activeImageWarmups -= 1
+        queuedImageWarmups.delete(source)
+        resolve()
+        runNextImageWarmup()
+      })
+    })
+    runNextImageWarmup()
+    return request
+  })).then(() => undefined)
 }
 
 export async function configureImageCache(maxMb: number, keepDays: number): Promise<void> {

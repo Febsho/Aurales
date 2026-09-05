@@ -334,21 +334,16 @@ export default function ContextMenu() {
     <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={menuRef}
-        className="fixed min-w-[280px] max-w-[320px] rounded-2xl border border-white/[0.08] overscroll-contain"
+        className="context-menu-glass fixed min-w-[280px] max-w-[320px] rounded-2xl border border-white/[0.22] text-white overscroll-contain"
         style={{
           left: adjusted.x || x,
           top: adjusted.y || y,
           maxHeight: 'calc(100vh - 16px)',
           overflowY: 'auto',
           scrollbarWidth: 'thin',
-          background: 'rgba(10, 10, 12, 0.45)',
-          backdropFilter: 'blur(40px) saturate(220%)',
-          WebkitBackdropFilter: 'blur(40px) saturate(220%)',
-          boxShadow: '0 32px 64px rgba(0,0,0,0.65), inset 0 1px 1px rgba(255,255,255,0.12)',
           animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)',
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-b from-white/[0.08] to-white/[0.02] pointer-events-none"></div>
         <div className="relative">
           {isEpisode && episodeStill && (
             <div className="relative w-full aspect-video overflow-hidden">
@@ -370,7 +365,7 @@ export default function ContextMenu() {
             </div>
           )}
           {!isEpisode && (
-            <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.12]">
               <div className="flex items-center gap-2.5">
                 {item.poster && (
                   <img src={item.poster} alt="" className="w-8 h-12 rounded-md object-cover flex-shrink-0" />
@@ -388,7 +383,7 @@ export default function ContextMenu() {
             </div>
           )}
           {isEpisode && !episodeStill && (
-            <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.12]">
               <div className="flex items-center gap-2.5">
                 {item.poster && (
                   <img src={item.poster} alt="" className="w-8 h-12 rounded-md object-cover flex-shrink-0" />
@@ -403,17 +398,17 @@ export default function ContextMenu() {
             </div>
           )}
           {providerStates.length > 0 && (
-            <div className="px-1.5 py-1.5 border-b border-white/[0.08]">
-              <p className="px-2.5 py-1 text-meta font-semibold text-white/25 uppercase tracking-wider">Watch Status</p>
+            <div className="px-1.5 py-1.5 border-b border-white/[0.12]">
+              <p className="px-2.5 py-1 text-meta font-semibold text-white/55 uppercase tracking-wider">Watch Status</p>
               {providerStates.map((state) => (
                 <button
                   key={state.provider}
                   onClick={() => handleToggleProvider(state.provider)}
                   disabled={state.loading}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer disabled:opacity-50 group"
+                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer disabled:opacity-50 group"
                 >
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PROVIDER_META[state.provider].color }}></div>
-                  <span className="text-sm text-white/80 flex-1 text-left">{PROVIDER_META[state.provider].label}</span>
+                  <span className="text-sm text-white/90 flex-1 text-left">{PROVIDER_META[state.provider].label}</span>
                   {state.loading ? (
                     <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin"></div>
                   ) : (
@@ -430,40 +425,40 @@ export default function ContextMenu() {
             </div>
           )}
           {providerStates.length > 1 && (
-            <div className="px-1.5 py-1 border-b border-white/[0.08]">
-              <button onClick={() => handleMarkAllProviders(true)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+            <div className="px-1.5 py-1 border-b border-white/[0.12]">
+              <button onClick={() => handleMarkAllProviders(true)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
                 <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-sm text-white/70">Mark all providers</span>
+                <span className="text-sm text-white/90">Mark all providers</span>
               </button>
-              <button onClick={() => handleMarkAllProviders(false)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <button onClick={() => handleMarkAllProviders(false)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
                 <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-sm text-white/70">Unmark all providers</span>
+                <span className="text-sm text-white/90">Unmark all providers</span>
               </button>
             </div>
           )}
           <div className="px-1.5 py-1.5">
             {target.kind === 'media' && (
-              <button onClick={handleGoToDetail} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <button onClick={handleGoToDetail} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
                 <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-sm text-white/70">Go to details</span>
+                <span className="text-sm text-white/90">Go to details</span>
               </button>
             )}
-            <button onClick={handleCopyId} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+            <button onClick={handleCopyId} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
               <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <span className="text-sm text-white/70">Copy IDs</span>
+              <span className="text-sm text-white/90">Copy IDs</span>
             </button>
           </div>
-          {target.kind === 'media' && <div className="border-t border-white/[0.08] px-1.5 py-1.5">
-            <p className="px-2.5 py-1 text-meta font-semibold uppercase tracking-wider text-white/25">Recommendations</p>
-            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-white/70 transition-colors hover:bg-white/[0.08]">{label}</button>)}
+          {target.kind === 'media' && <div className="border-t border-white/[0.12] px-1.5 py-1.5">
+            <p className="px-2.5 py-1 text-meta font-semibold uppercase tracking-wider text-white/55">Recommendations</p>
+            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-white/90 transition-colors hover:bg-white/[0.12]">{label}</button>)}
           </div>}
         </div>
       </div>

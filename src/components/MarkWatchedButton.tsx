@@ -40,6 +40,7 @@ interface MarkWatchedButtonProps {
   onMarked?: () => void
   onUnmarked?: () => void
   appSeasonCounts?: { season: number; count: number }[]
+  className?: string
 }
 
 type Service = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
@@ -59,7 +60,7 @@ const SERVICE_LABELS: Record<Service, string> = {
   anilist: 'AniList',
 }
 
-export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, isAnime = false, compact, watched = false, onMarked, onUnmarked, appSeasonCounts }: MarkWatchedButtonProps) {
+export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, isAnime = false, compact, watched = false, onMarked, onUnmarked, appSeasonCounts, className = '' }: MarkWatchedButtonProps) {
   const [open, setOpen] = useState(false)
   const [allDone, setAllDone] = useState(watched)
   const [states, setStates] = useState<Record<Service, ServiceState>>({
@@ -450,7 +451,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   }
 
   return (
-    <div className="relative" ref={menuRef}>
+    <div className={`relative ${className}`} ref={menuRef}>
       <button
         onClick={() => connectedServices.length > 0 ? setOpen(!open) : void markAll()}
         title={allDone ? 'Mark as unwatched' : 'Mark as watched'}

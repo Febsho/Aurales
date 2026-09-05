@@ -2,6 +2,7 @@ import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import Badge from '../ui/Badge'
 import type { ParticipantStatus } from '../../services/watch-together/types'
+import WatchTogetherAvatar from './WatchTogetherAvatar'
 
 const statusDotColor: Record<ParticipantStatus, string> = {
   connected: 'bg-success',
@@ -46,12 +47,8 @@ export default function RoomParticipants() {
             ].join(' ')}
           >
             {/* Avatar / initial */}
-            <div className="watch-together-avatar w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold text-white/60">
-              {p.avatar ? (
-                <img src={p.avatar} alt="" className="w-full h-full rounded-lg object-cover" />
-              ) : (
-                p.name.charAt(0).toUpperCase()
-              )}
+            <div className="watch-together-avatar h-7 w-7 shrink-0 overflow-hidden rounded-lg text-xs font-bold text-white/60">
+              <WatchTogetherAvatar participant={p} name={p.name} isCurrentUser={p.id === currentUserId} />
             </div>
 
             {/* Name + status */}

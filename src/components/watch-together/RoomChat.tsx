@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
+import WatchTogetherAvatar from './WatchTogetherAvatar'
 
 function formatRelativeTime(timestamp: number): string {
   const now = Date.now()
@@ -60,24 +61,30 @@ export default function RoomChat() {
         ) : (
           messages.map((msg) => {
             const isMe = msg.userId === currentUserId
+            const sender = currentRoom?.participants.find((participant) => participant.id === msg.userId)
             return (
               <div
                 key={msg.id}
                 className={[
-                  'flex flex-col px-2.5 py-1.5 rounded-lg max-w-[85%]',
+                  'flex w-fit min-w-0 gap-2 px-2.5 py-1.5 rounded-lg max-w-[85%]',
                   isMe ? 'self-end bg-accent/10' : 'watch-together-surface self-start',
                 ].join(' ')}
               >
-                <div className="flex items-center gap-1.5">
-                  <span className={[
-                    'text-meta font-semibold',
-                    isMe ? 'text-accent/80' : 'text-white/60',
-                  ].join(' ')}>
-                    {isMe ? 'You' : msg.userName}
-                  </span>
-                  <span className="text-tag text-white/20">{formatRelativeTime(msg.sentAt)}</span>
+                <div className="watch-together-avatar mt-0.5 h-6 w-6 shrink-0 overflow-hidden rounded-md text-tag font-bold text-white/60">
+                  <WatchTogetherAvatar participant={sender} name={msg.userName} isCurrentUser={isMe} />
                 </div>
-                <p className="text-xs text-white/80 leading-relaxed break-words">{msg.message}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={[
+                      'text-meta font-semibold',
+                      isMe ? 'text-accent/80' : 'text-white/60',
+                    ].join(' ')}>
+                      {isMe ? 'You' : msg.userName}
+                    </span>
+                    <span className="text-tag text-white/20">{formatRelativeTime(msg.sentAt)}</span>
+                  </div>
+                  <p className="text-xs text-white/80 leading-relaxed break-words [overflow-wrap:anywhere]">{msg.message}</p>
+                </div>
               </div>
             )
           })

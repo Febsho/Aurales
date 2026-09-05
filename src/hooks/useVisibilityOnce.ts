@@ -36,7 +36,14 @@ export function useVisibilityOnce<T extends Element>(
   const [visible, setVisible] = useState(eager)
 
   useEffect(() => {
-    if (visible || eager) return
+    // A row can be promoted from deferred to eager after the initial Home
+    // shell is stable. Reflect that prop change instead of leaving it behind
+    // its intersection sentinel until the user scrolls to it.
+    if (eager) {
+      setVisible(true)
+      return
+    }
+    if (visible) return
     const element = ref.current
     if (!element || typeof IntersectionObserver === 'undefined') {
       setVisible(true)

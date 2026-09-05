@@ -6,7 +6,7 @@ import { simklRequest, MOCK_WATCHLIST } from './client'
 import { isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
-import type { SimklWatchlistItem, SimklApiItem, SimklMediaType } from './types'
+import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklEpisode } from './types'
 
 const EXACT_EPISODE_PREFIX = 'simkl_episode_state_v1:'
 const EXACT_EPISODE_TTL_MS = 10 * 60 * 1000
@@ -98,7 +98,10 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
   const responses = await Promise.all(
     statuses.flatMap((status) => (['shows', 'anime'] as const).map((type) =>
       simklRequest<SimklApiItem[]>(
-        `/sync/all-items/${type}/${status}?extended=full&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
+        // Simkl exposes the TVDB season/episode for anime only with
+        // full_anime_seasons. Without it, cours and specials frequently use
+        // different numbering and a watched anime episode appears unwatched.
+        `/sync/all-items/${type}/${status}?extended=${type === 'anime' ? 'full_anime_seasons' : 'full'}&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
       ).then((items) => (items || []).map((item) => ({ ...item, status }))).catch(() => [])
     ))
   )
@@ -120,7 +123,9 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
 export async function getSimklWatchedEpisodes(forceRefresh = false): Promise<SimklWatchlistItem[]> {
   if (forceRefresh) return fetchSimklWatchedEpisodes()
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_history:episodes',
+    // Version the key so cached responses fetched before TVDB episode mapping
+    // was requested cannot keep anime episodes falsely unchecked.
+    'simkl_history:episodes:v2',
     fetchSimklWatchedEpisodes,
     { category: 'SIMKL_LISTS', ttlSeconds: 300 },
   )
@@ -353,9 +358,9 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
   }).filter(Boolean) as SimklWatchlistItem[]
 }
 
-function extractWatchedEpisodes(raw: any) {
+export function extractWatchedEpisodes(raw: any) {
   const seasons = Array.isArray(raw?.seasons) ? raw.seasons : []
-  const episodes: { season: number; episode: number; watchedAt?: string }[] = []
+  const episodes: SimklEpisode[] = []
   for (const season of seasons) {
     const seasonNumber = Number(season.number ?? season.season)
     if (!Number.isFinite(seasonNumber)) continue
@@ -363,10 +368,14 @@ function extractWatchedEpisodes(raw: any) {
     for (const episode of seasonEpisodes) {
       const episodeNumber = Number(episode.number ?? episode.episode)
       if (!Number.isFinite(episodeNumber)) continue
+      const tvdbSeason = Number(episode.tvdb?.season ?? episode.tvdb_season)
+      const tvdbEpisode = Number(episode.tvdb?.episode ?? episode.tvdb_episode)
       episodes.push({
         season: seasonNumber,
         episode: episodeNumber,
         watchedAt: episode.watched_at ?? episode.watchedAt ?? raw.last_watched_at,
+        tvdbSeason: Number.isFinite(tvdbSeason) ? tvdbSeason : undefined,
+        tvdbEpisode: Number.isFinite(tvdbEpisode) ? tvdbEpisode : undefined,
       })
     }
   }

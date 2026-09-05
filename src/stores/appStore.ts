@@ -11,6 +11,7 @@ import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
 import { getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
 import { enqueueSyncRecord } from '../services/sync/auralesSync'
+import { DEFAULT_BETTER_POSTERS_SETTINGS, type BetterPostersSettings } from '../services/betterPosters'
 
 function invalidateCatalogData(): void {
   ;[
@@ -244,6 +245,14 @@ interface AppState {
   cacheBufferSize: 'default' | 'large' | 'aggressive'
   audioPassthrough: boolean
   autoSkipSegments: boolean
+  showSkipIntroButton: boolean
+  autoSkipIntro: boolean
+  showSkipCreditsButton: boolean
+  autoSkipCredits: boolean
+  autoPlayNextEpisode: boolean
+  nextEpisodeCountdownSeconds: 5 | 10 | 15 | 30
+  scrubThumbnailPreviews: boolean
+  showPlayerLoadingIndicator: boolean
   autoPlayFirstStream: boolean
   automaticStreamRecovery: boolean
   playbackPreloadMode: PlaybackPreloadMode
@@ -277,6 +286,8 @@ interface AppState {
   setArtProviders: (providers: ArtProviderSettings) => void
   customArtUrls: CustomArtUrls
   setCustomArtUrls: (urls: CustomArtUrls) => void
+  betterPosters: BetterPostersSettings
+  setBetterPosters: (settings: BetterPostersSettings) => void
   // Metadata sources
   movieMetadataSource: 'tmdb' | 'tvdb'
   seriesMetadataSource: 'tvdb' | 'tmdb'
@@ -367,6 +378,14 @@ interface AppState {
   setCacheBufferSize: (size: 'default' | 'large' | 'aggressive') => void
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
+  setShowSkipIntroButton: (val: boolean) => void
+  setAutoSkipIntro: (val: boolean) => void
+  setShowSkipCreditsButton: (val: boolean) => void
+  setAutoSkipCredits: (val: boolean) => void
+  setAutoPlayNextEpisode: (val: boolean) => void
+  setNextEpisodeCountdownSeconds: (seconds: 5 | 10 | 15 | 30) => void
+  setScrubThumbnailPreviews: (val: boolean) => void
+  setShowPlayerLoadingIndicator: (val: boolean) => void
   setAutoPlayFirstStream: (val: boolean) => void
   setAutomaticStreamRecovery: (val: boolean) => void
   setPlaybackPreloadMode: (mode: PlaybackPreloadMode) => void
@@ -860,6 +879,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   cacheBufferSize: (localStorage.getItem('aurales_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  showSkipIntroButton: localStorage.getItem('aurales_show_skip_intro_button') !== 'false',
+  autoSkipIntro: localStorage.getItem('aurales_auto_skip_intro') === 'true' || localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  showSkipCreditsButton: localStorage.getItem('aurales_show_skip_credits_button') !== 'false',
+  autoSkipCredits: localStorage.getItem('aurales_auto_skip_credits') === 'true' || localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  autoPlayNextEpisode: localStorage.getItem('aurales_auto_play_next_episode') !== 'false',
+  nextEpisodeCountdownSeconds: (() => {
+    const value = Number(localStorage.getItem('aurales_next_episode_countdown_seconds') || '15')
+    return ([5, 10, 15, 30].includes(value) ? value : 15) as 5 | 10 | 15 | 30
+  })(),
+  scrubThumbnailPreviews: localStorage.getItem('aurales_scrub_thumbnail_previews') !== 'false',
+  showPlayerLoadingIndicator: localStorage.getItem('aurales_show_player_loading_indicator') !== 'false',
   // Default ON: instant playback (detail-page prepare + startup preload) is
   // the expected experience; users who want the manual picker opt out.
   autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') !== 'false',
@@ -994,7 +1024,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsolatedPlaybackResume: (value) => { localStorage.setItem('aurales_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
   setCacheBufferSize: (size) => { localStorage.setItem('aurales_cache_buffer_size', size); set({ cacheBufferSize: size }) },
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
-  setAutoSkipSegments: (val) => { localStorage.setItem('aurales_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
+  setAutoSkipSegments: (val) => {
+    localStorage.setItem('aurales_auto_skip_segments', String(val))
+    localStorage.setItem('aurales_auto_skip_intro', String(val))
+    localStorage.setItem('aurales_auto_skip_credits', String(val))
+    set({ autoSkipSegments: val, autoSkipIntro: val, autoSkipCredits: val })
+  },
+  setShowSkipIntroButton: (val) => { localStorage.setItem('aurales_show_skip_intro_button', String(val)); set({ showSkipIntroButton: val }) },
+  setAutoSkipIntro: (val) => { localStorage.setItem('aurales_auto_skip_intro', String(val)); localStorage.setItem('aurales_auto_skip_segments', 'false'); set({ autoSkipIntro: val, autoSkipSegments: false }) },
+  setShowSkipCreditsButton: (val) => { localStorage.setItem('aurales_show_skip_credits_button', String(val)); set({ showSkipCreditsButton: val }) },
+  setAutoSkipCredits: (val) => { localStorage.setItem('aurales_auto_skip_credits', String(val)); localStorage.setItem('aurales_auto_skip_segments', 'false'); set({ autoSkipCredits: val, autoSkipSegments: false }) },
+  setAutoPlayNextEpisode: (val) => { localStorage.setItem('aurales_auto_play_next_episode', String(val)); set({ autoPlayNextEpisode: val }) },
+  setNextEpisodeCountdownSeconds: (seconds) => { localStorage.setItem('aurales_next_episode_countdown_seconds', String(seconds)); set({ nextEpisodeCountdownSeconds: seconds }) },
+  setScrubThumbnailPreviews: (val) => { localStorage.setItem('aurales_scrub_thumbnail_previews', String(val)); set({ scrubThumbnailPreviews: val }) },
+  setShowPlayerLoadingIndicator: (val) => { localStorage.setItem('aurales_show_player_loading_indicator', String(val)); set({ showPlayerLoadingIndicator: val }) },
   setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
   setAutomaticStreamRecovery: (val) => { localStorage.setItem('aurales_automatic_stream_recovery', String(val)); set({ automaticStreamRecovery: val }) },
   setPlaybackPreloadMode: (mode) => {
@@ -1165,6 +1208,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_mpv_custom_args', '')
     localStorage.setItem('aurales_player_quality_profile', 'balanced')
     localStorage.setItem('aurales_playback_preload_mode', 'smart')
+    localStorage.setItem('aurales_show_skip_intro_button', 'true')
+    localStorage.setItem('aurales_auto_skip_intro', 'false')
+    localStorage.setItem('aurales_show_skip_credits_button', 'true')
+    localStorage.setItem('aurales_auto_skip_credits', 'false')
+    localStorage.setItem('aurales_auto_play_next_episode', 'true')
+    localStorage.setItem('aurales_next_episode_countdown_seconds', '15')
+    localStorage.setItem('aurales_scrub_thumbnail_previews', 'true')
+    localStorage.setItem('aurales_show_player_loading_indicator', 'true')
     localStorage.removeItem('aurales_preload_playback_sources')
     set({
       hwdecMode: 'auto',
@@ -1174,6 +1225,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       mpvCustomArgs: '',
       playerQualityProfile: 'balanced',
       playbackPreloadMode: 'smart',
+      showSkipIntroButton: true,
+      autoSkipIntro: false,
+      showSkipCreditsButton: true,
+      autoSkipCredits: false,
+      autoPlayNextEpisode: true,
+      nextEpisodeCountdownSeconds: 15,
+      scrubThumbnailPreviews: true,
+      showPlayerLoadingIndicator: true,
     })
   },
 
@@ -1222,6 +1281,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
   } as CustomArtUrls,
   setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
+  betterPosters: { ...DEFAULT_BETTER_POSTERS_SETTINGS, ...JSON.parse(localStorage.getItem('aurales_better_posters') || 'null') },
+  setBetterPosters: (settings) => {
+    localStorage.setItem('aurales_better_posters', JSON.stringify(settings))
+    invalidateCatalogData()
+    set({ betterPosters: settings })
+  },
   movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
   seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
   animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',

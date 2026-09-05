@@ -156,6 +156,7 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
+    betterPosters: settings.betterPosters,
     // Metadata source affects the resolved title/overview/artwork, so it must be
     // part of the cache key — otherwise switching sources returns a stale detail page
     meta: [settings.seriesMetadataSource, settings.seriesMetadataFallback, settings.animeMetadataSource, settings.animeMetadataFallback, settings.animeTitleLanguage],
@@ -757,6 +758,7 @@ export default function SeriesDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
   const seriesMetadataSource = useAppStore((s) => s.seriesMetadataSource)
   const seriesMetadataFallback = useAppStore((s) => s.seriesMetadataFallback)
   const animeMetadataSource = useAppStore((s) => s.animeMetadataSource)
@@ -767,8 +769,9 @@ export default function SeriesDetailPage() {
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
+    betterPosters,
     meta: [seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage],
-  }), [artProviders, fanartApiKey, customArtUrls, seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage])
+  }), [artProviders, fanartApiKey, customArtUrls, betterPosters, seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage])
 
   const routeIsAnime = Boolean(
     state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' ||
@@ -2486,12 +2489,12 @@ export default function SeriesDetailPage() {
           </div>
         }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="detail-hero-actions">
             {defaultEpisode && (
               <Button
                 variant="secondary"
                 size="lg"
-    className="h-11 rounded-full !border-white !bg-white !text-black shadow-[0_8px_22px_rgba(0,0,0,0.32)] hover:!bg-white/90 hover:shadow-[0_10px_26px_rgba(0,0,0,0.42)] disabled:!opacity-75"
+                className="detail-hero-actions__play"
                 loading={streamResolving && streamEpisode?.season === defaultEpisode.season && streamEpisode?.episode === defaultEpisode.episode}
                 icon={
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -2507,6 +2510,7 @@ export default function SeriesDetailPage() {
                     : 'Play'}
               </Button>
             )}
+            <div className="detail-hero-actions__secondary">
             <WatchlistButton
               item={{
                 id: show.id,
@@ -2543,8 +2547,10 @@ export default function SeriesDetailPage() {
               malId={show.malId}
               tvdbId={show.tvdbId}
               detailSize
+              className="detail-hero-actions__watchlist"
             />
             <MarkWatchedButton
+              className="detail-hero-actions__mark"
               mediaRef={{
                 localId: show.id,
                 title: show.title,
@@ -2586,6 +2592,7 @@ export default function SeriesDetailPage() {
               }}
             />
             <StartInRoomButton
+              className="detail-hero-actions__room"
               media={{
                 id: show.id,
                 type: 'series',
@@ -2600,6 +2607,7 @@ export default function SeriesDetailPage() {
                 anilistId: show.anilistId ? Number(show.anilistId) : undefined,
               }}
             />
+            </div>
           </div>
         }
       />
@@ -2640,10 +2648,10 @@ export default function SeriesDetailPage() {
                   showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
                 }}
                 className={[
-                  'flex-shrink-0 px-6 py-3 rounded-xl text-base font-semibold transition-all duration-300 cursor-pointer focus-ring',
+                  'flex-shrink-0 px-7 py-3.5 rounded-2xl text-base font-semibold transition-all duration-300 cursor-pointer focus-ring',
                   selectedSeason === season.seasonNumber
-                    ? 'bg-white/15 text-white border border-white/25'
-                    : 'text-white/60 hover:text-white hover:bg-white/[0.08] border border-transparent',
+                    ? 'bg-white/18 text-white border border-white/30 shadow-[0_8px_22px_rgba(0,0,0,0.22)]'
+                    : 'text-white/60 hover:text-white hover:bg-white/[0.10] border border-transparent',
                 ].join(' ')}
               >
                 {season.name}

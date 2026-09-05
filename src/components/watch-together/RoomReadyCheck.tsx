@@ -63,10 +63,15 @@ export default function RoomReadyCheck() {
             key={p.id}
             className="flex items-center justify-between px-3 py-1.5 rounded-lg"
           >
-            <span className="text-xs text-white/60 truncate">
-              {p.name}
-              {p.id === currentUserId && <span className="text-white/25"> (you)</span>}
-            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="watch-together-avatar h-5 w-5 shrink-0 overflow-hidden rounded-md flex items-center justify-center text-meta font-bold text-white/50">
+                {p.avatar ? <img src={p.avatar} alt="" className="h-full w-full object-cover" /> : p.name.charAt(0).toUpperCase()}
+              </div>
+              <span className="text-xs text-white/60 truncate">
+                {p.name}
+                {p.id === currentUserId && <span className="text-white/25"> (you)</span>}
+              </span>
+            </div>
             <div className="flex items-center gap-1.5">
               {p.sourceStatus === 'resolving' && <span className="text-meta text-warning">Finding source…</span>}
               {p.sourceStatus === 'starting' && <span className="text-meta text-warning">Starting…</span>}

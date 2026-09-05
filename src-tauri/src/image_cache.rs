@@ -87,7 +87,9 @@ impl Drop for SlotGuard {
 /// Same poison tolerance as the download state: a panic while holding the
 /// config must not turn every later artwork request into a panicking worker.
 fn lock_config() -> MutexGuard<'static, CacheConfig> {
-    CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    CONFIG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -382,13 +384,14 @@ pub fn handle_request(
         // An unanswered responder is worse than any error response: the <img>
         // never fires load or error, so the artwork stays blank with no retry
         // path. Catch the unwind so a panic still produces a reply.
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&app, &path)))
-            .unwrap_or_else(|_| {
-                tauri::http::Response::builder()
-                    .status(500)
-                    .body(Vec::new())
-                    .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
-            });
+        let response =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&app, &path)))
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .body(Vec::new())
+                        .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+                });
         responder.respond(response);
     });
 }

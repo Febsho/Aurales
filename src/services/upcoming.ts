@@ -59,6 +59,35 @@ export function releaseTiming(date?: string, now = new Date()): string {
   return `In ${days} ${days === 1 ? 'day' : 'days'}`
 }
 
+function upcomingMediaKey(event: ReleaseEvent): string {
+  const media = event.media
+  return `${media.type}:${String(media.tmdbId || media.imdbId || media.id).replace(/^tmdb[-:]/i, '')}`
+}
+
+/**
+ * A show may return a season announcement plus every scheduled episode. The
+ * Upcoming shelf is a "what should I watch next?" view, so retain only one
+ * release per title and prefer the next dated episode for active series.
+ */
+export function keepNextReleasePerTitle(events: ReleaseEvent[], now = new Date()): ReleaseEvent[] {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const grouped = new Map<string, ReleaseEvent[]>()
+  for (const event of events) {
+    const key = upcomingMediaKey(event)
+    grouped.set(key, [...(grouped.get(key) || []), event])
+  }
+
+  return [...grouped.values()].flatMap((releases) => {
+    const datedFuture = releases.filter((event) => event.releaseDate && new Date(`${event.releaseDate.slice(0, 10)}T12:00:00`).getTime() >= today)
+    if (datedFuture.length === 0) return []
+    const nextEpisode = datedFuture
+      .filter((event) => event.type === 'episode' || event.type === 'anime_episode')
+      .sort((a, b) => String(a.releaseDate).localeCompare(String(b.releaseDate)))[0]
+    if (nextEpisode) return [nextEpisode]
+    return [datedFuture.sort((a, b) => String(a.releaseDate).localeCompare(String(b.releaseDate)))[0]]
+  })
+}
+
 /** Normalize existing provider metadata into release events; never invent a date. */
 export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; progress: WatchProgress[]; getShow: (id: string) => Promise<{ seasons: { seasonNumber: number; airDate?: string; name?: string; poster?: string }[]; title: string; backdrop?: string; poster?: string; tmdbId?: string | number }>; getSeason?: (id: string, season: number) => Promise<{ episodes: { episodeNumber: number; seasonNumber: number; name?: string; airDate?: string; still?: string }[] }> }): Promise<ReleaseEvent[]> {
   const mediaKey = (value: string | number | undefined) => String(value || '').replace(/^tmdb[-:]/i, '')
@@ -89,5 +118,7 @@ export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; pr
       }
     } catch { /* retain cached/offline items; a failed provider cannot create a release */ }
   }
-  const prefs = getUpcomingPreferences(); return events.filter((event) => !prefs.hidden[event.id]).sort((a, b) => b.relevanceScore - a.relevanceScore || String(a.releaseDate || '9999').localeCompare(String(b.releaseDate || '9999')))
+  const prefs = getUpcomingPreferences()
+  return keepNextReleasePerTitle(events.filter((event) => !prefs.hidden[event.id]))
+    .sort((a, b) => b.relevanceScore - a.relevanceScore || String(a.releaseDate || '9999').localeCompare(String(b.releaseDate || '9999')))
 }

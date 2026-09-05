@@ -48,39 +48,62 @@ function IntegrationIcon({ service, name }: { service: string; name: string }) {
   )
 }
 
-function Status({ state, label }: { state: IntegrationState; label?: string }) {
-  const value = stateCopy[state]
-  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${value.className}`}><span aria-hidden>{value.marker}</span>{label ?? value.label}</span>
+function IntegrationCard({ integration, onManage }: { integration: Integration; onManage: () => void }) {
+  const status = integration.statusLabel ?? stateCopy[integration.state].label
+  const open = () => {
+    if (integration.manage || integration.setup || integration.onDisconnect) onManage()
+    else integration.onPrimary()
+  }
+  return (
+    <div className="group flex w-full items-center transition-colors hover:bg-white/[.055] focus-within:bg-white/[.055]">
+      <button
+        type="button"
+        onClick={open}
+        className="flex min-w-0 flex-1 items-center justify-between gap-5 px-4 py-4 text-left focus-visible:outline-none sm:px-5"
+        aria-label={`${integration.name}, ${status}`}
+      >
+        <div className="min-w-0">
+          <h3 className="text-[15px] font-semibold tracking-tight text-white/90">{integration.name}</h3>
+          {(integration.account || integration.message) && (
+            <p className={`mt-0.5 truncate text-xs ${integration.message && integration.state === 'needs-attention' ? 'text-amber-200/70' : 'text-white/40'}`}>
+              {integration.message || integration.account}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {!integration.inlineControl && (
+          <span className={`text-sm font-medium ${integration.state === 'connected' ? 'text-emerald-200/80' : integration.state === 'needs-attention' ? 'text-amber-200/80' : 'text-white/48'}`}>
+            {status}
+          </span>
+          )}
+          <svg className="h-4 w-4 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-white/65" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+      </button>
+      {integration.inlineControl && <div className="shrink-0 pr-4 sm:pr-5">{integration.inlineControl}</div>}
+    </div>
+  )
 }
 
-function IntegrationCard({ integration, onManage }: { integration: Integration; onManage: () => void }) {
-  const busy = integration.state === 'syncing'
+const groupCopy: Array<{ ids: Integration['group'][]; title: string }> = [
+  { ids: ['history'], title: 'Accounts' },
+  { ids: ['streaming'], title: 'Playback services' },
+  { ids: ['ecosystem'], title: 'Media ecosystem' },
+  { ids: ['playback', 'metadata', 'ai'], title: 'Optional services' },
+]
+
+function IntegrationList({ title, integrations, onManage }: { title: string; integrations: Integration[]; onManage: (id: string) => void }) {
+  if (!integrations.length) return null
   return (
-    <article className={`group flex min-h-44 flex-col rounded-3xl border border-white/[.09] bg-white/[.035] p-5 shadow-[0_12px_35px_rgba(0,0,0,.14)] backdrop-blur-xl transition-[transform,border-color,background-color] duration-200 hover:-translate-y-0.5 hover:border-white/[.16] hover:bg-white/[.055] motion-reduce:transform-none ${integration.wide ? 'md:col-span-2' : ''}`}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <IntegrationIcon service={integration.iconService} name={integration.name} />
-          <div className="min-w-0">
-            <h3 className="text-base font-bold tracking-tight text-white">{integration.name}</h3>
-            <p className="mt-0.5 text-xs leading-relaxed text-white/55">{integration.description}</p>
-          </div>
-        </div>
-        <Status state={integration.state} label={integration.statusLabel} />
+    <section aria-labelledby={`accounts-${title.toLowerCase().replace(/\s+/g, '-')}`}>
+      <h3 id={`accounts-${title.toLowerCase().replace(/\s+/g, '-')}`} className="mb-2 px-1 text-[11px] font-bold uppercase tracking-[.16em] text-white/38">{title}</h3>
+      <div className="settings-panel-card divide-y divide-white/[.055] overflow-hidden rounded-2xl border border-white/[.075] bg-white/[.025]">
+        {integrations.map((integration) => (
+          <IntegrationCard key={integration.id} integration={integration} onManage={() => onManage(integration.id)} />
+        ))}
       </div>
-      <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-5">
-        <div className="min-h-5 text-xs text-white/50">
-          {integration.account && <span>{integration.account}</span>}
-          {integration.detail && <span className={integration.account ? 'ml-2 text-white/35' : ''}>{integration.detail}</span>}
-          {integration.message && <span className="block text-amber-100/80">{integration.message}</span>}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {integration.inlineControl}
-          {integration.onSync && integration.state === 'connected' && <Button variant="secondary" size="sm" onClick={integration.onSync}>{integration.syncLabel ?? 'Sync Now'}</Button>}
-          {!integration.hidePrimaryAction && (integration.state === 'connected' ? <Button variant="ghost" size="sm" onClick={onManage}>Manage <span aria-hidden>›</span></Button> : <Button size="sm" onClick={integration.primaryOpensManage ? onManage : integration.onPrimary} loading={busy}>{integration.primaryLabel} <span aria-hidden>›</span></Button>)}
-          {integration.showAdvancedLink && integration.state !== 'connected' && integration.setup && <button type="button" onClick={onManage} className="px-1 py-1 text-xs font-semibold text-white/50 transition hover:text-white focus-ring">Advanced setup</button>}
-        </div>
-      </div>
-    </article>
+    </section>
   )
 }
 
@@ -90,34 +113,66 @@ export default function AccountsHub({ integrations }: { integrations: Integratio
   const managed = integrations.find((item) => item.id === managedId)
   const connected = useMemo(() => integrations.filter((item) => item.isAccount && item.state === 'connected').length, [integrations])
   const configured = useMemo(() => integrations.filter((item) => item.isConfigured).length, [integrations])
-  const attention = integrations.filter((item) => item.state === 'needs-attention').length
-  const groups = [
-    ['history', 'Watch History & Lists'],
-    ['streaming', 'Streaming & Debrid'],
-    ['ecosystem', 'Media Ecosystem'],
-    ['playback', 'Playback Enhancements'],
-    ['metadata', 'Artwork & Metadata'],
-    ['ai', 'AI & Intelligence'],
-  ] as const
-  const summaryParts = [connected ? `${connected} account${connected === 1 ? '' : 's'} connected` : '', configured ? `${configured} service${configured === 1 ? '' : 's'} configured` : ''].filter(Boolean)
-  const summary = summaryParts.length ? `${summaryParts.join(' · ')}${attention ? ` · ${attention} needs attention` : ' · All services healthy'}` : 'No services configured'
   return (
-    <section className="accounts-hub mx-auto w-full max-w-[1120px]" aria-label="Connected services">
-      <header className="mb-9 max-w-2xl">
-        <p className="text-xs font-bold uppercase tracking-[.22em] text-accent/80">Your services</p>
-        <h2 className="mt-2 text-3xl font-black tracking-tight text-white">Accounts</h2>
-        <p className="mt-2 text-sm leading-relaxed text-white/60">Connect Aurales to the services you already use. Bring your history, lists, anime progress, and streaming together.</p>
-        <p className="mt-4 text-xs font-semibold text-white/65">{summary}</p>
+    <section className="accounts-hub mx-auto w-full max-w-[820px]" aria-label="Connected services">
+      <header className="mb-7 max-w-2xl">
+        <h2 className="text-3xl font-black tracking-tight text-white">Accounts</h2>
+        <p className="mt-2 text-sm leading-relaxed text-white/55">Connect and manage the services Aurales uses.</p>
       </header>
-      {connected === 0 && configured === 0 && <div className="mb-8 rounded-2xl border border-white/[.08] bg-white/[.025] px-5 py-4 text-sm text-white/60"><strong className="font-semibold text-white/85">Connect your services.</strong> Aurales works without external accounts, but services can bring your existing library and activity with you.</div>}
-      <div className="space-y-9">
-        {groups.map(([id, label]) => {
-          const items = integrations.filter((item) => item.group === id)
-          if (!items.length) return null
-          return <section key={id} aria-labelledby={`accounts-${id}`}><h3 id={`accounts-${id}`} className="mb-3 text-[11px] font-bold uppercase tracking-[.18em] text-white/35">{label}</h3><div className="grid grid-cols-1 gap-3 md:grid-cols-2">{items.map((integration) => <IntegrationCard key={integration.id} integration={integration} onManage={() => setManagedId(integration.id)} />)}</div></section>
-        })}
+      {connected === 0 && configured === 0 && <div className="settings-panel-card mb-8 rounded-2xl border border-white/[.08] bg-white/[.025] px-5 py-4 text-sm text-white/60"><strong className="font-semibold text-white/85">Connect your services.</strong> Aurales works without external accounts, but services can bring your existing library and activity with you.</div>}
+      <div className="space-y-7">
+        {groupCopy.map((group) => (
+          <IntegrationList key={group.title} title={group.title} integrations={integrations.filter((item) => group.ids.includes(item.group))} onManage={setManagedId} />
+        ))}
       </div>
-      {managed && <Modal open onClose={() => { setManagedId(null); setConfirmDisconnect(false) }} title={managed.name} description={managed.statusLabel ?? stateCopy[managed.state].label} size="md"><div className="space-y-6"><div className="flex items-center gap-3"><IntegrationIcon service={managed.iconService} name={managed.name} /><div><p className="text-sm font-semibold text-white">{managed.account ?? managed.description}</p>{managed.detail && <p className="mt-1 text-xs text-white/55">{managed.detail}</p>}</div></div>{managed.manage}{managed.setup && <section className="border-t border-white/[.08] pt-5"><p className="mb-3 text-xs font-bold uppercase tracking-[.16em] text-white/40">Advanced</p>{managed.setup}</section>}{managed.state === 'connected' && managed.onSync && <Button variant="secondary" onClick={managed.onSync}>{managed.syncLabel ?? 'Sync Now'}</Button>}{managed.state === 'connected' && managed.onDisconnect && <section className="border-t border-white/[.08] pt-5"><p className="mb-3 text-xs font-bold uppercase tracking-[.16em] text-white/40">Danger zone</p>{confirmDisconnect ? <div className="rounded-xl border border-danger/20 bg-danger/[.06] p-3"><p className="text-sm text-white/75">Disconnect {managed.name}? Credentials will be removed from this profile; local viewing history stays in Aurales.</p><div className="mt-3 flex gap-2"><Button variant="danger" size="sm" onClick={() => { managed.onDisconnect?.(); setManagedId(null); setConfirmDisconnect(false) }}>Confirm disconnect</Button><Button variant="ghost" size="sm" onClick={() => setConfirmDisconnect(false)}>Cancel</Button></div></div> : <Button variant="danger" onClick={() => setConfirmDisconnect(true)}>Disconnect {managed.name}</Button>}</section>}</div></Modal>}
+      <p className="mt-7 max-w-3xl px-1 text-xs leading-relaxed text-white/45">Watchlists, lists, history, scrobbling, and resume positions sync with each connected tracker. Playback services such as TorBox only resolve playback links on this device.</p>
+      {managed && (
+        <Modal
+          open
+          onClose={() => { setManagedId(null); setConfirmDisconnect(false) }}
+          size="md"
+          className="accounts-service-modal overflow-hidden"
+        >
+          <div className="space-y-5">
+            <header className="accounts-service-modal__hero">
+              <div className="accounts-service-modal__icon"><IntegrationIcon service={managed.iconService} name={managed.name} /></div>
+              <div className="min-w-0">
+                <p className="accounts-service-modal__eyebrow">{managed.group === 'streaming' ? 'Playback service' : managed.group === 'history' ? 'Connected account' : 'Service settings'}</p>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-white">{managed.name}</h2>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-white/55">
+                  <span>{managed.account ?? managed.description}</span>
+                  {managed.detail && <><span className="text-white/20">•</span><span>{managed.detail}</span></>}
+                </div>
+              </div>
+              <span className={`accounts-service-modal__status accounts-service-modal__status--${managed.state}`}>
+                {managed.statusLabel ?? stateCopy[managed.state].label}
+              </span>
+            </header>
+
+            {managed.message && <div className={`accounts-service-modal__notice ${managed.state === 'needs-attention' ? 'accounts-service-modal__notice--warning' : ''}`}>{managed.message}</div>}
+
+            {managed.state !== 'connected' && !managed.primaryOpensManage && !managed.hidePrimaryAction && (
+              <div className="accounts-service-modal__action"><Button onClick={managed.onPrimary} loading={managed.state === 'syncing'}>{managed.primaryLabel}</Button></div>
+            )}
+
+            {managed.manage && <section className="accounts-service-modal__section">{managed.manage}</section>}
+            {managed.setup && <section className="accounts-service-modal__section"><p className="accounts-service-modal__section-label">Setup & access</p>{managed.setup}</section>}
+            {managed.state === 'connected' && managed.onSync && <div className="accounts-service-modal__action"><Button variant="secondary" onClick={managed.onSync}>{managed.syncLabel ?? 'Sync Now'}</Button></div>}
+
+            {managed.state === 'connected' && managed.onDisconnect && (
+              <section className="accounts-service-modal__disconnect">
+                <p className="accounts-service-modal__section-label">Connection</p>
+                {confirmDisconnect ? (
+                  <div className="rounded-2xl border border-danger/20 bg-danger/[.07] p-4">
+                    <p className="text-sm leading-relaxed text-white/75">Disconnect {managed.name}? Credentials will be removed from this profile; local viewing history stays in Aurales.</p>
+                    <div className="mt-4 flex flex-wrap gap-2"><Button variant="danger" size="sm" onClick={() => { managed.onDisconnect?.(); setManagedId(null); setConfirmDisconnect(false) }}>Confirm disconnect</Button><Button variant="ghost" size="sm" onClick={() => setConfirmDisconnect(false)}>Cancel</Button></div>
+                  </div>
+                ) : <Button variant="ghost" onClick={() => setConfirmDisconnect(true)}>Disconnect {managed.name}</Button>}
+              </section>
+            )}
+          </div>
+        </Modal>
+      )}
     </section>
   )
 }

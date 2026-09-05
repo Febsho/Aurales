@@ -12,7 +12,6 @@ import HeroMpvTrailer from './HeroMpvTrailer'
 import TrailerPreview from './TrailerPreview'
 import { nativeTrailerPlayerSupported } from '../services/player'
 import { Button } from './ui'
-import WatchlistButton from './WatchlistButton'
 import { waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
 
@@ -95,7 +94,6 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [directBackdropRetries, setDirectBackdropRetries] = useState<Set<string>>(() => new Set())
   const loadedBackdropsRef = useRef<Set<string>>(new Set())
   const [logoError, setLogoError] = useState(false)
-  const [scrollBlur, setScrollBlur] = useState(0)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
   const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
@@ -105,6 +103,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
@@ -113,7 +112,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
-  const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
+  const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
   const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
   const [heroTrailerPlaying, setHeroTrailerPlaying] = useState(false)
@@ -201,8 +200,11 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   }, [count, scrolledAway, heroTrailerPlaying])
 
   // Scroll blur: listen to the scroll container (closest overflow-y parent).
-  // WebKitGTK's fallback renderer cannot animate a full-bleed image filter
-  // smoothly, so Linux only tracks the threshold used to pause the carousel.
+  // Keep the frame-by-frame visual update out of React: re-rendering the whole
+  // hero for every scroll tick is much more expensive than changing two CSS
+  // custom properties on the already-mounted artwork. WebKitGTK's fallback
+  // renderer cannot animate a full-bleed image filter smoothly, so Linux only
+  // tracks the threshold used to pause the carousel.
   useEffect(() => {
     if (isSmall) return
     const el = heroRef.current
@@ -214,7 +216,11 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     const update = () => {
       frame = 0
       const t = scrollParent.scrollTop
-      if (!linuxReducedEffects) setScrollBlur(Math.min(t / 400, 1) * 20)
+      if (!linuxReducedEffects && !cinematic) {
+        const progress = Math.min(t / 400, 1)
+        el.style.setProperty('--hero-scroll-blur', `${progress * 20}px`)
+        el.style.setProperty('--hero-scroll-scale', String(1 + progress * 0.05))
+      }
       const nextScrolledAway = t > 100
       if (nextScrolledAway !== scrolledAwayRef.current) {
         scrolledAwayRef.current = nextScrolledAway
@@ -229,7 +235,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       scrollParent.removeEventListener('scroll', onScroll)
       if (frame) window.cancelAnimationFrame(frame)
     }
-  }, [isSmall, linuxReducedEffects])
+  }, [isSmall, linuxReducedEffects, cinematic])
 
   // Upgrade backdrops to highest-voted from TMDB images endpoint
   const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
@@ -460,7 +466,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!displayItems.length) return
     displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
       const candidateTmdbId = candidate.tmdbId || (String(candidate.id).startsWith('tmdb-') ? String(candidate.id).replace('tmdb-', '') : undefined)
-      if (!candidateTmdbId) return
+      if (!candidateTmdbId && !candidate.imdbId) return
       preloadTrailerSource({
         type: candidate.type === 'series' ? 'series' : 'movie',
         tmdbId: candidateTmdbId,
@@ -558,9 +564,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               style={{
                 opacity: i === activeIndex ? 1 : 0,
                 pointerEvents: 'none',
-                filter: !linuxReducedEffects && !cinematic && scrollBlur > 0 ? `blur(${scrollBlur}px)` : undefined,
-                transform: !linuxReducedEffects && !cinematic && scrollBlur > 0 ? 'scale(1.05)' : undefined,
-                transition: 'opacity 1s ease-in-out, filter 0.15s ease-out, transform 0.15s ease-out',
+                filter: !linuxReducedEffects && !cinematic ? 'blur(var(--hero-scroll-blur, 0px))' : undefined,
+                transform: !linuxReducedEffects && !cinematic ? 'scale(var(--hero-scroll-scale, 1))' : undefined,
+                transition: 'opacity 1s ease-in-out',
               }}
             >
               <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
@@ -727,37 +733,43 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           )}
 
           {/* Actor avatars */}
-          {!isSmall && !cinematic && cast.length > 0 && (
-            <div className="flex items-center gap-2 mb-5">
-              <div className="flex -space-x-1.5">
+          {!isSmall && cast.length > 0 && (
+            <div className="flex items-center gap-3 mb-6">
+              <div className="flex -space-x-2">
                 {cast.map((actor) => (
-                  <div key={actor.name} className="w-8 h-8 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
+                  <div key={actor.name} className="w-10 h-10 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
                     {actor.photo ? (
                       <img src={cachedImage(actor.photo)} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-meta font-bold text-white/60">
+                      <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/60">
                         {actor.name.charAt(0)}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
-              <span className="text-xs text-white/60 font-medium truncate max-w-sm">
+              <span className="text-sm text-white/50 font-medium truncate max-w-md">
                 {cast.map((a) => a.name).join(', ')}
               </span>
             </div>
           )}
 
           {/* Actions + dots */}
-          {!fixedStaticDetails && <div className="flex items-center gap-3">
-            {cinematic ? (
-              <>
-                <Button variant="white" size="lg" onClick={() => nav(true)}>Play</Button>
-                <Button variant="secondary" size="lg" onClick={() => nav(false)}>More Info</Button>
-                <WatchlistButton item={item} mediaRef={{ localId: item.id, title: item.title, year: item.year, type: item.isAnime ? 'anime' : type === 'series' ? 'show' : 'movie', isAnime: item.isAnime, contentType: type === 'series' ? 'series' : 'movie', imdbId: item.imdbId, tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined }} mediaType={type} isAnime={item.isAnime} anilistId={item.anilistId} malId={item.malId} tvdbId={item.tvdbId} />
-              </>
+          <div className="flex items-end gap-3">
+            {!isSmall ? (
+              <div className="home-hero-actions">
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  className="home-hero-details-action"
+                  icon={<svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                  onClick={() => nav(false)}
+                >
+                  Go to Details
+                </Button>
+              </div>
             ) : (
-              <Button variant="white" size={isSmall ? 'md' : 'lg'} onClick={() => nav(false)}>
+              <Button variant="white" size="md" onClick={() => nav(false)}>
                 Go to {type === 'movie' ? 'Movie' : 'Series'}
               </Button>
             )}
@@ -792,7 +804,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                 </div>
               </div>
             )}
-          </div>}
+          </div>
         </div>
       </>
     )

@@ -24,7 +24,6 @@ export default function Layout() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState('')
-  const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false)
   const [searchBarVisible, setSearchBarVisible] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
   const [cinematicNavHidden, setCinematicNavHidden] = useState(false)
@@ -34,8 +33,9 @@ export default function Layout() {
   const mainRef = useRef<HTMLElement>(null)
   const searchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMainScrollTop = useRef(0)
-  const linuxNavFrame = useRef(0)
-  const linuxReducedEffects = document.documentElement.dataset.platform === 'linux'
+  const navScrollFrame = useRef(0)
+  const cinematicNavHiddenRef = useRef(false)
+  const cinematicAtTopRef = useRef(true)
 
   const showSearchBar = useCallback(() => {
     if (searchHideTimer.current) { clearTimeout(searchHideTimer.current); searchHideTimer.current = null }
@@ -62,6 +62,8 @@ export default function Layout() {
 
   useEffect(() => {
     if (!usesTopNav) {
+      cinematicNavHiddenRef.current = false
+      cinematicAtTopRef.current = true
       setCinematicNavHidden(false)
       setCinematicAtTop(true)
       return
@@ -69,36 +71,42 @@ export default function Layout() {
     const el = mainRef.current
     if (!el) return
     lastMainScrollTop.current = el.scrollTop
-    setCinematicAtTop(el.scrollTop <= 24)
+    cinematicAtTopRef.current = el.scrollTop <= 24
+    setCinematicAtTop(cinematicAtTopRef.current)
     const updateNavForScroll = () => {
       const current = el.scrollTop
       const delta = current - lastMainScrollTop.current
-      if (current <= 24) setCinematicNavHidden(false)
-      else if (delta > 6) setCinematicNavHidden(true)
-      else if (delta < -6) setCinematicNavHidden(false)
-      setCinematicAtTop(current <= 24)
+      const nextAtTop = current <= 24
+      let nextHidden = cinematicNavHiddenRef.current
+      if (nextAtTop) nextHidden = false
+      else if (delta > 6) nextHidden = true
+      else if (delta < -6) nextHidden = false
+      if (nextHidden !== cinematicNavHiddenRef.current) {
+        cinematicNavHiddenRef.current = nextHidden
+        setCinematicNavHidden(nextHidden)
+      }
+      if (nextAtTop !== cinematicAtTopRef.current) {
+        cinematicAtTopRef.current = nextAtTop
+        setCinematicAtTop(nextAtTop)
+      }
       lastMainScrollTop.current = current
     }
     const onScroll = () => {
-      if (!linuxReducedEffects) {
-        updateNavForScroll()
-        return
-      }
-      if (linuxNavFrame.current) return
-      linuxNavFrame.current = window.requestAnimationFrame(() => {
-        linuxNavFrame.current = 0
+      if (navScrollFrame.current) return
+      navScrollFrame.current = window.requestAnimationFrame(() => {
+        navScrollFrame.current = 0
         updateNavForScroll()
       })
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => {
       el.removeEventListener('scroll', onScroll)
-      if (linuxNavFrame.current) {
-        window.cancelAnimationFrame(linuxNavFrame.current)
-        linuxNavFrame.current = 0
+      if (navScrollFrame.current) {
+        window.cancelAnimationFrame(navScrollFrame.current)
+        navScrollFrame.current = 0
       }
     }
-  }, [usesTopNav, location.pathname, linuxReducedEffects])
+  }, [usesTopNav, location.pathname])
 
   useLayoutEffect(() => {
     // Home must also reset: returning from a scrolled detail page would leave
@@ -127,12 +135,12 @@ export default function Layout() {
     setQuery(q)
   }, [searchParams])
 
-  // Cinematic has no persistent search bar elsewhere, so focus the input as
-  // soon as the search page opens (e.g. via the top-nav search icon).
+  // Focus the page-level search field as soon as Search opens, regardless of
+  // whether navigation is the cinematic top bar or the floating sidebar.
   useEffect(() => {
-    if (!usesTopNav || !isSearchPage) return
+    if (!isSearchPage) return
     requestAnimationFrame(() => inputRef.current?.focus())
-  }, [usesTopNav, isSearchPage])
+  }, [isSearchPage])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -143,8 +151,9 @@ export default function Layout() {
         setRoomPanelOpen(!useWatchTogetherStore.getState().roomPanelOpen)
       } else if (e.key === '/' || (e.key === 'k' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
-        // In cinematic the search input only exists on the search page.
-        if (usesTopNav && location.pathname !== '/search') {
+        // The sidebar owns search through its dedicated destination; keeping a
+        // second floating input above it competes with the Apple-style nav.
+        if (location.pathname !== '/search') {
           navigate('/search')
           return
         }
@@ -224,7 +233,6 @@ export default function Layout() {
     }, 120)
   }
 
-  const topControlLeft = !sidebarPinned && sidebarOverlayVisible ? 'left-[14.75rem]' : 'left-4'
   const searchInput = (
     <div className="global-search relative mx-auto w-full">
       <div className="absolute left-3.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
@@ -279,7 +287,7 @@ export default function Layout() {
       <TitleBar />
       {usesTopNav
         ? <CinematicTopNav hidden={cinematicNavHidden} />
-        : <Sidebar onOverlayVisibleChange={setSidebarOverlayVisible} />}
+        : <Sidebar />}
       {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
           Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
       {usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
@@ -291,53 +299,14 @@ export default function Layout() {
 
       {/* Content area — shifts right when pinned, full-bleed when auto-hide */}
       <div className={`relative flex flex-col min-h-0 h-full ${!usesTopNav && sidebarPinned ? 'flex-1 min-w-0' : 'absolute inset-0'}`}>
-        {!usesTopNav && location.pathname !== '/' && location.pathname !== '/discover' && (
-          <button
-            type="button"
-            onClick={goBack}
-            className={[
-              'absolute top-4 z-50',
-              topControlLeft,
-              'w-11 h-11 rounded-full flex items-center justify-center',
-              'bg-black/45 hover:bg-black/70 backdrop-blur-xl',
-              'border border-white/15 hover:border-white/30',
-              'text-white/75 hover:text-white shadow-lg',
-              'transition-all duration-200 cursor-pointer focus-ring',
-            ].join(' ')}
-            title="Go back (Alt+Left)"
-            aria-label="Go back"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
-              <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        )}
-        {/* Narrow center proximity zone — triggers search bar near the indicator */}
-        {!usesTopNav && <div
-          className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-10 z-[9997]"
-          onMouseEnter={showSearchBar}
-        />}
-        {/* Glowing indicator pill — visible when search bar is hidden */}
-        {!usesTopNav && !searchBarVisible && !searchFocused && !isSearchPage && (
-          <div
-            className="absolute top-0 left-1/2 -translate-x-1/2 z-[9998] w-28 h-1 rounded-b-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
-            aria-hidden="true"
-          />
-        )}
-        {/* Search bar — slides down from top; in cinematic it only exists on
-            the search page, sitting below the floating top nav */}
-        {(!usesTopNav || isSearchPage) && <header
-          onMouseEnter={usesTopNav ? undefined : showSearchBar}
-          onMouseLeave={usesTopNav ? undefined : scheduleHideSearchBar}
+        {/* Search is shown on its dedicated page in either navigation mode;
+            it remains hidden on sidebar Home and Settings. */}
+        {isSearchPage && <header
           className={[
-            // A top-bar search belongs beneath the navigation capsule and its
-            // profile menu. Sidebar search remains above its own content.
-            `${usesTopNav ? 'fixed z-[60]' : 'absolute z-[9998]'} left-1/2`,
+            'fixed z-[60] left-1/2',
             'w-[min(38rem,calc(100vw-2rem))]',
             'transition-all duration-300 ease-expo',
-            usesTopNav || searchBarVisible || searchFocused || isSearchPage
-              ? `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-9'} opacity-100 pointer-events-auto`
-              : '-translate-x-1/2 -top-8 opacity-0 pointer-events-none',
+            `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-[calc(var(--window-chrome-height)+1rem)]'} opacity-100 pointer-events-auto`,
           ].join(' ')}
         >
           {searchInput}

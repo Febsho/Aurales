@@ -164,8 +164,8 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   requireReadyCheck: lsGet('requireReadyCheck', true),
   showChat: lsGet('showChat', true),
   autoCopyInvite: lsGet('autoCopyInvite', true),
-  driftThreshold: lsGet('driftThreshold', 2),
-  syncInterval: lsGet('syncInterval', 5),
+  driftThreshold: lsGet('driftThreshold', 1),
+  syncInterval: lsGet('syncInterval', 1),
   allowGuestDifferentStream: lsGet('allowGuestDifferentStream', false),
 
   // Actions
@@ -289,8 +289,9 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
     set({ driftThreshold: val })
   },
   setSyncInterval: (val) => {
-    lsSet('syncInterval', val)
-    set({ syncInterval: val })
+    const interval = Math.max(0.5, val)
+    lsSet('syncInterval', interval)
+    set({ syncInterval: interval })
   },
   setAllowGuestDifferentStream: (val) => {
     lsSet('allowGuestDifferentStream', val)

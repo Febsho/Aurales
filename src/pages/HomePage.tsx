@@ -870,7 +870,9 @@ const INITIAL_VISIBLE = 3;
 
 function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const activated = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '400px' })
+  // Keep a generous ahead-of-scroll buffer for shelves that are added after
+  // the startup preloader yields, including very long custom Home layouts.
+  const activated = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '1600px' })
 
   if (!activated) {
     return (
@@ -902,6 +904,16 @@ function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: H
 }
 
 function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex = 0, previousIndex = null, direction = 1 }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void; fixed?: boolean; activeIndex?: number; previousIndex?: number | null; direction?: 1 | -1 }) {
+  const [preloadRemainingRows, setPreloadRemainingRows] = useState(false)
+
+  useEffect(() => {
+    // The first shelves paint immediately. Once that work has settled, mount
+    // the remaining shelves so their durable catalog data and artwork cache
+    // are ready before ordinary vertical scrolling reaches them.
+    const timer = window.setTimeout(() => setPreloadRemainingRows(true), 850)
+    return () => window.clearTimeout(timer)
+  }, [])
+
   return (
     <div className="space-y-4">
       {rows.map((row, idx) => (
@@ -910,7 +922,7 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
           row={row}
           isEditing={isEditing}
           onRemove={onRemove}
-          eager={idx < INITIAL_VISIBLE}
+          eager={idx < INITIAL_VISIBLE || preloadRemainingRows}
           motionClass={!fixed ? 'fixed-hero-row-active' : idx === activeIndex ? `fixed-hero-row-active ${previousIndex != null ? `fixed-hero-row-enter-${direction > 0 ? 'up' : 'down'}` : ''}` : idx === previousIndex ? `fixed-hero-row-active fixed-hero-row-exit-${direction > 0 ? 'up' : 'down'}` : ''}
         />
       ))}

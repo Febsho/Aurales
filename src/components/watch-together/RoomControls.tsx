@@ -63,8 +63,8 @@ export default function RoomControls() {
                       onClick={() => handleTransferHost(p.id)}
                       className="watch-together-control w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors duration-150 cursor-pointer"
                     >
-                      <div className="watch-together-avatar w-5 h-5 rounded-md flex items-center justify-center text-meta font-bold text-white/50">
-                        {p.name.charAt(0).toUpperCase()}
+                      <div className="watch-together-avatar w-5 h-5 rounded-md overflow-hidden flex items-center justify-center text-meta font-bold text-white/50">
+                        {p.avatar ? <img src={p.avatar} alt="" className="w-full h-full object-cover" /> : p.name.charAt(0).toUpperCase()}
                       </div>
                       <span>{p.name}</span>
                     </button>

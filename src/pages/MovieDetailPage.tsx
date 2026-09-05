@@ -181,6 +181,7 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
+    betterPosters: settings.betterPosters,
     meta: [settings.movieMetadataSource, settings.movieMetadataFallback],
   })
 }
@@ -213,6 +214,7 @@ export default function MovieDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
   const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
   const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
@@ -221,8 +223,9 @@ export default function MovieDetailPage() {
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
+    betterPosters,
     meta: [movieMetadataSource, movieMetadataFallback],
-  }), [artProviders, fanartApiKey, customArtUrls, movieMetadataSource, movieMetadataFallback])
+  }), [artProviders, fanartApiKey, customArtUrls, betterPosters, movieMetadataSource, movieMetadataFallback])
   const [movieWatched, setMovieWatched] = useState(false)
 
   useEffect(() => {
@@ -835,11 +838,11 @@ export default function MovieDetailPage() {
           />
         }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="detail-hero-actions">
             <Button
               variant="secondary"
               size="lg"
-    className="h-11 rounded-full !border-white !bg-white !text-black shadow-[0_8px_22px_rgba(0,0,0,0.32)] hover:!bg-white/90 hover:shadow-[0_10px_26px_rgba(0,0,0,0.42)] disabled:!opacity-75"
+              className="detail-hero-actions__play"
               loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -856,6 +859,7 @@ export default function MovieDetailPage() {
                   : 'Play'
               })()}
             </Button>
+            <div className="detail-hero-actions__secondary">
             <WatchlistButton
               item={{
                 id: movie.id,
@@ -888,8 +892,10 @@ export default function MovieDetailPage() {
               anilistId={movie.anilistId}
               malId={movie.malId}
               detailSize
+              className="detail-hero-actions__watchlist"
             />
             <MarkWatchedButton
+              className="detail-hero-actions__mark"
               mediaRef={{
                 localId: movie.id,
                 title: movie.title,
@@ -927,6 +933,7 @@ export default function MovieDetailPage() {
               }}
             />
             <StartInRoomButton
+              className="detail-hero-actions__room"
               media={{
                 id: movie.id,
                 type: 'movie',
@@ -941,6 +948,7 @@ export default function MovieDetailPage() {
                 anilistId: movie.anilistId ? Number(movie.anilistId) : undefined,
               }}
             />
+            </div>
           </div>
         }
       />

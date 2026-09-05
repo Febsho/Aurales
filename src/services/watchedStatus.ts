@@ -609,6 +609,16 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
       if (!entry.watchedEpisodes || entry.watchedEpisodes.length === 0) return false
       if (item.episode == null) {
         if (!item.seasonEpisodeCount) return false
+        // Anime history includes a TVDB mapping per episode. Prefer it over
+        // Simkl's native anime season numbers, which may represent cours as
+        // separate seasons while the app follows TVDB numbering.
+        if (item.isAnime) {
+          const watchedTvdbEpisodes = new Set(entry.watchedEpisodes
+            .filter((episode) => Number(episode.tvdbSeason) === Number(item.season))
+            .map((episode) => Number(episode.tvdbEpisode))
+            .filter(Number.isFinite))
+          if (watchedTvdbEpisodes.size >= item.seasonEpisodeCount) return true
+        }
         if (item.isAnime && item.appSeasonEpCounts) {
           const range = seasonAbsoluteRange(item)
           if (range) {
@@ -626,6 +636,7 @@ async function isSimklWatched(item: WatchedLookupItem): Promise<boolean> {
         : undefined)
 
       return entry.watchedEpisodes.some((episode) =>
+        (item.isAnime && Number(episode.tvdbSeason) === Number(item.season) && Number(episode.tvdbEpisode) === Number(item.episode)) ||
         (Number(episode.season) === Number(item.season) && Number(episode.episode) === Number(item.episode)) ||
         (item.isAnime && absoluteEpisode != null && Number(episode.season) === 1 && Number(episode.episode) === Number(absoluteEpisode)) ||
         (mappedSimkl != null && Number(episode.season) === Number(mappedSimkl.season) && Number(episode.episode) === Number(mappedSimkl.episode))
@@ -788,7 +799,7 @@ async function getTraktCache(): Promise<TraktCacheData> {
 }
 
 async function getSimklCache(): Promise<SimklCacheData> {
-  return cachedFetch<SimklCacheData>('watched:simkl', async () => {
+  return cachedFetch<SimklCacheData>('watched:simkl:v2', async () => {
     const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
     return { items: [...movies, ...episodes] }
   }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })

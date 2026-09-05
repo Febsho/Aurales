@@ -214,13 +214,14 @@ export default function TrailerPreview({
   }, [embedLoaded, trailer.key, onEnded, onUnavailable])
 
   // YouTube briefly paints its own centre pause glyph when autoplay begins.
-  // Keep the existing artwork in place until that transient control fades.
+  // Keep the existing artwork in place until that transient control fully
+  // fades; the old 900ms reveal still exposed it on slower WebKit starts.
   useEffect(() => {
     if (!embedPlaying) {
       setEmbedRevealKey(null)
       return
     }
-    const timer = window.setTimeout(() => setEmbedRevealKey(trailer.key), 900)
+    const timer = window.setTimeout(() => setEmbedRevealKey(trailer.key), 1600)
     return () => window.clearTimeout(timer)
   }, [embedPlaying, trailer.key])
 

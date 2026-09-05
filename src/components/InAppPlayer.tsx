@@ -455,7 +455,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         video.currentTime,
         { currentTime: time, isPlaying, lastUpdatedAt: (e as CustomEvent).detail.sentAt },
         driftThreshold,
-        3000,
+        1000,
       )
 
       if (shouldSeek) {
@@ -486,7 +486,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       const video = videoRef.current
       if (!video || !useWatchTogetherStore.getState().currentRoom) return
       wtReportLocalPlayback(video.currentTime, !video.paused)
-    }, 1000)
+    }, 250)
 
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)

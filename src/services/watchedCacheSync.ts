@@ -87,7 +87,7 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
     extract: (data) => extractTraktKeys(data.movies, data.shows),
   },
   simkl: {
-    key: 'watched:simkl',
+    key: 'watched:simkl:v2',
     fetch: async () => {
       const [movies, episodes] = await Promise.all([getSimklWatchedMovies(true), getSimklWatchedEpisodes(true)])
       return { items: [...movies, ...episodes] as SimklWatchlistItem[] }

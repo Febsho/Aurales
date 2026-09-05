@@ -119,7 +119,9 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
   const [animeCandidates, setAnimeCandidates] = useState<{ anilistId?: number; malId?: number; simklId?: number }[]>(
     anilistId || malId ? [{ anilistId: anilistId ? Number(anilistId) : undefined, malId: malId ? Number(malId) : undefined }] : [],
   )
-  const anilistActive = animeDetected && isAniListConnected() && (animeCandidates.length > 0 || !!(animeIds.anilistId || animeIds.malId))
+  // AniList is an anime tracker. Do not surface it for regular movies/shows
+  // merely because a provider happened to return a loose MAL/AniList mapping.
+  const anilistActive = isAnime === true && isAniListConnected() && (animeCandidates.length > 0 || !!(animeIds.anilistId || animeIds.malId))
   // Callers commonly construct mediaRef inline. Depending on that object by
   // identity makes the provider-check effect run after every state update and
   // can create an infinite render loop (notably in the rotating Discover hero).
@@ -324,8 +326,10 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const toggleProvider = useCallback(async (provider: Provider) => {
+  const toggleProvider = useCallback(async (provider: Provider, targetInList?: boolean) => {
     const current = states[provider]
+    const nextInList = targetInList ?? !current.inList
+    if (current.inList === nextInList) return
     setStates((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }))
 
     try {
@@ -337,23 +341,23 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
         if (mediaRef.imdbId) ids.imdb = mediaRef.imdbId
         if (mediaRef.tmdbId) ids.tmdb = mediaRef.tmdbId
         const payload = { [key]: [{ title: mediaRef.title, year: mediaRef.year, ids }] }
-        if (current.inList) await removeFromTraktWatchlist(payload)
+        if (!nextInList) await removeFromTraktWatchlist(payload)
         else await addToTraktWatchlist(payload)
       } else if (provider === 'simkl') {
-        if (current.inList) await removeFromSimklWatchlist(mediaRef)
+        if (!nextInList) await removeFromSimklWatchlist(mediaRef)
         else await addToSimklWatchlist(mediaRef)
       } else if (provider === 'pmdb' && mediaRef.tmdbId) {
         const pmdbType = mediaType === 'series' ? 'tv' : 'movie'
-        if (current.inList) await removeFromPMDBWatchlist(mediaRef.tmdbId, pmdbType)
+        if (!nextInList) await removeFromPMDBWatchlist(mediaRef.tmdbId, pmdbType)
         else await addToPMDBWatchlist(mediaRef.tmdbId, pmdbType)
       } else if (provider === 'mdblist' && mediaRef.tmdbId) {
-        if (current.inList) await removeFromMdblistWatchlist(mediaRef.tmdbId, mediaType, mediaRef.imdbId)
+        if (!nextInList) await removeFromMdblistWatchlist(mediaRef.tmdbId, mediaType, mediaRef.imdbId)
         else await addToMdblistWatchlist(mediaRef.tmdbId, mediaType, mediaRef.imdbId)
       } else if (provider === 'anilist') {
-        if (current.inList) await removeFromAniListList(animeIds.anilistId, animeIds.malId)
+        if (!nextInList) await removeFromAniListList(animeIds.anilistId, animeIds.malId)
         else await addToAniListPlanning(animeIds.anilistId, animeIds.malId)
       }
-      setStates((prev) => ({ ...prev, [provider]: { inList: !current.inList, loading: false, checking: false } }))
+      setStates((prev) => ({ ...prev, [provider]: { inList: nextInList, loading: false, checking: false } }))
     } catch (err) {
       console.error(`[WatchlistButton] toggle ${provider} failed:`, err)
       setStates((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }))
@@ -379,47 +383,41 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
   }, [mediaRef, animeIds.anilistId, animeIds.malId])
 
   const anyLoading = connectedProviders.some((p) => states[p].loading)
+  const allInList = connectedProviders.length > 0 && connectedProviders.every((provider) => states[provider].inList)
+  const addToAllProviders = () => {
+    void Promise.all(connectedProviders.map((provider) => toggleProvider(provider, true)))
+  }
 
-  const label = anyInList ? 'In Watchlist' : 'Add to Watchlist'
+  const label = allInList ? 'In all connected watchlists' : 'Add to all connected watchlists'
 
   return (
     <div className={`relative flex items-center gap-1.5 ${className}`} ref={menuRef}>
       <button
         type="button"
-        onClick={() => toggleProvider('local')}
-        disabled={states.local.loading}
-        aria-label={localInList ? 'Remove from local watchlist' : 'Add to local watchlist'}
-        aria-pressed={localInList}
+        onClick={addToAllProviders}
+        onContextMenu={(event) => { event.preventDefault(); setOpen(true) }}
+        disabled={anyLoading}
+        aria-label={label}
+        aria-pressed={allInList}
+        title={`${label}. Right-click to choose services.`}
         className={[
           `grid ${detailSize ? 'h-12 w-12' : 'h-11 w-11'} flex-shrink-0 place-items-center rounded-full border transition-[transform,background-color,border-color,color] duration-200 cursor-pointer`,
           'active:scale-95 disabled:pointer-events-none disabled:opacity-55',
-          localInList
+          anyInList
             ? 'border-accent/60 bg-accent/20 text-accent shadow-[0_6px_18px_rgba(0,0,0,0.22)]'
             : 'border-white/15 bg-[#171717] text-white/70 hover:border-white/30 hover:bg-[#242424] hover:text-white',
         ].join(' ')}
       >
-        {states.local.loading ? (
+        {anyLoading ? (
           <svg className="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
         ) : (
-          <svg className="h-5 w-5" fill={localInList ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
+          <svg className="h-5 w-5" fill={allInList ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 21s-7.2-4.35-9.55-8.4C.4 9.05 2.02 4.5 6.15 3.56A5.15 5.15 0 0 1 12 6.18a5.15 5.15 0 0 1 5.85-2.62c4.13.94 5.75 5.49 3.7 9.04C19.2 16.65 12 21 12 21Z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         )}
-      </button>
-
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        disabled={anyLoading}
-        aria-label="Manage watchlists"
-        aria-expanded={open}
-        title={label}
-        className={`grid ${detailSize ? 'h-10 w-8' : 'h-9 w-8'} place-items-center rounded-full border border-white/10 bg-[#171717] text-white/60 transition-colors hover:border-white/25 hover:bg-[#242424] hover:text-white disabled:opacity-45 ${open ? 'border-white/25 bg-[#242424] text-white' : ''}`}
-      >
-        <svg className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
       </button>
 
       {open && (

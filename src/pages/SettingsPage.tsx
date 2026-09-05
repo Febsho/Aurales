@@ -60,6 +60,7 @@ import ProfilesSettings from '../components/settings/ProfilesSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
+import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -99,6 +100,7 @@ const BACKUP_KEYS = [
   'aurales_poster_trailer_previews',
   'aurales_poster_trailer_hover_delay_ms',
   'aurales_poster_trailer_sound',
+  'aurales_better_posters',
   'aurales_trailer_volume',
   'orynt_next_episode_prompt',
   'orynt_accent_color',
@@ -112,6 +114,14 @@ const BACKUP_KEYS = [
   'orynt_cache_buffer_size',
   'orynt_audio_passthrough',
   'orynt_auto_skip_segments',
+  'aurales_show_skip_intro_button',
+  'aurales_auto_skip_intro',
+  'aurales_show_skip_credits_button',
+  'aurales_auto_skip_credits',
+  'aurales_auto_play_next_episode',
+  'aurales_next_episode_countdown_seconds',
+  'aurales_scrub_thumbnail_previews',
+  'aurales_show_player_loading_indicator',
   'orynt_sub_font_size',
   'orynt_sub_bg_opacity',
   'simkl_token',
@@ -131,7 +141,7 @@ const BACKUP_KEYS = [
 
 function SettingSection({ title, description, children }: { title?: string; description?: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
+    <div className="settings-panel-card bg-white/[0.03] border border-white/[0.06] rounded-2xl">
       {title && (
         <div className="px-6 pt-5 pb-1">
           <h3 className="text-sm font-semibold text-white">{title}</h3>
@@ -224,7 +234,7 @@ function SettingSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className={`flex h-11 w-full items-center justify-between gap-3 rounded-xl border px-4 text-left text-sm font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-colors ${
+        className={`settings-panel-control flex h-11 w-full items-center justify-between gap-3 rounded-xl border px-4 text-left text-sm font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-colors ${
           open
             ? 'border-white/25 bg-white/12 text-white'
             : 'border-white/10 bg-black/25 text-white/85 hover:border-white/18 hover:bg-white/8'
@@ -303,18 +313,6 @@ function PresenceToggle({ checked, onChange }: { checked: boolean; onChange: (ch
     >
       <span className={`h-5 w-5 rounded-full shadow-[0_2px_8px_rgba(0,0,0,.35)] transition-transform duration-200 ${checked ? 'translate-x-5 bg-emerald-200' : 'translate-x-0 bg-white/45'}`} />
     </button>
-  )
-}
-
-function SearchEngineSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { id: string; name: string }[] }) {
-  return (
-    <SettingSelect
-      label="Search engine"
-      value={value}
-      onChange={onChange}
-      className="w-48"
-      options={options.map((option) => ({ value: option.id, label: option.name }))}
-    />
   )
 }
 
@@ -530,7 +528,6 @@ function CacheManagementSection() {
     [CACHE_CATEGORIES.HOME_ROW]: 'Home Rows',
     [CACHE_CATEGORIES.DETAIL_PAGE]: 'Detail Pages',
     [CACHE_CATEGORIES.TVDB_SEASON]: 'Season Data',
-    [CACHE_CATEGORIES.ANIME_MAPPING]: 'Anime ID Mappings',
   }
 
   return (
@@ -563,7 +560,7 @@ function CacheManagementSection() {
               </button>
             </div>
           </div>
-          {Object.entries(stats.byCategory).filter(([, count]) => count > 0).map(([cat, count]) => (
+          {Object.entries(stats.byCategory).filter(([cat, count]) => cat !== CACHE_CATEGORIES.ANIME_MAPPING && count > 0).map(([cat, count]) => (
             <div key={cat} className="flex items-center justify-between px-1 py-1">
               <span className="text-xs text-white/70">{categoryLabels[cat] || cat} ({count})</span>
               <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-meta font-bold cursor-pointer">
@@ -573,79 +570,6 @@ function CacheManagementSection() {
           ))}
         </div>
       )}
-    </SettingSection>
-  )
-}
-
-function AnimeIdMappingsSection() {
-  const [lookupCacheCount, setLookupCacheCount] = useState<number | null>(null)
-  const [animeListCount, setAnimeListCount] = useState<number | null>(null)
-  const [aniBridgeCount, setAniBridgeCount] = useState<number | null>(null)
-  const [aniBridgeLoading, setAniBridgeLoading] = useState(false)
-
-  const refresh = (loadAniBridge = false) => {
-    cacheStats().then((stats) => {
-      setLookupCacheCount(stats.byCategory[CACHE_CATEGORIES.ANIME_MAPPING] || 0)
-    })
-    import('../services/animeLists')
-      .then(({ getStoredAnimeListEntryCount }) => getStoredAnimeListEntryCount())
-      .then(setAnimeListCount)
-      .catch(() => setAnimeListCount(0))
-    if (loadAniBridge) setAniBridgeLoading(true)
-    import('../services/anime-mapping/anibridgeMappings')
-      .then(({ getStoredAniBridgeEntryCount, preloadAniBridgeMappings }) => loadAniBridge ? preloadAniBridgeMappings() : getStoredAniBridgeEntryCount())
-      .then(setAniBridgeCount)
-      .catch(() => setAniBridgeCount(0))
-      .finally(() => setAniBridgeLoading(false))
-  }
-
-  // Load the public episode index when this section is opened. Previously the
-  // UI only counted an already-populated cache, so a first-time user always
-  // saw a misleading zero despite the mapping being available on demand.
-  useEffect(() => { refresh(true) }, [])
-
-  return (
-    <SettingSection>
-      <SettingRow label="Anime-list index entries" description="Fribb anime-list mapping entries stored in browser cache.">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-bold text-white tabular-nums">
-            {animeListCount == null ? 'Loading...' : animeListCount.toLocaleString()}
-          </span>
-          <button
-            onClick={() => refresh()}
-            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
-          >
-            Refresh
-          </button>
-        </div>
-      </SettingRow>
-      <SettingRow label="AniBridge episode mappings" description="Episode-level mappings across AniList, MAL, TMDB, TVDB, IMDB, and AniDB. Loaded automatically and refreshed daily.">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-bold text-white tabular-nums">
-            {aniBridgeLoading || aniBridgeCount == null ? 'Loading...' : aniBridgeCount.toLocaleString()}
-          </span>
-          <button
-            onClick={() => refresh(true)}
-            disabled={aniBridgeLoading}
-            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
-          >
-            {aniBridgeLoading ? 'Loading...' : 'Refresh'}
-          </button>
-        </div>
-      </SettingRow>
-      <SettingRow label="Anime lookup cache" description="Resolved provider mappings created when anime watch status or sync needs them.">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-bold text-white/80 tabular-nums">
-            {lookupCacheCount == null ? 'Loading...' : lookupCacheCount === 0 ? 'No entries yet' : lookupCacheCount.toLocaleString()}
-          </span>
-          <button
-            onClick={() => refresh()}
-            className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/70 hover:text-white rounded-lg text-xs font-bold cursor-pointer"
-          >
-            Check
-          </button>
-        </div>
-      </SettingRow>
     </SettingSection>
   )
 }
@@ -705,7 +629,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
   const currentQuality = qualityOptions.find(o => o.value === store.imageQuality) ?? qualityOptions[1]
 
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+    <div className="settings-panel-card bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
       {/* Header */}
       <div className="px-6 pt-5 pb-1">
         <h3 className="text-sm font-semibold text-white">Image Cache</h3>
@@ -721,7 +645,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
               <SelectMenu
                 aria-label="Image cache quality" value={store.imageQuality}
                 onChange={(e) => store.setImageQuality(e.target.value as 'data-saver' | 'balanced' | 'high')}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="w-40"
               >
                 {qualityOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -740,7 +664,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
               <SelectMenu
                 aria-label="Image cache size limit" value={store.imageCacheSizeMb}
                 onChange={(e) => store.setImageCacheSizeMb(Number(e.target.value))}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="w-36"
               >
                 {sizeOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -759,7 +683,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
               <SelectMenu
                 aria-label="Image cache retention" value={store.imageKeepDays}
                 onChange={(e) => store.setImageKeepDays(Number(e.target.value))}
-                className="appearance-none pl-3 pr-8 py-2 bg-white/[0.06] hover:bg-white/[0.09] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50 transition-colors"
+                className="w-36"
               >
                 {keepOptions.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -782,7 +706,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
             <button
               onClick={handleClear}
               disabled={clearing}
-              className="text-sm font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+              className="rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-2 text-sm font-semibold transition-colors hover:border-red-400/40 hover:bg-red-400/15 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
               style={{ color: cleared ? 'rgb(134 239 172)' : 'rgb(239 68 68)' }}
             >
               {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : 'Clear Image Cache'}
@@ -814,17 +738,32 @@ function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: s
 function ArtworkSettingsSection() {
   const artProviders = useAppStore((s) => s.artProviders)
   const setArtProviders = useAppStore((s) => s.setArtProviders)
-  const customArtUrls = useAppStore((s) => s.customArtUrls)
-  const setCustomArtUrls = useAppStore((s) => s.setCustomArtUrls)
-  const btttrPosterUrl = 'https://btttr.cc/poster/auto/{imdb_id}/auto.png'
+  const betterPosters = useAppStore((s) => s.betterPosters)
+  const setBetterPosters = useAppStore((s) => s.setBetterPosters)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [previewMovie, setPreviewMovie] = useState({ id: 'tt1104001', title: 'TRON: Legacy' })
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('https://btttr.cc/catalog/movie/tmdb-today.json')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load trending movies')))
+      .then((data: { metas?: Array<{ id?: string; name?: string }> }) => {
+        const movie = data.metas?.find((item) => item.id?.startsWith('tt'))
+        if (!cancelled && movie?.id) setPreviewMovie({ id: movie.id, title: movie.name || 'Trending movie' })
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
 
   const updateProvider = (key: string, value: string) => {
     setArtProviders({ ...artProviders, [key]: value })
   }
 
-  const updateCustomUrl = (key: string, value: string) => {
-    setCustomArtUrls({ ...customArtUrls, [key]: value })
+  const updateBetterPosters = (settings: Partial<typeof betterPosters>) => {
+    setBetterPosters({ ...betterPosters, ...settings })
+    window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
   }
+  const previewPosterUrl = getBetterPostersUrl(betterPosters).replace('{imdb_id}', previewMovie.id)
 
   const sections = [
     { title: 'Movies', color: 'text-amber-400/80', prefix: 'movie' },
@@ -860,161 +799,63 @@ function ArtworkSettingsSection() {
         </div>
       ))}
 
-      <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Custom Art URL Overrides</h3>
-      <SettingSection description="Custom URL patterns replace the default artwork everywhere. Use placeholders: {imdb_id}, {tmdb_id}, {tvdb_id}, {mal_id}, {anilist_id}, {type}, {season}, {episode}">
-        <SettingRow label="Poster URL pattern" description="e.g. https://example.com/poster/{imdb_id}.jpg">
-          <div className="flex items-center gap-2">
-            <SelectMenu
-              value={customArtUrls.posterUrl === btttrPosterUrl ? btttrPosterUrl : customArtUrls.posterUrl ? 'custom' : ''}
-              onChange={(e) => {
-                if (e.target.value === 'custom') updateCustomUrl('posterUrl', 'https://example.com/poster/{imdb_id}.jpg')
-                else updateCustomUrl('posterUrl', e.target.value)
-              }}
-              className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-            >
-              <option value="">None</option>
-              <option value={btttrPosterUrl}>btttr.cc</option>
-              <option value="custom">Custom</option>
-            </SelectMenu>
-            <input
-              type="text"
-              value={customArtUrls.posterUrl}
-              onChange={(e) => updateCustomUrl('posterUrl', e.target.value)}
-              placeholder="Leave empty to use provider"
-              className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
+      <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Better Posters</h3>
+      <SettingSection>
+        <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. It takes priority over a custom poster URL while enabled.">
+          <SettingToggle checked={betterPosters.enabled} onChange={(enabled) => updateBetterPosters({ enabled })} />
+        </SettingRow>
+        {betterPosters.enabled && <>
+          <SettingRow label="Trend tags" description="Show Trending, New, and ranking labels.">
+            <SettingToggle checked={betterPosters.trendTags} onChange={(trendTags) => updateBetterPosters({ trendTags })} />
+          </SettingRow>
+          <SettingRow label="Quality tags" description="Show 4K, Dolby Vision, and Atmos badges when available.">
+            <SettingToggle checked={betterPosters.qualityTags} onChange={(qualityTags) => updateBetterPosters({ qualityTags })} />
+          </SettingRow>
+          <SettingRow label="Genre" description="Show the genre label at the bottom of the poster.">
+            <SettingToggle checked={betterPosters.showGenre} onChange={(showGenre) => updateBetterPosters({ showGenre })} />
+          </SettingRow>
+          <SettingRow label="Rating" description="Show a rating label at the bottom of the poster.">
+            <SettingToggle checked={betterPosters.showRating} onChange={(showRating) => updateBetterPosters({ showRating })} />
+          </SettingRow>
+          {betterPosters.showRating && <SettingRow label="Rating source" description="Choose which score BetterPosters prints.">
+            <SettingSelect
+              value={betterPosters.ratingSource}
+              onChange={(ratingSource) => updateBetterPosters({ ratingSource: ratingSource as BetterPostersRatingSource })}
+              options={[
+                { value: 'avg', label: 'Average' }, { value: 'IM', label: 'IMDb (/10)' },
+                { value: 'TM', label: 'TMDB (/10)' }, { value: 'RT', label: 'Rotten Tomatoes (%)' },
+                { value: 'MC', label: 'Metacritic (/100)' }, { value: 'TR', label: 'Trakt (/10)' },
+                { value: 'LB', label: 'Letterboxd (/5)' }, { value: 'RE', label: 'Roger Ebert (/4)' },
+              ]}
             />
+          </SettingRow>}
+          <SettingRow label="Age rating" description="Show labels such as PG-13, TV-MA, or R.">
+            <SettingToggle checked={betterPosters.ageRating} onChange={(ageRating) => updateBetterPosters({ ageRating })} />
+          </SettingRow>
+          <SettingRow label="Poster language" description="Language used for BetterPosters labels and metadata.">
+            <SettingSelect
+              value={betterPosters.language}
+              onChange={(language) => updateBetterPosters({ language })}
+              options={[
+                { value: 'en', label: 'English' }, { value: 'de', label: 'Deutsch' },
+                { value: 'es-ES', label: 'Español (España)' }, { value: 'es-MX', label: 'Español (Latinoamérica)' },
+                { value: 'fr', label: 'Français' }, { value: 'pt-BR', label: 'Português (Brasil)' },
+              ]}
+            />
+          </SettingRow>
+          <div ref={previewRef} className="px-6 py-6 bg-black/10">
+            <p className="text-sm font-medium text-white">Live preview</p>
+            <p className="text-xs text-white/60 mt-0.5">{previewMovie.title} — currently trending. Changes update as you adjust the options above.</p>
+            <div className="mt-4 flex justify-center">
+              <img
+                key={previewPosterUrl}
+                src={previewPosterUrl}
+                alt="Better Posters example for TRON: Legacy"
+                className="w-40 rounded-xl border border-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.38)]"
+              />
+            </div>
           </div>
-        </SettingRow>
-        <SettingRow label="Background URL pattern" description="e.g. https://example.com/backdrop/{tmdb_id}.jpg">
-          <input
-            type="text"
-            value={customArtUrls.backdropUrl}
-            onChange={(e) => updateCustomUrl('backdropUrl', e.target.value)}
-            placeholder="Leave empty to use provider"
-            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
-          />
-        </SettingRow>
-        <SettingRow label="Logo URL pattern" description="e.g. https://example.com/logo/{tmdb_id}.png">
-          <input
-            type="text"
-            value={customArtUrls.logoUrl}
-            onChange={(e) => updateCustomUrl('logoUrl', e.target.value)}
-            placeholder="Leave empty to use provider"
-            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
-          />
-        </SettingRow>
-        <SettingRow label="Episode thumbnail URL pattern" description="e.g. https://example.com/ep/{tmdb_id}/S{season}E{episode}.jpg">
-          <input
-            type="text"
-            value={customArtUrls.episodeThumbnailUrl}
-            onChange={(e) => updateCustomUrl('episodeThumbnailUrl', e.target.value)}
-            placeholder="Leave empty to use provider"
-            className="w-80 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/25 focus:outline-none focus:border-accent/50"
-          />
-        </SettingRow>
-      </SettingSection>
-
-      <div className="mt-4 px-1">
-        <p className="text-xs text-white/50">Custom URL patterns take priority over all providers. If a pattern is set and resolves successfully (all placeholders filled, valid URL), it replaces the default art everywhere — home, discover, detail pages, and cards.</p>
-        <div className="mt-3 bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
-          <p className="text-xs font-semibold text-white/50 mb-2">Available placeholders</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-white/60">
-            <span><code className="text-accent/70">{'{imdb_id}'}</code> — IMDb ID (tt1234567)</span>
-            <span><code className="text-accent/70">{'{tmdb_id}'}</code> — TMDb numeric ID</span>
-            <span><code className="text-accent/70">{'{tvdb_id}'}</code> — TVDb numeric ID</span>
-            <span><code className="text-accent/70">{'{mal_id}'}</code> — MyAnimeList ID</span>
-            <span><code className="text-accent/70">{'{anilist_id}'}</code> — AniList ID</span>
-            <span><code className="text-accent/70">{'{type}'}</code> — movie or series</span>
-            <span><code className="text-accent/70">{'{season}'}</code> — Season number</span>
-            <span><code className="text-accent/70">{'{episode}'}</code> — Episode number</span>
-          </div>
-        </div>
-      </div>
-    </>
-  )
-}
-
-function SearchSettingsSection() {
-  const movieSearchEngine = useAppStore((s) => s.movieSearchEngine)
-  const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine)
-  const animeSeriesSearchEngine = useAppStore((s) => s.animeSeriesSearchEngine)
-  const animeMovieSearchEngine = useAppStore((s) => s.animeMovieSearchEngine)
-  const movieSearchEnabled = useAppStore((s) => s.movieSearchEnabled)
-  const seriesSearchEnabled = useAppStore((s) => s.seriesSearchEnabled)
-  const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
-  const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
-  const setMovieSearchEngine = useAppStore((s) => s.setMovieSearchEngine)
-  const setSeriesSearchEngine = useAppStore((s) => s.setSeriesSearchEngine)
-  const setAnimeSeriesSearchEngine = useAppStore((s) => s.setAnimeSeriesSearchEngine)
-  const setAnimeMovieSearchEngine = useAppStore((s) => s.setAnimeMovieSearchEngine)
-  const setMovieSearchEnabled = useAppStore((s) => s.setMovieSearchEnabled)
-  const setSeriesSearchEnabled = useAppStore((s) => s.setSeriesSearchEnabled)
-  const setAnimeSeriesSearchEnabled = useAppStore((s) => s.setAnimeSeriesSearchEnabled)
-  const setAnimeMovieSearchEnabled = useAppStore((s) => s.setAnimeMovieSearchEnabled)
-  const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
-  const openrouterModel = useAppStore((s) => s.openrouterModel)
-
-  const movieOptions = [
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-    { id: 'mdblist', name: 'MDBList Search' },
-    { id: 'cinemeta', name: 'Cinemeta' },
-  ]
-  const seriesOptions = [
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'tvdb', name: 'TheTVDB Search' },
-    { id: 'tvmaze', name: 'TVmaze Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-    { id: 'mdblist', name: 'MDBList Search' },
-    { id: 'cinemeta', name: 'Cinemeta' },
-  ]
-  const animeSeriesOptions = [
-    { id: 'mal', name: 'MAL (Series)' },
-    { id: 'tvdb', name: 'TheTVDB Search' },
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-  ]
-  const animeMovieOptions = [
-    { id: 'mal', name: 'MAL (Movies)' },
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-  ]
-
-  return (
-    <>
-      <SettingSection title="Primary Keyword Engines" description="Choose the default engine for basic keyword searches. The AI search uses this engine to find items based on its suggestions.">
-        <SettingRow label="Movies Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={movieSearchEngine} onChange={setMovieSearchEngine} options={movieOptions} />
-            <SettingToggle checked={movieSearchEnabled} onChange={setMovieSearchEnabled} />
-          </div>
-        </SettingRow>
-        <SettingRow label="Series Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={seriesSearchEngine} onChange={setSeriesSearchEngine} options={seriesOptions} />
-            <SettingToggle checked={seriesSearchEnabled} onChange={setSeriesSearchEnabled} />
-          </div>
-        </SettingRow>
-        <SettingRow label="Anime (Series) Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={animeSeriesSearchEngine} onChange={setAnimeSeriesSearchEngine} options={animeSeriesOptions} />
-            <SettingToggle checked={animeSeriesSearchEnabled} onChange={setAnimeSeriesSearchEnabled} />
-          </div>
-        </SettingRow>
-        <SettingRow label="Anime (Movies) Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={animeMovieSearchEngine} onChange={setAnimeMovieSearchEngine} options={animeMovieOptions} />
-            <SettingToggle checked={animeMovieSearchEnabled} onChange={setAnimeMovieSearchEnabled} />
-          </div>
-        </SettingRow>
-      </SettingSection>
-
-      <SettingSection title="AI-Powered Search" description="Configure the AI model in the Accounts tab under OpenRouter.">
-        <SettingRow label="Status" description="AI search uses your OpenRouter API key to interpret natural language queries.">
-          <span className={`text-xs font-semibold ${openrouterApiKey ? 'text-green-400' : 'text-white/50'}`}>
-            {openrouterApiKey ? `Active — ${openrouterModel || 'default model'}` : 'Not configured'}
-          </span>
-        </SettingRow>
+        </>}
       </SettingSection>
     </>
   )
@@ -1129,13 +970,19 @@ export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [searchParams] = useSearchParams()
-  type SettingsTab = 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  type SettingsTab = 'overview' | 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
   const requestedTab = searchParams.get('tab')
-  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'accounts')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'overview')
 
   useEffect(() => {
     if (requestedTab === 'profiles') setActiveTab('profiles')
   }, [requestedTab])
+
+  // A category can be opened after the overview has been scrolled a long way
+  // down. Start each view at its own header instead of inheriting that offset.
+  useEffect(() => {
+    document.querySelector<HTMLElement>('.app-scroll-root')?.scrollTo({ top: 0 })
+  }, [activeTab])
   
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
@@ -1384,7 +1231,12 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!getTorBoxToken()) return
-    getTorBoxUser().then(setTorBoxUser).catch(() => setTorBoxUser(null))
+    getTorBoxUser()
+      .then(setTorBoxUser)
+      .catch((error) => {
+        setTorBoxUser(null)
+        setTorBoxMessage(error instanceof Error ? error.message : 'TorBox could not verify this connection.')
+      })
   }, [])
 
   useEffect(() => {
@@ -1508,11 +1360,26 @@ export default function SettingsPage() {
       setTraktError('Trakt requires app credentials for device authorization. Add your Trakt Client ID and Client Secret below.')
       return
     }
-    setTraktError('')
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    setTraktCode(null)
+    setTraktPolling(true)
+    setTraktError('Requesting a secure Trakt device code…')
     try {
       const code = await getDeviceCode()
       setTraktCode(code)
-      setTraktPolling(true)
+      setTraktError('Open Trakt in your browser and enter the code shown here.')
+
+      // Browser launch is deliberately detached. Some Linux launchers do not
+      // return until the browser closes, but the device-code UI and polling
+      // need to keep working while that page is open.
+      if ((window as any).__TAURI_INTERNALS__) {
+        void invoke('open_simkl_auth', { url: code.verificationUrl }).catch(() => {
+          setTraktError('Open the Trakt verification link below and enter the code shown here.')
+        })
+      } else {
+        window.open(code.verificationUrl, '_blank', 'noopener,noreferrer')
+      }
 
       pollRef.current = setInterval(async () => {
         try {
@@ -1543,6 +1410,7 @@ export default function SettingsPage() {
         setTraktError('Authorization timed out. Try again.')
       }, code.expiresIn * 1000)
     } catch (e) {
+      setTraktPolling(false)
       setTraktError(`Failed to start auth: ${e instanceof Error ? e.message : e}`)
     }
   }
@@ -1633,13 +1501,18 @@ export default function SettingsPage() {
 
   const finishTorBoxConnection = async (token: string) => {
     setTorBoxToken(token)
-    setTorBoxTokenInput(token)
-    const user = await getTorBoxUser()
-    setTorBoxUser(user)
-    setTorBoxDevice(null)
-    setTorBoxMessage(`Connected as ${user.email}`)
-    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
-    torBoxPollRef.current = null
+    try {
+      const user = await getTorBoxUser()
+      setTorBoxTokenInput(token)
+      setTorBoxUser(user)
+      setTorBoxDevice(null)
+      setTorBoxMessage(`Connected as ${user.email}`)
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      torBoxPollRef.current = null
+    } catch (error) {
+      clearTorBoxToken()
+      throw error
+    }
   }
 
   const handleTorBoxConnect = async () => {
@@ -1648,9 +1521,6 @@ export default function SettingsPage() {
     try {
       const device = await startTorBoxDeviceAuth()
       setTorBoxDevice(device)
-      const authUrl = device.verification_url || device.friendly_verification_url
-      if ((window as any).__TAURI_INTERNALS__) await invoke('open_simkl_auth', { url: authUrl })
-      else window.open(authUrl, '_blank', 'noopener,noreferrer')
       if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
       const poll = async () => {
         if (Date.now() >= new Date(device.expires_at).getTime()) {
@@ -1676,6 +1546,18 @@ export default function SettingsPage() {
       torBoxPollRef.current = setInterval(poll, Math.max(2, device.interval || 5) * 1000)
       setTorBoxMessage('Waiting for TorBox authorization…')
       void poll()
+
+      // Start polling before launching the browser. A few Linux launchers keep
+      // their open process alive until the browser window closes; authorization
+      // must not wait for that process to exit.
+      const authUrl = device.verification_url || device.friendly_verification_url
+      if ((window as any).__TAURI_INTERNALS__) {
+        void invoke('open_simkl_auth', { url: authUrl }).catch(() => {
+          setTorBoxMessage('Open the TorBox link below to finish authorization.')
+        })
+      } else {
+        window.open(authUrl, '_blank', 'noopener,noreferrer')
+      }
     } catch (error) {
       setTorBoxLoading(false)
       setTorBoxMessage(error instanceof Error ? error.message : String(error))
@@ -1972,32 +1854,12 @@ export default function SettingsPage() {
           )
         },
         {
-          id: 'search',
-          label: 'Search',
-          description: 'Search engines, catalog order, and AI-powered search.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="m21 21-4.35-4.35" />
-            </svg>
-          )
-        },
-        {
           id: 'progress',
           label: 'Progress & Sync',
           description: 'Watch progress tracking, scrobbling, and service sync settings.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-            </svg>
-          )
-        },
-        {
-          id: 'upcoming',
-          label: 'Upcoming',
-          description: 'Choose which watchlists and active services power release reminders.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <rect x="3" y="4.5" width="18" height="16" rx="2" /><path strokeLinecap="round" d="M7 2.5v4M17 2.5v4M3 9h18M8 13h3M8 17h7" />
             </svg>
           )
         },
@@ -2079,41 +1941,55 @@ export default function SettingsPage() {
   const activeItem = categories.flatMap(c => c.items).find(i => i.id === activeTab)
 
   return (
-    <div className="settings-page flex h-full">
-      {/* ─── Left Sidebar ─── */}
-      <div className="settings-page__nav w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5 pt-32">
-        {categories.map((cat) => (
-          <div key={cat.title}>
-            <div className="text-meta font-bold uppercase tracking-wider text-white/50 px-3 mb-1.5">{cat.title}</div>
-            <div className="space-y-0.5">
-              {cat.items.map((item) => {
-                const active = activeTab === item.id
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => { setActiveTab(item.id as any) }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-[7px] text-sm font-medium rounded-lg transition-all cursor-pointer text-left ${
-                      active
-                        ? 'bg-white/[0.08] text-white'
-                        : 'text-white/50 hover:text-white/70 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <span className={active ? 'text-white/80' : 'text-white/60'}>{item.icon}</span>
-                    <span className="settings-page__nav-label">{item.label}</span>
-                  </button>
-                )
-              })}
+    <div className="settings-page min-h-full">
+      {activeTab === 'overview' ? (
+        <div className="settings-hub">
+          <section className="settings-hub__identity" aria-labelledby="settings-title">
+            <div className="settings-hub__mark" aria-hidden="true">
+              <img src="/app-logo.png?v=3" alt="" />
             </div>
+            <p className="settings-hub__eyebrow">Aurales</p>
+            <h1 id="settings-title">Settings</h1>
+            <p>Personalize how Aurales looks, plays, connects, and keeps your library in sync.</p>
+          </section>
+
+          <section className="settings-hub__categories" aria-label="Settings categories">
+            {categories.map((category) => (
+              <div className="settings-hub__group" key={category.title}>
+                <p className="settings-hub__group-label">{category.title}</p>
+                <div className="settings-hub__cards">
+                  {category.items.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setActiveTab(item.id as SettingsTab)}
+                      className={`settings-hub-card settings-hub-card--tone-${index % 6}`}
+                    >
+                      <span className="settings-hub-card__icon" aria-hidden="true">{item.icon}</span>
+                      <span className="settings-hub-card__copy">
+                        <span className="settings-hub-card__title">{item.label}</span>
+                        <span className="settings-hub-card__description">{item.description}</span>
+                      </span>
+                      <svg className="settings-hub-card__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        </div>
+      ) : (
+        <div className="settings-page__content settings-page__content--panel">
+          <div className="settings-page__panel-header">
+            <button type="button" onClick={() => setActiveTab('overview')} className="settings-page__back" aria-label="Back to all settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" aria-hidden="true"><path d="m15 18-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              All settings
+            </button>
+            {activeTab !== 'accounts' && <><h1>{activeItem?.label ?? 'Settings'}</h1>
+            <p>{activeItem?.description ?? ''}</p></>}
           </div>
-        ))}
-      </div>
 
-      {/* ─── Right Content ─── */}
-      <div className="settings-page__content flex-1 min-w-0 overflow-y-auto p-8 pt-32">
-        {activeTab !== 'accounts' && <><h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
-        <p className="text-sm text-white/60 mb-8">{activeItem?.description ?? ''}</p></>}
-
-        <div className="settings-page__content-inner space-y-6 max-w-6xl">
+          <div className="settings-page__content-inner space-y-6 max-w-6xl">
 
           {/* ═══════════════════════════════════════════════
               ACCOUNTS TAB
@@ -2146,11 +2022,12 @@ export default function SettingsPage() {
                   setup: <div className="space-y-3"><p className="text-sm text-white/60">Use a personal access token only if browser authorization is unavailable.</p><div className="flex gap-2"><input type="password" value={anilistTokenInput} onChange={(e) => setAnilistTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && connectAniListManual()} placeholder="Manual access token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={connectAniListManual} disabled={anilistLoading || !anilistTokenInput} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save token</button></div></div>,
                 },
                 {
-                  id: 'torbox', name: 'TorBox', iconService: 'torbox', group: 'streaming', description: 'Cached streaming',
-                  state: torBoxLoading ? 'syncing' : torBoxUser ? 'connected' : torBoxMessage && /error|failed|expired|invalid/i.test(torBoxMessage) ? 'needs-attention' : 'not-connected',
+                  id: 'torbox', name: 'TorBox', iconService: 'torbox', group: 'streaming', description: 'Resolves cached torrent links locally for playback',
+                  state: torBoxLoading ? 'syncing' : torBoxUser ? 'connected' : getTorBoxToken() || (torBoxMessage && /error|failed|expired|invalid|authenticate/i.test(torBoxMessage)) ? 'needs-attention' : 'not-connected',
+                  statusLabel: torBoxUser ? 'Connected' : undefined,
                   account: torBoxUser?.email, detail: torBoxUser ? (['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`) : undefined, message: torBoxMessage || undefined,
-                  primaryLabel: 'Connect TorBox', onPrimary: handleTorBoxConnect, showAdvancedLink: true, isAccount: true, onDisconnect: handleTorBoxDisconnect,
-                  setup: <div className="space-y-3">{torBoxDevice && <div className="rounded-xl border border-accent/20 bg-accent/[.06] p-3 text-sm text-white/70">Finish device authorization with code <strong className="font-mono text-white">{torBoxDevice.code}</strong>.</div>}<p className="text-sm text-white/60">Paste a personal TorBox API token instead of using device authorization.</p><div className="flex gap-2"><input type="password" value={torBoxTokenInput} onChange={(e) => setTorBoxTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleTorBoxManualConnect()} placeholder="TorBox API token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save</button></div></div>,
+                  primaryLabel: 'Connect with TorBox', onPrimary: handleTorBoxConnect, isAccount: false, onDisconnect: handleTorBoxDisconnect,
+                  setup: <div className="space-y-4">{torBoxDevice && <div className="rounded-xl border border-accent/20 bg-accent/[.06] p-4"><p className="text-xs font-bold uppercase tracking-[.14em] text-accent/80">Finish on TorBox</p><p className="mt-2 text-sm text-white/65">Open the TorBox device page and enter this code:</p><div className="mt-3 flex flex-wrap items-center justify-between gap-3"><strong className="font-mono text-2xl tracking-[.18em] text-white">{torBoxDevice.code}</strong><a href={torBoxDevice.verification_url || torBoxDevice.friendly_verification_url} target="_blank" rel="noreferrer" className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Open TorBox ↗</a></div><p className="mt-3 text-xs text-white/45">This code expires in 10 minutes. Aurales will finish connecting automatically.</p></div>}<div><p className="text-xs font-bold uppercase tracking-[.14em] text-white/40">Use an API key instead</p><p className="mt-2 text-sm text-white/55">Aurales stores the key in this profile and uses it to resolve cached torrent links locally before handing the playable URL to the player.</p><div className="mt-3 flex gap-2"><input type="password" value={torBoxTokenInput} onChange={(e) => setTorBoxTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleTorBoxManualConnect()} placeholder="TorBox API key" aria-label="TorBox API key" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Verify & save</button></div><a href="https://torbox.app/settings" target="_blank" rel="noreferrer" className="mt-3 inline-block text-xs font-semibold text-accent hover:underline">Find your API key in TorBox settings ↗</a></div></div>,
                 },
                 {
                   id: 'stremio', name: 'Stremio', iconService: 'stremio', group: 'ecosystem', wide: true, description: 'Library · Addons · History',
@@ -2582,13 +2459,6 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'artwork' && (
             <ArtworkSettingsSection />
-          )}
-
-          {/* ═══════════════════════════════════════════════
-              SEARCH TAB
-              ═══════════════════════════════════════════════ */}
-          {activeTab === 'search' && (
-            <SearchSettingsSection />
           )}
 
           {/* ═══════════════════════════════════════════════
@@ -3442,8 +3312,29 @@ export default function SettingsPage() {
                     ]}
                   />
                 </SettingRow>
-                <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
-                  <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
+              </SettingSection>
+
+              <SettingSection title="Skip Segments" description="Control buttons and automatic skipping independently. Segment times come from PublicMetaDB or IntroDB.">
+                <SettingRow label="Show Skip Intro button" description="Show a player button during recaps and intros.">
+                  <SettingToggle checked={store.showSkipIntroButton} onChange={store.setShowSkipIntroButton} />
+                </SettingRow>
+                <SettingRow label="Automatically skip intros" description="Jump past detected recaps and intros without waiting for input.">
+                  <SettingToggle checked={store.autoSkipIntro} onChange={store.setAutoSkipIntro} />
+                </SettingRow>
+                <SettingRow label="Show Skip Credits button" description="Show a player button when detected credits begin.">
+                  <SettingToggle checked={store.showSkipCreditsButton} onChange={store.setShowSkipCreditsButton} />
+                </SettingRow>
+                <SettingRow label="Automatically skip credits" description="Jump to the end of a detected credits segment.">
+                  <SettingToggle checked={store.autoSkipCredits} onChange={store.setAutoSkipCredits} />
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="Scrub Preview" description="Configure the thumbnail shown while seeking on the timeline.">
+                <SettingRow label="Full-file scrub previews" description="Generate preview thumbnails at any point in the stream. Turn off to keep timestamp-only seeking.">
+                  <SettingToggle checked={store.scrubThumbnailPreviews} onChange={store.setScrubThumbnailPreviews} />
+                </SettingRow>
+                <SettingRow label="Show loading indicator" description="Show a spinner and status while the player opens a stream.">
+                  <SettingToggle checked={store.showPlayerLoadingIndicator} onChange={store.setShowPlayerLoadingIndicator} />
                 </SettingRow>
               </SettingSection>
 
@@ -3470,7 +3361,17 @@ export default function SettingsPage() {
               </SettingSection>
 
               {/* Next episode prompt */}
-              <SettingSection title="Next Episode Prompt" description="Auto follows an ending or credits chapter when the stream provides one, with a near-end fallback.">
+              <SettingSection title="Next Episode" description="Show the next episode near an ending or credits chapter, with a near-end fallback.">
+                <SettingRow label="Automatically play next episode" description="Start the next episode when the Up Next countdown finishes. When off, the prompt waits for you.">
+                  <SettingToggle checked={store.autoPlayNextEpisode} onChange={store.setAutoPlayNextEpisode} />
+                </SettingRow>
+                <SettingRow label="Countdown duration" description="How long the Up Next prompt waits before starting playback.">
+                  <SettingSelect
+                    value={store.nextEpisodeCountdownSeconds}
+                    onChange={(value) => store.setNextEpisodeCountdownSeconds(Number(value) as 5 | 10 | 15 | 30)}
+                    options={[5, 10, 15, 30].map((seconds) => ({ value: seconds, label: `${seconds} seconds` }))}
+                  />
+                </SettingRow>
                 <div className="px-6 py-4">
                   <div className="flex flex-wrap gap-2">
                     {(['auto', 'off', '30s', '45s', '1m', '1.5m', '2m'] as const).map((opt) => {
@@ -3665,6 +3566,9 @@ export default function SettingsPage() {
                     onChange={(e) => wtStore.setSyncInterval(Number(e.target.value))}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
                   >
+                    <option value={0.5}>0.5 seconds</option>
+                    <option value={1}>1 second</option>
+                    <option value={2}>2 seconds</option>
                     <option value={3}>3 seconds</option>
                     <option value={5}>5 seconds</option>
                     <option value={10}>10 seconds</option>
@@ -3830,22 +3734,6 @@ export default function SettingsPage() {
 
               <ImageCacheSection onClearBackdropCache={handleClearBackdropCache} />
 
-              {/* Anime ID Mappings (collapsible) */}
-              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
-                <details className="group">
-                  <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">Anime ID Mappings</h3>
-                      <p className="text-sm text-white/60 mt-0.5">Local mapping data connecting anime across services.</p>
-                    </div>
-                    <svg className="w-4 h-4 text-white/60 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
-                  </summary>
-                  <div className="divide-y divide-white/[0.04]">
-                    <AnimeIdMappingsSection />
-                  </div>
-                </details>
-              </div>
-
               {/* Factory Reset */}
               <SettingSection title="Danger Zone" description="Irreversible actions. Proceed with caution.">
                 <SettingRow label="Factory Reset" description="Clear all local cache, tokens, logs, addons, and reset to defaults.">
@@ -3864,6 +3752,7 @@ export default function SettingsPage() {
 
         </div>
       </div>
+      )}
       {playerDebugTest && (
         <Suspense fallback={null}>
           <NativeMpvPlayer

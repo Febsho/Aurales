@@ -4,6 +4,8 @@ import { cacheGet, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
+export const TRAILERIO_MANIFEST_URL = 'https://trailerio.cc/manifest.json'
+const TRAILERIO_BASE_URL = new URL('.', TRAILERIO_MANIFEST_URL).toString().replace(/\/$/, '')
 
 export type TrailerSource = {
   source: 'trailerio' | 'tmdb' | 'youtube'
@@ -230,18 +232,38 @@ async function fetchYoutubeFallback(input: TrailerLookupInput): Promise<TrailerS
   return extractYoutubeFallback(html, input.title)
 }
 
+async function resolveTrailerioImdbId(input: TrailerLookupInput): Promise<string | null> {
+  const supplied = String(input.imdbId || '').trim()
+  if (/^tt\d+$/.test(supplied)) return supplied
+  if (!input.tmdbId) return null
+
+  const apiKey = getTmdbApiKey()
+  if (!apiKey) return null
+  const tmdbId = String(input.tmdbId).replace('tmdb-', '')
+  if (!/^\d+$/.test(tmdbId)) return null
+
+  const url = new URL(`${TMDB_BASE_URL}/${mediaTypeForTmdb(input.type)}/${tmdbId}/external_ids`)
+  url.searchParams.set('api_key', apiKey)
+  const response = await fetch(url.toString())
+  if (!response.ok) return null
+  const payload = await response.json() as { imdb_id?: unknown }
+  return typeof payload.imdb_id === 'string' && /^tt\d+$/.test(payload.imdb_id)
+    ? payload.imdb_id
+    : null
+}
+
 /**
  * Trailerio is a Stremio metadata addon that exposes publisher-hosted trailer
  * streams (Apple TV HLS and Plex/IVA MP4) for IMDb IDs. Prefer it over a
  * YouTube page so the hero player receives a real high-resolution stream.
  */
 async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource | null> {
-  const imdbId = String(input.imdbId || '').trim()
-  if (!/^tt\d+$/.test(imdbId)) return null
+  const imdbId = await resolveTrailerioImdbId(input)
+  if (!imdbId) return null
 
   const mediaType = mediaTypeForTmdb(input.type) === 'movie' ? 'movie' : 'series'
   const responseText = await invoke<string>('http_get_text', {
-    url: `https://trailerio.cc/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`,
+    url: `${TRAILERIO_BASE_URL}/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`,
   })
   const payload = JSON.parse(responseText) as TrailerioResponse
   const links = payload.meta?.links || []
@@ -273,9 +295,9 @@ async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource 
 export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const tmdbId = input.tmdbId ? String(input.tmdbId).replace('tmdb-', '') : ''
   const cacheKey = [
-    // v8 invalidates older loose YouTube matches, which could retain a trailer
-    // from another movie in the same franchise for seven days.
-    'trailer_source_v8',
+    // v9 promotes Trailerio's IMDb-addressed results above TMDB and YouTube
+    // and invalidates older cached sources selected in the opposite order.
+    'trailer_source_v9',
     mediaTypeForTmdb(input.type),
     tmdbId || 'no-tmdb',
     input.imdbId || 'no-imdb',
@@ -295,12 +317,12 @@ export async function getTrailerSource(input: TrailerLookupInput): Promise<Trail
   // concurrent Hero/poster requests, and persist only a successful source.
   const request = (async (): Promise<TrailerSource | null> => {
     try {
-      // Prefer an official YouTube trailer ID: HeroMpvTrailer resolves it through
-      // bundled yt-dlp and plays the 1080p streams in mpv without YouTube UI.
-      const tmdbTrailer = await fetchTmdbTrailer(input).catch(() => null)
-      const source = tmdbTrailer
+      // Trailerio is addressed by an exact IMDb ID and supplies publisher-hosted
+      // streams, avoiding both ambiguous title searches and YouTube startup UI.
+      const trailerio = await fetchTrailerio(input).catch(() => null)
+      const source = trailerio
+        || await fetchTmdbTrailer(input).catch(() => null)
         || await fetchYoutubeFallback(input).catch(() => null)
-        || await fetchTrailerio(input).catch(() => null)
       if (!source) return null
       await cacheSet(cacheKey, source, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
       return source

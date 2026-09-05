@@ -6,6 +6,7 @@ import type { PlaybackItem } from '../../services/simkl/playback'
 import { getPlayableStreamUrl } from '../../services/streams/playableUrl'
 import { recordReliabilityEvent, streamFingerprint } from '../../services/streams/reliabilityHistory'
 import { estimateRoomPosition, serverTimestampToLocal } from '../../services/watch-together/clockSync'
+import { createRoomStream } from '../../services/watch-together/streamMatcher'
 import { useNativePlayerSupported } from '../../hooks/useNativePlayerSupported'
 import NativeMpvPlayer from '../NativeMpvPlayer'
 
@@ -147,6 +148,9 @@ export default function WatchTogetherAutoPlayer() {
     recordReliabilityEvent(stream, 'failed_start')
     const next = useWatchTogetherStore.getState().advanceLocalSource()
     if (next) {
+      if (useWatchTogetherStore.getState().isHost) {
+        wsClient.selectStream(createRoomStream({ ...next.stream, addonId: next.addonId }))
+      }
       wsClient.sendLocalSourceStatus('starting')
       startTimeRef.current = wsClient.getBestKnownTime()
     } else {

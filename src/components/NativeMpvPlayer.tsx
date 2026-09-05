@@ -8,7 +8,7 @@ import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, isEmbeddedPlayerRunning, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
+import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -415,12 +415,14 @@ interface UpNextOverlayProps {
   nextEp: NextEpInfo
   showBackdrop?: string
   countdown: number
+  countdownDuration: number
+  autoplayEnabled: boolean
   isSearching: boolean
   onPlay: () => void
   onDismiss: () => void
 }
 
-function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, onDismiss }: UpNextOverlayProps) {
+function UpNextOverlay({ nextEp, showBackdrop, countdown, countdownDuration, autoplayEnabled, isSearching, onPlay, onDismiss }: UpNextOverlayProps) {
   const epCode = `S${String(nextEp.season).padStart(2, '0')}E${String(nextEp.episode).padStart(2, '0')}`
   const backdrop = highQualityTmdbImage(nextEp.stillPath || showBackdrop)
   const backdropStyle = backdrop
@@ -510,7 +512,7 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
                     <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
                     </svg>
-                    Playing in {countdown}…
+                    {autoplayEnabled ? `Playing in ${countdown}…` : 'Play next episode'}
                   </>
                 )}
               </button>
@@ -532,12 +534,14 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
 
       {/* Keep the countdown edge-to-edge. It must not inherit the content
           column's right inset, which only exists to leave room for PiP. */}
-      <div className="absolute inset-x-0 bottom-0 z-10 h-0.5 bg-white/15 overflow-hidden">
-        <div
-          className="h-full bg-white/70 transition-all duration-1000 ease-linear"
-          style={{ width: `${((15 - countdown) / 15) * 100}%` }}
-        />
-      </div>
+      {autoplayEnabled && (
+        <div className="absolute inset-x-0 bottom-0 z-10 h-0.5 bg-white/15 overflow-hidden">
+          <div
+            className="h-full bg-white/70 transition-all duration-1000 ease-linear"
+            style={{ width: `${((countdownDuration - countdown) / countdownDuration) * 100}%` }}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -934,6 +938,9 @@ function FullNativeMpvPlayer({
   const [playerDebugError, setPlayerDebugError] = useState('')
   const isDraggingRef = useRef(false)
   const thumbnailRequestRef = useRef(0)
+  const nativeThumbnailResolvedRef = useRef(0)
+  const chapterThumbnailWaitersRef = useRef<Map<string, (path: string | null) => void>>(new Map())
+  const timelinePreviewVisibleRef = useRef(false)
   const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 
@@ -1042,7 +1049,14 @@ function FullNativeMpvPlayer({
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
   const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
-  const autoSkipSegments = useAppStore((s) => s.autoSkipSegments)
+  const showSkipIntroButton = useAppStore((s) => s.showSkipIntroButton)
+  const autoSkipIntro = useAppStore((s) => s.autoSkipIntro)
+  const showSkipCreditsButton = useAppStore((s) => s.showSkipCreditsButton)
+  const autoSkipCredits = useAppStore((s) => s.autoSkipCredits)
+  const autoPlayNextEpisode = useAppStore((s) => s.autoPlayNextEpisode)
+  const nextEpisodeCountdownSeconds = useAppStore((s) => s.nextEpisodeCountdownSeconds)
+  const scrubThumbnailPreviews = useAppStore((s) => s.scrubThumbnailPreviews)
+  const showPlayerLoadingIndicator = useAppStore((s) => s.showPlayerLoadingIndicator)
   const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
   const openrouterModel = useAppStore((s) => s.openrouterModel)
   const subtitleTranslationLang = useAppStore((s) => s.subtitleTranslationLang)
@@ -1179,7 +1193,7 @@ function FullNativeMpvPlayer({
         progressRef.current.currentTime,
         { currentTime: time, isPlaying, lastUpdatedAt: sentAt },
         driftThreshold,
-        3000,
+        1000,
       )
 
       if (shouldSeek) {
@@ -1213,49 +1227,76 @@ function FullNativeMpvPlayer({
 
   // ── Timeline Preview ──────────────────────────────────────────────────────
   const hideTimelinePreview = useCallback(() => {
-    isDraggingRef.current = false
+    timelinePreviewVisibleRef.current = false
     thumbnailRequestRef.current += 1
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
     thumbnailTimerRef.current = null
     setTimelineThumbnail(null)
     setTimelinePreview((preview) => ({ ...preview, visible: false }))
+    clearPlayerThumbnail().catch(() => {})
   }, [])
 
   const updateTimelinePreviewAtPct = useCallback((leftPct: number) => {
     if (duration <= 0 || !Number.isFinite(duration)) return
     const pct = Math.max(0, Math.min(100, leftPct))
     const time = Math.max(0, Math.min(duration, (pct / 100) * duration))
+    timelinePreviewVisibleRef.current = true
     setTimelinePreview({ visible: true, leftPct: pct, time })
-    if (!isDraggingRef.current) return
+    if (!scrubThumbnailPreviews) {
+      setTimelineThumbnail(null)
+      return
+    }
 
     const requestId = ++thumbnailRequestRef.current
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
     thumbnailTimerRef.current = setTimeout(async () => {
       const streamUrl = currentStreamUrlRef.current || url
-      if (!streamUrl || !isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
+      if (!streamUrl || requestId !== thumbnailRequestRef.current) return
+
+      // Prefer ThumbFast inside the active libmpv instance. It already owns
+      // the opened debrid stream and therefore works when a second standalone
+      // ffmpeg process cannot seek that authenticated/redirected URL.
       try {
-        const result = await getOrQueueScrubThumbnail({
-          mediaId: getThumbnailMediaId(),
-          streamUrl,
-          duration,
-          time,
-          thumbnailInterval: 10,
-          thumbnailWidth: 480,
-          thumbnailHeight: 270,
-          quality: 82,
-          maxConcurrentFfmpegWorkers: 2,
-        })
-        if (!isDraggingRef.current || requestId !== thumbnailRequestRef.current) return
-        const path = result.exactPath || result.nearestPath
-        if (path) setTimelineThumbnail(convertFileSrc(path))
+        await requestPlayerThumbnail(time)
+        await new Promise((resolve) => window.setTimeout(resolve, 650))
+        if (requestId !== thumbnailRequestRef.current) return
+        if (nativeThumbnailResolvedRef.current === requestId) return
       } catch {
-        // The timestamp preview still works when the source cannot be thumbnailed.
+        // Process-mode mpv and unsupported sources use the cache fallback.
       }
-    }, 180)
-  }, [duration, getThumbnailMediaId, url])
+
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          const result = await getOrQueueScrubThumbnail({
+            mediaId: getThumbnailMediaId(),
+            streamUrl,
+            duration,
+            time,
+            thumbnailInterval: 10,
+            thumbnailWidth: 480,
+            thumbnailHeight: 270,
+            quality: 82,
+            maxConcurrentFfmpegWorkers: 2,
+          })
+          if (requestId !== thumbnailRequestRef.current) return
+          const path = result.exactPath || result.nearestPath
+          if (path) {
+            setTimelineThumbnail(convertFileSrc(path))
+            return
+          }
+        } catch {
+          // The timestamp preview still works when the source cannot be thumbnailed.
+          return
+        }
+        // The first request queues an ffmpeg extraction. Poll briefly so a
+        // first-time hover receives the result without requiring mouse movement.
+        await new Promise((resolve) => window.setTimeout(resolve, 250 + attempt * 100))
+        if (requestId !== thumbnailRequestRef.current) return
+      }
+    }, 450)
+  }, [duration, getThumbnailMediaId, scrubThumbnailPreviews, url])
 
   const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current) return
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return
     updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100)
@@ -1264,6 +1305,46 @@ function FullNativeMpvPlayer({
   useEffect(() => () => {
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
   }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    const chapterWaiters = chapterThumbnailWaitersRef.current
+    listen<{ path: string; width: number; height: number; time?: number; sessionId: string }>('player-thumbnail-ready', (event) => {
+      if (disposed || !scrubThumbnailPreviews) return
+      if (event.payload.time != null) {
+        const waiterKey = event.payload.time.toFixed(3)
+        const waiter = chapterWaiters.get(waiterKey)
+        if (waiter) {
+          chapterWaiters.delete(waiterKey)
+          waiter(event.payload.path)
+          return
+        }
+      }
+      if (!timelinePreviewVisibleRef.current) return
+      nativeThumbnailResolvedRef.current = thumbnailRequestRef.current
+      setTimelineThumbnail(event.payload.path)
+    }).then((cleanup) => {
+      if (disposed) cleanup()
+      else unlisten = cleanup
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      chapterWaiters.forEach((resolve) => resolve(null))
+      chapterWaiters.clear()
+      unlisten?.()
+    }
+  }, [scrubThumbnailPreviews])
+
+  useEffect(() => {
+    if (scrubThumbnailPreviews) return
+    thumbnailRequestRef.current += 1
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = null
+    timelinePreviewVisibleRef.current = false
+    setTimelineThumbnail(null)
+    clearPlayerThumbnail().catch(() => {})
+  }, [scrubThumbnailPreviews])
 
   useEffect(() => {
     if (!playerReady) return
@@ -1342,13 +1423,14 @@ function FullNativeMpvPlayer({
   }, [url])
 
   // Chapter tile thumbnails come from the same ffmpeg scrub-thumbnail cache
-  // as the timeline preview. Warm them as soon as chapters are known so the
-  // shared Windows/Linux UI does not open onto an empty strip.
+  // as the timeline preview. Generate them only when the strip is opened so
+  // background decoding never competes with normal playback or a real seek.
   useEffect(() => {
-    if (!playerReady || duration <= 0 || displayChapters.length === 0) return
+    if (!showChapters || !scrubThumbnailPreviews || !playerReady || duration <= 0 || displayChapters.length === 0) return
     const streamUrl = currentStreamUrlRef.current || url
     if (!streamUrl) return
     let cancelled = false
+    const chapterWaiters = chapterThumbnailWaitersRef.current
     const mediaId = getThumbnailMediaId()
     const initialTime = progressRef.current.currentTime
     const prioritizedChapters = [...displayChapters].sort((a, b) => {
@@ -1362,19 +1444,39 @@ function FullNativeMpvPlayer({
         if (cancelled) return
         const key = `${Math.round(chapter.time)}`
         if (chapterThumbsRef.current[key]) continue
+        const sampleTime = Math.min(chapter.time + 2, Math.max(duration - 5, 0))
         try {
+          const waiterKey = sampleTime.toFixed(3)
+          const nativePath = await new Promise<string | null>((resolve) => {
+            let settled = false
+            const finish = (path: string | null) => {
+              if (settled) return
+              settled = true
+              chapterWaiters.delete(waiterKey)
+              resolve(path)
+            }
+            chapterWaiters.set(waiterKey, finish)
+            requestPlayerThumbnail(sampleTime).catch(() => finish(null))
+            window.setTimeout(() => finish(null), 2200)
+          })
+          if (cancelled) return
+          if (nativePath) {
+            chapterThumbsRef.current = { ...chapterThumbsRef.current, [key]: nativePath }
+            setChapterThumbs(chapterThumbsRef.current)
+            continue
+          }
           const result = await getOrQueueScrubThumbnail({
             mediaId,
             streamUrl,
             duration,
             // Sample slightly into the chapter so tiles don't land on the
             // black fade frame at the cut.
-            time: Math.min(chapter.time + 2, Math.max(duration - 5, 0)),
+            time: sampleTime,
             thumbnailInterval: 10,
             thumbnailWidth: 480,
             thumbnailHeight: 270,
             quality: 82,
-            maxConcurrentFfmpegWorkers: 2,
+            maxConcurrentFfmpegWorkers: 1,
           })
           if (cancelled) return
           if (result.exactPath) {
@@ -1396,8 +1498,11 @@ function FullNativeMpvPlayer({
     return () => {
       cancelled = true
       if (chapterThumbRetryRef.current) clearTimeout(chapterThumbRetryRef.current)
+      chapterWaiters.forEach((resolve) => resolve(null))
+      chapterWaiters.clear()
+      clearPlayerThumbnail().catch(() => {})
     }
-  }, [playerReady, displayChapters, duration, url, getThumbnailMediaId])
+  }, [playerReady, displayChapters, duration, url, getThumbnailMediaId, scrubThumbnailPreviews, showChapters])
 
   // Center the active chapter tile when the strip opens.
   useEffect(() => {
@@ -1547,6 +1652,12 @@ function FullNativeMpvPlayer({
     return () => document.removeEventListener('pointerdown', dismissOnOutsidePress, true)
   }, [dismissPlayerOptions])
 
+  const wtBlockedNotice = useCallback(() => {
+    setError('Only the host can control playback in this room.')
+    setTimeout(() => setError((prev) => prev === 'Only the host can control playback in this room.' ? '' : prev), 2500)
+    showControls()
+  }, [showControls])
+
   const command = useCallback((name: string, args: unknown[] = []) => {
     sendPlayerCommand(name, args).catch((e) => {
       const message = String(e)
@@ -1556,6 +1667,42 @@ function FullNativeMpvPlayer({
       }
     })
   }, [])
+
+  const commitTimelineSeek = useCallback((percentage: number) => {
+    const pct = Math.max(0, Math.min(100, percentage))
+    isDraggingRef.current = false
+    setIsDragging(false)
+    hideTimelinePreview()
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
+    const targetTime = duration > 0 ? (pct / 100) * duration : 0
+    progressRef.current.currentTime = targetTime
+    setCurrentTime(targetTime)
+    command('seek', [pct, 'absolute-percent+keyframes'])
+    if (duration > 0) sendWatchTogetherSeek(targetTime)
+  }, [command, duration, hideTimelinePreview, sendWatchTogetherSeek, wtBlockedNotice])
+
+  // Pointer capture is normally enough, but WebKit can still omit the range
+  // input's pointerup when native video/window layers change under the cursor.
+  // A window-level release guard guarantees the drag state is always cleared.
+  useEffect(() => {
+    const finishDrag = () => {
+      if (isDraggingRef.current) commitTimelineSeek(draggingProgressRef.current)
+    }
+    const cancelDrag = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+      setIsDragging(false)
+      hideTimelinePreview()
+    }
+    window.addEventListener('pointerup', finishDrag)
+    window.addEventListener('pointercancel', cancelDrag)
+    window.addEventListener('blur', cancelDrag)
+    return () => {
+      window.removeEventListener('pointerup', finishDrag)
+      window.removeEventListener('pointercancel', cancelDrag)
+      window.removeEventListener('blur', cancelDrag)
+    }
+  }, [commitTimelineSeek, hideTimelinePreview])
 
   // ─ Subtitle loading ───────────────────────────────────────────────────────
   const loadAddonSubtitles = useCallback(async (loadAll = false) => {
@@ -2852,7 +2999,7 @@ function FullNativeMpvPlayer({
           ) {
             upNextTriggeredRef.current = true
             setShowUpNext(true)
-            setUpNextCountdown(15)
+            setUpNextCountdown(nextEpisodeCountdownSeconds)
           }
 
           // Warm up the next episode ~90s before the end: preload its addon
@@ -2904,7 +3051,8 @@ function FullNativeMpvPlayer({
           setSkipType((previous) => previous === foundType ? previous : foundType)
           // Auto-skip is disabled for guests without control rights — the
           // local jump would be reverted by drift correction anyway.
-          if (autoSkipSegments && found && foundType && !wtControlBlocked()) {
+          const shouldAutoSkip = foundType === 'credits' ? autoSkipCredits : autoSkipIntro
+          if (shouldAutoSkip && found && foundType && !wtControlBlocked()) {
             const endMs = foundType === 'intro'
               ? found.intro_end_ms
               : foundType === 'recap'
@@ -2936,7 +3084,7 @@ function FullNativeMpvPlayer({
       cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
+  }, [skips, autoSkipIntro, autoSkipCredits, nextEpisodeCountdownSeconds, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -3222,7 +3370,11 @@ function FullNativeMpvPlayer({
   }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout])
 
   useEffect(() => {
-    if (!showUpNext) { setUpNextCountdown(15); return }
+    if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
+    if (!autoPlayNextEpisode) {
+      setUpNextCountdown(nextEpisodeCountdownSeconds)
+      return
+    }
     const interval = setInterval(() => {
       setUpNextCountdown((prev) => {
         if (prev <= 1) {
@@ -3234,7 +3386,7 @@ function FullNativeMpvPlayer({
       })
     }, 1000)
     return () => clearInterval(interval)
-  }, [showUpNext, handleAutoplay])
+  }, [showUpNext, handleAutoplay, autoPlayNextEpisode, nextEpisodeCountdownSeconds])
 
   // ─ Playback controls ──────────────────────────────────────────────────────
   const close = async () => {
@@ -3312,12 +3464,6 @@ function FullNativeMpvPlayer({
     // the relaunch also fails to produce a video frame.
     triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0))
   }, [triggerRestart, startTime])
-
-  const wtBlockedNotice = useCallback(() => {
-    setError('Only the host can control playback in this room.')
-    setTimeout(() => setError((prev) => prev === 'Only the host can control playback in this room.' ? '' : prev), 2500)
-    showControls()
-  }, [showControls])
 
   const togglePlay = () => {
     if (!playerRunning) {
@@ -3559,7 +3705,7 @@ function FullNativeMpvPlayer({
       style={{ background: playerReady ? 'rgba(0,0,0,0.05)' : '#000' }}
       onMouseMove={showControls}
     >
-      {!playerReady && !error && (
+      {!playerReady && !error && showPlayerLoadingIndicator && (
         <div className="absolute inset-0 z-[3] flex items-center justify-center bg-black pointer-events-none">
           <div className="flex flex-col items-center gap-4">
             <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white" />
@@ -3700,6 +3846,9 @@ function FullNativeMpvPlayer({
 
             <div className="player-controls__secondary flex flex-shrink-0 items-center gap-2">
               {activeSkip && (
+                (skipType === 'credits' && showSkipCreditsButton)
+                || ((skipType === 'intro' || skipType === 'recap') && showSkipIntroButton)
+              ) && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
@@ -4035,66 +4184,61 @@ function FullNativeMpvPlayer({
                 max={100}
                 step={0.05}
                 value={displayProgressPct}
-                onMouseDown={(e) => {
+                aria-label="Playback position"
+                aria-valuetext={duration > 0 ? `${formatTime(displayCurrentTime)} of ${formatTime(duration)}` : 'Loading'}
+                onPointerDown={(e) => {
+                  if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return
                   const rect = e.currentTarget.getBoundingClientRect()
                   const clickPct = rect.width > 0 ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)) : progressPct
+                  e.currentTarget.setPointerCapture(e.pointerId)
                   isDraggingRef.current = true
                   setIsDragging(true)
                   draggingProgressRef.current = clickPct
                   setDraggingProgress(clickPct)
                   updateTimelinePreviewAtPct(clickPct)
                 }}
-                onMouseUp={(e) => {
-                  // Seek to the exact release position. Relying on draggingProgressRef
-                  // is unreliable: the native range's onChange can overwrite it with a
-                  // stepped value on a plain click, which broke backward-clicks.
+                onPointerMove={(e) => {
+                  if (!isDraggingRef.current) return
+                  if (e.pointerType === 'mouse' && e.buttons === 0) {
+                    commitTimelineSeek(draggingProgressRef.current)
+                    return
+                  }
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const movePct = rect.width > 0
+                    ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
+                    : draggingProgressRef.current
+                  draggingProgressRef.current = movePct
+                  setDraggingProgress(movePct)
+                  updateTimelinePreviewAtPct(movePct)
+                }}
+                onPointerUp={(e) => {
+                  if (!isDraggingRef.current) return
                   const rect = e.currentTarget.getBoundingClientRect()
                   const upPct = rect.width > 0
                     ? Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
                     : draggingProgressRef.current
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
                   draggingProgressRef.current = upPct
+                  commitTimelineSeek(upPct)
+                }}
+                onPointerCancel={() => {
+                  isDraggingRef.current = false
                   setIsDragging(false)
                   hideTimelinePreview()
-                  if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  const targetTime = duration > 0 ? (upPct / 100) * duration : 0
-                  progressRef.current.currentTime = targetTime
-                  setCurrentTime(targetTime)
-                  command('seek', [upPct, 'absolute-percent+keyframes'])
-                  if (duration > 0) sendWatchTogetherSeek(targetTime)
-                }}
-                onTouchStart={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect()
-                  const touch = e.touches[0]
-                  const clickPct = rect.width > 0 && touch ? Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100)) : progressPct
-                  isDraggingRef.current = true
-                  setIsDragging(true)
-                  draggingProgressRef.current = clickPct
-                  setDraggingProgress(clickPct)
-                  updateTimelinePreviewAtPct(clickPct)
-                }}
-                onTouchEnd={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect()
-                  const touch = e.changedTouches[0]
-                  const upPct = rect.width > 0 && touch
-                    ? Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100))
-                    : draggingProgressRef.current
-                  draggingProgressRef.current = upPct
-                  setIsDragging(false)
-                  hideTimelinePreview()
-                  if (wtControlBlocked()) { wtBlockedNotice(); return }
-                  const targetTime = duration > 0 ? (upPct / 100) * duration : 0
-                  progressRef.current.currentTime = targetTime
-                  setCurrentTime(targetTime)
-                  command('seek', [upPct, 'absolute-percent+keyframes'])
-                  if (duration > 0) sendWatchTogetherSeek(targetTime)
                 }}
                 onChange={(e) => {
                   const val = Number(e.target.value)
                   draggingProgressRef.current = val
                   setDraggingProgress(val)
-                  if (isDraggingRef.current) updateTimelinePreviewAtPct(val)
+                  if (isDraggingRef.current) {
+                    updateTimelinePreviewAtPct(val)
+                  } else {
+                    // Native range keyboard controls do not emit pointer events.
+                    // Commit them immediately so arrow/Page/Home/End seeking works.
+                    commitTimelineSeek(val)
+                  }
                 }}
-                className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
+                className="absolute inset-0 w-full touch-none opacity-0 cursor-pointer h-6 -top-2.5"
               />
             </div>
           </div>
@@ -4196,9 +4340,10 @@ function FullNativeMpvPlayer({
                         onClick={(event) => {
                           event.stopPropagation()
                           if (wtControlBlocked()) { wtBlockedNotice(); return }
+                          setShowChapters(false)
                           progressRef.current.currentTime = chapter.time
                           setCurrentTime(chapter.time)
-                          command('seek', [chapter.time, 'absolute+exact'])
+                          command('seek', [chapter.time, 'absolute+keyframes'])
                           sendWatchTogetherSeek(chapter.time)
                         }}
                         className="group/chapter flex-none rounded-lg text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-white/70"
@@ -4271,6 +4416,8 @@ function FullNativeMpvPlayer({
           nextEp={nextEpInfo}
           showBackdrop={currentBackdropRef.current}
           countdown={upNextCountdown}
+          countdownDuration={nextEpisodeCountdownSeconds}
+          autoplayEnabled={autoPlayNextEpisode}
           isSearching={isAutoSearching}
           onPlay={handleAutoplay}
           onDismiss={() => {

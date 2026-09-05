@@ -12,6 +12,11 @@ import { cancelRequestGroup } from '../services/network/requestCoordinator'
 
 const SEARCH_HISTORY_KEY = 'orynt_search_history'
 const MAX_HISTORY = 10
+const DEFAULT_SEARCH_ENGINES = {
+  movie: 'tmdb' as SearchEngineId,
+  series: 'tvdb' as SearchEngineId,
+  anime: 'mal' as SearchEngineId,
+}
 
 function loadSearchHistory(): string[] {
   try {
@@ -147,8 +152,9 @@ function rankResults(items: SearchResult[], query: string): SearchResult[] {
 }
 
 function isAnime(item: SearchResult): boolean {
+  if (item.isAnime) return true
   if (item.provider === 'mal') return true
-  if (item.malId || item.anilistId) return true
+  if (item.provider === 'anilist' || item.malId || item.anilistId) return true
   return false
 }
 
@@ -191,14 +197,6 @@ export default function SearchPage() {
   const [searchHistory, setSearchHistory] = useState(loadSearchHistory)
   const [typeFilter, setTypeFilter] = useState<'all' | 'movies' | 'series' | 'anime' | 'people'>('all')
   const addons = useAppStore((state) => state.addons)
-  const movieSearchEngine = useAppStore((s) => s.movieSearchEngine) as SearchEngineId
-  const seriesSearchEngine = useAppStore((s) => s.seriesSearchEngine) as SearchEngineId
-  const animeSeriesSearchEngine = useAppStore((s) => s.animeSeriesSearchEngine) as SearchEngineId
-  const animeMovieSearchEngine = useAppStore((s) => s.animeMovieSearchEngine) as SearchEngineId
-  const movieSearchEnabled = useAppStore((s) => s.movieSearchEnabled)
-  const seriesSearchEnabled = useAppStore((s) => s.seriesSearchEnabled)
-  const animeSeriesSearchEnabled = useAppStore((s) => s.animeSeriesSearchEnabled)
-  const animeMovieSearchEnabled = useAppStore((s) => s.animeMovieSearchEnabled)
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const requestIdRef = useRef(0)
@@ -254,24 +252,16 @@ export default function SearchPage() {
       .catch(() => {})
     pending.push(peopleSearch)
 
-    if (movieSearchEnabled) {
-      fireEngine(movieSearchEngine, 'movie')
-      usedEngines.add(movieSearchEngine)
-    }
+    fireEngine(DEFAULT_SEARCH_ENGINES.movie, 'movie')
+    usedEngines.add(DEFAULT_SEARCH_ENGINES.movie)
 
-    if (seriesSearchEnabled) {
-      fireEngine(seriesSearchEngine, 'series')
-      usedEngines.add(seriesSearchEngine)
-    }
+    fireEngine(DEFAULT_SEARCH_ENGINES.series, 'series')
+    usedEngines.add(DEFAULT_SEARCH_ENGINES.series)
 
-    if (animeSeriesSearchEnabled && !usedEngines.has(animeSeriesSearchEngine)) {
-      fireEngine(animeSeriesSearchEngine, 'series')
-      usedEngines.add(animeSeriesSearchEngine)
-    }
-
-    if (animeMovieSearchEnabled && !usedEngines.has(animeMovieSearchEngine)) {
-      fireEngine(animeMovieSearchEngine, 'movie')
-      usedEngines.add(animeMovieSearchEngine)
+    // Jikan's anime search returns both anime movies and series in one result
+    // set, so one request keeps the default search fast without dropping either.
+    if (!usedEngines.has(DEFAULT_SEARCH_ENGINES.anime)) {
+      fireEngine(DEFAULT_SEARCH_ENGINES.anime, 'series')
     }
 
     // Addon searches
@@ -318,7 +308,7 @@ export default function SearchPage() {
     } finally {
       if (requestId === requestIdRef.current) setLoading(false)
     }
-  }, [addons, movieSearchEngine, seriesSearchEngine, animeSeriesSearchEngine, animeMovieSearchEngine, movieSearchEnabled, seriesSearchEnabled, animeSeriesSearchEnabled, animeMovieSearchEnabled])
+  }, [addons])
 
   useEffect(() => {
     requestIdRef.current += 1
@@ -386,20 +376,20 @@ export default function SearchPage() {
 
       {loading && totalResults === 0 && (
         <div className="search-loading">
-          <PeopleSkeleton />
           <MediaRowSkeleton title="Movies and shows" />
+          <PeopleSkeleton />
         </div>
       )}
 
       {!loading || totalResults > 0 ? (
-        <div className="search-results space-y-7">
+        <div className="search-results">
+          {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="poster" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="poster" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="poster" disableArtOverride={false} cinematicExpand={false} />}
+          {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="poster" disableArtOverride={false} cinematicExpand={false} />}
           {(typeFilter === 'all' || typeFilter === 'people') && people.length > 0 && (
             <PeopleResults people={typeFilter === 'people' ? people : people.slice(0, 10)} />
           )}
-          {(typeFilter === 'all' || typeFilter === 'movies') && movies.length > 0 && <MediaRow title="Movies" items={movies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'series') && series.length > 0 && <MediaRow title="Series" items={series} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'anime') && animeMovies.length > 0 && <MediaRow title="Anime Movies" items={animeMovies} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
-          {(typeFilter === 'all' || typeFilter === 'anime') && animeSeries.length > 0 && <MediaRow title="Anime Series" items={animeSeries} layout="feature" disableArtOverride={false} cinematicExpand={false} />}
         </div>
       ) : null}
 
@@ -495,11 +485,8 @@ function PeopleResults({ people }: { people: TmdbPersonSearchResult[] }) {
               )}
             </div>
             <div className="person-search-card__body">
-              <span className="person-search-card__role">{person.knownForDepartment || 'Cast & crew'}</span>
               <h3>{person.name}</h3>
-              <p>{person.knownFor.map((credit) => credit.title).join(' · ') || 'View filmography'}</p>
             </div>
-            <span className="person-search-card__arrow" aria-hidden="true">→</span>
           </button>
         ))}
       </div>

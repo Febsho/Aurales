@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useAppStore } from '../stores/appStore'
 import { getAppVersion } from '../services/updater'
 import { prefetchRoute } from '../services/routePrefetch'
@@ -10,25 +11,24 @@ const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
   { path: '/search', label: 'Search', icon: SearchIcon },
   { path: '/discover', label: 'Discover', icon: CompassIcon },
-  { path: '/upcoming', label: 'Upcoming', icon: CalendarIcon },
   { path: '/watch-together', label: 'Watch Together', icon: TogetherIcon },
   { path: '/collections', label: 'Library', icon: LibraryIcon },
   { path: '/settings', label: 'Settings', icon: SettingsIcon },
   ...(import.meta.env.DEV ? [{ path: '/developer', label: 'Developer', icon: ToolIcon }] : []),
 ]
 
-interface SidebarProps {
-  onOverlayVisibleChange?: (visible: boolean) => void
-}
-
-export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
+export default function Sidebar() {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [switchingProfileId, setSwitchingProfileId] = useState<string | null>(null)
+  const [profileMenuPosition, setProfileMenuPosition] = useState({ left: 0, bottom: 0 })
   const [, setProfileVersion] = useState(0)
   const location = useLocation()
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileTriggerRef = useRef<HTMLButtonElement>(null)
+  const profileMenuRef = useRef<HTMLDivElement>(null)
 
   const handleMouseEnter = useCallback(() => {
     if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
@@ -36,63 +36,103 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
   }, [])
 
   const handleMouseLeave = useCallback(() => {
+    if (profileMenuOpen) return
     if (hideTimer.current) clearTimeout(hideTimer.current)
     hideTimer.current = setTimeout(() => setHovered(false), 400)
-  }, [])
+  }, [profileMenuOpen])
 
   useEffect(() => {
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
   }, [])
   useEffect(() => { const refresh = () => setProfileVersion((value) => value + 1); window.addEventListener(PROFILE_CHANGED_EVENT, refresh); return () => window.removeEventListener(PROFILE_CHANGED_EVENT, refresh) }, [])
-  const activeProfile = getActiveProfile()
 
-  // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
-  const pinned = !autoHide
-  const visible = pinned || hovered
+  const updateProfileMenuPosition = useCallback(() => {
+    const rect = profileTriggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const menuWidth = 272
+    setProfileMenuPosition({
+      left: Math.min(rect.right + 12, window.innerWidth - menuWidth - 12),
+      bottom: Math.max(12, window.innerHeight - rect.bottom),
+    })
+  }, [])
 
   useEffect(() => {
-    onOverlayVisibleChange?.(!pinned && visible)
-  }, [onOverlayVisibleChange, pinned, visible])
+    if (!profileMenuOpen) return
+    setHovered(true)
+    updateProfileMenuPosition()
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (profileTriggerRef.current?.contains(target) || profileMenuRef.current?.contains(target)) return
+      setProfileMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setProfileMenuOpen(false)
+      profileTriggerRef.current?.focus()
+    }
+    window.addEventListener('resize', updateProfileMenuPosition)
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('resize', updateProfileMenuPosition)
+      document.removeEventListener('pointerdown', closeOnOutsidePress)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [profileMenuOpen, updateProfileMenuPosition])
+
+  const switchProfile = useCallback(async (profileId: string) => {
+    setSwitchingProfileId(profileId)
+    const switched = await setActiveProfile(profileId)
+    if (!switched) setSwitchingProfileId(null)
+  }, [])
+  const activeProfile = getActiveProfile()
+
+  // Pinned = always visible, shifts content. Auto-hide keeps an active-page
+  // pill on screen, then opens a floating menu over the page.
+  const pinned = !autoHide
+  const visible = pinned || hovered
+  const activeNavItem = navItems.find((item) => item.exact
+    ? location.pathname === item.path
+    : location.pathname.startsWith(item.path)) || navItems[0]
+  const ActiveNavIcon = activeNavItem.icon
 
   return (
     <>
-      {/* Invisible hit zone on left edge — only needed in auto-hide mode */}
-      {autoHide && (
-        <>
-          <div
-            className="absolute top-0 left-0 bottom-0 w-5 z-40"
-            onMouseEnter={handleMouseEnter}
-            onMouseMove={handleMouseEnter}
-          />
-          {!visible && (
-            <div
-              className="absolute left-0 top-1/2 z-30 h-44 w-1.5 -translate-y-1/2 rounded-r-full bg-white/70 shadow-[0_0_18px_rgba(255,255,255,0.55)] pointer-events-none"
-              aria-hidden="true"
-            />
-          )}
-        </>
-      )}
       <aside
         onMouseEnter={() => !pinned && handleMouseEnter()}
         onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
-          'app-sidebar flex flex-col',
-          'transition-all duration-300 ease-expo',
+          'app-sidebar app-sidebar--glass flex flex-col',
           pinned
-            ? 'relative z-30 w-52 flex-shrink-0 bg-[rgba(15,17,15,0.94)] backdrop-blur-2xl saturate-150 border-r border-white/[0.12] shadow-[8px_0_40px_rgba(0,0,0,0.42)]'
+            ? 'relative z-30 w-52 flex-shrink-0 border-r border-white/[0.18] shadow-[8px_0_40px_rgba(0,0,0,0.32)]'
             : [
-                // z-40 so the floating sidebar sits above the fixed hero shelf
-                // (z-30) instead of the posters bleeding over it.
-                'absolute top-3 bottom-3 z-40 rounded-2xl overflow-hidden',
+                // Apple TV-style navigation: a compact active-page pill at the
+                // top left opens into an overlay menu without shifting content.
+                'app-sidebar--floating absolute top-5 left-5 z-40 rounded-2xl overflow-hidden',
                 visible
-                  ? 'left-3 w-52 bg-[rgba(15,17,15,0.96)] backdrop-blur-2xl saturate-150 border border-white/[0.14] shadow-[0_8px_40px_rgba(0,0,0,0.58)] opacity-100'
-                  : '-left-56 w-52 opacity-0 pointer-events-none',
+                  ? 'app-sidebar--liquid w-52 border border-white/[0.36] shadow-[0_18px_52px_rgba(0,0,0,0.30)]'
+                  : 'app-sidebar--liquid h-11 w-auto rounded-full border border-white/[0.36] shadow-[0_12px_34px_rgba(0,0,0,0.24)]',
               ].join(' '),
         ].join(' ')}
       >
       {/* Logo + pin toggle */}
-      <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
-        <div className="app-sidebar__brand flex items-center gap-2.5">
+      {!pinned && !visible ? (
+        <button
+          type="button"
+          onClick={handleMouseEnter}
+          onFocus={handleMouseEnter}
+          className="flex h-11 items-center gap-2.5 px-3.5 text-sm font-bold tracking-wide text-white/95 transition-all duration-200 hover:bg-white/[0.14] hover:text-white focus:outline-none"
+          aria-label={`Open navigation; current page ${activeNavItem.label}`}
+          aria-expanded={false}
+        >
+          <svg className="h-4 w-4 text-white/65" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+            <path d="m14 6-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <ActiveNavIcon className="h-[18px] w-[18px]" filled />
+          <span>{activeNavItem.label}</span>
+        </button>
+      ) : pinned ? <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
+        <div className={`app-sidebar__brand flex items-center ${!pinned && !visible ? 'gap-0' : 'gap-2.5'}`}>
           <img
             src="/app-logo.png?v=3"
             alt=""
@@ -116,10 +156,10 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
             </svg>
           )}
         </button>
-      </div>
+      </div> : null}
 
       {/* Nav items */}
-      <nav className="app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 mt-1">
+      <nav className={`app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 ${!pinned && !visible ? 'hidden' : pinned ? 'mt-1' : 'my-2'}`}>
         {navItems.map((item) => {
           const isActive = item.exact
             ? location.pathname === item.path
@@ -130,12 +170,13 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
               key={item.path}
               to={item.path}
               onMouseEnter={() => prefetchRoute(item.path)}
-              onFocus={() => prefetchRoute(item.path)}
+              onFocus={() => { prefetchRoute(item.path); if (!pinned) setHovered(true) }}
+              onClick={() => { if (!pinned) setHovered(false) }}
               className={[
                 'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5',
                 isActive
-                  ? 'bg-white/[0.12] text-white'
-                  : 'text-white/70 hover:text-white hover:bg-white/[0.08]',
+                  ? pinned ? 'bg-white/[0.12] text-white' : 'bg-white/[0.24] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.30),0_5px_16px_rgba(0,0,0,0.16)]'
+                  : 'text-white/75 hover:text-white hover:bg-white/[0.12]',
               ].join(' ')}
             >
               <item.icon
@@ -154,15 +195,36 @@ export default function Sidebar({ onOverlayVisibleChange }: SidebarProps) {
       </nav>
 
       {/* Footer */}
-      <div className="app-sidebar__footer p-3 border-t border-white/[0.04]">
+      {visible && <div className={`app-sidebar__footer p-3 border-t border-white/[0.10] ${!pinned ? 'bg-black/[0.08]' : 'border-white/[0.04]'}`}>
         <div className="sidebar-profile-switcher mb-3" data-open={profileMenuOpen || undefined}>
-          <button onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} className="sidebar-profile-trigger">
-            <ProfileAvatar {...activeProfile} size="sm" className="!h-8 !w-8 !rounded-full" /><span className="sidebar-profile-name">{activeProfile.name}</span><svg className="sidebar-profile-chevron h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          <button ref={profileTriggerRef} onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} className="sidebar-profile-trigger">
+            <ProfileAvatar {...activeProfile} size="sm" className="!h-9 !w-9 !rounded-xl" />
+            <span className="sidebar-profile-trigger__copy"><span>{activeProfile.name}</span><small>Switch profile</small></span>
+            <svg className="sidebar-profile-chevron h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
-          {profileMenuOpen && <div role="menu" className="sidebar-profile-menu">{getProfiles().map((profile) => <button role="menuitem" key={profile.id} onClick={() => { void setActiveProfile(profile.id); setProfileMenuOpen(false); setProfileVersion((value) => value + 1) }} className="sidebar-profile-menu-item"><ProfileAvatar {...profile} size="sm" /><span className="min-w-0 flex-1 truncate">{profile.name}</span>{profile.id === activeProfile.id && <span>✓</span>}</button>)}<NavLink to="/settings?tab=profiles" onClick={() => setProfileMenuOpen(false)} className="sidebar-profile-manage">Manage Profiles</NavLink></div>}
+          {profileMenuOpen && createPortal(
+            <div ref={profileMenuRef} role="menu" aria-label="Profiles" className="sidebar-profile-menu" style={{ left: profileMenuPosition.left, bottom: profileMenuPosition.bottom }}>
+              <div className="sidebar-profile-menu__label">Profiles</div>
+              {getProfiles().map((profile) => {
+                const current = profile.id === activeProfile.id
+                const switching = profile.id === switchingProfileId
+                return <button role="menuitem" key={profile.id} disabled={switchingProfileId !== null} onClick={() => { if (current) { setProfileMenuOpen(false); return }; void switchProfile(profile.id) }} className="sidebar-profile-menu-item">
+                  <ProfileAvatar {...profile} size="sm" className="!h-9 !w-9 !rounded-xl" />
+                  <span className="sidebar-profile-menu-item__copy"><span>{profile.name}</span><small>{switching ? 'Switching…' : current ? 'Current profile' : 'Switch profile'}</small></span>
+                  {current ? <span className="sidebar-profile-menu-item__check">✓</span> : <span className="sidebar-profile-menu-item__chevron">›</span>}
+                </button>
+              })}
+              <NavLink role="menuitem" to="/settings?tab=profiles" onClick={() => setProfileMenuOpen(false)} className="sidebar-profile-manage">
+                <span className="sidebar-profile-manage__icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg></span>
+                <span className="sidebar-profile-menu-item__copy"><span>Manage Profiles</span><small>Add, edit, or remove profiles</small></span>
+                <span className="sidebar-profile-menu-item__chevron">›</span>
+              </NavLink>
+            </div>,
+            document.body,
+          )}
         </div>
         <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
-      </div>
+      </div>}
 
     </aside>
     </>
@@ -177,10 +239,6 @@ function TogetherIcon({ className, filled }: { className?: string; filled?: bool
       <path d="M7 21h10" />
     </svg>
   )
-}
-
-function CalendarIcon({ className, filled }: { className?: string; filled?: boolean }) {
-  return <svg className={className} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" /></svg>
 }
 
 function HomeIcon({ className, filled }: { className?: string; filled?: boolean }) {

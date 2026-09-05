@@ -38,6 +38,14 @@ function isDiagnosticStream(stream: AddonStream): boolean {
   return /scrape summary|removal reasons|status\s*:\s*success|successfully fetched streams/i.test(text)
 }
 
+function sourceIdentity(stream: AddonStream): string | null {
+  if (stream.infoHash) return `torrent:${stream.infoHash}:${stream.fileIdx ?? 0}`
+  const url = getPlayableStreamUrl(stream) ?? stream.externalUrl
+  if (url) return `url:${url}`
+  if (stream.ytId) return `youtube:${stream.ytId}`
+  return null
+}
+
 interface StreamSelectorProps {
   open: boolean
   onClose: () => void
@@ -134,7 +142,10 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const [smartMode, setSmartMode] = useState<SmartPlayMode>(() => (localStorage.getItem('aurales_smart_play_mode') as SmartPlayMode) || 'best')
   const [smartStatus, setSmartStatus] = useState('')
   const [sourceDiagnostics, setSourceDiagnostics] = useState<Record<string, SourceDiagnostic>>({})
-  const [selectedProvider, setSelectedProvider] = useState<string>('all')
+  // Opening a mixed list makes identical releases from several addons look
+  // like duplicates. Start with one provider; "All sources" remains an
+  // explicit option for users who want to compare every result.
+  const [selectedProvider, setSelectedProvider] = useState<string>('auto')
   const [refreshRevision, setRefreshRevision] = useState(0)
   const smartQueueRef = useRef<SmartFallbackQueue<AddonStream> | null>(null)
   const smartActiveRef = useRef(false)
@@ -436,7 +447,14 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
 
   const filteredStreams = useMemo(
-    () => streams.filter((stream) => (Boolean(getPlayableStreamUrl(stream)) || isTorBoxCachedStream(stream)) && !isDiagnosticStream(stream)),
+    () => streams.filter((stream) => (Boolean(getPlayableStreamUrl(stream)) || isTorBoxCachedStream(stream)) && !isDiagnosticStream(stream))
+      // Addons occasionally return the same source more than once. Preserve
+      // sources from different addons for comparison, but never render an
+      // identical source twice from the same provider.
+      .filter((stream, _index, candidates) => {
+        const identity = sourceIdentity(stream)
+        return !identity || candidates.findIndex((candidate) => candidate.addonId === stream.addonId && sourceIdentity(candidate) === identity) === _index
+      }),
     [streams],
   )
   const torBoxChecking = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
@@ -445,19 +463,27 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     filteredStreams.map((stream) => [stream.addonId, stream.addonName] as const)
   ).entries()), [filteredStreams])
 
-  const providerStreams = useMemo(() => selectedProvider === 'all'
-    ? filteredStreams
-    : filteredStreams.filter((stream) => stream.addonId === selectedProvider), [filteredStreams, selectedProvider])
+  const activeProvider = selectedProvider === 'auto'
+    ? providerOptions[0]?.[0] ?? 'all'
+    : selectedProvider
 
-  const visibleStreams = useMemo(() => selectedProvider === 'all'
+  const providerStreams = useMemo(() => activeProvider === 'all'
     ? filteredStreams
-    : filteredStreams.filter((stream) => stream.addonId === selectedProvider), [filteredStreams, selectedProvider])
+    : filteredStreams.filter((stream) => stream.addonId === activeProvider), [filteredStreams, activeProvider])
+
+  const visibleStreams = useMemo(() => activeProvider === 'all'
+    ? filteredStreams
+    : filteredStreams.filter((stream) => stream.addonId === activeProvider), [filteredStreams, activeProvider])
 
   useEffect(() => {
-    if (selectedProvider !== 'all' && !providerOptions.some(([id]) => id === selectedProvider)) {
-      setSelectedProvider('all')
+    if (selectedProvider !== 'auto' && selectedProvider !== 'all' && !providerOptions.some(([id]) => id === selectedProvider)) {
+      setSelectedProvider('auto')
     }
   }, [providerOptions, selectedProvider])
+
+  useEffect(() => {
+    if (open) setSelectedProvider('auto')
+  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
 
   // Memoize merged subtitles â€” must be before any early return (rules of hooks).
   // Keeps the array reference stable so NativeMpvPlayer's loadAddonSubtitles
@@ -817,7 +843,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
               <div className="min-w-0">
               <p className="mb-1 text-meta font-bold uppercase tracking-[0.26em] text-accent">Select source</p>
               <h2 className="truncate text-2xl font-black tracking-tight text-white sm:text-3xl">{displayTitle}</h2>
-                <p className="mt-1 text-xs text-white/60">{filteredStreams.length ? `${filteredStreams.length} playable sources` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
+                <p className="mt-1 text-xs text-white/60">{filteredStreams.length ? `${visibleStreams.length} of ${filteredStreams.length} playable sources${activeProvider !== 'all' ? ` · ${providerOptions.find(([id]) => id === activeProvider)?.[1] || 'Addon'}` : ''}` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
               </div>
             </div>
             <div className="flex flex-shrink-0 items-center">
@@ -831,9 +857,9 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
           <div className="mb-3 flex min-h-12 flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-[#111315]/90 p-2 shadow-xl">
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === 'all' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All ({filteredStreams.length})</button>
+              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === 'all' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All sources ({filteredStreams.length})</button>
               {providerOptions.map(([id, name]) => (
-                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${selectedProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} {sourceDiagnostics[id]?.failureReason ? '⚠' : '✓'} ({streams.filter((stream) => stream.addonId === id).length})</button>
+                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} {sourceDiagnostics[id]?.failureReason ? '⚠' : '✓'} ({filteredStreams.filter((stream) => stream.addonId === id).length})</button>
               ))}
             </div>
             <div className="hidden h-6 w-px bg-white/[0.08] lg:block" />
@@ -926,6 +952,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
+                <div className="mb-1 text-tag font-bold uppercase tracking-[0.16em] text-accent/75">{stream.addonName}</div>
                 {showStreamName && (
                   <div className="truncate text-lg font-extrabold tracking-tight text-white">
                     {getStreamHeading(stream, i)}
@@ -949,7 +976,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
                   </div>
                 )}
               </div>
-              {playingIndex === i ? (
+              {playingIndex === streams.indexOf(stream) ? (
                 <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
               ) : (
                 <svg className={`w-4 h-4 transition-colors flex-shrink-0 ${

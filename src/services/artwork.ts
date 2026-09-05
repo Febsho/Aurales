@@ -1,5 +1,6 @@
 import type { EpisodeDetails, MovieDetails, SearchResult, ShowDetails } from '../types'
 import { useAppStore } from '../stores/appStore'
+import { getBetterPostersUrl } from './betterPosters'
 import type { ArtProvider, ArtProviderSettings } from '../stores/appStore'
 
 interface ArtIds {
@@ -42,7 +43,10 @@ function resolveCustomUrl(pattern: string, ids: ArtIds): string | undefined {
 }
 
 function getCustomUrls() {
-  return useAppStore.getState().customArtUrls
+  const { customArtUrls, betterPosters } = useAppStore.getState()
+  return betterPosters.enabled
+    ? { ...customArtUrls, posterUrl: getBetterPostersUrl(betterPosters) }
+    : customArtUrls
 }
 
 export function getSearchResultCustomArt(item: SearchResult): { poster?: string; backdrop?: string; logo?: string } {

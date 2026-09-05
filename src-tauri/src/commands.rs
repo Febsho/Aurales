@@ -17,7 +17,9 @@ fn sync_keyring_entry(email: &str) -> Result<keyring::Entry, String> {
 
 #[tauri::command]
 pub fn sync_password_store(email: String, password: String) -> Result<(), String> {
-    sync_keyring_entry(&email)?.set_password(&password).map_err(|error| error.to_string())
+    sync_keyring_entry(&email)?
+        .set_password(&password)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2839,7 +2841,21 @@ pub async fn mpv_command(
         player_debug_log(format!("[MPV CMD] {}", payload));
 
         match target {
-            Target::LibMpv(player) => player.command(&command_name, &args),
+            Target::LibMpv(player) => {
+                // ThumbFast owns a second decoder. Stop it in the same ordered
+                // libmpv command stream before a user seek so preview work can
+                // never delay the seek that actually changes playback.
+                if command_name == "seek" {
+                    let _ = player.command(
+                        "script-message-to",
+                        &[
+                            serde_json::Value::String("thumbfast".to_string()),
+                            serde_json::Value::String("stop".to_string()),
+                        ],
+                    );
+                }
+                player.command(&command_name, &args)
+            }
             Target::Ipc { writer, ipc_path } => {
                 if let Some(writer) = writer {
                     let write_result =
@@ -2940,7 +2956,7 @@ pub async fn clear_player_thumbnail() -> Result<(), String> {
                 "script-message-to",
                 &[
                     serde_json::Value::String("thumbfast".to_string()),
-                    serde_json::Value::String("clear".to_string()),
+                    serde_json::Value::String("stop".to_string()),
                 ],
             );
         }
@@ -4246,10 +4262,18 @@ pub async fn exchange_simkl_token(
 #[allow(deprecated)] // tauri-plugin-shell::Shell::open is deprecated in favour of
                      // tauri-plugin-opener; switch once opener is added to Cargo.toml.
 pub fn open_simkl_auth(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell()
-        .open(&url, None)
-        .map_err(|e| format!("Failed to open Simkl auth URL in browser: {}", e))
+    validate_http_url(&url)?;
+    // Some Linux browser launchers keep the `open` process alive until the
+    // browser window closes. Never let that block the Tauri command queue:
+    // OAuth/device-code polling must be able to continue while the browser is
+    // still open.
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_shell::ShellExt;
+        if let Err(error) = app.shell().open(&url, None) {
+            log::error!("Failed to open authorization URL in browser: {error}");
+        }
+    });
+    Ok(())
 }
 
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for AniList's

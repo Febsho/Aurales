@@ -108,10 +108,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
-  const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
+  const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
+  const customPosterNeedsImdbId = betterPosters.enabled || customArtUrls.posterUrl.includes('{imdb_id}')
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
   const mouseFollowEnabled = !homeCardAnimations && !reducedMotion
   const handleMouseFollow = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -355,8 +357,16 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       ? Boolean(initialArtItem.backdrop || initialArtItem.poster)
       : Boolean(initialArtItem.poster || initialArtItem.backdrop)
     const wantsProviderArt = !disableArtOverride && (!hasInitialArtwork || detailIntent)
+    // A usable catalog poster must not short-circuit custom poster resolution.
+    // BetterPosters (and {imdb_id} custom templates) may still need us to
+    // bridge a TMDB/TVDB ID to IMDb. Previously that work only started after
+    // hover set detailIntent, making posters appear to update on hover.
+    const needsCustomPosterId = !disableArtOverride
+      && customPosterNeedsImdbId
+      && !imdbId
+      && Boolean(tmdbId || displayItem.tvdbId)
 
-    if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt) {
+    if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt && !needsCustomPosterId) {
       if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
         getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
           .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
@@ -374,7 +384,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
           if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
         }
-        if (!resolvedImdbId && (resolvedTmdbId || displayItem.tvdbId) && customArtKey.includes('{imdb_id}')) {
+        if (!resolvedImdbId && (resolvedTmdbId || displayItem.tvdbId) && customPosterNeedsImdbId) {
           const { resolveImdbId } = await import('../services/metadataEnrich')
           resolvedImdbId = await resolveImdbId(
             {
@@ -428,7 +438,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       } catch (_) { /* ignore */ }
     })()
     return () => { cancelled = true }
-  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, appManagedMetadata, detailIntent, initialArtItem.poster, initialArtItem.backdrop])
+  }, [isVisible, layout, disableArtOverride, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.tvdbId, displayItem.imdbId, displayItem.type, displayItem.isAnime, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, customPosterNeedsImdbId, appManagedMetadata, detailIntent, initialArtItem.poster, initialArtItem.backdrop])
 
   const pickWorkingUrl = (...urls: Array<string | undefined>) =>
     urls.find((url) => url && !failedImageUrls.has(url))
@@ -581,6 +591,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       getTrailerSource({
         type: displayItem.type,
         tmdbId,
+        imdbId: displayItem.imdbId,
         title: displayItem.title,
         year: displayItem.year,
         language: trailerLanguage,
@@ -590,7 +601,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         setHoverPreviewOpen(true)
       }).catch(() => undefined)
     }, posterTrailerHoverDelayMs)
-  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, homeCardAnimations, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+  }, [cinematicMode, cinematicExpand, disableTrailerPreview, displayItem.id, displayItem.imdbId, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, homeCardAnimations, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
 
   useEffect(() => {
     // Turning the preference off while a card is hovered should restore its

@@ -20,6 +20,7 @@ export default function DetailContentShell({
   const sectionRef = useRef<HTMLDivElement>(null)
   const [logoError, setLogoError] = useState(false)
   const [contentActive, setContentActive] = useState(false)
+  const contentActiveRef = useRef(false)
   const logoUrl = logo || (imdbId ? `https://images.metahub.space/logo/medium/${imdbId}/img` : undefined)
 
   useEffect(() => {
@@ -32,7 +33,10 @@ export default function DetailContentShell({
 
     let locked = false
     const updateActive = () => {
-      setContentActive(scrollContainer.scrollTop >= section.offsetTop * 0.72)
+      const nextActive = scrollContainer.scrollTop >= section.offsetTop * 0.72
+      if (nextActive === contentActiveRef.current) return
+      contentActiveRef.current = nextActive
+      setContentActive(nextActive)
     }
     const transitionTo = (top: number) => {
       if (locked) return

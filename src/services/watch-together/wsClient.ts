@@ -8,7 +8,7 @@ import type {
   LocalSourceStatus,
 } from './types'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
-import { resolveLocalSourceCandidates } from './streamMatcher'
+import { createRoomStream, isSameRoomStream, resolveLocalSourceCandidates } from './streamMatcher'
 import type { LocalSourceCandidate, PendingRoomSync } from '../../stores/watchTogetherStore'
 import { estimateRoomPosition, estimateServerTiming, serverTimestampToLocal } from './clockSync'
 import { getActiveProfile } from '../profiles'
@@ -329,6 +329,7 @@ export function useManualLocalSource(candidate: LocalSourceCandidate): void {
   sourceResolveController?.abort()
   sourceResolveController = null
   getStore().setManualLocalSource(candidate)
+  if (getStore().isHost) selectStream(createRoomStream({ ...candidate.stream, addonId: candidate.addonId }))
   sendLocalSourceStatus('ready')
   setReady(true)
 }
@@ -473,8 +474,10 @@ export function ping(): void {
 
 export function startSyncLoop(): void {
   stopSyncLoop()
-  const intervalMs = getStore().syncInterval * 1000
-  syncTimer = setInterval(() => {
+  // A one-second position beacon keeps normal drift below the correction
+  // threshold without making the room server carry video traffic.
+  const intervalMs = Math.max(500, getStore().syncInterval * 1000)
+  const broadcastPosition = () => {
     const store = getStore()
     if (!store.isHost || !store.currentRoom) return
     const pb = store.currentRoom.playback
@@ -487,7 +490,9 @@ export function startSyncLoop(): void {
 
     const elapsed = localPlayback.isPlaying ? (Date.now() - localPlayback.updatedAt) / 1000 : 0
     sendSyncState(localPlayback.time + elapsed, localPlayback.isPlaying)
-  }, intervalMs)
+  }
+  broadcastPosition()
+  syncTimer = setInterval(broadcastPosition, intervalMs)
 }
 
 export function stopSyncLoop(): void {
@@ -499,7 +504,7 @@ export function stopSyncLoop(): void {
 
 export function startPingLoop(): void {
   stopPingLoop()
-  pingTimer = setInterval(ping, 30_000)
+  pingTimer = setInterval(ping, 10_000)
 }
 
 export function stopPingLoop(): void {
@@ -514,7 +519,7 @@ export function stopPingLoop(): void {
 export async function autoResolveStream(
   media?: RoomMedia,
   episode?: RoomEpisode,
-  _hostStream?: RoomStream,
+  hostStream?: RoomStream,
 ): Promise<boolean> {
   const store = getStore()
   const m = media ?? store.currentRoom?.selectedMedia
@@ -529,9 +534,23 @@ export async function autoResolveStream(
     logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, generation })
     const candidates = await resolveLocalSourceCandidates(m, ep, signal)
     if (signal.aborted) return false
-    if (!getStore().setLocalSourceCandidates(generation, candidates)) return false
-    const match = candidates[0]
+    // The host publishes a non-sensitive release fingerprint. Put an exact
+    // local match first; other valid sources remain fallbacks in case a peer
+    // does not have that addon or its link has expired.
+    const orderedCandidates = !store.isHost && hostStream
+      ? (() => {
+          const exact = candidates.filter((candidate) => isSameRoomStream({ ...candidate.stream, addonId: candidate.addonId }, hostStream))
+          // Keep every verified source as a fallback. A guest may not have the
+          // host addon, and a source URL can expire independently per device.
+          return exact.length ? [...exact, ...candidates.filter((candidate) => !exact.includes(candidate))] : candidates
+        })()
+      : candidates
+    if (!getStore().setLocalSourceCandidates(generation, orderedCandidates)) return false
+    const match = orderedCandidates[0]
     if (match) {
+      // Publish the host's release after it has passed local resolution. This
+      // lets guests select the same release without ever exposing its URL.
+      if (getStore().isHost) selectStream(createRoomStream({ ...match.stream, addonId: match.addonId }))
       sendLocalSourceStatus('ready')
       setReady(true)
       logDebug('in', 'AUTO_RESOLVE_OK', { addon: match.addonName, count: candidates.length, stream: match.stream.name ?? match.stream.title })
@@ -613,9 +632,11 @@ function handleServerMessage(msg: ServerMessage): void {
         previousEpisode?.seasonNumber !== msg.episode?.seasonNumber ||
         previousEpisode?.episodeNumber !== msg.episode?.episodeNumber
       )
+      const streamChanged = msg.stream?.streamFingerprint !== store.currentRoom?.selectedStream?.streamFingerprint
+        || msg.stream?.infoHash !== store.currentRoom?.selectedStream?.infoHash
       store.updateMedia(msg.media, msg.episode, msg.stream)
-      if (msg.media && mediaChanged) {
-        autoResolveStream(msg.media, msg.episode)
+      if (msg.media && (mediaChanged || (streamChanged && !store.isHost))) {
+        autoResolveStream(msg.media, msg.episode, msg.stream)
       }
       break
     }

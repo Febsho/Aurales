@@ -262,7 +262,7 @@ impl ThumbnailJobController {
             .unwrap_or(0)
     }
 
-    fn wait_until_idle(&self) {
+    fn finish_when_idle(&self) {
         if let Ok(mut state) = self.state.lock() {
             loop {
                 if state.shutdown {
@@ -275,7 +275,13 @@ impl ThumbnailJobController {
                                 && state.queue.is_empty()
                                 && state.in_progress.is_empty() =>
                         {
-                            break
+                            // Close the queue while still holding the same lock
+                            // used by enqueue(). Without this atomic boundary, a
+                            // scrub request can arrive after the idle check but
+                            // before shutdown and be silently abandoned.
+                            let mut state = state;
+                            state.shutdown = true;
+                            break;
                         }
                         Ok((state, _)) => state,
                         Err(_) => return,
@@ -288,6 +294,13 @@ impl ThumbnailJobController {
                 };
             }
         }
+    }
+
+    fn is_shutdown(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.shutdown)
+            .unwrap_or(true)
     }
 
     fn shutdown(&self) {
@@ -571,9 +584,17 @@ pub fn get_or_queue_scrub_thumbnail(
     if exact.is_none() {
         let (controller, should_spawn) = {
             let mut jobs = active_jobs().lock().map_err(|e| e.to_string())?;
-            if let Some(controller) = jobs.get(&cache_key) {
-                (Arc::clone(controller), false)
+            let reusable = jobs
+                .get(&cache_key)
+                .filter(|controller| !controller.is_shutdown())
+                .cloned();
+            if let Some(controller) = reusable {
+                (controller, false)
             } else {
+                // A finished worker remains in the map for a few instructions
+                // while it publishes metadata. Replace it immediately rather
+                // than enqueueing work that can no longer be consumed.
+                jobs.remove(&cache_key);
                 let existing = scan_generated_indices(&frame_dir);
                 let controller = Arc::new(ThumbnailJobController::new(existing));
                 jobs.insert(cache_key.clone(), Arc::clone(&controller));
@@ -840,13 +861,26 @@ fn spawn_thumbnail_job(
                 ThumbnailCacheUpdated { metadata },
             );
         }
+        let mut removed_own_entry = false;
         if let Ok(mut jobs) = active_jobs().lock() {
-            jobs.remove(&job_request.cache_key);
+            // A late scrub request may already have replaced this finished
+            // controller. Only remove our own entry; otherwise the old worker
+            // can accidentally orphan the replacement job.
+            let owns_entry = jobs
+                .get(&job_request.cache_key)
+                .map(|active| Arc::ptr_eq(active, &controller))
+                .unwrap_or(false);
+            if owns_entry {
+                jobs.remove(&job_request.cache_key);
+                removed_own_entry = true;
+            }
         }
-        debug_update(|state| {
-            state.active = false;
-            state.current_ffmpeg_status = "idle".to_string();
-        });
+        if removed_own_entry {
+            debug_update(|state| {
+                state.active = false;
+                state.current_ffmpeg_status = "idle".to_string();
+            });
+        }
     });
 }
 
@@ -1000,7 +1034,7 @@ fn run_thumbnail_job(
         }));
     }
 
-    controller.wait_until_idle();
+    controller.finish_when_idle();
     let contiguous_count = contiguous_generated_count(&frame_dir, config.max_count);
     if contiguous_count > 0 {
         publish_sprites(
@@ -1784,6 +1818,22 @@ fn validate_request(request: &ThumbnailStartRequest) -> Result<(), String> {
         return Err("thumbnail cache key is required".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThumbnailJobController;
+    use std::collections::HashSet;
+
+    #[test]
+    fn idle_shutdown_rejects_late_scrub_work() {
+        let controller = ThumbnailJobController::new(HashSet::new());
+
+        controller.finish_when_idle();
+
+        assert!(controller.is_shutdown());
+        assert!(!controller.enqueue(12, 0, "late-scrub"));
+    }
 }
 
 fn sanitize_cache_key(value: &str) -> String {

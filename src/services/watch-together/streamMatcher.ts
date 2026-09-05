@@ -24,6 +24,39 @@ export function createStreamFingerprint(stream: StreamResult & { addonId?: strin
   return `${stream.addonId ?? 'unknown'}:label:${hash}`
 }
 
+/**
+ * The only stream information that is safe and useful to share with a room.
+ * URLs and provider credentials deliberately stay on the local machine.
+ */
+export function createRoomStream(stream: StreamResult & { addonId: string }): RoomStream {
+  const label = [stream.name, stream.title, stream.filename, stream.behaviorHints?.filename]
+    .filter(Boolean)
+    .join(' ')
+  const quality = label.match(/\b(4k|2160p|1080p|720p|480p)\b/i)?.[0]?.toLowerCase()
+  return {
+    addonId: stream.addonId,
+    name: stream.name,
+    title: stream.title,
+    quality,
+    infoHash: stream.infoHash,
+    fileIdx: stream.fileIdx,
+    streamFingerprint: createStreamFingerprint(stream),
+  }
+}
+
+/** A quality label alone is not enough to identify the same release. */
+export function isSameRoomStream(
+  stream: StreamResult & { addonId: string },
+  reference: RoomStream,
+): boolean {
+  if (reference.addonId && reference.infoHash) {
+    return stream.addonId === reference.addonId
+      && stream.infoHash === reference.infoHash
+      && (reference.fileIdx == null || stream.fileIdx === reference.fileIdx)
+  }
+  return Boolean(reference.streamFingerprint && createStreamFingerprint(stream) === reference.streamFingerprint)
+}
+
 function preferredMediaId(media: RoomMedia): string {
   if (media.imdbId) return media.imdbId
   if (media.tmdbId) return `tmdb:${media.tmdbId}`
@@ -166,19 +199,14 @@ export function matchStreamToHost(
 ): { stream: StreamResult; addonId: string; addonName: string } | null {
   // Priority 1: same addon + infoHash + fileIdx
   if (hostStream.addonId && hostStream.infoHash) {
-    const exact = localStreams.find(
-      (s) =>
-        s.addonId === hostStream.addonId &&
-        s.infoHash === hostStream.infoHash &&
-        (hostStream.fileIdx == null || s.fileIdx === hostStream.fileIdx),
-    )
+    const exact = localStreams.find((s) => isSameRoomStream(s, hostStream))
     if (exact) return { stream: exact, addonId: exact.addonId, addonName: exact.addonName }
   }
 
   // Priority 2: same stream fingerprint
   if (hostStream.streamFingerprint) {
     const byFingerprint = localStreams.find(
-      (s) => createStreamFingerprint(s) === hostStream.streamFingerprint,
+      (s) => isSameRoomStream(s, hostStream),
     )
     if (byFingerprint) {
       return { stream: byFingerprint, addonId: byFingerprint.addonId, addonName: byFingerprint.addonName }

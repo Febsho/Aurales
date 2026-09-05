@@ -5,14 +5,14 @@ import { subscribeLocalWatchlist } from '../services/localWatchlist'
 import { tmdbProvider } from '../services/tmdb'
 import { buildUpcomingEvents, getUpcomingPreferences, isReleaseInHorizon, releaseTiming, type ReleaseEvent } from '../services/upcoming'
 import { loadUpcomingSeeds } from '../services/upcomingSources'
-import { readUpcomingEventsCache, writeUpcomingEventsCache } from '../services/upcomingCache'
+import { readUpcomingEventsCache, readUpcomingEventsStartupSnapshot, writeUpcomingEventsCache, writeUpcomingEventsStartupSnapshot } from '../services/upcomingCache'
 
 /** A landscape shelf deliberately sharing Continue Watching's size, controls, and card treatment. */
 export default function UpcomingHomeRow() {
   const navigate = useNavigate()
   const progress = useAppStore((s) => s.watchProgress)
   const posterSize = useAppStore((s) => s.posterSize)
-  const [events, setEvents] = useState<ReleaseEvent[]>([])
+  const [events, setEvents] = useState<ReleaseEvent[]>(() => readUpcomingEventsStartupSnapshot() ?? [])
   const [preferencesRevision, setPreferencesRevision] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const prefs = getUpcomingPreferences()
@@ -23,8 +23,15 @@ export default function UpcomingHomeRow() {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
+      const startup = readUpcomingEventsStartupSnapshot()
+      if (startup && !cancelled) setEvents(startup)
       const cached = await readUpcomingEventsCache()
-      if (cached && !cancelled) setEvents(cached)
+      if (cached) {
+        // Backfill the synchronous snapshot for users upgrading with only the
+        // existing SQLite cache, even when the provider refresh later fails.
+        writeUpcomingEventsStartupSnapshot(cached)
+        if (!cancelled) setEvents(cached)
+      }
       const seeds = await loadUpcomingSeeds(getUpcomingPreferences())
       const next = await buildUpcomingEvents({ ...seeds, getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`), getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season) })
       void writeUpcomingEventsCache(next)
@@ -48,7 +55,7 @@ export default function UpcomingHomeRow() {
       .then((events) => { void writeUpcomingEventsCache(events); setEvents(events) })
   }), [])
 
-  const visible = events.filter((event) => isReleaseInHorizon(event, prefs.horizonDays)).slice(0, 12)
+  const visible = events.filter((event) => !prefs.hidden[event.id] && isReleaseInHorizon(event, prefs.horizonDays)).slice(0, 12)
   const scroll = (direction: number) => scrollRef.current?.scrollBy({ left: direction * Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85)), behavior: 'smooth' })
 
   return <section className="mb-8">

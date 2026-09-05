@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.6" date="2026-09-05">
+      <description>
+        <p>
+          Makes Home and Discover scrolling smoother by preloading catalog
+          shelves and warming artwork in the native image cache, corrects
+          Simkl anime episode watched status, and improves account connection
+          flows for Trakt and TorBox.
+        </p>
+      </description>
+    </release>
     <release version="0.3.5" date="2026-08-30">
       <description>
         <p>

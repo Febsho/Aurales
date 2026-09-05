@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/appStore'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 import { getTmdbCardMetadata } from '../services/tmdb'
 import RatingsStrip from './RatingsStrip'
+import { warmCachedImages } from '../services/imageCache'
 
 const CATALOG_PREVIEW_LIMIT = 25
 const INITIAL_RENDERED_CARDS = 30
@@ -164,6 +165,15 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     [rowItems, renderedCount],
   )
   useEffect(() => setRenderedCount(INITIAL_RENDERED_CARDS), [rowItems])
+  useEffect(() => {
+    // Start with enough artwork for the initial viewport and a few horizontal
+    // scroll steps. The shared queue keeps many Home/Discover shelves from
+    // saturating the network or native image cache at once.
+    const timer = window.setTimeout(() => {
+      void warmCachedImages(rowItems.slice(0, 14).flatMap((item) => [item.poster, item.backdrop, item.logo]))
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [rowItems])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
   const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: visibleItems } }) }

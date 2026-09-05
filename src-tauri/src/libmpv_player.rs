@@ -765,6 +765,7 @@ struct ThumbfastRender {
     width: u32,
     height: u32,
     thumbnail: String,
+    time: Option<f64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -773,6 +774,7 @@ struct ThumbnailReadyPayload {
     path: String,
     width: u32,
     height: u32,
+    time: Option<f64>,
     session_id: String,
 }
 
@@ -806,6 +808,7 @@ unsafe fn handle_client_message_event(
                         path: data_url,
                         width: render.width,
                         height: render.height,
+                        time: render.time,
                         session_id: session_id.to_string(),
                     },
                 );

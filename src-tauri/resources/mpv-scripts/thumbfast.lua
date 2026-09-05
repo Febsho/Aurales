@@ -604,7 +604,7 @@ local function draw(w, h, script)
             mp.command_native_async({"overlay-add", options.overlay_id, x, y, options.thumbnail..".bgra", 0, "bgra", w, h, (4*w), scale_w, scale_h}, function() end)
         end
     elseif script then
-        local json, err = mp.utils.format_json({width=w, height=h, scale_factor=options.scale_factor, x=x, y=y, socket=options.socket, thumbnail=options.thumbnail, overlay_id=options.overlay_id})
+        local json, err = mp.utils.format_json({width=w, height=h, scale_factor=options.scale_factor, x=x, y=y, socket=options.socket, thumbnail=options.thumbnail, overlay_id=options.overlay_id, time=last_seek_time})
         mp.commandv("script-message-to", script, "thumbfast-render", json)
     end
 end
@@ -745,6 +745,19 @@ local function quit()
     spawned = false
     real_w, real_h = nil, nil
     clear()
+end
+
+-- A real playback seek must take priority over preview decoding. Unlike the
+-- inactivity timer, this command stops the helper even if it was displaying a
+-- thumbnail a moment ago, so it cannot keep reading/decoding the stream while
+-- the main player is trying to seek.
+local function stop()
+    clear()
+    activity_timer:kill()
+    run("quit")
+    spawned = false
+    spawn_waiting = false
+    real_w, real_h = nil, nil
 end
 
 activity_timer = mp.add_timeout(options.quit_after_inactivity, quit)
@@ -946,6 +959,7 @@ mp.observe_property("duration", "native", on_duration)
 
 mp.register_script_message("thumb", thumb)
 mp.register_script_message("clear", clear)
+mp.register_script_message("stop", stop)
 
 mp.register_event("file-loaded", file_load)
 mp.register_event("shutdown", shutdown)

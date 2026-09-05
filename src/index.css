@@ -616,6 +616,187 @@ select option {
   color-scheme: dark;
 }
 
+/* Settings starts as a calm, TV-friendly category hub. The persistent app
+   navigation already owns route switching, so this deliberately avoids a
+   second competing sidebar. */
+.settings-hub {
+  display: grid;
+  grid-template-columns: minmax(15rem, .72fr) minmax(0, 1.7fr);
+  gap: clamp(2.5rem, 6vw, 8rem);
+  width: min(100% - clamp(2rem, 7vw, 10rem), 96rem);
+  min-height: 100%;
+  margin-inline: auto;
+  padding-block: clamp(7.5rem, 15vh, 11rem) clamp(3rem, 8vh, 7rem);
+}
+
+.settings-hub__identity {
+  align-self: start;
+  position: sticky;
+  top: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-inline: clamp(.25rem, 1vw, 1rem);
+  text-align: center;
+  transform: translateY(-50%);
+}
+
+.settings-hub__mark {
+  display: grid;
+  width: clamp(5.25rem, 8vw, 7.5rem);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 29%;
+  background: linear-gradient(145deg, rgba(255,255,255,.18), rgba(255,255,255,.055));
+  box-shadow: inset 0 1px rgba(255,255,255,.18), 0 22px 55px rgba(0,0,0,.28);
+}
+
+.settings-hub__mark img { width: 68%; height: 68%; object-fit: contain; }
+.settings-hub__eyebrow { margin: 1.7rem 0 .4rem; color: rgba(255,255,255,.42); font-size: .7rem; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+.settings-hub__identity h1 { margin: 0; color: #fff; font-size: clamp(2.2rem, 4vw, 3.5rem); font-weight: 800; letter-spacing: -.05em; line-height: 1; }
+.settings-hub__identity > p:last-child { max-width: 20rem; margin: 1rem 0 0; color: rgba(255,255,255,.57); font-size: .95rem; line-height: 1.6; }
+
+.settings-hub__categories { min-width: 0; }
+.settings-hub__group + .settings-hub__group { margin-top: 2.2rem; }
+.settings-hub__group-label { margin: 0 0 .7rem .25rem; color: rgba(255,255,255,.38); font-size: .67rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+.settings-hub__cards { display: grid; gap: .65rem; }
+
+.settings-hub-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: clamp(.85rem, 1.4vw, 1.2rem);
+  width: 100%;
+  min-height: clamp(5.5rem, 8vh, 6.6rem);
+  padding: .85rem clamp(1rem, 1.6vw, 1.4rem);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 1.15rem;
+  background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 10px 28px rgba(0,0,0,.12);
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.settings-hub-card:hover, .settings-hub-card:focus-visible {
+  outline: none;
+  transform: translateX(.35rem) scale(1.012);
+  border-color: rgba(255,255,255,.34);
+  background: linear-gradient(105deg, rgba(255,255,255,.22), rgba(255,255,255,.11));
+  box-shadow: inset 0 1px rgba(255,255,255,.2), 0 16px 36px rgba(0,0,0,.22);
+}
+
+.settings-hub-card__icon { display: grid; width: 3rem; height: 3rem; flex: 0 0 auto; place-items: center; border-radius: .75rem; color: white; background: linear-gradient(145deg, #7a8cff, #5368d7); box-shadow: inset 0 1px rgba(255,255,255,.35), 0 6px 14px rgba(0,0,0,.2); }
+.settings-hub-card__icon svg { width: 1.5rem !important; height: 1.5rem !important; }
+.settings-hub-card--tone-1 .settings-hub-card__icon { background: linear-gradient(145deg, #fa719d, #d94d79); }
+.settings-hub-card--tone-2 .settings-hub-card__icon { background: linear-gradient(145deg, #69aefd, #4779dd); }
+.settings-hub-card--tone-3 .settings-hub-card__icon { background: linear-gradient(145deg, #cc71f2, #9652d9); }
+.settings-hub-card--tone-4 .settings-hub-card__icon { background: linear-gradient(145deg, #5edcca, #28a89f); }
+.settings-hub-card--tone-5 .settings-hub-card__icon { background: linear-gradient(145deg, #ffc66c, #d98a41); }
+.settings-hub-card__copy { min-width: 0; }
+.settings-hub-card__title, .settings-hub-card__description { display: block; }
+.settings-hub-card__title { font-size: clamp(1rem, 1.5vw, 1.22rem); font-weight: 750; letter-spacing: -.02em; }
+.settings-hub-card__description { margin-top: .18rem; overflow: hidden; color: rgba(255,255,255,.59); font-size: clamp(.76rem, 1.15vw, .91rem); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.settings-hub-card__chevron { width: 1.25rem; height: 1.25rem; color: rgba(255,255,255,.55); }
+
+.settings-page__content--panel { width: min(100% - clamp(2rem, 7vw, 10rem), 72rem); margin-inline: auto; padding: clamp(6.5rem, 13vh, 9.5rem) 0 5rem; }
+.settings-page__panel-header { margin-bottom: 2rem; }
+.settings-page__panel-header h1 { margin: 1.35rem 0 .3rem; color: #fff; font-size: clamp(1.75rem, 3vw, 2.4rem); font-weight: 800; letter-spacing: -.04em; }
+.settings-page__panel-header > p { margin: 0; color: rgba(255,255,255,.58); font-size: .94rem; }
+.settings-page__back { display: inline-flex; align-items: center; gap: .55rem; border: 1px solid rgba(255,255,255,.12); border-radius: .9rem; background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075)); box-shadow: inset 0 1px rgba(255,255,255,.11), 0 8px 24px rgba(0,0,0,.16); color: rgba(255,255,255,.82); cursor: pointer; font-size: .83rem; font-weight: 700; padding: .65rem .85rem; transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease; }
+.settings-page__back:hover, .settings-page__back:focus-visible { outline: none; transform: translateX(-.15rem); border-color: rgba(255,255,255,.32); background: linear-gradient(105deg, rgba(255,255,255,.22), rgba(255,255,255,.11)); box-shadow: inset 0 1px rgba(255,255,255,.2), 0 12px 30px rgba(0,0,0,.22); color: #fff; }
+.settings-page__back svg { width: 1rem; height: 1rem; }
+
+/* Detail views carry the overview's raised glass language into their grouped
+   controls, so opening a category feels like drilling into the same system. */
+.settings-page__content--panel .settings-panel-card {
+  border-color: rgba(255,255,255,.12);
+  background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 10px 28px rgba(0,0,0,.12);
+}
+
+.settings-page__content--panel .settings-panel-control,
+.settings-page__content--panel .settings-panel-card .select-menu__trigger {
+  border-color: rgba(255,255,255,.12);
+  background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 8px 22px rgba(0,0,0,.15);
+}
+
+.settings-page__content--panel .settings-panel-control:hover,
+.settings-page__content--panel .settings-panel-control:focus-visible,
+.settings-page__content--panel .settings-panel-control[aria-expanded="true"],
+.settings-page__content--panel .settings-panel-card .select-menu__trigger:hover:not(:disabled),
+.settings-page__content--panel .settings-panel-card .select-menu__trigger:focus-visible,
+.settings-page__content--panel .settings-panel-card .select-menu__trigger[data-open] {
+  border-color: rgba(255,255,255,.3);
+  background: linear-gradient(105deg, rgba(255,255,255,.22), rgba(255,255,255,.11));
+}
+
+.settings-page__content--panel .accounts-hub .settings-panel-card:hover {
+  border-color: rgba(255,255,255,.3);
+  background: linear-gradient(105deg, rgba(255,255,255,.2), rgba(255,255,255,.1));
+  box-shadow: inset 0 1px rgba(255,255,255,.18), 0 16px 36px rgba(0,0,0,.2);
+}
+
+/* Account dialogs use the same layered, cinematic surface as the rest of the
+   app instead of reading like a generic browser form. */
+.accounts-service-modal {
+  border-color: rgba(255,255,255,.14) !important;
+  background:
+    radial-gradient(90% 60% at 0% 0%, rgba(104, 118, 255, .18), transparent 58%),
+    radial-gradient(70% 45% at 100% 0%, rgba(55, 208, 175, .10), transparent 60%),
+    linear-gradient(145deg, rgba(27, 30, 43, .98), rgba(10, 12, 19, .98)) !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.13), 0 30px 90px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.3) !important;
+}
+
+.accounts-service-modal > .p-6 { padding: 1.35rem; }
+.accounts-service-modal__hero { display: flex; align-items: flex-start; gap: .9rem; min-height: 4rem; padding: .25rem .25rem .95rem; border-bottom: 1px solid rgba(255,255,255,.09); }
+.accounts-service-modal__icon > div { width: 3.45rem; height: 3.45rem; border-radius: 1.1rem; border-color: rgba(255,255,255,.16); background: linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.045)); box-shadow: inset 0 1px rgba(255,255,255,.16), 0 10px 26px rgba(0,0,0,.28); }
+.accounts-service-modal__icon img { width: 1.9rem; height: 1.9rem; }
+.accounts-service-modal__eyebrow, .accounts-service-modal__section-label { margin: 0; color: rgba(255,255,255,.42); font-size: .66rem; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+.accounts-service-modal__status { margin-left: auto; margin-right: 2.4rem; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(255,255,255,.06); color: rgba(255,255,255,.64); font-size: .72rem; font-weight: 750; line-height: 1; padding: .48rem .62rem; white-space: nowrap; }
+.accounts-service-modal__status--connected { border-color: rgba(89, 231, 182, .22); background: rgba(54, 211, 153, .10); color: rgba(168, 255, 218, .95); }
+.accounts-service-modal__status--syncing { border-color: rgba(129, 147, 255, .30); background: rgba(104, 118, 255, .13); color: #ced4ff; }
+.accounts-service-modal__status--needs-attention { border-color: rgba(251, 191, 36, .24); background: rgba(251, 191, 36, .10); color: #ffdc89; }
+.accounts-service-modal__notice { border: 1px solid rgba(129, 147, 255, .18); border-radius: .9rem; background: rgba(104, 118, 255, .08); color: rgba(224, 228, 255, .78); font-size: .78rem; line-height: 1.45; padding: .72rem .85rem; }
+.accounts-service-modal__notice--warning { border-color: rgba(251, 191, 36, .20); background: rgba(251, 191, 36, .08); color: rgba(255, 227, 154, .85); }
+.accounts-service-modal__section { border: 1px solid rgba(255,255,255,.085); border-radius: 1rem; background: linear-gradient(145deg, rgba(255,255,255,.065), rgba(255,255,255,.025)); box-shadow: inset 0 1px rgba(255,255,255,.07); padding: 1rem; }
+.accounts-service-modal__section > .accounts-service-modal__section-label { margin-bottom: .8rem; }
+.accounts-service-modal__action { display: flex; align-items: center; justify-content: flex-start; }
+.accounts-service-modal__disconnect { border-top: 1px solid rgba(255,255,255,.08); padding-top: 1rem; }
+.accounts-service-modal__disconnect > .accounts-service-modal__section-label { margin-bottom: .7rem; }
+.accounts-service-modal input, .accounts-service-modal select, .accounts-service-modal textarea { border-color: rgba(255,255,255,.13) !important; background: rgba(3,5,10,.48) !important; box-shadow: inset 0 1px rgba(255,255,255,.045); }
+.accounts-service-modal input:focus, .accounts-service-modal select:focus, .accounts-service-modal textarea:focus { border-color: rgba(138, 151, 255, .72) !important; box-shadow: 0 0 0 3px rgba(104, 118, 255, .14), inset 0 1px rgba(255,255,255,.05); }
+
+@media (max-width: 520px) {
+  .accounts-service-modal > .p-6 { padding: 1rem; }
+  .accounts-service-modal__hero { gap: .7rem; }
+  .accounts-service-modal__icon > div { width: 3rem; height: 3rem; border-radius: .95rem; }
+  .accounts-service-modal__status { margin-right: 2.15rem; font-size: .65rem; padding: .42rem .5rem; }
+}
+
+@media (max-width: 780px) {
+  .settings-hub {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+    width: min(100% - 2rem, 42rem);
+    padding-top: 6rem;
+  }
+
+  .settings-hub__identity { position: static; align-items: flex-start; padding: 0; text-align: left; transform: none; }
+  .settings-hub__mark { width: 4.5rem; }
+  .settings-hub__eyebrow { margin-top: 1.15rem; }
+  .settings-hub__identity h1 { font-size: 2.25rem; }
+  .settings-hub__identity > p:last-child { max-width: 31rem; }
+  .settings-hub-card { min-height: 5.2rem; border-radius: 1rem; }
+  .settings-hub-card:hover, .settings-hub-card:focus-visible { transform: none; }
+  .settings-hub-card__description { white-space: normal; }
+  .settings-page__content--panel { width: min(100% - 2rem, 42rem); padding-top: 5.5rem; }
+}
+
 .settings-page select:not([multiple]) {
   min-height: 2.75rem;
   appearance: none !important;
@@ -1041,9 +1222,9 @@ html[data-interface-theme="cinematic"] .global-search__input:focus {
 }
 
 .search-page {
-  --search-surface: rgba(13, 17, 14, .94);
-  --search-surface-raised: rgba(19, 24, 20, .96);
-  --search-border: rgba(255, 255, 255, .085);
+  --search-surface: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  --search-surface-raised: linear-gradient(105deg, rgba(255,255,255,.22), rgba(255,255,255,.11));
+  --search-border: rgba(255, 255, 255, .12);
   --search-muted: rgba(255, 255, 255, .46);
   min-height: 100%;
 }
@@ -1154,58 +1335,70 @@ html[data-interface-theme="cinematic"] .global-search__input:focus {
 }
 .people-results__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
-  gap: .7rem;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(11rem, 14rem);
+  gap: .65rem;
+  overflow-x: auto;
+  padding: .15rem .15rem .75rem;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
 }
+.people-results__grid::-webkit-scrollbar { display: none; }
 .person-search-card {
-  position: relative;
   display: grid;
-  grid-template-columns: 4.6rem minmax(0, 1fr) auto;
+  grid-template-columns: 3rem minmax(0, 1fr);
   align-items: center;
-  gap: .9rem;
+  gap: clamp(.85rem, 1.4vw, 1.2rem);
+  width: 100%;
+  min-height: 4.75rem;
   min-width: 0;
-  padding: .62rem .8rem .62rem .62rem;
-  border: 1px solid var(--search-border);
-  border-radius: 1rem;
-  background: var(--search-surface);
+  padding: .85rem clamp(1rem, 1.6vw, 1.4rem);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 1.15rem;
+  background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 10px 28px rgba(0,0,0,.12);
+  color: #fff;
   text-align: left;
   cursor: pointer;
   overflow: hidden;
-  transition: transform .22s, border-color .22s, background .22s, box-shadow .22s;
+  scroll-snap-align: start;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 .person-search-card:hover,
 .person-search-card:focus-visible {
-  transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, .18);
-  background: var(--search-surface-raised);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, .24);
+  outline: none;
+  transform: translateX(.35rem) scale(1.012);
+  border-color: rgba(255,255,255,.34);
+  background: linear-gradient(105deg, rgba(255,255,255,.22), rgba(255,255,255,.11));
+  box-shadow: inset 0 1px rgba(255,255,255,.2), 0 16px 36px rgba(0,0,0,.22);
 }
 .person-search-card__photo {
-  width: 4.6rem;
-  height: 5.6rem;
+  width: 3rem;
+  height: 3rem;
   display: grid;
   place-items: center;
   overflow: hidden;
-  border-radius: .72rem;
-  background: rgba(255, 255, 255, .055);
-  color: rgba(255, 255, 255, .2);
-  font-size: 1.65rem;
+  border-radius: .75rem;
+  background: linear-gradient(145deg, #69aefd, #4779dd);
+  box-shadow: inset 0 1px rgba(255,255,255,.35), 0 6px 14px rgba(0,0,0,.2);
+  color: rgba(255,255,255,.88);
+  font-size: 1.1rem;
   font-weight: 850;
 }
 .person-search-card__photo img { width: 100%; height: 100%; object-fit: cover; }
 .person-search-card__body { min-width: 0; }
 .person-search-card__role {
   display: block;
-  margin-bottom: .25rem;
-  color: var(--color-accent);
-  font-size: .59rem;
+  margin-bottom: .18rem;
+  color: rgba(255,255,255,.5);
+  font-size: .62rem;
   font-weight: 800;
   letter-spacing: .1em;
   text-transform: uppercase;
 }
 .person-search-card h3 {
   overflow: hidden;
-  color: rgba(255, 255, 255, .92);
+  color: #fff;
   font-size: .95rem;
   font-weight: 750;
   text-overflow: ellipsis;
@@ -1213,25 +1406,26 @@ html[data-interface-theme="cinematic"] .global-search__input:focus {
 }
 .person-search-card p {
   display: -webkit-box;
-  margin-top: .3rem;
+  margin-top: .18rem;
   overflow: hidden;
-  color: rgba(255, 255, 255, .38);
-  font-size: .7rem;
-  line-height: 1.4;
+  color: rgba(255,255,255,.59);
+  font-size: clamp(.76rem, 1.15vw, .91rem);
+  line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 .person-search-card__arrow {
-  color: rgba(255, 255, 255, .2);
-  font-size: 1rem;
+  color: rgba(255,255,255,.55);
+  font-size: 1.2rem;
   transition: color .2s, transform .2s;
 }
-.person-search-card:hover .person-search-card__arrow { color: var(--color-accent); transform: translateX(2px); }
+.person-search-card:hover .person-search-card__arrow { color: #fff; transform: translateX(2px); }
 .search-empty,
 .search-start {
   border: 1px solid var(--search-border);
   border-radius: 1.25rem;
   background: var(--search-surface);
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 10px 28px rgba(0,0,0,.12);
 }
 .search-start { padding: 1.5rem; }
 .search-section-heading { margin: 0 0 1.1rem; }
@@ -1264,14 +1458,7 @@ html[data-interface-theme="cinematic"] .global-search__input:focus {
 .search-loading { padding-top: .5rem; }
 
 html[data-interface-theme="cinematic"] .search-page {
-  --search-surface: rgba(17, 20, 25, .76);
-  --search-surface-raised: rgba(25, 29, 36, .88);
-  --search-border: rgba(255, 255, 255, .1);
   --search-muted: rgba(218, 224, 235, .46);
-  background:
-    radial-gradient(ellipse at 50% -8%, rgba(91, 107, 137, .1), transparent 38%),
-    radial-gradient(ellipse at 4% 62%, rgba(48, 75, 69, .08), transparent 34%),
-    linear-gradient(180deg, #0b0d11 0%, #080a0e 54%, #07090c 100%);
 }
 html[data-interface-theme="cinematic"] .search-overview {
   padding: 1.35rem .25rem 1.75rem;
@@ -1285,12 +1472,25 @@ html[data-interface-theme="cinematic"] .search-eyebrow { color: rgba(203, 212, 2
 html[data-interface-theme="cinematic"] .search-filter { border-radius: 999px; background: rgba(255, 255, 255, .035); }
 html[data-interface-theme="cinematic"] .search-filter--active { border-color: rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .11); color: rgba(255, 255, 255, .94); }
 html[data-interface-theme="cinematic"] .people-results { padding-inline: 2rem; }
-html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: .85rem; }
-html[data-interface-theme="cinematic"] .person-search-card { border-radius: .7rem; }
-html[data-interface-theme="cinematic"] .person-search-card__photo { border-radius: .4rem; }
-html[data-interface-theme="cinematic"] .search-start,
-html[data-interface-theme="cinematic"] .search-empty { background: var(--search-surface); }
+html[data-interface-theme="cinematic"] .people-results__grid { grid-auto-columns: minmax(11rem, 14rem); }
 
+.search-results {
+  display: grid;
+  gap: 1.25rem;
+}
+.search-results .media-row { margin-bottom: 0 !important; }
+.search-results .media-row > div:first-child,
+.search-results .media-row > div:last-of-type {
+  width: 100% !important;
+  margin-inline: 0 !important;
+  padding-inline: max(2.5rem, var(--space-page-inline)) !important;
+}
+.search-results .people-results {
+  width: 100% !important;
+  margin-inline: 0 !important;
+  padding-inline: max(1.5rem, var(--space-page-inline)) !important;
+}
+.search-results .cinematic-row-track { padding-bottom: 1.5rem !important; }
 .search-page > .search-start--history {
   width: fit-content !important;
   max-width: calc(100% - (2 * var(--space-page-inline)));
@@ -1298,8 +1498,8 @@ html[data-interface-theme="cinematic"] .search-empty { background: var(--search-
   padding: .75rem .8rem;
   border-color: rgba(255, 255, 255, .09);
   border-radius: 1rem;
-  background: rgba(17, 20, 26, .62);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .045), 0 12px 34px rgba(0, 0, 0, .2);
+  background: linear-gradient(105deg, rgba(255,255,255,.13), rgba(255,255,255,.075));
+  box-shadow: inset 0 1px rgba(255,255,255,.11), 0 10px 28px rgba(0,0,0,.12);
 }
 .search-start--history .search-section-heading {
   align-items: center;
@@ -1333,8 +1533,8 @@ html[data-interface-theme="cinematic"] .search-empty { background: var(--search-
 }
 
 html[data-theme-background="oled"] .search-page {
-  --search-surface: #050505;
-  --search-surface-raised: #0a0a0a;
+  --search-surface: linear-gradient(105deg, rgba(255,255,255,.09), rgba(255,255,255,.045));
+  --search-surface-raised: linear-gradient(105deg, rgba(255,255,255,.16), rgba(255,255,255,.08));
   --search-border: rgba(255, 255, 255, .11);
 }
 html[data-theme-background="oled"] .global-search__input { background: #080808; }
@@ -1343,7 +1543,7 @@ html[data-theme-background="oled"] .global-search__input { background: #080808; 
   .search-overview { padding: 1.2rem; }
   .people-results { padding-inline: 1.25rem; }
   .people-results__grid,
-  html[data-interface-theme="cinematic"] .people-results__grid { grid-template-columns: 1fr; }
+  html[data-interface-theme="cinematic"] .people-results__grid { grid-auto-columns: minmax(10rem, 62vw); }
 }
 
 /* Watch Together follows the selected interface instead of rendering as an
@@ -1927,76 +2127,191 @@ html[data-platform="linux"] .global-search__input {
 
 @media (max-width: 700px) { .cinematic-profile-switcher { display: none; } }
 
-/* Sidebar profile control uses the same compact-to-expanded glass interaction
-   as the cinematic top navigation, while its menu unfolds upward from the
-   footer so it never falls outside the application window. */
+/* Shared liquid-glass material for pinned and floating sidebars. The tint is
+   deliberately translucent so the backdrop blur remains visible over art. */
+.app-sidebar--glass {
+  isolation: isolate;
+  background: rgba(15, 18, 22, .34);
+  /* This isolated surface intentionally opts back into blur on Linux. The
+     app-wide fallback disables it elsewhere, but containment keeps this
+     small navigation layer from triggering full-window recomposition. */
+  backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+}
+
+.app-sidebar--glass::before {
+  content: none;
+}
+
+.app-sidebar--glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+
+/* The title bar owns the top 32px in the desktop build. Keep the floating
+   navigation below it so its pill never becomes a broken full-width strip. */
+.app-sidebar--floating {
+  position: absolute;
+  top: calc(var(--window-chrome-height) + 1rem) !important;
+  left: 1rem !important;
+  max-width: calc(100vw - 2rem);
+  /* Keep the expanding glass surface in its own paint/layout boundary. This
+     prevents WebKitGTK from promoting its height into a viewport-wide layer. */
+  contain: layout paint;
+}
+
+/* Profile switching uses the same full-width glass-card language as Settings. */
 .sidebar-profile-switcher {
   position: relative;
   display: flex;
-  width: 2.5rem;
+  width: 100%;
   max-width: 100%;
-  transition: width var(--duration-fast) var(--ease-out-expo);
 }
-.sidebar-profile-switcher:hover,
-.sidebar-profile-switcher:focus-within,
-.sidebar-profile-switcher[data-open] { width: 100%; }
 .sidebar-profile-trigger {
   display: flex;
   width: 100%;
-  height: 2.5rem;
-  min-height: 0;
+  min-height: 3.5rem;
   align-items: center;
-  gap: 0;
-  overflow: hidden;
-  padding: .25rem;
-  border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, .055);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .16), inset 0 -1px rgba(255, 255, 255, .04);
-  color: rgba(255, 255, 255, .86);
-  backdrop-filter: blur(28px) saturate(1.5);
-  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  gap: .65rem;
+  padding: .45rem .55rem;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: .9rem;
+  background: rgba(255, 255, 255, .085);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 8px 22px rgba(0, 0, 0, .12);
+  color: rgba(255, 255, 255, .92);
   cursor: pointer;
-  transition: gap var(--duration-fast) var(--ease-standard), padding var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard);
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
 }
 .sidebar-profile-trigger:hover,
 .sidebar-profile-trigger:focus-visible,
-.sidebar-profile-trigger[aria-expanded='true'] { gap: .5rem; padding-right: .7rem; background-color: rgba(255, 255, 255, .1); outline: none; }
-.sidebar-profile-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; font-weight: 650; opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard); }
-.sidebar-profile-chevron { flex: 0 0 auto; color: rgba(255, 255, 255, .45); opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard); }
-.sidebar-profile-trigger:hover .sidebar-profile-name,
-.sidebar-profile-trigger:focus-visible .sidebar-profile-name,
-.sidebar-profile-trigger[aria-expanded='true'] .sidebar-profile-name,
-.sidebar-profile-trigger:hover .sidebar-profile-chevron,
-.sidebar-profile-trigger:focus-visible .sidebar-profile-chevron,
-.sidebar-profile-trigger[aria-expanded='true'] .sidebar-profile-chevron { opacity: 1; }
+.sidebar-profile-trigger[aria-expanded='true'] { border-color: rgba(255, 255, 255, .30); background: rgba(255, 255, 255, .16); outline: none; transform: translateX(.1rem); }
+.sidebar-profile-trigger__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.15; }
+.sidebar-profile-trigger__copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; font-weight: 700; }
+.sidebar-profile-trigger__copy small { margin-top: .22rem; color: rgba(255, 255, 255, .46); font-size: .64rem; font-weight: 500; }
+.sidebar-profile-chevron { flex: 0 0 auto; color: rgba(255, 255, 255, .5); transition: transform var(--duration-fast) var(--ease-standard); }
 .sidebar-profile-trigger[aria-expanded='true'] .sidebar-profile-chevron { transform: rotate(180deg); }
 .sidebar-profile-menu {
-  position: absolute;
-  bottom: calc(100% + .2rem);
-  left: 0;
-  z-index: 50;
-  width: 100%;
-  overflow: hidden;
-  padding: .375rem;
-  border: 1px solid rgba(255, 255, 255, .2);
-  border-radius: var(--radius-xl);
-  background-color: rgba(255, 255, 255, .075);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .2), inset 0 -1px rgba(255, 255, 255, .04), 0 14px 36px rgba(0, 0, 0, .28);
-  backdrop-filter: blur(32px) saturate(1.55);
-  -webkit-backdrop-filter: blur(32px) saturate(1.55);
-  transform-origin: bottom center;
+  position: fixed;
+  z-index: 10000;
+  width: 17rem;
+  padding: .55rem;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 1.2rem;
+  background: rgba(18, 21, 26, .48);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .25), inset 1px 0 rgba(255, 255, 255, .08), 0 20px 55px rgba(0, 0, 0, .42);
+  backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
+  -webkit-backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
+  transform-origin: bottom left;
   animation: sidebar-profile-menu-unfold 220ms var(--ease-out-expo) 45ms both;
 }
+
+.sidebar-profile-menu__label {
+  padding: .3rem .45rem .5rem;
+  color: rgba(255, 255, 255, .42);
+  font-size: .63rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
 .sidebar-profile-menu-item,
-.sidebar-profile-manage { display: flex; width: 100%; min-height: 2.5rem; align-items: center; gap: .55rem; padding: .45rem .5rem; border: 0; border-radius: .55rem; background: transparent; color: rgba(255, 255, 255, .76); font-size: .78rem; font-weight: 600; text-align: left; cursor: pointer; }
+.sidebar-profile-manage {
+  display: flex;
+  width: 100%;
+  min-height: 3.75rem;
+  align-items: center;
+  gap: .7rem;
+  padding: .55rem .65rem;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: .9rem;
+  background: rgba(255, 255, 255, .085);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .1);
+  color: rgba(255, 255, 255, .92);
+  font-size: .82rem;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.sidebar-profile-menu-item + .sidebar-profile-menu-item { margin-top: .4rem; }
 .sidebar-profile-menu-item:hover,
 .sidebar-profile-menu-item:focus-visible,
 .sidebar-profile-manage:hover,
-.sidebar-profile-manage:focus-visible { background: var(--state-hover-bg); color: #fff; outline: none; }
-.sidebar-profile-manage { margin-top: .3rem; border-top: 1px solid rgba(255, 255, 255, .12); padding-top: .55rem; }
-@keyframes sidebar-profile-menu-unfold { from { opacity: 0; clip-path: inset(100% 0 0 0 round var(--radius-xl)); transform: translateY(.2rem); } to { opacity: 1; clip-path: inset(0 0 0 0 round var(--radius-xl)); transform: translateY(0); } }
+.sidebar-profile-manage:focus-visible {
+  outline: none;
+  border-color: rgba(255, 255, 255, .32);
+  background: rgba(255, 255, 255, .16);
+  color: #fff;
+  transform: translateX(.15rem);
+}
+.sidebar-profile-menu-item:disabled { cursor: wait; opacity: .72; }
+.sidebar-profile-menu-item__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.2; }
+.sidebar-profile-menu-item__copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-profile-menu-item__copy small { margin-top: .2rem; color: rgba(255, 255, 255, .48); font-size: .66rem; font-weight: 500; }
+.sidebar-profile-menu-item__check,
+.sidebar-profile-menu-item__chevron { flex: 0 0 auto; color: rgba(255, 255, 255, .55); font-size: 1.1rem; }
+.sidebar-profile-menu-item__check { display: grid; width: 1.35rem; height: 1.35rem; place-items: center; border-radius: 50%; background: rgba(255, 255, 255, .14); color: #fff; font-size: .7rem; }
+.sidebar-profile-manage { margin-top: .55rem; }
+.sidebar-profile-manage__icon { display: grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; border-radius: .65rem; background: linear-gradient(145deg, #7a8cff, #5368d7); box-shadow: inset 0 1px rgba(255, 255, 255, .32); }
+.sidebar-profile-manage__icon svg { width: 1.15rem; height: 1.15rem; }
+@keyframes sidebar-profile-menu-unfold { from { opacity: 0; clip-path: inset(0 100% 0 0 round 1.2rem); transform: translateX(-.25rem) scale(.98); } to { opacity: 1; clip-path: inset(0 0 0 0 round 1.2rem); transform: translateX(0) scale(1); } }
+
+/* Narrow exception to the Linux no-blur fallback. Higher specificity is
+   required because that performance rule is intentionally !important. */
+html[data-platform="linux"] .app-sidebar--glass {
+  backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+}
+html[data-platform="linux"] .sidebar-profile-menu {
+  backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
+  -webkit-backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
+}
 @media (prefers-reduced-motion: reduce) { .sidebar-profile-menu { animation: none; } .sidebar-profile-switcher, .sidebar-profile-trigger { transition: none; } }
+
+/* Poster and episode context menus share the sidebar's neutral liquid-glass
+   material and Settings-style action rows. */
+.context-menu-glass {
+  isolation: isolate;
+  background: rgba(15, 18, 22, .46);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 24px 60px rgba(0, 0, 0, .48);
+  backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+}
+
+.context-menu-glass > .relative > div:not(:first-child) {
+  border-color: rgba(255, 255, 255, .10);
+}
+
+.context-menu-glass button {
+  min-height: 2.5rem;
+  border: 1px solid transparent;
+  border-radius: .75rem;
+  color: rgba(255, 255, 255, .9);
+  transition: background-color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.context-menu-glass button:hover,
+.context-menu-glass button:focus-visible {
+  outline: none;
+  border-color: rgba(255, 255, 255, .16);
+  background: rgba(255, 255, 255, .11);
+  transform: translateX(.1rem);
+}
+
+.context-menu-glass button:active { transform: scale(.985); }
+
+.context-menu-glass button:disabled {
+  transform: none;
+  cursor: wait;
+}
+
+html[data-platform="linux"] .context-menu-glass {
+  backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(46px) saturate(175%) contrast(105%) !important;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .cinematic-nav-indicator {
@@ -2076,6 +2391,14 @@ html[data-interface-theme="cinematic"] .media-row--ranked .cinematic-row-track {
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--ranked .cinematic-row-track,
 html[data-interface-theme="cinematic"] [data-home-card-motion="off"] .media-row--ranked .cinematic-row-track {
+  padding-bottom: 1rem !important;
+}
+/* With card-focus animation disabled there is no expandable metadata panel to
+   reserve space for. Poster, landscape, and feature shelves previously kept
+   the full focus-detail band while ranked shelves collapsed it, leaving a
+   noticeably larger blank gap between the ordinary Home rows. Keep every
+   static shelf on the same compact rhythm as a ranked shelf. */
+html[data-interface-theme="cinematic"] [data-home-card-motion="off"] .cinematic-row-track {
   padding-bottom: 1rem !important;
 }
 .cinematic-row-track > button { overflow-anchor: none; }
@@ -2178,6 +2501,12 @@ html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="o
   padding-bottom: clamp(.75rem, 1.5vh, 1.5rem);
   pointer-events: none;
   text-shadow: 0 2px 14px rgba(0, 0, 0, .9);
+}
+/* The static Fixed Focus hero uses a transparent overlay above the shelf.
+   Let only its actual controls receive input, leaving the artwork itself out
+   of the row's pointer path. */
+html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="off"] .fixed-cinematic-hero .fixed-cinematic-static-content button {
+  pointer-events: auto;
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home[data-home-card-motion="off"] .fixed-cinematic-static-content .hero-title-logo {
   width: auto;
@@ -2927,16 +3256,26 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
 }
 
 /* When card-focus animation is disabled, retain a small direct-manipulation
-   response: the artwork follows the cursor without changing the shelf layout,
-   starting trailers, or expanding neighbouring cards. */
+   response without changing the shelf layout, starting trailers, or expanding
+   neighbouring cards. A soft lift gives the pointer-follow transform a stable
+   hover target instead of making it snap between raw cursor positions. */
 [data-home-card-motion="off"] .media-row button[data-mouse-follow] > [data-hero-viewport] {
-  transform: perspective(850px) translate3d(var(--mouse-card-shift-x, 0), var(--mouse-card-shift-y, 0), 0) rotateX(var(--mouse-card-tilt-x, 0deg)) rotateY(var(--mouse-card-tilt-y, 0deg)) !important;
+  --mouse-card-hover-lift: 0px;
+  --mouse-card-hover-scale: 1;
+  transform: perspective(850px) translate3d(var(--mouse-card-shift-x, 0px), calc(var(--mouse-card-shift-y, 0px) + var(--mouse-card-hover-lift)), 0) scale(var(--mouse-card-hover-scale)) rotateX(var(--mouse-card-tilt-x, 0deg)) rotateY(var(--mouse-card-tilt-y, 0deg)) !important;
   transform-origin: center;
-  transition: transform 80ms linear, border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard) !important;
+  backface-visibility: hidden;
+  transition: transform 180ms cubic-bezier(.22, 1, .36, 1), border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard) !important;
   will-change: transform;
 }
+[data-home-card-motion="off"] .media-row button[data-mouse-follow]:hover > [data-hero-viewport],
+[data-home-card-motion="off"] .media-row button[data-mouse-follow]:focus-visible > [data-hero-viewport] {
+  --mouse-card-hover-lift: -3px;
+  --mouse-card-hover-scale: 1.018;
+}
 [data-home-card-motion="off"] .media-row button[data-mouse-follow]:not(:hover) > [data-hero-viewport] {
-  transition-duration: 280ms !important;
+  transition-duration: 300ms !important;
+  transition-timing-function: cubic-bezier(.16, 1, .3, 1) !important;
 }
 
 /* Dynamic Banner Feature overlays stay mounted at all times. During a real
@@ -3075,6 +3414,104 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   max-width: min(90%, 34rem);
   object-fit: contain;
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.6));
+}
+
+/* TV-style hero actions: one unmistakable primary action with its utility
+   actions collected beneath it, instead of a row of equally weighted pills. */
+.detail-hero-actions {
+  display: grid;
+  width: min(100%, 29rem);
+  gap: .5rem;
+}
+
+.detail-hero-actions__play {
+  width: 100%;
+  min-height: 3.65rem;
+  justify-content: center;
+  border-radius: .78rem !important;
+  border-color: rgba(255, 255, 255, .86) !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .98), rgba(226, 226, 234, .92)) !important;
+  color: #0a0a0b !important;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .32);
+}
+
+.detail-hero-actions__play:hover {
+  background: #fff !important;
+  box-shadow: 0 15px 34px rgba(0, 0, 0, .42);
+}
+
+/* Home only needs a quiet route into the richer detail view. Keep this
+   deliberately lighter than the detail hero's primary playback control. */
+.home-hero-actions {
+  display: flex;
+}
+
+.home-hero-details-action {
+  min-height: 2.5rem !important;
+  padding-inline: .65rem !important;
+  border-color: transparent !important;
+  border-radius: .55rem !important;
+  background: transparent !important;
+  color: rgba(255, 255, 255, .72) !important;
+  box-shadow: none !important;
+  font-size: .875rem !important;
+  font-weight: 600 !important;
+}
+
+.home-hero-details-action:hover {
+  border-color: rgba(255, 255, 255, .08) !important;
+  background: rgba(255, 255, 255, .08) !important;
+  color: #fff !important;
+}
+
+.detail-hero-actions__secondary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  gap: .45rem;
+}
+
+.detail-hero-actions__watchlist {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  gap: 0 !important;
+}
+
+.detail-hero-actions__watchlist > button,
+.detail-hero-actions__mark > button,
+.detail-hero-actions__room {
+  width: 100%;
+  min-height: 3.15rem !important;
+  border-color: rgba(255, 255, 255, .09) !important;
+  background: rgba(255, 255, 255, .055) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .055);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+
+.detail-hero-actions__watchlist > button:hover,
+.detail-hero-actions__mark > button:hover,
+.detail-hero-actions__room:hover {
+  border-color: rgba(255, 255, 255, .17) !important;
+  background: rgba(255, 255, 255, .10) !important;
+}
+
+.detail-hero-actions__watchlist > button:first-child {
+  width: 100% !important;
+  border-radius: .8rem !important;
+}
+
+.detail-hero-actions__mark > button {
+  width: 100%;
+  padding-inline: .85rem;
+  border-radius: .8rem !important;
+}
+
+.detail-hero-actions__room {
+  grid-column: 1 / -1;
+  padding-inline: .85rem !important;
+  border-radius: .8rem !important;
 }
 
 .detail-episodes-section {

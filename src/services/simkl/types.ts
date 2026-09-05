@@ -103,6 +103,12 @@ export interface SimklEpisode {
   season: number
   episode: number
   watchedAt?: string
+  /**
+   * Simkl's native anime season numbering can differ from TVDB's. The
+   * `full_anime_seasons` history response includes this canonical mapping.
+   */
+  tvdbSeason?: number
+  tvdbEpisode?: number
 }
 
 export interface SimklShow {

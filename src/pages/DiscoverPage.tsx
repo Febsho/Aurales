@@ -657,7 +657,7 @@ export default function DiscoverPage() {
     const reset=window.setTimeout(()=>{setHeroTrailer(null);setTrailerOpen(false)},0)
     if(!heroItem)return
     let cancelled=false
-    getTrailerSource({type:heroItem.type,tmdbId:heroItem.tmdbId,title:heroItem.title,year:heroItem.year}).then((trailer)=>{if(!cancelled)setHeroTrailer(trailer)}).catch(()=>undefined)
+    getTrailerSource({type:heroItem.type,tmdbId:heroItem.tmdbId,imdbId:heroItem.imdbId,title:heroItem.title,year:heroItem.year}).then((trailer)=>{if(!cancelled)setHeroTrailer(trailer)}).catch(()=>undefined)
     return()=>{cancelled=true;window.clearTimeout(reset)}
   },[heroItem])
 
