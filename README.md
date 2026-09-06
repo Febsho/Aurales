@@ -25,9 +25,9 @@ Aurales is an elegant, offline-first desktop media hub that brings your catalogs
 
 Aurales is built for people who want a polished place to decide what to watch and keep their viewing history consistent:
 
-| Discover | Watch | Keep everything in sync |
+| Find something | Watch it | Keep it organized |
 | :--- | :--- | :--- |
-| Browse a cinematic home screen, search across multiple metadata providers, and get recommendations shaped by moods and genres. | Open title details, choose streams from Stremio addons, resume playback, and use embedded or native **mpv** playback. | Sync history, watchlists, ratings, and progress with Simkl, Trakt, AniList, MDBList, and PMDB. |
+| Browse Home, Trending, Upcoming, and Discover. Search movies, series, anime, and addon catalogs. | Choose a stream, resume playback, use subtitles, and play videos with embedded or native **mpv**. | Use profiles, local watchlists, custom shelves, provider lists, and optional sync across devices. |
 
 ### See it in action
 
@@ -52,56 +52,54 @@ Aurales is built for people who want a polished place to decide what to watch an
 
 ### Why Aurales
 
-- **One home for every service** — Combine streaming links, metadata, watchlists, and history without jumping between apps.
-- **Discovery that feels personal** — Use mood, genre, quality, and recommendation modes such as *For You*, *Hidden Gems*, and *Quick Watch*.
-- **A desktop-first player** — Pick the best available stream, resume where you stopped, skip intros, and tune subtitle presentation.
-- **Built for groups and anime fans** — Watch Together rooms, real-time chat, drift correction, episode-level anime tracking, and cross-ID matching.
+- **One place to browse** — Bring metadata, lists, recommendations, and playback together in one desktop app.
+- **Flexible discovery** — Browse by mood, genre, type, rating, streaming service, or personal taste.
+- **A full desktop player** — Resume videos, choose streams, skip intros and credits, and customize subtitles.
+- **Separate profiles** — Keep each person’s history, lists, recommendations, and playback settings separate.
 
 ## Features
 
 ### 🔍 Discovery & Search
-- **Spotlight Hero Banner** — Rotating spotlight with user/critic ratings, detailed synopsis, cast lists, and backdrop art.
-- **Mood-Based Discovery** — Curated categories (e.g., *"Heists & Cons"*, *"Mind Benders"*, *"Slice of Life"*) for Movies, Series, and Anime.
-- **Advanced Filtering** — Narrow down by genre (Adventure, Fantasy, Horror, Sci-Fi, etc.) or by streaming network/platform (Netflix, Disney+, Prime Video, HBO Max, Crunchyroll, etc.).
-- **Multi-Engine Search** — Query TMDB, TheTVDB, TVmaze, Trakt, MDBList, Cinemeta, and MyAnimeList (MAL) simultaneously.
-- **AI-Powered Search** — Optional natural language query interpretation powered by OpenRouter AI.
+- **Home, Trending, and Upcoming** — See spotlight titles, continue watching, popular picks, and upcoming releases.
+- **Discover** — Browse Movies, Series, and Anime by mood, genre, rating, and recommendation mode.
+- **Search sources** — Choose from TMDB, TheTVDB, Trakt, MDBList, TVmaze, Cinemeta, or MAL/Jikan. Installed addon catalogs can appear in search too.
+- **Optional AI search** — Connect OpenRouter to search with natural-language requests.
 
 ### 🎬 Streaming & Playback
-- **Stremio Addon Ecosystem** — Install community addons via URL to fetch streams, additional catalogs, metadata, and subtitles.
-- **Stream Selection** — Choose from multiple available streams with quality, codec, audio channels, and file size details.
-- **Native & Embedded mpv Player** — Full-featured desktop player with hardware acceleration, available as an inline embedded window or standard external overlay.
-- **Intro/Outro Auto-Skip** — Skip intros and credits automatically using integration with the crowd-sourced **IntroDB** database.
-- **Resume Playback** — Keep track of your progress and resume from where you left off across all media.
+- **Stremio addons** — Install addon URLs to add streams, catalogs, metadata, and subtitles.
+- **Stream picker** — Compare available streams and see details such as quality, codec, audio, and file size when provided.
+- **mpv playback** — Use the embedded player or a native mpv window with hardware acceleration.
+- **Resume and skip** — Resume from saved positions and skip intros, recaps, and credits when IntroDB data is available.
+- **Playback tools** — Use timeline previews, stream health checks, subtitle tracks, and configurable player controls.
 
 ### 🔄 Watch Tracking & Sync
-Aurales synchronizes your watch history, watchlist, rating, and current progress across multiple tracking providers:
+- **Connected services** — Link Trakt, Simkl, AniList, MDBList, or PMDB.
+- **Progress and scrobbling** — Save watched status, resume positions, and playback activity to the services you enable.
+- **Lists and ratings** — Browse connected watchlists, account lists, public lists, and ratings where the provider supports them.
+- **Provider controls** — Choose which services are used for watched checkmarks, resume data, and scrobbling.
+- **Aurales Sync** — Optionally sync profiles, settings, and connected services across devices.
 
-| Service | Watch History | Watchlist | Scrobbling | Continue Watching |
-| :--- | :---: | :---: | :---: | :---: |
-| **Simkl** | ✓ | ✓ | ✓ | ✓ |
-| **Trakt** | ✓ | ✓ | ✓ | ✓ |
-| **AniList** (Anime) | ✓ | ✓ | ✓ | ✓ |
-| **MDBList** | ✓ | ✓ | ✓ | ✓ |
-| **PMDB** | ✓ | ✓ | ✓ | ✓ |
+### 📂 Library & Home layout
+- **Custom shelves** — Add addon catalogs, provider lists, local watchlists, upcoming releases, and smart collections to Home.
+- **Drag and drop** — Reorder shelves and choose poster, landscape, compact, or continue-watching layouts.
+- **Collections** — Build dynamic TMDB collections with filters such as genre, rating, and streaming service.
+- **Profiles** — Keep library choices and viewing preferences separate for each profile.
 
-### 📂 Library & Layout customization
-- **Customizable Home Shelves** — Drag-and-drop rows to curate your home screen (spotlight banners, poster carousels, landscape episode rows, compact lists).
-- **Shelf Management** — Add, remove, rename, and reorder shelves directly from the settings.
-- **Unified Library** — Browse watchlists and custom collections from all synced accounts in one interface.
+### 💬 Watch Together
+- **Shared rooms** — Create or join a room with an invite link.
+- **Synchronized playback** — Play, pause, and seek together while each person uses their own stream.
+- **Room chat** — Send messages and show chat bubbles during playback.
 
-### 💬 Watch Together (Co-Viewing)
-- **Synchronized Viewing** — Create or join co-watching rooms using simple invite codes.
-- **Real-Time Interactive Chat** — Text chat with overlay bubbles during playback.
-- **Drift Correction** — Under-the-hood synchronization that adjusts playback speed to correct for latency and keep everyone in sync.
+### 🌟 Anime
+- **Dedicated Anime tab** — Keep anime separate from regular Movies and Series browsing.
+- **Episode tracking** — Track episodes and progress with AniList, Simkl, Trakt, or local storage.
+- **Cross-provider matching** — Match anime across MAL, AniList, TMDB, TheTVDB, and other metadata sources.
+- **Season support** — Handle regular seasons, specials, OVAs, and unaired episodes.
 
-### 🌟 Anime Support
-- **Dedicated Anime Mode** — Sync watch progress with AniList and Simkl with episode-level precision.
-- **Cross-ID Resolution** — Automatic mapping between MAL, AniList, TMDB, and TheTVDB identifiers.
-- **Moods & Season Handler** — Anime-specific discovery tabs and configuration for specials, ova, or unaired seasons.
-
-### 🛠️ Subtitles & Real-Time AI Translation
-- **Multi-Source Subtitles** — Select from embedded tracks, addon-provided subtitle catalogs, or download external SRT files.
-- **Real-Time AI Translation** — Translate any active subtitle track on the fly into your target language using OpenRouter models (e.g., Gemini, LLaMA) with context-aware lookahead.
+### 🛠️ Subtitles & AI translation
+- **Multiple subtitle sources** — Use embedded tracks, addon subtitles, or external SRT files.
+- **Subtitle styling** — Change size, color, background, outline, position, and other display options.
+- **Optional live translation** — Use an OpenRouter model to translate the active subtitle track while you watch.
 
 ## Download & Install
 
