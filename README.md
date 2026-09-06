@@ -57,6 +57,52 @@ Aurales is built for people who want a polished place to decide what to watch an
 - **A desktop-first player** — Pick the best available stream, resume where you stopped, skip intros, and tune subtitle presentation.
 - **Built for groups and anime fans** — Watch Together rooms, real-time chat, drift correction, episode-level anime tracking, and cross-ID matching.
 
+## Features
+
+### 🔍 Discovery & Search
+- **Spotlight Hero Banner** — Rotating spotlight with user/critic ratings, detailed synopsis, cast lists, and backdrop art.
+- **Mood-Based Discovery** — Curated categories (e.g., *"Heists & Cons"*, *"Mind Benders"*, *"Slice of Life"*) for Movies, Series, and Anime.
+- **Advanced Filtering** — Narrow down by genre (Adventure, Fantasy, Horror, Sci-Fi, etc.) or by streaming network/platform (Netflix, Disney+, Prime Video, HBO Max, Crunchyroll, etc.).
+- **Multi-Engine Search** — Query TMDB, TheTVDB, TVmaze, Trakt, MDBList, Cinemeta, and MyAnimeList (MAL) simultaneously.
+- **AI-Powered Search** — Optional natural language query interpretation powered by OpenRouter AI.
+
+### 🎬 Streaming & Playback
+- **Stremio Addon Ecosystem** — Install community addons via URL to fetch streams, additional catalogs, metadata, and subtitles.
+- **Stream Selection** — Choose from multiple available streams with quality, codec, audio channels, and file size details.
+- **Native & Embedded mpv Player** — Full-featured desktop player with hardware acceleration, available as an inline embedded window or standard external overlay.
+- **Intro/Outro Auto-Skip** — Skip intros and credits automatically using integration with the crowd-sourced **IntroDB** database.
+- **Resume Playback** — Keep track of your progress and resume from where you left off across all media.
+
+### 🔄 Watch Tracking & Sync
+Aurales synchronizes your watch history, watchlist, rating, and current progress across multiple tracking providers:
+
+| Service | Watch History | Watchlist | Scrobbling | Continue Watching |
+| :--- | :---: | :---: | :---: | :---: |
+| **Simkl** | ✓ | ✓ | ✓ | ✓ |
+| **Trakt** | ✓ | ✓ | ✓ | ✓ |
+| **AniList** (Anime) | ✓ | ✓ | ✓ | ✓ |
+| **MDBList** | ✓ | ✓ | ✓ | ✓ |
+| **PMDB** | ✓ | ✓ | ✓ | ✓ |
+
+### 📂 Library & Layout customization
+- **Customizable Home Shelves** — Drag-and-drop rows to curate your home screen (spotlight banners, poster carousels, landscape episode rows, compact lists).
+- **Shelf Management** — Add, remove, rename, and reorder shelves directly from the settings.
+- **Unified Library** — Browse watchlists and custom collections from all synced accounts in one interface.
+
+### 💬 Watch Together (Co-Viewing)
+- **Synchronized Viewing** — Create or join co-watching rooms using simple invite codes.
+- **Real-Time Interactive Chat** — Text chat with overlay bubbles during playback.
+- **Drift Correction** — Under-the-hood synchronization that adjusts playback speed to correct for latency and keep everyone in sync.
+
+### 🌟 Anime Support
+- **Dedicated Anime Mode** — Sync watch progress with AniList and Simkl with episode-level precision.
+- **Cross-ID Resolution** — Automatic mapping between MAL, AniList, TMDB, and TheTVDB identifiers.
+- **Moods & Season Handler** — Anime-specific discovery tabs and configuration for specials, ova, or unaired seasons.
+
+### 🛠️ Subtitles & Real-Time AI Translation
+- **Multi-Source Subtitles** — Select from embedded tracks, addon-provided subtitle catalogs, or download external SRT files.
+- **Real-Time AI Translation** — Translate any active subtitle track on the fly into your target language using OpenRouter models (e.g., Gemini, LLaMA) with context-aware lookahead.
+
 ## Download & Install
 
 Download version **0.3.7** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
@@ -146,52 +192,6 @@ To update the AppImage, run the `curl` command again with the new version number
 
 AppImage and Flatpak provide broad Linux coverage without publishing a separate package for every distribution. Native `.deb`, `.rpm`, Snap, and AUR packages can be added later if there is demand for package-manager integration.
 
-## Features
-
-### 🔍 Discovery & Search
-- **Spotlight Hero Banner** — Rotating spotlight with user/critic ratings, detailed synopsis, cast lists, and backdrop art.
-- **Mood-Based Discovery** — Curated categories (e.g., *"Heists & Cons"*, *"Mind Benders"*, *"Slice of Life"*) for Movies, Series, and Anime.
-- **Advanced Filtering** — Narrow down by genre (Adventure, Fantasy, Horror, Sci-Fi, etc.) or by streaming network/platform (Netflix, Disney+, Prime Video, HBO Max, Crunchyroll, etc.).
-- **Multi-Engine Search** — Query TMDB, TheTVDB, TVmaze, Trakt, MDBList, Cinemeta, and MyAnimeList (MAL) simultaneously.
-- **AI-Powered Search** — Optional natural language query interpretation powered by OpenRouter AI.
-
-### 🎬 Streaming & Playback
-- **Stremio Addon Ecosystem** — Install community addons via URL to fetch streams, additional catalogs, metadata, and subtitles.
-- **Stream Selection** — Choose from multiple available streams with quality, codec, audio channels, and file size details.
-- **Native & Embedded mpv Player** — Full-featured desktop player with hardware acceleration, available as an inline embedded window or standard external overlay.
-- **Intro/Outro Auto-Skip** — Skip intros and credits automatically using integration with the crowd-sourced **IntroDB** database.
-- **Resume Playback** — Keep track of your progress and resume from where you left off across all media.
-
-### 🔄 Watch Tracking & Sync
-Aurales synchronizes your watch history, watchlist, rating, and current progress across multiple tracking providers:
-
-| Service | Watch History | Watchlist | Scrobbling | Continue Watching |
-| :--- | :---: | :---: | :---: | :---: |
-| **Simkl** | ✓ | ✓ | ✓ | ✓ |
-| **Trakt** | ✓ | ✓ | ✓ | ✓ |
-| **AniList** (Anime) | ✓ | ✓ | ✓ | ✓ |
-| **MDBList** | ✓ | ✓ | ✓ | ✓ |
-| **PMDB** | ✓ | ✓ | ✓ | ✓ |
-
-### 📂 Library & Layout customization
-- **Customizable Home Shelves** — Drag-and-drop rows to curate your home screen (spotlight banners, poster carousels, landscape episode rows, compact lists).
-- **Shelf Management** — Add, remove, rename, and reorder shelves directly from the settings.
-- **Unified Library** — Browse watchlists and custom collections from all synced accounts in one interface.
-
-### 💬 Watch Together (Co-Viewing)
-- **Synchronized Viewing** — Create or join co-watching rooms using simple invite codes.
-- **Real-Time Interactive Chat** — Text chat with overlay bubbles during playback.
-- **Drift Correction** — Under-the-hood synchronization that adjusts playback speed to correct for latency and keep everyone in sync.
-
-### 🌟 Anime Support
-- **Dedicated Anime Mode** — Sync watch progress with AniList and Simkl with episode-level precision.
-- **Cross-ID Resolution** — Automatic mapping between MAL, AniList, TMDB, and TheTVDB identifiers.
-- **Moods & Season Handler** — Anime-specific discovery tabs and configuration for specials, ova, or unaired seasons.
-
-### 🛠️ Subtitles & Real-Time AI Translation
-- **Multi-Source Subtitles** — Select from embedded tracks, addon-provided subtitle catalogs, or download external SRT files.
-- **Real-Time AI Translation** — Translate any active subtitle track on the fly into your target language using OpenRouter models (e.g., Gemini, LLaMA) with context-aware lookahead.
-
 ---
 
 ## Tech Stack
@@ -203,24 +203,6 @@ Aurales synchronizes your watch history, watchlist, rating, and current progress
 | **Build System** | Vite 8, TypeScript |
 | **Media Player** | Native mpv + libmpv FFI (bundled in Windows, AppImage, and Flatpak releases) |
 | **Database & Cache** | SQLite (via rusqlite, static/bundled build) |
-
----
-
-## Companion Watch Together Server
-
-Aurales uses a lightweight WebSocket room coordinator server to manage co-watching rooms.
-
-The server source code is located in the [watch-together-server](./watch-together-server) subdirectory.
-
-### Running it locally:
-```bash
-cd watch-together-server
-npm install
-npm run dev
-```
-The server will boot at `http://localhost:3009` with WebSockets active at `ws://localhost:3009/ws`.
-
-For detailed deployment guides (Docker, Nginx reverse proxy, HTTPS Certbot, and Oracle cloud firewall setup), refer to the [Watch Together Server README](./watch-together-server/README.md).
 
 ---
 
