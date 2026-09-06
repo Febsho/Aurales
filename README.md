@@ -19,7 +19,43 @@
 
 ---
 
-Aurales is an elegant, offline-first desktop media hub that aggregates streaming metadata, handles watch status synchronization across major tracking services, supports the extensive Stremio addon ecosystem for streaming links, and utilizes a highly optimized embedded or native **mpv** window for flawless playback.
+Aurales is an elegant, offline-first desktop media hub that brings your catalogs, watch history, recommendations, and playback into one focused desktop experience.
+
+## Features at a glance
+
+Aurales is built for people who want a polished place to decide what to watch and keep their viewing history consistent:
+
+| Discover | Watch | Keep everything in sync |
+| :--- | :--- | :--- |
+| Browse a cinematic home screen, search across multiple metadata providers, and get recommendations shaped by moods and genres. | Open title details, choose streams from Stremio addons, resume playback, and use embedded or native **mpv** playback. | Sync history, watchlists, ratings, and progress with Simkl, Trakt, AniList, MDBList, and PMDB. |
+
+### See it in action
+
+<p align="center">
+  <img src="./public/screenshots/home.png" alt="Aurales home screen with spotlight hero and continue watching" width="49%" />
+  <img src="./public/screenshots/trending.png" alt="Aurales trending screen with ranked movies and series" width="49%" />
+</p>
+
+<p align="center">
+  <img src="./public/screenshots/title-details.png" alt="Aurales title details screen with ratings, cast, and resume playback" width="49%" />
+  <img src="./public/screenshots/episodes.png" alt="Aurales season and episode browser with watched states" width="49%" />
+</p>
+
+<p align="center">
+  <img src="./public/screenshots/settings.png" alt="Aurales settings with profiles, sync, accounts, addons, and preferences" width="49%" />
+  <img src="./public/screenshots/home-trending.png" alt="Aurales alternate home view with navigation and trending series" width="49%" />
+</p>
+
+<p align="center">
+  <img src="./public/screenshots/playback.png" alt="Aurales native media player with timeline and playback controls" width="82%" />
+</p>
+
+### Why Aurales
+
+- **One home for every service** — Combine streaming links, metadata, watchlists, and history without jumping between apps.
+- **Discovery that feels personal** — Use mood, genre, quality, and recommendation modes such as *For You*, *Hidden Gems*, and *Quick Watch*.
+- **A desktop-first player** — Pick the best available stream, resume where you stopped, skip intros, and tune subtitle presentation.
+- **Built for groups and anime fans** — Watch Together rooms, real-time chat, drift correction, episode-level anime tracking, and cross-ID matching.
 
 ## Download & Install
 
