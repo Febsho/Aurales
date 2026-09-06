@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SyncRecord } from './auralesSync'
+import type { SyncRecord } from './syncQueue'
 
 /**
  * WebKit gives localStorage roughly 5 MB per origin and throws

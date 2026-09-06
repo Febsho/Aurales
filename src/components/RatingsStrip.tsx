@@ -32,16 +32,33 @@ export default function RatingsStrip(props: RatingsStripProps) {
 
     if (props.episode != null && props.isAnime) {
       let cancelled = false
-      import('../services/jikan')
-        .then(({ getJikanEpisodeRating }) => getJikanEpisodeRating(props.malId, props.episode))
-        .then((score) => {
-          if (cancelled) return
-          const malEpisodeRating = score != null ? toMalRating(score) : null
-          setRatings(malEpisodeRating ? [malEpisodeRating] : imdbEpisodeRating ? [imdbEpisodeRating] : [])
-        })
-        .catch(() => {
-          if (!cancelled) setRatings(imdbEpisodeRating ? [imdbEpisodeRating] : [])
-        })
+      // IMDb is already attached to the episode by the season-level request.
+      // Show it immediately while MAL is being resolved, then replace it only
+      // when MAL has an actual per-episode score.
+      setRatings(imdbEpisodeRating ? [imdbEpisodeRating] : [])
+      const load = async () => {
+        const tvdbId = Number(String(props.tvdbId ?? '').replace(/^tvdb[-:]/i, ''))
+        const mapped = Number.isFinite(tvdbId) && props.season != null
+          ? await import('../services/animeLists')
+            .then(({ mapTvdbEpisodeToAnimeProvidersLocal }) => mapTvdbEpisodeToAnimeProvidersLocal(
+              tvdbId,
+              props.season!,
+              props.episode!,
+            ))
+            .catch(() => null)
+          : null
+        // A show-level MAL id normally represents the first cour. Never reuse
+        // it for later TVDB seasons when the season-specific mapping is absent.
+        const malId = mapped?.malId ?? (props.season === 1 ? props.malId : undefined)
+        const malEpisode = mapped?.episode ?? props.episode
+        const score = await import('../services/jikan')
+          .then(({ getJikanEpisodeRating }) => getJikanEpisodeRating(malId, malEpisode))
+          .catch(() => null)
+        if (cancelled) return
+        const malRating = score != null ? toMalRating(score) : null
+        setRatings(malRating ? [malRating] : imdbEpisodeRating ? [imdbEpisodeRating] : [])
+      }
+      void load()
       return () => { cancelled = true }
     }
 

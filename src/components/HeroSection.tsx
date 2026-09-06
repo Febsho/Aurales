@@ -195,7 +195,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (count <= 1) return
     if (scrolledAway) return
     if (heroTrailerPlaying) return
-    const id = setInterval(() => setActiveIndex((prev) => (prev + 1) % count), 8000)
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') setActiveIndex((prev) => (prev + 1) % count)
+    }, 8000)
     return () => clearInterval(id)
   }, [count, scrolledAway, heroTrailerPlaying])
 

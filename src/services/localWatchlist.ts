@@ -1,6 +1,6 @@
 import type { SearchResult } from '../types'
 import { profileStorageKey, PROFILE_CHANGED_EVENT } from './profiles'
-import { enqueueSyncRecord } from './sync/auralesSync'
+import { enqueueSyncRecord } from './sync/syncQueue'
 
 const STORAGE_KEY = 'aurales_local_watchlist_v1'
 

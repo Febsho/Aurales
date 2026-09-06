@@ -10,7 +10,7 @@ import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
 import { getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
-import { enqueueSyncRecord } from '../services/sync/auralesSync'
+import { enqueueSyncRecord } from '../services/sync/syncQueue'
 import { DEFAULT_BETTER_POSTERS_SETTINGS, type BetterPostersSettings } from '../services/betterPosters'
 
 function invalidateCatalogData(): void {

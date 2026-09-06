@@ -6,9 +6,11 @@ interface DetailLoadingStateProps {
   title?: string
   backdrop?: string
   poster?: string
+  error?: string
+  onRetry?: () => void
 }
 
-export default function DetailLoadingState({ logo, title, backdrop, poster }: DetailLoadingStateProps) {
+export default function DetailLoadingState({ logo, title, backdrop, poster, error, onRetry }: DetailLoadingStateProps) {
   const [logoFailed, setLogoFailed] = useState(false)
   const background = backdrop || poster
 
@@ -42,11 +44,14 @@ export default function DetailLoadingState({ logo, title, backdrop, poster }: De
           <h1 className="text-3xl font-black tracking-tight text-white/90 md:text-5xl">{title}</h1>
         ) : null}
 
-        <div
+        {error ? <div role="alert" className="flex flex-col items-center gap-4 text-white/80">
+          <p>{error}</p>
+          {onRetry && <button onClick={onRetry} className="rounded-lg bg-white/15 px-5 py-2 text-white hover:bg-white/25">Try again</button>}
+        </div> : <div
           className="h-7 w-7 animate-spin rounded-full border-2 border-white/15 border-t-accent"
           role="status"
           aria-label="Loading details"
-        />
+        />}
       </div>
     </div>
   )

@@ -2,7 +2,7 @@ import type { SearchResult } from '../../types'
 import { mediaKey } from './recommendationEngine'
 import type { RecommendationFeedback, RecommendationFeedbackKind } from './types'
 import { profileStorageKey } from '../profiles'
-import { enqueueSyncRecord } from '../sync/auralesSync'
+import { enqueueSyncRecord } from '../sync/syncQueue'
 
 const KEY = 'aurales_discovery_feedback_v1'
 export function loadRecommendationFeedback(): RecommendationFeedback[] { try { const value = JSON.parse(localStorage.getItem(profileStorageKey(KEY)) || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } }

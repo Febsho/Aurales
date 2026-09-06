@@ -16,6 +16,7 @@ const DEFAULT_ROWS: u32 = 10;
 const DEFAULT_QUALITY: u32 = 75;
 const DEFAULT_MAX_FFMPEG_WORKERS: u32 = 2;
 const SPRITE_CACHE_BUDGET_BYTES: u64 = 180 * 1024 * 1024;
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +86,15 @@ pub struct ScrubThumbnailResponse {
 #[serde(rename_all = "camelCase")]
 struct ThumbnailCacheUpdated {
     metadata: ThumbnailMetadata,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThumbnailFrameReady {
+    cache_key: String,
+    interval: u32,
+    index: u32,
+    path: String,
 }
 
 #[derive(Default)]
@@ -168,7 +178,10 @@ impl ThumbnailJobController {
             Ok(state) => state,
             Err(_) => return false,
         };
-        if state.shutdown || state.generated.contains(&index) || state.in_progress.contains(&index)
+        if state.shutdown
+            || state.generated.contains(&index)
+            || state.in_progress.contains(&index)
+            || state.failed.contains(&index)
         {
             state.cache_hits += 1;
             return false;
@@ -312,11 +325,20 @@ impl ThumbnailJobController {
 }
 
 static ACTIVE_JOBS: OnceLock<Mutex<HashMap<String, Arc<ThumbnailJobController>>>> = OnceLock::new();
+static BACKGROUND_GENERATIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SPRITE_MEMORY_CACHE: OnceLock<Mutex<SpriteMemoryCache>> = OnceLock::new();
 static THUMBNAIL_DEBUG_STATE: OnceLock<Mutex<ThumbnailDebugState>> = OnceLock::new();
 
 fn active_jobs() -> &'static Mutex<HashMap<String, Arc<ThumbnailJobController>>> {
     ACTIVE_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn background_generations() -> &'static Mutex<HashSet<String>> {
+    BACKGROUND_GENERATIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn active_job_key(cache_key: &str, interval: u32) -> String {
+    format!("{cache_key}:interval-{interval}")
 }
 
 fn sprite_memory_cache() -> &'static Mutex<SpriteMemoryCache> {
@@ -470,12 +492,22 @@ pub fn start_thumbnail_generation(
     let cache_key = sanitize_cache_key(&request.cache_key);
     let cache_dir = thumbnail_cache_dir(&app, &cache_key)?;
     fs::create_dir_all(&cache_dir).map_err(|e| format!("create thumbnail cache: {e}"))?;
-    debug_reset(&cache_key, &cache_dir);
     let job_request = ThumbnailStartRequest {
         cache_key: cache_key.clone(),
         ..request
     };
-    let config = thumbnail_config(&job_request);
+    let fast_interval = clamp_interval(job_request.fast_interval.unwrap_or(60));
+    let refined_interval = clamp_interval(
+        job_request
+            .refined_interval
+            .or(job_request.thumbnail_interval)
+            .unwrap_or(5),
+    );
+    let mut refined_request = job_request.clone();
+    refined_request.fast_interval = None;
+    refined_request.refined_interval = None;
+    refined_request.thumbnail_interval = Some(refined_interval);
+    let config = thumbnail_config(&refined_request);
     let (pass_dir, frame_dir, sprite_dir) = pass_paths(&cache_dir, config.interval);
     fs::create_dir_all(&frame_dir).map_err(|e| format!("create thumbnail frame dir: {e}"))?;
     fs::create_dir_all(&sprite_dir).map_err(|e| format!("create thumbnail sprite dir: {e}"))?;
@@ -483,23 +515,9 @@ pub fn start_thumbnail_generation(
         state.output_dir = Some(pass_dir.to_string_lossy().to_string());
     });
 
-    if let Some(metadata) = read_metadata(&cache_dir) {
-        if metadata.status == "ready" && metadata.interval == config.interval {
-            debug_event(
-                "cache-hit",
-                format!(
-                    "ready metadata loaded interval={} sprites={} thumbnails={}",
-                    metadata.interval,
-                    metadata.sprites.len(),
-                    metadata.thumbnail_count
-                ),
-            );
-            prefetch_first_sprites(&metadata);
-            return Ok(Some(metadata));
-        }
-    }
-
-    let existing_count = scan_generated_indices(&frame_dir)
+    let existing_indices = scan_generated_indices(&frame_dir);
+    let existing_generated = existing_indices.len() as u32;
+    let existing_count = existing_indices
         .iter()
         .copied()
         .max()
@@ -507,7 +525,7 @@ pub fn start_thumbnail_generation(
         .unwrap_or(0);
     publish_metadata(
         &app,
-        &job_request,
+        &refined_request,
         &cache_dir,
         &frame_dir,
         &sprite_dir,
@@ -517,13 +535,105 @@ pub fn start_thumbnail_generation(
         config.columns,
         config.rows,
         existing_count,
-        if existing_count > 0 { "idle" } else { "empty" },
+        if existing_generated >= config.max_count {
+            "ready"
+        } else if existing_count > 0 {
+            "generating"
+        } else {
+            "empty"
+        },
     );
-    debug_update(|state| {
-        state.active = false;
-        state.current_stage = "cache-init".to_string();
-        state.current_ffmpeg_status = "idle".to_string();
-    });
+
+    let should_spawn = existing_generated < config.max_count
+        && background_generations()
+            .lock()
+            .map(|mut jobs| jobs.insert(cache_key.clone()))
+            .unwrap_or(false);
+    if should_spawn {
+        let app_for_job = app.clone();
+        let cache_key_for_job = cache_key.clone();
+        let cache_dir_for_job = cache_dir.clone();
+        std::thread::spawn(move || {
+            debug_reset(&cache_key_for_job, &cache_dir_for_job);
+            let mut intervals = vec![fast_interval];
+            if refined_interval != fast_interval {
+                intervals.push(refined_interval);
+            }
+            for interval in intervals {
+                let mut pass_request = job_request.clone();
+                pass_request.fast_interval = None;
+                pass_request.refined_interval = None;
+                pass_request.thumbnail_interval = Some(interval);
+                let pass_config = thumbnail_config(&pass_request);
+                let (_, pass_frames, _) = pass_paths(&cache_dir_for_job, interval);
+                let existing = scan_generated_indices(&pass_frames);
+                if existing.len() as u32 >= pass_config.max_count {
+                    debug_event(
+                        "background-pass-hit",
+                        format!(
+                            "cache={} interval={} frames={}",
+                            cache_key_for_job,
+                            interval,
+                            existing.len()
+                        ),
+                    );
+                    continue;
+                }
+
+                let job_key = active_job_key(&cache_key_for_job, interval);
+                loop {
+                    let occupied = active_jobs()
+                        .lock()
+                        .map(|jobs| jobs.get(&job_key).is_some_and(|job| !job.is_shutdown()))
+                        .unwrap_or(false);
+                    if !occupied {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+
+                let controller = Arc::new(ThumbnailJobController::new(existing));
+                if let Ok(mut jobs) = active_jobs().lock() {
+                    jobs.insert(job_key.clone(), Arc::clone(&controller));
+                }
+                for index in 0..pass_config.max_count {
+                    controller.enqueue(index, 20, "background-wave");
+                }
+                debug_event(
+                    "background-pass-start",
+                    format!(
+                        "cache={} interval={} planned={}",
+                        cache_key_for_job, interval, pass_config.max_count
+                    ),
+                );
+                if let Err(error) = run_thumbnail_job(
+                    app_for_job.clone(),
+                    pass_request,
+                    cache_dir_for_job.clone(),
+                    Arc::clone(&controller),
+                    pass_config,
+                ) {
+                    debug_event("background-pass-error", error);
+                }
+                if let Ok(mut jobs) = active_jobs().lock() {
+                    if jobs
+                        .get(&job_key)
+                        .is_some_and(|job| Arc::ptr_eq(job, &controller))
+                    {
+                        jobs.remove(&job_key);
+                    }
+                }
+            }
+            if let Ok(mut jobs) = background_generations().lock() {
+                jobs.remove(&cache_key_for_job);
+            }
+            debug_update(|state| {
+                state.active = false;
+                state.current_stage = "background-complete".to_string();
+                state.current_ffmpeg_status = "idle".to_string();
+            });
+        });
+    }
 
     Ok(read_metadata(&cache_dir))
 }
@@ -579,13 +689,26 @@ pub fn get_or_queue_scrub_thumbnail(
                 config.width,
                 config.height,
             )
+            // A sparse refined cache must not show a frame from many minutes
+            // away just because it is the only one generated so far.
+            .filter(|(index, _)| index.abs_diff(requested_index) <= 6)
+        })
+        .or_else(|| {
+            find_nearest_coarse_thumbnail(
+                &cache_dir,
+                request.time,
+                config.interval,
+                config.width,
+                config.height,
+            )
         });
 
     if exact.is_none() {
+        let job_key = active_job_key(&cache_key, config.interval);
         let (controller, should_spawn) = {
             let mut jobs = active_jobs().lock().map_err(|e| e.to_string())?;
             let reusable = jobs
-                .get(&cache_key)
+                .get(&job_key)
                 .filter(|controller| !controller.is_shutdown())
                 .cloned();
             if let Some(controller) = reusable {
@@ -594,10 +717,10 @@ pub fn get_or_queue_scrub_thumbnail(
                 // A finished worker remains in the map for a few instructions
                 // while it publishes metadata. Replace it immediately rather
                 // than enqueueing work that can no longer be consumed.
-                jobs.remove(&cache_key);
+                jobs.remove(&job_key);
                 let existing = scan_generated_indices(&frame_dir);
                 let controller = Arc::new(ThumbnailJobController::new(existing));
-                jobs.insert(cache_key.clone(), Arc::clone(&controller));
+                jobs.insert(job_key, Arc::clone(&controller));
                 (controller, true)
             }
         };
@@ -636,8 +759,7 @@ pub fn get_or_queue_scrub_thumbnail(
         .copied()
         .max()
         .map(|index| index + 1)
-        .unwrap_or(0)
-        .max(requested_index + 1);
+        .unwrap_or(0);
     let metadata = build_metadata(
         &frame_dir,
         &sprite_dir,
@@ -823,6 +945,49 @@ fn find_nearest_thumbnail(
         })
 }
 
+fn find_nearest_coarse_thumbnail(
+    cache_dir: &Path,
+    requested_time: f64,
+    target_interval: u32,
+    width: u32,
+    height: u32,
+) -> Option<(u32, PathBuf)> {
+    let mut nearest: Option<(f64, u32, PathBuf)> = None;
+    for entry in fs::read_dir(cache_dir).ok()?.filter_map(Result::ok) {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(interval) = name
+            .strip_prefix("interval_")
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if interval <= target_interval {
+            continue;
+        }
+        let frame_dir = path.join("thumbs");
+        for index in scan_generated_indices(&frame_dir) {
+            let frame_time = index as f64 * interval as f64;
+            let distance = (frame_time - requested_time).abs();
+            if distance > 90.0
+                || nearest
+                    .as_ref()
+                    .is_some_and(|(best_distance, _, _)| distance >= *best_distance)
+            {
+                continue;
+            }
+            let frame_path = frame_dir.join(format!("frame_{index:05}.webp"));
+            if let Some(valid_path) = valid_thumbnail_path(&frame_path, width, height) {
+                let mapped_index = (frame_time / target_interval as f64).round() as u32;
+                nearest = Some((distance, mapped_index, valid_path));
+            }
+        }
+    }
+    nearest.map(|(_, index, path)| (index, path))
+}
+
 fn spawn_thumbnail_job(
     app: tauri::AppHandle,
     job_request: ThumbnailStartRequest,
@@ -862,16 +1027,17 @@ fn spawn_thumbnail_job(
             );
         }
         let mut removed_own_entry = false;
+        let job_key = active_job_key(&job_request.cache_key, config.interval);
         if let Ok(mut jobs) = active_jobs().lock() {
             // A late scrub request may already have replaced this finished
             // controller. Only remove our own entry; otherwise the old worker
             // can accidentally orphan the replacement job.
             let owns_entry = jobs
-                .get(&job_request.cache_key)
+                .get(&job_key)
                 .map(|active| Arc::ptr_eq(active, &controller))
                 .unwrap_or(false);
             if owns_entry {
-                jobs.remove(&job_request.cache_key);
+                jobs.remove(&job_key);
                 removed_own_entry = true;
             }
         }
@@ -882,6 +1048,24 @@ fn spawn_thumbnail_job(
             });
         }
     });
+}
+
+fn emit_frame_ready(
+    app: &tauri::AppHandle,
+    request: &ThumbnailStartRequest,
+    interval: u32,
+    index: u32,
+    path: &Path,
+) {
+    let _ = app.emit(
+        "thumbnail-frame-ready",
+        ThumbnailFrameReady {
+            cache_key: request.cache_key.clone(),
+            interval,
+            index,
+            path: path.to_string_lossy().to_string(),
+        },
+    );
 }
 
 fn run_thumbnail_job(
@@ -930,6 +1114,13 @@ fn run_thumbnail_job(
                     match inspect_image(&frame_path, config.width, config.height) {
                         Ok(stats) => {
                             controller.mark_generated(task.index, 0);
+                            emit_frame_ready(
+                                &app,
+                                &request,
+                                config.interval,
+                                task.index,
+                                &frame_path,
+                            );
                             debug_event(
                                 "frame-cache-hit",
                                 format!(
@@ -943,20 +1134,22 @@ fn run_thumbnail_job(
                                     stats.height
                                 ),
                             );
-                            publish_metadata(
-                                &app,
-                                &request,
-                                &cache_dir,
-                                &frame_dir,
-                                &sprite_dir,
-                                config.interval,
-                                config.width,
-                                config.height,
-                                config.columns,
-                                config.rows,
-                                controller.generated_count(),
-                                "generating",
-                            );
+                            if task.priority == 0 || controller.generated_count() % 20 == 0 {
+                                publish_metadata(
+                                    &app,
+                                    &request,
+                                    &cache_dir,
+                                    &frame_dir,
+                                    &sprite_dir,
+                                    config.interval,
+                                    config.width,
+                                    config.height,
+                                    config.columns,
+                                    config.rows,
+                                    controller.generated_count(),
+                                    "generating",
+                                );
+                            }
                             continue;
                         }
                         Err(error) => {
@@ -981,6 +1174,13 @@ fn run_thumbnail_job(
                     Ok(frame_stats) => {
                         let duration_ms = started.elapsed().as_millis();
                         controller.mark_generated(task.index, duration_ms);
+                        emit_frame_ready(
+                            &app,
+                            &request,
+                            config.interval,
+                            task.index,
+                            &frame_path,
+                        );
                         debug_update(|state| {
                             state.generated_thumbnails = state.generated_thumbnails.max(controller.generated_count());
                             state.last_output_path = Some(frame_path.to_string_lossy().to_string());
@@ -1004,20 +1204,22 @@ fn run_thumbnail_job(
                                 duration_ms
                             ),
                         );
-                        publish_metadata(
-                            &app,
-                            &request,
-                            &cache_dir,
-                            &frame_dir,
-                            &sprite_dir,
-                            config.interval,
-                            config.width,
-                            config.height,
-                            config.columns,
-                            config.rows,
-                            controller.generated_count(),
-                            "generating",
-                        );
+                        if task.priority == 0 || controller.generated_count() % 20 == 0 {
+                            publish_metadata(
+                                &app,
+                                &request,
+                                &cache_dir,
+                                &frame_dir,
+                                &sprite_dir,
+                                config.interval,
+                                config.width,
+                                config.height,
+                                config.columns,
+                                config.rows,
+                                controller.generated_count(),
+                                "generating",
+                            );
+                        }
                     }
                     Err(error) => {
                         controller.mark_failed(task.index);
@@ -1834,6 +2036,18 @@ mod tests {
         assert!(controller.is_shutdown());
         assert!(!controller.enqueue(12, 0, "late-scrub"));
     }
+
+    #[test]
+    fn failed_frame_is_not_hot_looped_in_same_job() {
+        let controller = ThumbnailJobController::new(HashSet::new());
+
+        assert!(controller.enqueue(12, 0, "scrub-exact"));
+        let task = controller.pop().expect("queued thumbnail task");
+        assert_eq!(task.index, 12);
+        controller.mark_failed(task.index);
+
+        assert!(!controller.enqueue(12, 0, "scrub-exact"));
+    }
 }
 
 fn sanitize_cache_key(value: &str) -> String {
@@ -1866,29 +2080,48 @@ fn clamp_interval(value: u32) -> u32 {
     value.clamp(2, 300)
 }
 
-pub(crate) fn find_ffmpeg() -> PathBuf {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("ffmpeg.exe"));
-            candidates.push(dir.join("ffmpeg"));
-            candidates.push(dir.join("binaries").join("ffmpeg.exe"));
-            candidates.push(dir.join("binaries").join("ffmpeg"));
-        }
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join("ffmpeg.exe"),
-    );
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("ffmpeg.exe"),
-    );
+fn ffmpeg_candidate_works(candidate: &Path) -> bool {
+    Command::new(candidate)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
 
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.exists())
-        .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+pub(crate) fn find_ffmpeg() -> PathBuf {
+    FFMPEG_PATH
+        .get_or_init(|| {
+            let mut candidates = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    candidates.push(dir.join("ffmpeg.exe"));
+                    candidates.push(dir.join("ffmpeg"));
+                    candidates.push(dir.join("binaries").join("ffmpeg.exe"));
+                    candidates.push(dir.join("binaries").join("ffmpeg"));
+                }
+            }
+            candidates.push(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries")
+                    .join("ffmpeg.exe"),
+            );
+            candidates.push(
+                PathBuf::from("src-tauri")
+                    .join("binaries")
+                    .join("ffmpeg.exe"),
+            );
+            // Command resolves this candidate through PATH. This is the
+            // expected fallback on Linux, where a copied dynamically-linked
+            // binary may exist beside the app but lack its matching libraries.
+            candidates.push(PathBuf::from("ffmpeg"));
+
+            candidates
+                .into_iter()
+                .find(|candidate| ffmpeg_candidate_works(candidate))
+                .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+        })
+        .clone()
 }

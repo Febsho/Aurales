@@ -53,7 +53,7 @@ export function recordPlaybackPreference(key: string, stream: StreamResult & { a
   save(memory)
   // Only the derived characteristics are queued; stream URLs and provider
   // credentials never enter this record.
-  void import('../sync/auralesSync').then(({ enqueueSyncRecord }) => enqueueSyncRecord('playback-memory', key, memory[key]))
+  void import('../sync/syncQueue').then(({ enqueueSyncRecord }) => enqueueSyncRecord('playback-memory', key, memory[key]))
 }
 export function resetPlaybackMemory(): void { localStorage.removeItem(profileStorageKey(KEY)) }
 export function playbackMemoryScore(stream: StreamResult & { addonId?: string }, memories: Array<PlaybackPreference | undefined>): { score: number; reasons: string[] } {

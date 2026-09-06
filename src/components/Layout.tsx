@@ -19,6 +19,7 @@ export default function Layout() {
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   const roomPanelOpen = useWatchTogetherStore((s) => s.roomPanelOpen)
+  const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
   const location = useLocation()
@@ -322,9 +323,11 @@ export default function Layout() {
           <WatchTogetherPanel open={roomPanelOpen} onClose={() => setRoomPanelOpen(false)} />
         </Suspense>
       )}
-      <Suspense fallback={null}>
-        <WatchTogetherAutoPlayer />
-      </Suspense>
+      {currentRoom && (
+        <Suspense fallback={null}>
+          <WatchTogetherAutoPlayer />
+        </Suspense>
+      )}
       <KeyboardShortcutsHelp />
     </div>
   )

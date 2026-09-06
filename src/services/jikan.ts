@@ -14,6 +14,8 @@ interface JikanEpisodesPage {
   }
 }
 
+const episodePageRequests = new Map<number, Promise<JikanEpisode[]>>()
+
 export async function getJikanEpisodeRating(malId: string | number | undefined, episodeNumber: number | undefined): Promise<number | null> {
   const animeId = Number(malId)
   const episode = Number(episodeNumber)
@@ -26,14 +28,19 @@ export async function getJikanEpisodeRating(malId: string | number | undefined, 
 }
 
 async function getJikanEpisodes(malId: number): Promise<JikanEpisode[]> {
-  return cachedFetch(
+  const pending = episodePageRequests.get(malId)
+  if (pending) return pending
+
+  const request = cachedFetch(
     `jikan:anime:${malId}:episodes`,
     () => fetchAllEpisodePages(malId),
     {
       category: CACHE_CATEGORIES.ANIME_MAPPING,
       ttlSeconds: CACHE_TTLS.ANIME_MAPPING_AIRING,
     },
-  )
+  ).finally(() => episodePageRequests.delete(malId))
+  episodePageRequests.set(malId, request)
+  return request
 }
 
 async function fetchAllEpisodePages(malId: number): Promise<JikanEpisode[]> {

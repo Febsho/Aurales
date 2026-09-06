@@ -2287,6 +2287,10 @@ fn launch_mpv_with_window(
             set_option("sub-fix-timing", "yes".to_string())?;
             set_option("demuxer-mkv-subtitle-preroll", "yes".to_string())?;
             set_option("cache", "yes".to_string())?;
+            // Start as soon as mpv has a decodable frame. The cache continues
+            // to fill in the background, rather than making a cold stream wait
+            // for its initial readahead target before playback is visible.
+            set_option("cache-pause-initial", "no".to_string())?;
             set_option("cache-secs", cache_secs.to_string())?;
             set_option("demuxer-max-bytes", max_bytes.to_string())?;
             set_option("demuxer-max-back-bytes", max_back_bytes.to_string())?;
@@ -2842,15 +2846,16 @@ pub async fn mpv_command(
 
         match target {
             Target::LibMpv(player) => {
-                // ThumbFast owns a second decoder. Stop it in the same ordered
-                // libmpv command stream before a user seek so preview work can
-                // never delay the seek that actually changes playback.
+                // Stop ThumbFast from scheduling more preview work before a
+                // user seek. `clear` only cancels its timers and is immediate;
+                // do not use `stop` here because writing to the helper socket
+                // can wait on a wedged decoder and delay the real seek.
                 if command_name == "seek" {
                     let _ = player.command(
                         "script-message-to",
                         &[
                             serde_json::Value::String("thumbfast".to_string()),
-                            serde_json::Value::String("stop".to_string()),
+                            serde_json::Value::String("clear".to_string()),
                         ],
                     );
                 }
@@ -2956,7 +2961,10 @@ pub async fn clear_player_thumbnail() -> Result<(), String> {
                 "script-message-to",
                 &[
                     serde_json::Value::String("thumbfast".to_string()),
-                    serde_json::Value::String("stop".to_string()),
+                    // `clear` only cancels the pending ThumbFast request. It
+                    // does not wait on the helper decoder, so releasing the
+                    // timeline can never hold up the actual playback seek.
+                    serde_json::Value::String("clear".to_string()),
                 ],
             );
         }

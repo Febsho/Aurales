@@ -1,4 +1,4 @@
-import { enqueueSyncRecord } from './auralesSync'
+import { enqueueSyncRecord } from './syncQueue'
 import { getActiveProfileId, getActiveProfile, getStoredProfileOwnedState, isProfileOwnedStorageKey, storeProfileOwnedValue } from '../profiles'
 
 const vaultId = (profileId: string) => `profile-settings-v1:${profileId}`

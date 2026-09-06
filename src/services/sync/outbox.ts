@@ -1,4 +1,4 @@
-import type { SyncRecord } from './auralesSync'
+import type { SyncRecord } from './syncQueue'
 
 /**
  * Durable storage for the pending sync queue.

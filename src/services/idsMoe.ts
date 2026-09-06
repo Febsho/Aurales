@@ -5,6 +5,9 @@ const API_BASE = 'https://api.ids.moe'
 const API_KEY = 'ids_HUUATSvhnnYAfCO0LatQIFAyOyApHB0i7UJJVrKdEVk'
 const CACHE_TTL = 14 * 24 * 60 * 60 // 14 days
 const REQUEST_TIMEOUT_MS = 4_000
+const FAILURE_RETRY_MS = 60_000
+const pendingRequests = new Map<string, Promise<IdsMoeResult | null>>()
+const failedAt = new Map<string, number>()
 
 interface IdsMoeResult {
   title?: string
@@ -42,8 +45,14 @@ type Platform = 'mal' | 'anilist' | 'imdb' | 'tmdb' | 'trakt' | 'simkl' | 'kitsu
 
 async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoeResult | null> {
   const cacheKey = `ids_moe:${platform}:${id}`
-  try {
-    return await cachedFetch<IdsMoeResult | null>(cacheKey, async () => {
+  const lastFailure = failedAt.get(cacheKey)
+  if (lastFailure && Date.now() - lastFailure < FAILURE_RETRY_MS) return null
+  const pending = pendingRequests.get(cacheKey)
+  if (pending) return pending
+
+  const request = (async () => {
+    try {
+      const result = await cachedFetch<IdsMoeResult | null>(cacheKey, async () => {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
       const res = await fetch(`${API_BASE}/ids/${id}?p=${platform}`, {
@@ -52,10 +61,17 @@ async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoe
       }).finally(() => clearTimeout(timeout))
       if (!res.ok) return null
       return await res.json() as IdsMoeResult
-    }, { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: CACHE_TTL })
-  } catch (_) {
-    return null
-  }
+      }, { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: CACHE_TTL })
+      if (result) failedAt.delete(cacheKey)
+      else failedAt.set(cacheKey, Date.now())
+      return result
+    } catch (_) {
+      failedAt.set(cacheKey, Date.now())
+      return null
+    }
+  })().finally(() => pendingRequests.delete(cacheKey))
+  pendingRequests.set(cacheKey, request)
+  return request
 }
 
 function toResolved(r: IdsMoeResult): ResolvedAnimeIds {
@@ -83,14 +99,25 @@ export async function resolveViaIdsMoe(known: {
   traktId?: number
   simklId?: number
 }): Promise<ResolvedAnimeIds | null> {
-  let result: IdsMoeResult | null = null
-
-  if (known.malId) result = await fetchIds(known.malId, 'mal')
-  if (!result && known.anilistId) result = await fetchIds(known.anilistId, 'anilist')
-  if (!result && known.imdbId) result = await fetchIds(known.imdbId, 'imdb')
-  if (!result && known.tmdbId) result = await fetchIds(known.tmdbId, 'tmdb')
-  if (!result && known.traktId) result = await fetchIds(known.traktId, 'trakt')
-  if (!result && known.simklId) result = await fetchIds(known.simklId, 'simkl')
+  // Each endpoint returns the complete cross-provider record. Retrying the
+  // same title through every known alias turns one unavailable service into a
+  // 16–24 second serial wait and multiplies traffic across episode cards.
+  // Prefer the anime-native identifier and let a later explicit retry try
+  // again after the short negative-cache window.
+  const candidate: [string | number, Platform] | undefined = known.malId
+    ? [known.malId, 'mal']
+    : known.anilistId
+      ? [known.anilistId, 'anilist']
+      : known.imdbId
+        ? [known.imdbId, 'imdb']
+        : known.tmdbId
+          ? [known.tmdbId, 'tmdb']
+          : known.traktId
+            ? [known.traktId, 'trakt']
+            : known.simklId
+              ? [known.simklId, 'simkl']
+              : undefined
+  const result = candidate ? await fetchIds(candidate[0], candidate[1]) : null
 
   return result ? toResolved(result) : null
 }

@@ -29,10 +29,19 @@ export function prefetchLikelyRoutes(): () => void {
     requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
     cancelIdleCallback?: (id: number) => void
   }
-  if (typeof idleWindow.requestIdleCallback === 'function') {
-    const id = idleWindow.requestIdleCallback(run, { timeout: 4000 })
-    return () => idleWindow.cancelIdleCallback?.(id)
+  let idleId: number | undefined
+  // requestIdleCallback can fire almost immediately during the first empty
+  // frame. Give Home and its cached hero a short uncontested startup window,
+  // then use actual idle time for route chunks.
+  const delayId = window.setTimeout(() => {
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      idleId = idleWindow.requestIdleCallback(run, { timeout: 3000 })
+    } else {
+      run()
+    }
+  }, 1200)
+  return () => {
+    window.clearTimeout(delayId)
+    if (idleId != null) idleWindow.cancelIdleCallback?.(idleId)
   }
-  const id = window.setTimeout(run, 2500)
-  return () => window.clearTimeout(id)
 }

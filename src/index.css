@@ -2156,9 +2156,94 @@ html[data-platform="linux"] .global-search__input {
   top: calc(var(--window-chrome-height) + 1rem) !important;
   left: 1rem !important;
   max-width: calc(100vw - 2rem);
+  width: var(--sidebar-collapsed-width, 8.5rem);
+  height: 2.75rem;
+  border-radius: 999px;
+  transform: translate3d(0, 0, 0) scale(.985);
+  transform-origin: top left;
+  transition:
+    width 340ms cubic-bezier(.22, 1, .36, 1),
+    height 380ms cubic-bezier(.22, 1, .36, 1),
+    border-radius 300ms cubic-bezier(.22, 1, .36, 1),
+    transform 300ms cubic-bezier(.22, 1, .36, 1),
+    box-shadow 300ms ease;
+  will-change: width, height, transform;
   /* Keep the expanding glass surface in its own paint/layout boundary. This
      prevents WebKitGTK from promoting its height into a viewport-wide layer. */
   contain: layout paint;
+}
+
+.app-sidebar--floating[data-expanded='true'] {
+  width: 15rem;
+  height: min(calc(100vh - var(--window-chrome-height) - 2rem), 34rem);
+  border-radius: 1.5rem;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.app-sidebar__collapsed-trigger {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 3;
+  width: var(--sidebar-collapsed-width, 8.5rem);
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  transition:
+    opacity 120ms ease 170ms,
+    transform 260ms cubic-bezier(.22, 1, .36, 1) 110ms,
+    background-color 160ms ease;
+}
+
+.app-sidebar--floating[data-expanded='true'] .app-sidebar__collapsed-trigger {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-.45rem) scale(.97);
+  transition-delay: 0ms;
+}
+
+.app-sidebar--floating .app-sidebar__nav,
+.app-sidebar--floating .app-sidebar__footer {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-.65rem);
+  transition:
+    opacity 140ms ease,
+    transform 220ms cubic-bezier(.4, 0, 1, 1),
+    visibility 0s linear 260ms;
+}
+
+.app-sidebar--floating[data-expanded='true'] .app-sidebar__nav,
+.app-sidebar--floating[data-expanded='true'] .app-sidebar__footer {
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 190ms ease 70ms,
+    transform 300ms cubic-bezier(.22, 1, .36, 1) 45ms,
+    visibility 0s linear 0s;
+}
+
+.app-sidebar--floating .app-sidebar__nav a {
+  opacity: 0;
+  transform: translateX(-.5rem);
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    opacity 110ms ease,
+    transform 150ms cubic-bezier(.4, 0, 1, 1);
+}
+
+.app-sidebar--floating[data-expanded='true'] .app-sidebar__nav a {
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: calc(65ms + var(--sidebar-item-index, 0) * 22ms);
+  transition-duration: 180ms, 180ms, 190ms, 300ms;
+  transition-timing-function: ease, ease, ease, cubic-bezier(.22, 1, .36, 1);
+}
+
+.app-sidebar--floating[data-expanded='true'] .app-sidebar__footer {
+  transition-delay: 145ms, 110ms, 0ms;
 }
 
 /* Profile switching uses the same full-width glass-card language as Settings. */
@@ -2269,7 +2354,16 @@ html[data-platform="linux"] .sidebar-profile-menu {
   backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
   -webkit-backdrop-filter: blur(48px) saturate(180%) contrast(106%) !important;
 }
-@media (prefers-reduced-motion: reduce) { .sidebar-profile-menu { animation: none; } .sidebar-profile-switcher, .sidebar-profile-trigger { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-profile-menu { animation: none; }
+  .sidebar-profile-switcher,
+  .sidebar-profile-trigger,
+  .app-sidebar--floating,
+  .app-sidebar__collapsed-trigger,
+  .app-sidebar--floating .app-sidebar__nav,
+  .app-sidebar--floating .app-sidebar__footer,
+  .app-sidebar--floating .app-sidebar__nav a { transition: none; }
+}
 
 /* Poster and episode context menus share the sidebar's neutral liquid-glass
    material and Settings-style action rows. */

@@ -855,40 +855,38 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
             </div>
           </div>
 
-          <div className="mb-3 flex min-h-12 flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-[#111315]/90 p-2 shadow-xl">
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === 'all' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All sources ({filteredStreams.length})</button>
+          <div className="mb-3 rounded-2xl border border-white/[0.07] bg-[#111315]/90 p-2 shadow-xl">
+            <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }} aria-label="Source addons">
+              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === 'all' ? 'bg-white text-black shadow-sm' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All sources <span className="text-white/55">({filteredStreams.length})</span></button>
               {providerOptions.map(([id, name]) => (
-                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === id ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>{name} {sourceDiagnostics[id]?.failureReason ? '⚠' : '✓'} ({filteredStreams.filter((stream) => stream.addonId === id).length})</button>
+                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex flex-shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === id ? 'bg-white text-black shadow-sm' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${sourceDiagnostics[id]?.failureReason ? 'bg-amber-400' : activeProvider === id ? 'bg-accent' : 'bg-emerald-400/80'}`} aria-hidden="true" />
+                  {name} <span className={activeProvider === id ? 'text-black/55' : 'text-white/35'}>({filteredStreams.filter((stream) => stream.addonId === id).length})</span>
+                </button>
               ))}
             </div>
-            <div className="hidden h-6 w-px bg-white/[0.08] lg:block" />
-            <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
-            <button onClick={retryFailedSources} disabled={loading || !Object.values(sourceDiagnostics).some((diagnostic) => diagnostic.failureReason)} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Retry failed</button>
-            <button onClick={() => { setSmartStatus('Refreshing sources…'); void cacheClearCategory(CACHE_CATEGORIES.STREAM_PRELOAD).finally(() => setRefreshRevision((value) => value + 1)) }} disabled={loading} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Refresh sources</button>
-            {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
-              <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
-            ))}
-            <div className="hidden h-6 w-px bg-white/[0.08] xl:block" />
-            <span className="px-1 text-tag font-bold uppercase tracking-[0.18em] text-white/25">Show</span>
-            {([
-              ['Title', showStreamName, toggleStreamName],
-              ['Description', showStreamDesc, toggleStreamDesc],
-              ['Tags', showStreamTags, toggleStreamTags],
-            ] as const).map(([label, visible, toggle]) => (
-              <button
-                key={label}
-                type="button"
-                onClick={toggle}
-                aria-pressed={visible}
-                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-label font-semibold transition-colors ${
-                  visible ? 'bg-white/[0.09] text-white/80' : 'text-white/50 hover:bg-white/[0.04] hover:text-white/60'
-                }`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${visible ? 'bg-accent' : 'bg-white/20'}`} />
-                {label}
-              </button>
-            ))}
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-white/[0.07] pt-2">
+              <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
+              <button onClick={retryFailedSources} disabled={loading || !Object.values(sourceDiagnostics).some((diagnostic) => diagnostic.failureReason)} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Retry failed</button>
+              <button onClick={() => { setSmartStatus('Refreshing sources…'); void cacheClearCategory(CACHE_CATEGORIES.STREAM_PRELOAD).finally(() => setRefreshRevision((value) => value + 1)) }} disabled={loading} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Refresh</button>
+              <span className="mx-1 hidden h-5 w-px bg-white/[0.08] sm:block" />
+              <div className="flex items-center rounded-xl bg-white/[0.04] p-0.5">
+                {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
+                  <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
+                ))}
+              </div>
+              <div className="ml-auto flex items-center gap-1">
+                {([
+                  ['Title', showStreamName, toggleStreamName],
+                  ['Description', showStreamDesc, toggleStreamDesc],
+                  ['Tags', showStreamTags, toggleStreamTags],
+                ] as const).map(([label, visible, toggle]) => (
+                  <button key={label} type="button" onClick={toggle} aria-pressed={visible} className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-label font-semibold transition-colors ${visible ? 'bg-white/[0.09] text-white/80' : 'text-white/50 hover:bg-white/[0.04] hover:text-white/60'}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${visible ? 'bg-accent' : 'bg-white/20'}`} />{label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {smartStatus && <span className="w-full px-2 pb-1 text-xs text-white/50">{smartStatus}</span>}
             {Object.values(sourceDiagnostics).filter((diagnostic): diagnostic is SourceDiagnostic & { failureReason: NonNullable<SourceDiagnostic['failureReason']> } => Boolean(diagnostic.failureReason)).map((diagnostic) => (
               <span key={diagnostic.sourceFingerprint} className="w-full px-2 pb-1 text-xs text-amber-200/70">{diagnostic.addonId}: {diagnostic.failureReason.replaceAll('_', ' ').toLowerCase()} {diagnostic.retryable ? '· retryable' : '· skipped for this session'}</span>

@@ -8,6 +8,10 @@ export interface AnimeSeasonMappingOptions {
   hideUnairedEpisodes: boolean
   includeSpecials: boolean
   today: string
+  /** Fetch this season first so the visible episode rail wins the cold-load race. */
+  prioritySeason?: number
+  /** Bound page-critical mapping; the provider request may still finish and populate its cache. */
+  requestTimeoutMs?: number
 }
 
 const DEFAULT_OPTIONS: AnimeSeasonMappingOptions = {
@@ -31,6 +35,22 @@ interface RawSeasonData {
   data: SeasonDetails | null
 }
 
+async function settleWithin<T>(promise: Promise<T>, timeoutMs?: number): Promise<T | null> {
+  if (!timeoutMs || timeoutMs <= 0) return promise.catch(() => null)
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export async function mapTvdbSeasons(
   tvdbId: number,
   summaries: AppSeason[],
@@ -41,12 +61,39 @@ export async function mapTvdbSeasons(
   const ordered = [...summaries].sort((a, b) => a.seasonNumber - b.seasonNumber)
   const filtered = opts.includeSpecials ? ordered : ordered.filter((s) => s.seasonNumber !== 0)
 
-  const seasonsData: RawSeasonData[] = await Promise.all(
-    filtered.map(async (season) => {
-      const data = await tvdbProvider.getSeason(`tvdb-${tvdbId}`, season.seasonNumber).catch(() => null)
-      return { season, data }
+  const fetchOrder = options?.prioritySeason == null
+    ? filtered
+    : [...filtered].sort((a, b) => {
+      if (a.seasonNumber === options.prioritySeason) return -1
+      if (b.seasonNumber === options.prioritySeason) return 1
+      return a.seasonNumber - b.seasonNumber
     })
-  )
+
+  const seasonsData: RawSeasonData[] = []
+  let nextSeason = 0
+  // Limit submissions as well as active HTTP calls: a long-running anime
+  // must not put dozens of season requests ahead of a newly selected title.
+  await Promise.all(Array.from({ length: Math.min(2, fetchOrder.length) }, async () => {
+    while (nextSeason < fetchOrder.length) {
+      const season = fetchOrder[nextSeason++]
+      // The open page awaits this mapping; paused background work must not
+      // prevent its Promise.all from completing.
+      const priority = 'interactive'
+      const getSeason = tvdbProvider.getSeason as (
+        showId: string,
+        seasonNumber: number,
+        requestPriority?: 'interactive' | 'background',
+      ) => Promise<SeasonDetails>
+      const data = await settleWithin(
+        getSeason(`tvdb-${tvdbId}`, season.seasonNumber, priority),
+        opts.requestTimeoutMs,
+      )
+      seasonsData.push({ season, data })
+    }
+  }))
+  // Mapping and absolute episode numbering must remain chronological even
+  // though the network requests were scheduled visible-season-first.
+  seasonsData.sort((a, b) => a.season.seasonNumber - b.season.seasonNumber)
 
   // Collect all TVDB episode IDs that appear in seasons 2+ so we can
   // de-duplicate them from Season 1 when TVDB duplicates episodes across seasons.
@@ -142,29 +189,8 @@ export async function mapTvdbSeasons(
 
     episodes.sort((a, b) => a.episodeNumber - b.episodeNumber)
 
-    // If this is Season 1, later seasons exist, and Season 1 still has way more
-    // episodes than expected, trim episodes whose episode numbers exceed a
-    // reasonable season boundary. We find the maximum episode count across later
-    // seasons and use that as the upper bound for Season 1.
-    if (season.seasonNumber === 1 && hasLaterSeasons && episodes.length > 0) {
-      const laterMaxEps = seasonsData
-        .filter(({ season: s, data: d }) => s.seasonNumber > 1 && d && d.episodes.length > 0)
-        .map(({ data: d }) => d!.episodes.length)
-      const avgLaterEps = laterMaxEps.length > 0
-        ? Math.ceil(laterMaxEps.reduce((a, b) => a + b, 0) / laterMaxEps.length)
-        : 0
-
-      if (avgLaterEps > 0 && episodes.length > avgLaterEps * 1.5) {
-        const reasonableMax = Math.max(avgLaterEps + 2, 13)
-        const trimmed = episodes.filter((e) => e.episodeNumber <= reasonableMax)
-        if (trimmed.length > 0 && trimmed.length < episodes.length) {
-          console.log('[tvdbSeasonMapper] Trimming S1 from', episodes.length, 'to', trimmed.length,
-            'episodes (later seasons average:', avgLaterEps, ')')
-          episodes.length = 0
-          episodes.push(...trimmed)
-        }
-      }
-    }
+    // A long first season is valid. Only explicit cross-season ownership and
+    // duplicate IDs above justify removing episodes, never another season's size.
 
     const hasAnyAired = episodes.some((e) => e.isReleased)
     if (opts.hideUnairedSeasons && !hasAnyAired) continue

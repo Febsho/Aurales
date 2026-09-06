@@ -635,7 +635,12 @@ function handleServerMessage(msg: ServerMessage): void {
       const streamChanged = msg.stream?.streamFingerprint !== store.currentRoom?.selectedStream?.streamFingerprint
         || msg.stream?.infoHash !== store.currentRoom?.selectedStream?.infoHash
       store.updateMedia(msg.media, msg.episode, msg.stream)
-      if (msg.media && (mediaChanged || (streamChanged && !store.isHost))) {
+      // A host can select the same title again after stopping/cancelling it.
+      // The media identity is then unchanged, but the server has reset the
+      // room's ready state and the old local source may have expired.  The
+      // initial selection deliberately has no stream; treat it as a fresh
+      // selection on every client so both peers resolve and see the restart.
+      if (msg.media && (mediaChanged || !msg.stream || (streamChanged && !store.isHost))) {
         autoResolveStream(msg.media, msg.episode, msg.stream)
       }
       break

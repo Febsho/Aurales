@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.6-white?style=flat-square" alt="Version 0.3.6" />
+  <img src="https://img.shields.io/badge/version-0.3.7-white?style=flat-square" alt="Version 0.3.7" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -23,16 +23,18 @@ Aurales is an elegant, offline-first desktop media hub that aggregates streaming
 
 ## Download & Install
 
-Download version **0.3.6** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.3.7** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
-### Version 0.3.6 highlights
+### Version 0.3.7 highlights
 
-- Home and Discover now preload shelves and warm artwork through the native
-  image cache for smoother scrolling.
-- Simkl watched anime episodes now use Simkl's TVDB episode mapping, avoiding
-  false unchecked states when season numbering differs.
-- Account connections have a cleaner app-native flow, with responsive device
-  authorization for Trakt and TorBox.
+- Anime details, artwork, episode descriptions, ratings, and season changes now
+  resolve faster with more reliable cross-provider matching and caching.
+- Timeline previews now build progressively in the background and update live
+  while scrubbing, without seeking until the timeline is actively dragged.
+- Cold start and everyday navigation use less eager work, defer heavyweight
+  player and sync modules, and pause unnecessary updates while the app is hidden.
+- Sidebar and Watch Together interactions have smoother motion, clearer icons,
+  and more consistent room and playback behavior.
 
 ### Windows
 
@@ -78,9 +80,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.6/Aurales_0.3.6_amd64.flatpak \
-  -o Aurales_0.3.6_amd64.flatpak
-flatpak install --user -y ./Aurales_0.3.6_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.3.7/Aurales_0.3.7_amd64.flatpak \
+  -o Aurales_0.3.7_amd64.flatpak
+flatpak install --user -y ./Aurales_0.3.7_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -98,7 +100,7 @@ Download Aurales directly from GitHub, install it for your user, and launch it:
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.6/Aurales_0.3.6_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.3.7/Aurales_0.3.7_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -219,7 +221,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.3.6`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.3.7`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

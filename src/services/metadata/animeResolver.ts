@@ -87,6 +87,8 @@ export interface AnimeResolverOptions {
   includeSpecials: boolean
   useGenericSeasonLabels: boolean
   avoidJapaneseSeasonNames: boolean
+  /** Detail pages that already own TVDB season mapping can request metadata only. */
+  includeSeasonMapping: boolean
 }
 
 const DEFAULT_OPTIONS: AnimeResolverOptions = {
@@ -98,6 +100,7 @@ const DEFAULT_OPTIONS: AnimeResolverOptions = {
   includeSpecials: true,
   useGenericSeasonLabels: true,
   avoidJapaneseSeasonNames: true,
+  includeSeasonMapping: true,
 }
 
 async function tryTmdbSeasonsFallback(tmdbId: number, options: AnimeResolverOptions): Promise<AppSeason[] | null> {
@@ -245,7 +248,10 @@ export async function resolveAnimeMetadata(
   normalized.sourceMetadataProvider = usedSource
   applyAnimeSourceMetadata(normalized, selectedSource, source)
 
-  if (options.preferTvdbSeasons && ids.tvdbId) {
+  // SeriesDetailPage maps TVDB episodes itself so it can publish the shell and
+  // active season progressively. Repeating that all-season operation here is
+  // expensive for long-running anime and provides no data the page consumes.
+  if (options.includeSeasonMapping && options.preferTvdbSeasons && ids.tvdbId) {
     const [initialMappedSeasons, relations] = await Promise.all([
       mapTvdbSeasons(ids.tvdbId, normalized.seasons || [], {
         hideUnairedSeasons: options.hideUnairedSeasons,

@@ -1,6 +1,6 @@
 import type { WatchProgress } from '../types'
 import { getProfileSetting, setProfileSetting } from './profiles'
-import { enqueueSyncRecord } from './sync/auralesSync'
+import { enqueueSyncRecord } from './sync/syncQueue'
 
 export type ContinueWatchingSuppressionReason = 'manual' | 'accidental' | 'stale' | 'completed'
 export interface ContinueWatchingSuppression { suppressedAt: number; reason: ContinueWatchingSuppressionReason }

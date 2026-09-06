@@ -114,7 +114,7 @@ export function clearPendingProfileDeletions(): void { localStorage.removeItem(P
 function queueProfileRecord(profileId: string, payload: AuralesProfile | { id: string; deleted: true }): void {
   // Keep profiles usable when the optional transport has not loaded yet, and
   // avoid making the profile store depend on a transport implementation.
-  void import('./sync/auralesSync').then(({ enqueueSyncRecord }) => enqueueSyncRecord('profile', profileId, payload, profileId))
+  void import('./sync/syncQueue').then(({ enqueueSyncRecord }) => enqueueSyncRecord('profile', profileId, payload, profileId))
 }
 
 export function profileStorageKey(key: string, profileId = getActiveProfileId()): string {
@@ -162,7 +162,7 @@ export async function setActiveProfile(profileId: string): Promise<boolean> {
   // inert if a browser storage write fails (for example after a cache-heavy
   // session fills a WebView quota). The selected profile can still open.
   try { await saveProfileState(previous) } catch (error) { console.error('[profiles] could not save outgoing profile state', error); return false }
-  void import('./sync/encryptedVault').then(({ queueEncryptedVault }) => queueEncryptedVault(previous)).then(() => import('./sync/auralesSync')).then(({ scheduleAutomaticSync }) => scheduleAutomaticSync(250)).catch(() => {})
+  void import('./sync/encryptedVault').then(({ queueEncryptedVault }) => queueEncryptedVault(previous)).then(() => import('./sync/syncQueue')).then(({ scheduleAutomaticSync }) => scheduleAutomaticSync(250)).catch(() => {})
   try { localStorage.setItem(ACTIVE_KEY, profileId) } catch (error) { console.error('[profiles] could not activate profile', error); return false }
   try { await loadProfileState(profileId) } catch (error) { localStorage.setItem(ACTIVE_KEY, previous); console.error('[profiles] could not load selected profile state', error); return false }
   window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT, { detail: { profileId } }))

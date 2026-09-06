@@ -18,10 +18,12 @@ const DATA_URL = 'https://github.com/anibridge/anibridge-mappings/releases/lates
 const PERSISTENT_CACHE = 'aurales-anibridge-mappings-v1'
 const CACHE_TIMESTAMP_HEADER = 'x-aurales-cached-at'
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
+const FAILURE_RETRY_MS = 60 * 1000
 
 let cachedData: AniBridgeMappings | null = null
 let cacheTimestamp = 0
 let activePromise: Promise<AniBridgeMappings> | null = null
+let lastFetchFailureAt = 0
 
 export async function getStoredAniBridgeEntryCount(): Promise<number> {
   const persistent = await readPersistentCache()
@@ -104,7 +106,9 @@ async function getTargets(sourceDescriptor: string): Promise<AniBridgeTargetMap 
 }
 
 function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
-  if (cachedData && Date.now() - cacheTimestamp < CACHE_DURATION_MS) return Promise.resolve(cachedData)
+  if (cachedData && (Date.now() - cacheTimestamp < CACHE_DURATION_MS || Date.now() - lastFetchFailureAt < FAILURE_RETRY_MS)) {
+    return Promise.resolve(cachedData)
+  }
   if (activePromise) return activePromise
 
   activePromise = (async () => {
@@ -121,6 +125,7 @@ function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
       const data = await response.json() as AniBridgeMappings
       cachedData = data
       cacheTimestamp = Date.now()
+      lastFetchFailureAt = 0
       void writePersistentCache(data)
       console.log(`[anibridge] loaded ${countMappingEntries(data).toLocaleString()} mapping sources`)
       return data
@@ -129,8 +134,11 @@ function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
       if (persistent) {
         cachedData = persistent.data
         cacheTimestamp = persistent.timestamp
+      } else {
+        cachedData = {}
       }
-      return cachedData ?? {}
+      lastFetchFailureAt = Date.now()
+      return cachedData
     } finally {
       activePromise = null
     }

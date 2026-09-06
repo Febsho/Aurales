@@ -5,6 +5,7 @@ import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
 import { getActiveProfile } from '../../services/profiles'
+import { UsersRound } from 'lucide-react'
 
 export default function CreateRoomButton({ label, variant = 'nav' }: { label?: string; variant?: 'nav' | 'hero' }) {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
@@ -88,20 +89,13 @@ export default function CreateRoomButton({ label, variant = 'nav' }: { label?: s
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-accent" />
             </span>
           ) : (
-            <svg
-              className="w-[18px] h-[18px] text-white/50 group-hover:text-white transition-colors duration-200"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </svg>
+            <UsersRound
+              className={variant === 'hero'
+                ? 'h-6 w-6 text-accent'
+                : 'h-[18px] w-[18px] text-white/50 transition-colors duration-200 group-hover:text-white'}
+              strokeWidth={2.1}
+              aria-hidden="true"
+            />
           )}
         </div>
         {variant === 'hero' ? <span className="min-w-0 flex-1"><strong className="block text-xl font-black">{currentRoom ? 'Open your room' : (label || 'Start a room')}</strong><span className="mt-1 block text-sm text-white/60">{currentRoom ? `Room ${currentRoom.code} · ${currentRoom.participants.length} connected` : 'Create a code and invite friends to watch in sync.'}</span></span> : <span className={`text-sm tracking-wide whitespace-nowrap ${currentRoom ? 'font-semibold' : 'font-medium'}`}>{currentRoom ? 'Watch Together' : (label || 'Watch Together')}</span>}

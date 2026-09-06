@@ -1,11 +1,13 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef, useCallback } from 'react'
+import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { useAppStore } from '../stores/appStore'
 import { getAppVersion } from '../services/updater'
 import { prefetchRoute } from '../services/routePrefetch'
 import { getActiveProfile, getProfiles, PROFILE_CHANGED_EVENT, setActiveProfile } from '../services/profiles'
 import ProfileAvatar from './profiles/ProfileAvatar'
+import { UsersRound } from 'lucide-react'
 
 const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
@@ -95,6 +97,7 @@ export default function Sidebar() {
     ? location.pathname === item.path
     : location.pathname.startsWith(item.path)) || navItems[0]
   const ActiveNavIcon = activeNavItem.icon
+  const collapsedWidth = Math.min(14.5, Math.max(7.6, 5.2 + activeNavItem.label.length * 0.62))
 
   return (
     <>
@@ -108,30 +111,35 @@ export default function Sidebar() {
             : [
                 // Apple TV-style navigation: a compact active-page pill at the
                 // top left opens into an overlay menu without shifting content.
-                'app-sidebar--floating absolute top-5 left-5 z-40 rounded-2xl overflow-hidden',
+                'app-sidebar--floating absolute top-5 left-5 z-40 overflow-hidden border border-white/[0.36]',
                 visible
-                  ? 'app-sidebar--liquid w-52 border border-white/[0.36] shadow-[0_18px_52px_rgba(0,0,0,0.30)]'
-                  : 'app-sidebar--liquid h-11 w-auto rounded-full border border-white/[0.36] shadow-[0_12px_34px_rgba(0,0,0,0.24)]',
+                  ? 'app-sidebar--liquid app-sidebar--expanded shadow-[0_18px_52px_rgba(0,0,0,0.30)]'
+                  : 'app-sidebar--liquid app-sidebar--collapsed shadow-[0_12px_34px_rgba(0,0,0,0.24)]',
               ].join(' '),
         ].join(' ')}
+        data-expanded={visible || undefined}
+        data-pinned={pinned || undefined}
+        style={!pinned ? { '--sidebar-collapsed-width': `${collapsedWidth}rem` } as CSSProperties : undefined}
       >
       {/* Logo + pin toggle */}
-      {!pinned && !visible ? (
+      {!pinned && (
         <button
           type="button"
           onClick={handleMouseEnter}
           onFocus={handleMouseEnter}
-          className="flex h-11 items-center gap-2.5 px-3.5 text-sm font-bold tracking-wide text-white/95 transition-all duration-200 hover:bg-white/[0.14] hover:text-white focus:outline-none"
+          className="app-sidebar__collapsed-trigger flex h-11 items-center gap-2.5 whitespace-nowrap px-3.5 text-sm font-bold tracking-wide text-white/95 hover:bg-white/[0.14] hover:text-white focus:outline-none"
           aria-label={`Open navigation; current page ${activeNavItem.label}`}
-          aria-expanded={false}
+          aria-expanded={visible}
+          tabIndex={visible ? -1 : 0}
         >
           <svg className="h-4 w-4 text-white/65" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
-            <path d="m14 6-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="m10 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           <ActiveNavIcon className="h-[18px] w-[18px]" filled />
           <span>{activeNavItem.label}</span>
         </button>
-      ) : pinned ? <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
+      )}
+      {pinned && <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
         <div className={`app-sidebar__brand flex items-center ${!pinned && !visible ? 'gap-0' : 'gap-2.5'}`}>
           <img
             src="/app-logo.png?v=3"
@@ -156,11 +164,11 @@ export default function Sidebar() {
             </svg>
           )}
         </button>
-      </div> : null}
+      </div>}
 
       {/* Nav items */}
-      <nav className={`app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 ${!pinned && !visible ? 'hidden' : pinned ? 'mt-1' : 'my-2'}`}>
-        {navItems.map((item) => {
+      <nav aria-hidden={!visible} className={`app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 ${pinned ? 'mt-1' : 'my-2'}`}>
+        {navItems.map((item, index) => {
           const isActive = item.exact
             ? location.pathname === item.path
             : location.pathname.startsWith(item.path)
@@ -172,6 +180,8 @@ export default function Sidebar() {
               onMouseEnter={() => prefetchRoute(item.path)}
               onFocus={() => { prefetchRoute(item.path); if (!pinned) setHovered(true) }}
               onClick={() => { if (!pinned) setHovered(false) }}
+              tabIndex={visible ? 0 : -1}
+              style={{ '--sidebar-item-index': index } as CSSProperties}
               className={[
                 'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5',
                 isActive
@@ -195,9 +205,9 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      {visible && <div className={`app-sidebar__footer p-3 border-t border-white/[0.10] ${!pinned ? 'bg-black/[0.08]' : 'border-white/[0.04]'}`}>
+      <div aria-hidden={!visible} className={`app-sidebar__footer p-3 border-t border-white/[0.10] ${!pinned ? 'bg-black/[0.08]' : 'border-white/[0.04]'}`}>
         <div className="sidebar-profile-switcher mb-3" data-open={profileMenuOpen || undefined}>
-          <button ref={profileTriggerRef} onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} className="sidebar-profile-trigger">
+          <button ref={profileTriggerRef} onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} tabIndex={visible ? 0 : -1} className="sidebar-profile-trigger">
             <ProfileAvatar {...activeProfile} size="sm" className="!h-9 !w-9 !rounded-xl" />
             <span className="sidebar-profile-trigger__copy"><span>{activeProfile.name}</span><small>Switch profile</small></span>
             <svg className="sidebar-profile-chevron h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -224,7 +234,7 @@ export default function Sidebar() {
           )}
         </div>
         <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
-      </div>}
+      </div>
 
     </aside>
     </>
@@ -232,13 +242,7 @@ export default function Sidebar() {
 }
 
 function TogetherIcon({ className, filled }: { className?: string; filled?: boolean }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="5" width="18" height="14" rx="3" />
-      <path d="m10 9 5 3-5 3Z" fill={filled ? 'var(--color-surface, #111)' : 'none'} />
-      <path d="M7 21h10" />
-    </svg>
-  )
+  return <UsersRound className={className} strokeWidth={filled ? 2.4 : 2} aria-hidden="true" />
 }
 
 function HomeIcon({ className, filled }: { className?: string; filled?: boolean }) {

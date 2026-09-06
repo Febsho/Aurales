@@ -1,26 +1,28 @@
-import { v4 as uuid } from 'uuid'
 import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
 import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
-import { getOutboxRecords, outboxReady, putOutboxRecord, removeOutboxRecords, takeOutboxBatch } from './outbox'
+import { outboxReady, removeOutboxRecords, takeOutboxBatch } from './outbox'
+import {
+  AURALES_SYNC_SCHEMA_VERSION,
+  enqueueSyncRecord,
+  getDeviceId,
+  getSyncOutbox,
+  scheduleAutomaticSync,
+  type SyncRecord,
+} from './syncQueue'
 
-export const AURALES_SYNC_SCHEMA_VERSION = 1
-const DEVICE_KEY = 'aurales_sync_device_v1'
+export {
+  AURALES_SYNC_SCHEMA_VERSION,
+  enqueueSyncRecord,
+  getDeviceId,
+  getSyncOutbox,
+  scheduleAutomaticSync,
+}
+export type { SyncRecord }
+
 const CONFIG_KEY = 'aurales_sync_config_v1'
 export const DEFAULT_SYNC_ENDPOINT = 'https://sync.febsho.me'
 
-export interface SyncRecord {
-  recordId: string
-  profileId: string
-  type: 'profile' | 'progress' | 'watchlist' | 'discovery-feedback' | 'playback-memory' | 'profile-preferences' | 'encrypted-vault'
-  payload: unknown
-  updatedAt: string
-  deviceId: string
-  version: number
-  schemaVersion: number
-  revision?: number
-}
 export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string; autoSync?: boolean }
-export function getDeviceId(): string { let id = localStorage.getItem(DEVICE_KEY); if (!id) { id = uuid(); localStorage.setItem(DEVICE_KEY, id) } return id }
 export function getSyncConfig(): AuralesSyncConfig {
   try { return { ...JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'), endpoint: DEFAULT_SYNC_ENDPOINT } }
   catch { return { endpoint: DEFAULT_SYNC_ENDPOINT } }
@@ -31,20 +33,7 @@ export function setSyncConfig(config: AuralesSyncConfig): void {
   try { localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...getSyncConfig(), ...config })) }
   catch (error) { console.error('[sync] could not persist the sync config', error) }
 }
-export function getSyncOutbox(): SyncRecord[] { return getOutboxRecords() }
-let scheduledSync: ReturnType<typeof setTimeout> | undefined
-export function scheduleAutomaticSync(delayMs = 1200): void {
-  if (scheduledSync) clearTimeout(scheduledSync)
-  scheduledSync = setTimeout(() => { scheduledSync = undefined; void syncIfConfigured().catch(() => {}) }, delayMs)
-}
-/** Local-first, compacted outbox. The caller supplies an identity stable across devices (provider IDs where available). */
-export function enqueueSyncRecord(type: SyncRecord['type'], identity: string, payload: unknown, profileId = getActiveProfileId()): SyncRecord {
-  const recordId = `${profileId}:${type}:${identity}`
-  const record: SyncRecord = { recordId, profileId, type, payload, updatedAt: new Date().toISOString(), deviceId: getDeviceId(), version: 1, schemaVersion: AURALES_SYNC_SCHEMA_VERSION }
-  putOutboxRecord(record)
-  if (type !== 'encrypted-vault') scheduleAutomaticSync()
-  return record
-}
+let configuredSyncPending: Promise<void> | null = null
 function readProfileArray<T>(key: string, profileId: string): T[] { try { const value = JSON.parse(localStorage.getItem(profileStorageKey(key, profileId)) || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } }
 function readProfileObject<T>(key: string, profileId: string): Record<string, T> {
   try {
@@ -193,5 +182,9 @@ export async function downloadSyncNow(fetcher: typeof fetch = fetch): Promise<{ 
 export async function syncIfConfigured(): Promise<void> {
   const config = getSyncConfig()
   if (!config.accessToken || config.autoSync === false) return
-  await syncNow()
+  if (configuredSyncPending) return configuredSyncPending
+  configuredSyncPending = syncNow()
+    .then(() => undefined)
+    .finally(() => { configuredSyncPending = null })
+  return configuredSyncPending
 }

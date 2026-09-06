@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
+import { parseDetailId } from '../services/metadata/detailIds'
+import { useDetailArtworkReady } from '../hooks/useDetailArtworkReady'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -201,6 +203,9 @@ export default function MovieDetailPage() {
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_TRENDING)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [initialArtworkReady, setInitialArtworkReady] = useState(false)
   const [streamOpen, setStreamOpen] = useState(false)
   const [streamResolving, setStreamResolving] = useState(false)
   const autoPlayHandledRef = useRef(false)
@@ -410,7 +415,10 @@ export default function MovieDetailPage() {
 
 
   useEffect(() => {
+    let cancelled = false
     async function load() {
+      setLoadError(null)
+      setInitialArtworkReady(false)
       setMalRating(null)
       setLoading(true)
 
@@ -442,6 +450,7 @@ export default function MovieDetailPage() {
       const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
       if (movieCacheKey) {
         const cached = await cacheGet<MovieDetails>(movieCacheKey)
+        if (cancelled) return
         if (cached) {
           setMovie(cached.data)
           setLoading(false)
@@ -451,27 +460,7 @@ export default function MovieDetailPage() {
 
       let result: MovieDetails | null = null
 
-      const parseId = (val: unknown, prefix: string): string | undefined => {
-        let cleaned = cleanId(val)
-        if (!cleaned) return undefined
-        if (cleaned.startsWith('app_tvdb_')) cleaned = cleaned.replace('app_tvdb_', '')
-        else if (cleaned.startsWith('app_tmdb_movie_')) cleaned = cleaned.replace('app_tmdb_movie_', '')
-        else if (cleaned.startsWith('app_tmdb_')) cleaned = cleaned.replace('app_tmdb_', '')
-        else if (cleaned.startsWith('app_movie_')) cleaned = cleaned.replace('app_movie_', '')
-        const hasAnyPrefix = /^[a-z_]+[-:]/i.test(cleaned)
-        if (hasAnyPrefix) {
-          const lower = cleaned.toLowerCase()
-          if (lower.startsWith(`${prefix}-`) || lower.startsWith(`${prefix}:`)) {
-            return cleaned.replace(/^[a-z_]+[-:]/i, '')
-          }
-          return undefined
-        }
-        if (prefix === 'imdb') {
-          return cleaned.startsWith('tt') ? cleaned : undefined
-        }
-        if (cleaned.startsWith('tt')) return undefined
-        return cleaned
-      }
+      const parseId = (value: unknown, provider: string) => parseDetailId(cleanId(value), provider)
 
       // Collect all known IDs from route state
       const knownIds = {
@@ -556,6 +545,7 @@ export default function MovieDetailPage() {
       // already complete enough to render; external provider work must not
       // delay or replace it when managed metadata is disabled.
       if (!appManagedMetadata && result) {
+        if (cancelled) return
         const directMovie = applyMovieArt(applyInitialArtworkPreference({
           ...result,
           id: id || result.id,
@@ -568,6 +558,7 @@ export default function MovieDetailPage() {
       }
 
       // Show placeholder immediately
+      if (cancelled) return
       if (state.title || result) {
         const placeholder = applyMovieArt({
           id: id || 'unknown',
@@ -650,6 +641,7 @@ export default function MovieDetailPage() {
       artApplied.backdrop ||= immediateMovie?.backdrop
       artApplied.logo ||= immediateMovie?.logo
 
+      if (cancelled) return
       setMovie(artApplied)
       setLoading(false)
 
@@ -667,6 +659,7 @@ export default function MovieDetailPage() {
       void resolveArtFromProviders('movie', {
         tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
       }, artApplied.isAnime).then((providerArt) => {
+        if (cancelled) return
         if (!providerArt.poster && !providerArt.backdrop && !providerArt.logo) return
         const enhanced = applyMovieArt({
           ...artApplied,
@@ -679,8 +672,14 @@ export default function MovieDetailPage() {
         if (enhanced.id) void cacheSet(`detail:movie:${artKey}:${enhanced.id}`, enhanced, cacheOpts)
       }).catch(() => undefined)
     }
-    load()
-  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
+    load().catch((error) => {
+      if (cancelled) return
+      console.error('[MovieDetailPage] Detail load failed:', error)
+      setLoadError('Could not load movie details. Please try again.')
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature, loadAttempt])
 
   useEffect(() => {
     if (!movie || playbackPreloadMode === 'off') return
@@ -795,8 +794,20 @@ export default function MovieDetailPage() {
     provider: state.provider,
   }, 'movie', Boolean(state.anilistId || state.malId || (id && /^(mal|anilist)[-:]/i.test(id))))
 
-  if (loading || !movie) {
+  const artwork = useDetailArtworkReady([
+    movie?.backdrop, movie?.logo,
+    ...(movie?.cast.slice(0, 4).map(person => person.profilePath) || []),
+    ...(movie?.recommendations.slice(0, 4).map(item => item.poster) || []),
+  ], loadAttempt)
+
+  useEffect(() => {
+    if (!loading && movie && artwork.ready) setInitialArtworkReady(true)
+  }, [loading, movie?.id, artwork.ready])
+
+  if (loading || !movie || loadError || !initialArtworkReady) {
     return <DetailLoadingState
+      error={loadError || (artwork.failed ? 'Could not load artwork. Please try again.' : undefined)}
+      onRetry={() => setLoadAttempt(value => value + 1)}
       logo={initialRouteArt.logo}
       title={state.title}
       backdrop={initialRouteArt.backdrop}

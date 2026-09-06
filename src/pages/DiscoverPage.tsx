@@ -627,7 +627,9 @@ export default function DiscoverPage() {
   // Auto-advance the hero like the Home hero; pause while a dialog is open
   useEffect(() => {
     if (heroPool.length <= 1 || trailerOpen || whyOpen) return
-    const id = window.setInterval(() => setHeroIndex((current) => (current + 1) % heroPool.length), 8000)
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') setHeroIndex((current) => (current + 1) % heroPool.length)
+    }, 8000)
     return () => window.clearInterval(id)
   }, [heroPool.length, trailerOpen, whyOpen])
 

@@ -1,7 +1,6 @@
 import { useEffect, lazy, Suspense, useState } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import UpdatePrompt from './components/UpdatePrompt'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
 import type { ProgressProvider } from './stores/appStore'
@@ -22,6 +21,7 @@ const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 const PersonPage = lazy(() => import('./pages/PersonPage'))
 const WatchTogetherPage = lazy(() => import('./pages/WatchTogetherPage'))
 const UpcomingPage = lazy(() => import('./pages/UpcomingPage'))
+const UpdatePrompt = lazy(() => import('./components/UpdatePrompt'))
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
@@ -51,12 +51,22 @@ function scheduleIdleWork(callback: () => void, timeout = 1500) {
   }
 }
 
+function hasConfiguredAuralesSync(): boolean {
+  try {
+    const config = JSON.parse(localStorage.getItem('aurales_sync_config_v1') || '{}') as { accessToken?: string; autoSync?: boolean }
+    return Boolean(config.accessToken && config.autoSync !== false)
+  } catch {
+    return false
+  }
+}
+
 export default function App() {
   const [chooseProfile, setChooseProfile] = useState(() => {
     const switched = sessionStorage.getItem('aurales_profile_switched_v1')
     if (switched) sessionStorage.removeItem('aurales_profile_switched_v1')
     return !switched
   })
+  const [updatePromptReady, setUpdatePromptReady] = useState(false)
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)
@@ -109,6 +119,7 @@ export default function App() {
   // source of truth if the network is unavailable.
   useEffect(() => {
     const runSync = () => {
+      if (!hasConfiguredAuralesSync()) return
       void import('./services/sync/auralesSync').then(({ syncIfConfigured }) => {
         return import('./services/sync/secureLogin').then(async ({ loadSyncPassword }) => {
           const { getSyncConfig } = await import('./services/sync/auralesSync')
@@ -124,10 +135,12 @@ export default function App() {
         }).catch(() => {})
       }).catch(() => {})
     }
-    // Profiles must be fetched before/while the startup chooser is visible so
-    // a new device immediately shows every profile from this account.
-    runSync()
-    const cancelIdle = scheduleIdleWork(runSync, 3000)
+    // Profiles need an immediate pull only while the startup chooser is being
+    // shown. Returning sessions can sync after the shell has had an idle turn;
+    // previously both paths ran on every launch and could overlap.
+    const cancelIdle = chooseProfile
+      ? (() => { runSync(); return () => {} })()
+      : scheduleIdleWork(runSync, 3000)
     const onPageHide = () => runSync()
     const onVisibility = () => { if (document.visibilityState === 'hidden') runSync() }
     window.addEventListener('pagehide', onPageHide)
@@ -144,9 +157,12 @@ export default function App() {
   // write directly to storage. Observe the active profile's durable state so
   // every small setting/account change is backed up without a manual button.
   useEffect(() => {
+    if (chooseProfile) return
     let fingerprint = ''
     let stopped = false
     const checkForChanges = () => {
+      if (document.visibilityState === 'hidden') return
+      if (!hasConfiguredAuralesSync()) return
       void Promise.all([import('./services/sync/encryptedVault'), import('./services/sync/auralesSync')]).then(([vault, sync]) => {
         if (stopped) return
         const next = vault.profileSyncFingerprint()
@@ -155,13 +171,24 @@ export default function App() {
       }).catch(() => {})
     }
     checkForChanges()
-    const interval = window.setInterval(checkForChanges, 1500)
+    const interval = window.setInterval(checkForChanges, 5000)
     return () => { stopped = true; window.clearInterval(interval) }
-  }, [])
+  }, [chooseProfile])
 
   // Route chunks stay off the critical path, but likely first destinations are
   // ready by the time people reach the navigation after the Home shell paints.
-  useEffect(() => prefetchLikelyRoutes(), [])
+  useEffect(() => {
+    if (chooseProfile) return
+    return prefetchLikelyRoutes()
+  }, [chooseProfile])
+
+  // The updater and its markdown UI are irrelevant to first paint. Mount it
+  // after startup settles; UpdatePrompt keeps its own delayed network check.
+  useEffect(() => {
+    if (chooseProfile) return
+    const timer = window.setTimeout(() => setUpdatePromptReady(true), 1800)
+    return () => window.clearTimeout(timer)
+  }, [chooseProfile])
 
   useEffect(() => {
     if (watchedCheckmarkSources.join(',') === automaticWatchedSourcesKey) return
@@ -169,6 +196,7 @@ export default function App() {
   }, [automaticWatchedSourcesKey, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
+    if (chooseProfile) return
     let cancelled = false
     const cancelIdle = scheduleIdleWork(() => {
       import('./services/addons')
@@ -182,9 +210,10 @@ export default function App() {
       cancelled = true
       cancelIdle()
     }
-  }, [addons])
+  }, [addons, chooseProfile])
 
   useEffect(() => {
+    if (chooseProfile) return
     let cancelled = false
     let stopSync: (() => void) | undefined
 
@@ -214,10 +243,11 @@ export default function App() {
       stopSync?.()
       stopProviderSync?.()
     }
-  }, [watchedCheckmarkSources])
+  }, [watchedCheckmarkSources, chooseProfile])
 
   // Discord idle presence — set "Browsing" when no player is active
   useEffect(() => {
+    if (chooseProfile) return
     let cancelled = false
     let clearActivity: (() => Promise<void>) | undefined
 
@@ -240,9 +270,10 @@ export default function App() {
       cancelIdle()
       clearActivity?.().catch(() => {})
     }
-  }, [discordRichPresence])
+  }, [discordRichPresence, chooseProfile])
 
   useEffect(() => {
+    if (chooseProfile) return
     const cancelIdle = scheduleIdleWork(() => {
       const { imageCacheSizeMb, imageKeepDays } = useAppStore.getState()
       void import('./services/imageCache')
@@ -250,7 +281,7 @@ export default function App() {
         .catch(() => {})
     }, 1800)
     return cancelIdle
-  }, [])
+  }, [chooseProfile])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme-accent', accentColor)
@@ -322,36 +353,41 @@ export default function App() {
 
   return (
     <ErrorBoundary label="App">
-      {chooseProfile && <WhoWatching onComplete={() => setChooseProfile(false)} />}
-      <ProfileSwitchTransition />
-      <Suspense
-        fallback={
-          <div className="flex items-center justify-center h-screen bg-black">
-            <div className="w-12 h-12 rounded-2xl bg-accent/20 flex items-center justify-center animate-pulse">
-              <span className="text-accent font-black text-xl">A</span>
-            </div>
-          </div>
-        }
-      >
-        <Routes>
-          <Route element={<Layout />}>
-            <Route path="/" element={startPagePath === '/' ? <HomePage /> : <Navigate to={startPagePath} replace />} />
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/movie/:id" element={<MovieDetailPage />} />
-            <Route path="/series/:id" element={<SeriesDetailPage />} />
-            <Route path="/person/:id" element={<PersonPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/developer" element={<DeveloperPage />} />
-            <Route path="/discover" element={<DiscoverPage />} />
-            <Route path="/upcoming" element={<UpcomingPage />} />
-            <Route path="/watch-together" element={<WatchTogetherPage />} />
-            <Route path="/catalog/:rowId" element={<CatalogPage />} />
-            <Route path="/home-editor" element={<Navigate to="/collections?tab=shelves" replace />} />
-            <Route path="/collections" element={<CollectionsPage />} />
-          </Route>
-        </Routes>
-        <UpdatePrompt />
-      </Suspense>
+      {chooseProfile ? (
+        <WhoWatching onComplete={() => setChooseProfile(false)} />
+      ) : (
+        <>
+          <ProfileSwitchTransition />
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center h-screen bg-black">
+                <div className="w-12 h-12 rounded-2xl bg-accent/20 flex items-center justify-center animate-pulse">
+                  <span className="text-accent font-black text-xl">A</span>
+                </div>
+              </div>
+            }
+          >
+            <Routes>
+              <Route element={<Layout />}>
+                <Route path="/" element={startPagePath === '/' ? <HomePage /> : <Navigate to={startPagePath} replace />} />
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/movie/:id" element={<MovieDetailPage />} />
+                <Route path="/series/:id" element={<SeriesDetailPage />} />
+                <Route path="/person/:id" element={<PersonPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/developer" element={<DeveloperPage />} />
+                <Route path="/discover" element={<DiscoverPage />} />
+                <Route path="/upcoming" element={<UpcomingPage />} />
+                <Route path="/watch-together" element={<WatchTogetherPage />} />
+                <Route path="/catalog/:rowId" element={<CatalogPage />} />
+                <Route path="/home-editor" element={<Navigate to="/collections?tab=shelves" replace />} />
+                <Route path="/collections" element={<CollectionsPage />} />
+              </Route>
+            </Routes>
+            {updatePromptReady && <UpdatePrompt />}
+          </Suspense>
+        </>
+      )}
     </ErrorBoundary>
   )
 }

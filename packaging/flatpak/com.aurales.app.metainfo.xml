@@ -19,6 +19,16 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.7" date="2026-09-06">
+      <description>
+        <p>
+          Speeds up cold start and everyday navigation, improves anime
+          metadata, artwork, ratings, descriptions, and season switching,
+          rebuilds timeline thumbnail generation and live scrubbing, and
+          polishes Sidebar and Watch Together interactions.
+        </p>
+      </description>
+    </release>
     <release version="0.3.6" date="2026-09-05">
       <description>
         <p>

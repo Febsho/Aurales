@@ -70,7 +70,11 @@ export async function mapEpisodeToProviders(input: TvdbEpisodeMappingInput): Pro
       mal: anibridge?.mal ?? (local?.malId ? { id: local.malId, episodeNumber: local.episode } : undefined),
       simkl: local?.simklId ? { id: local.simklId, seasonNumber: 1, episodeNumber: local.episode } : undefined,
       trakt: anibridge?.trakt ?? (local?.traktId ? { id: local.traktId, seasonNumber: local.season, episodeNumber: input.tvdbEpisodeNumber } : undefined),
-      tmdb: anibridge?.tmdb ?? (local?.tmdbId ? { id: local.tmdbId, seasonNumber: local.season, episodeNumber: input.tvdbEpisodeNumber } : undefined),
+      tmdb: anibridge?.tmdb ?? (local?.tmdbId ? {
+        id: local.tmdbId,
+        seasonNumber: local.tmdbSeason ?? local.season,
+        episodeNumber: local.tmdbEpisode ?? input.tvdbEpisodeNumber,
+      } : undefined),
       confidence: anibridge ? anibridge.confidence : 0.85,
       source: anibridge ? anibridge.source : 'animeLists',
       updatedAt: now,
