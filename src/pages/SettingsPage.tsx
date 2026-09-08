@@ -206,75 +206,16 @@ function SettingSelect({
   className?: string
   label?: string
 }) {
-  const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const selected = options.find((option) => String(option.value) === String(value)) || options[0]
-
-  useEffect(() => {
-    if (!open) return
-    const closeOnOutsidePress = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('pointerdown', closeOnOutsidePress, true)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePress, true)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [open])
-
+  const rowLabel = useContext(SettingRowLabelContext)
   return (
-    <div ref={rootRef} className={`relative ${className}`}>
-      <button
-        type="button"
-        aria-label={label}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className={`settings-panel-control flex h-11 w-full items-center justify-between gap-3 rounded-xl border px-4 text-left text-sm font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-colors ${
-          open
-            ? 'border-white/25 bg-white/12 text-white'
-            : 'border-white/10 bg-black/25 text-white/85 hover:border-white/18 hover:bg-white/8'
-        }`}
-      >
-        <span className="truncate">{selected?.label}</span>
-        <svg className={`h-4 w-4 flex-none text-white/60 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-          <path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-
-      {open && (
-        <div
-          role="listbox"
-          className="settings-select-menu absolute inset-x-0 top-full z-[120] mt-2 max-h-72 overflow-x-hidden overflow-y-auto rounded-xl border border-white/12 bg-[#171714]/98 p-1.5 shadow-[0_20px_60px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
-        >
-          {options.map((option) => {
-            const active = String(option.value) === String(value)
-            return (
-              <button
-                key={String(option.value)}
-                type="button"
-                role="option"
-                aria-selected={active}
-                onClick={() => {
-                  onChange(String(option.value))
-                  setOpen(false)
-                }}
-                className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
-                  active ? 'bg-white/12 font-semibold text-white' : 'text-white/65 hover:bg-white/7 hover:text-white'
-                }`}
-              >
-                <span className="truncate">{option.label}</span>
-                <span className={`h-1.5 w-1.5 flex-none rounded-full ${active ? 'bg-accent shadow-[0_0_10px_var(--color-accent)]' : 'bg-transparent'}`} />
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </div>
+    <BaseSelectMenu
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className={className}
+      aria-label={label ?? rowLabel}
+    >
+      {options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}
+    </BaseSelectMenu>
   )
 }
 
@@ -926,7 +867,7 @@ function ResumePriorityList() {
   }
 
   const serviceLabels: Record<string, string> = {
-    local: 'Local Database',
+    local: 'Local fallback',
     simkl: 'Simkl',
     trakt: 'Trakt',
     pmdb: 'PMDB',
@@ -934,7 +875,7 @@ function ResumePriorityList() {
   }
 
   const isServiceConnected = (id: string) => {
-    if (id === 'local') return true
+    if (id === 'local') return false
     if (id === 'simkl') return store.simklConnected
     if (id === 'trakt') return store.traktConnected
     if (id === 'pmdb') return !!store.pmdbApiKey
@@ -1834,7 +1775,7 @@ export default function SettingsPage() {
         {
           id: 'metadata',
           label: 'Metadata',
-          description: 'Primary sources, fallback behavior, and community ratings.',
+          description: 'Fixed metadata sources, fallback behavior, and community ratings.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
@@ -2155,13 +2096,14 @@ export default function SettingsPage() {
           {activeTab === 'interface' && (
             <>
               <SettingSection title="Appearance" description="Tune the unified Aurales interface to your screen and viewing setup.">
-                <SettingRow label="Background" description="Use the selected interface theme's intended background, or force pure OLED black.">
+                <SettingRow label="Background" description="Choose a soft charcoal, subtle slate gradient, or pure OLED black.">
                   <SettingSelect
                     label="Interface background"
                     value={store.themeBackground}
-                    onChange={(value) => store.setThemeBackground(value as 'theme' | 'oled')}
+                    onChange={(value) => store.setThemeBackground(value as 'graphite' | 'slate' | 'oled')}
                     options={[
-                      { value: 'theme', label: 'Theme Background' },
+                      { value: 'graphite', label: 'Graphite' },
+                      { value: 'slate', label: 'Slate' },
                       { value: 'oled', label: 'Pure Black (OLED)' },
                     ]}
                   />
@@ -2356,70 +2298,9 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              {/* Movies */}
-              <h3 className="text-sm font-bold text-amber-400/80 mb-3">Movies</h3>
-              <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch movie metadata from.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['tmdb', 'tvdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setMovieMetadataSource(src)}
-                        className={`px-5 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.movieMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'tmdb' ? 'TMDb' : 'TVDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
-              </SettingSection>
-
-              {/* Series */}
-              <h3 className="text-sm font-bold text-amber-400/80 mt-8 mb-3">Series</h3>
-              <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch series metadata from.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['tvdb', 'tmdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setSeriesMetadataSource(src)}
-                        className={`px-5 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.seriesMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'tmdb' ? 'TMDb' : 'TVDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
-              </SettingSection>
-
               {/* Anime */}
               <h3 className="text-sm font-bold text-amber-400/80 mt-8 mb-3">Anime</h3>
               <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch anime titles and descriptions from. Season structure always comes from TVDb.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['anilist', 'mal', 'kitsu', 'tvdb', 'tmdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setAnimeMetadataSource(src)}
-                        className={`px-4 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.animeMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'anilist' ? 'AniList' : src === 'mal' ? 'MAL' : src === 'kitsu' ? 'Kitsu' : src === 'tvdb' ? 'TVDb' : 'TMDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
                 <SettingRow label="Hide unreleased anime seasons" description="Hide seasons where no episodes have aired yet.">
                   <SettingToggle checked={store.hideUnairedAnimeSeasons} onChange={store.setHideUnairedAnimeSeasons} />
                 </SettingRow>
@@ -2476,7 +2357,7 @@ export default function SettingsPage() {
                   <SelectMenu
                     value={store.continueWatchingLimit}
                     onChange={(e) => store.setContinueWatchingLimit(Number(e.target.value))}
-                    className="w-28 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                    className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
                     <option value={5}>5 items</option>
                     <option value={10}>10 items</option>
@@ -2490,7 +2371,7 @@ export default function SettingsPage() {
               {/* ─── Play Button Resume Priority ─── */}
               <SettingSection
                 title="Play Button Resume Priority"
-                description="Drag connected services to configure the priority order used to fetch your resume progress on the detail pages. The first active resume point found from top to bottom will be used."
+                description="Connected services are checked first. Local stays as a fallback unless you drag it above them; it is used automatically when no service is connected."
               >
                 <div className="px-6 py-4">
                   <ResumePriorityList />
@@ -2684,6 +2565,38 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'subtitles' && (
             <>
+              <SettingSection title="Default Audio & Subtitles" description="Aurales chooses your first matching language, then the fallback if it is unavailable.">
+                <SettingRow label="Preferred audio" description="First choice for spoken audio.">
+                  <SelectMenu value={store.preferredAudio[0] || ''} onChange={(e) => store.setPreferredAudio([e.target.value, ...store.preferredAudio.slice(1).filter((code) => code !== e.target.value)])} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Audio fallback" description="Used when preferred audio is not available.">
+                  <SelectMenu value={store.preferredAudio[1] || ''} onChange={(e) => store.setPreferredAudio([store.preferredAudio[0] || 'en', e.target.value].filter((code, index, all) => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    <option value="">None</option>{APP_LANGUAGES.filter((language) => language.code !== store.preferredAudio[0]).map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Preferred subtitles" description="First choice for subtitle tracks.">
+                  <SelectMenu value={store.preferredSubtitles[0] || ''} onChange={(e) => store.setPreferredSubtitles([e.target.value, ...store.preferredSubtitles.slice(1).filter((code) => code !== e.target.value)])} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Subtitle fallback" description="Used when preferred subtitles are not available.">
+                  <SelectMenu value={store.preferredSubtitles[1] || ''} onChange={(e) => store.setPreferredSubtitles([store.preferredSubtitles[0] || 'en', e.target.value].filter((code, index, all) => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    <option value="">None</option>{APP_LANGUAGES.filter((language) => language.code !== store.preferredSubtitles[0]).map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="For matching audio" description="What to show when the chosen audio already matches subtitle language.">
+                  <SelectMenu value={store.subtitleMode} onChange={(e) => store.setSubtitleMode(e.target.value as 'show' | 'forced' | 'hide')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="show">Show subtitles</option><option value="forced">Only signs & foreign parts</option><option value="hide">Hide subtitles</option></SelectMenu>
+                </SettingRow>
+                <SettingRow label="Prefer SDH subtitles" description="Choose SDH/closed-caption tracks when a matching language is available.">
+                  <input type="checkbox" checked={store.preferSdhSubtitles} onChange={(e) => store.setPreferSdhSubtitles(e.target.checked)} className="h-5 w-5 accent-white" />
+                </SettingRow>
+                <SettingRow label="Anime audio" description="Sub prioritizes Japanese audio; Dub prioritizes your preferred audio.">
+                  <SelectMenu value={store.animeAudioMode} onChange={(e) => store.setAnimeAudioMode(e.target.value as 'sub' | 'dub')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="sub">Sub (Japanese audio)</option><option value="dub">Dub (preferred audio)</option></SelectMenu>
+                </SettingRow>
+              </SettingSection>
+              <div className="hidden">
               {/* Audio Languages */}
               <SettingSection title="Audio Languages" description="Auto-switch to the best audio track match. Primary language first.">
                 <div className="px-6 py-5 space-y-4">
@@ -2802,6 +2715,8 @@ export default function SettingsPage() {
                   </details>
                 </div>
               </SettingSection>
+
+              </div>
 
               {/* Subtitle Styling */}
               <SettingSection title="Appearance" description="Preset styles or individual customize settings for player subtitles.">
@@ -3210,6 +3125,20 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
+              {/* Cache mode */}
+              <section className="space-y-3">
+                <h3 className="px-1 text-sm font-semibold text-white/65">Cache Mode</h3>
+                <SettingSection>
+                  <SettingRow label="Cache mode" description="Choose where streamed video is cached. Changes apply when starting the next video.">
+                    <SelectMenu value={store.videoCacheMode} onChange={(e) => store.setVideoCacheMode(e.target.value as 'memory' | 'disk' | 'auto')} className="w-44">
+                      <option value="memory">Memory</option>
+                      <option value="disk">Disk</option>
+                      <option value="auto">Auto</option>
+                    </SelectMenu>
+                  </SettingRow>
+                </SettingSection>
+              </section>
+
               <SettingSection title="Picture Quality" description="A simple rendering profile for mpv. Changes apply the next time you start playback.">
                 <div className="grid gap-2.5 px-6 py-4 md:grid-cols-3">
                   {([
@@ -3398,83 +3327,6 @@ export default function SettingsPage() {
                 <SettingRow label="Digital Audio Passthrough" description="Use only with a compatible HDMI receiver. Leave off for normal speakers or headphones to avoid silent playback.">
                   <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
                 </SettingRow>
-              </SettingSection>
-
-              {/* Hardware Decoding */}
-              <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
-                <SettingRow label="Hardware decoding" description="Leave on Auto-detect unless video stutters or shows visual glitches.">
-                  <SelectMenu
-                    value={store.hwdecMode}
-                    onChange={(e) => store.setHwdecMode(e.target.value as any)}
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="auto">Auto-detect (Recommended)</option>
-                    <option value="no">Disabled (Software)</option>
-                    <option value="videotoolbox">macOS (VideoToolbox)</option>
-                    <option value="nvdec">NVIDIA (nvdec)</option>
-                    <option value="vaapi">Intel/AMD Linux (vaapi)</option>
-                  </SelectMenu>
-                </SettingRow>
-              </SettingSection>
-
-              {/* Buffer */}
-              <SettingSection title="Buffer Cache" description="Adjust cache to prevent buffering on slow networks.">
-                <SettingRow label="Memory cache size" description="How much of the stream is kept in memory. Larger helps on unstable connections.">
-                  <SelectMenu
-                    value={store.cacheBufferSize}
-                    onChange={(e) => store.setCacheBufferSize(e.target.value as any)}
-                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="default">Default (150MB)</option>
-                    <option value="large">Large (256MB)</option>
-                    <option value="aggressive">Aggressive (512MB)</option>
-                  </SelectMenu>
-                </SettingRow>
-                <SettingRow label="Cache duration (seconds)" description="Amount of stream time to buffer ahead.">
-                  <input
-                    type="number"
-                    min="5"
-                    max="600"
-                    value={store.mpvCacheSecs}
-                    onChange={(e) => store.setMpvCacheSecs(Number(e.target.value) || 60)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </SettingRow>
-                <SettingRow label="Network timeout (seconds)" description="Connection timeout before giving up on a stream.">
-                  <input
-                    type="number"
-                    min="5"
-                    max="120"
-                    value={store.mpvNetworkTimeout}
-                    onChange={(e) => store.setMpvNetworkTimeout(Number(e.target.value) || 60)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Advanced Player Settings */}
-              <SettingSection title="Advanced Player Options" description="Configure custom parameters for the mpv player.">
-                <SettingRow label="Custom mpv arguments" description="Pass additional CLI flags to mpv (space-separated, e.g. --alang=eng --volume-max=150).">
-                  <input
-                    type="text"
-                    placeholder="e.g. --alang=eng --volume-max=150"
-                    value={store.mpvCustomArgs}
-                    onChange={(e) => store.setMpvCustomArgs(e.target.value)}
-                    className="w-96 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <div className="px-6 py-4">
-                  <button
-                    onClick={() => {
-                      if (confirm("Are you sure you want to reset all player settings to safe defaults?")) {
-                        store.resetPlayerSettings()
-                      }
-                    }}
-                    className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-200 rounded-xl text-sm font-semibold transition-all"
-                  >
-                    Reset Player Settings to Safe Defaults
-                  </button>
-                </div>
               </SettingSection>
 
               <p className="text-xs text-white/25 leading-relaxed px-1">

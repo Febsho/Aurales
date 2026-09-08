@@ -41,6 +41,7 @@ import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
 import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack, APP_LANGUAGES } from '../stores/appStore'
 import { setDiscordActivity, restoreDiscordBrowsingActivity } from '../services/discord'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
+import { createTrackPropertyQueue } from '../services/player/trackSwitch'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   play as wtPlay,
@@ -710,7 +711,7 @@ function wtControlBlocked(): boolean {
 }
 
 // mpv args derived from settings that aren't first-class launch params.
-function buildMpvExtraArgs(storeState: { mpvCustomArgs: string; audioPassthrough: boolean; playerQualityProfile: 'performance' | 'balanced' | 'quality' }): string {
+function buildMpvExtraArgs(storeState: { audioPassthrough: boolean; playerQualityProfile: 'performance' | 'balanced' | 'quality' }): string {
   // These mirror mpv's safe renderer presets: the default stays conservative,
   // while users with weaker or stronger GPUs get a one-choice tuning option.
   const qualityArgs = storeState.playerQualityProfile === 'performance'
@@ -718,7 +719,7 @@ function buildMpvExtraArgs(storeState: { mpvCustomArgs: string; audioPassthrough
     : storeState.playerQualityProfile === 'quality'
       ? '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
       : ''
-  const parts = [qualityArgs, storeState.mpvCustomArgs?.trim() ?? '']
+  const parts = [qualityArgs]
   if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
     parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
   }
@@ -1807,6 +1808,16 @@ function FullNativeMpvPlayer({
     })
   }, [])
 
+  // Track selection stays inside the current libmpv session: only `aid`/`sid`
+  // are changed, never the loaded file or player/UI lifecycle. The native
+  // command bridge uses blocking workers, so serialize these narrow mutations
+  // to preserve the user's final choice during rapid switching.
+  const trackPropertyQueueRef = useRef(createTrackPropertyQueue((property, value) =>
+    sendPlayerCommand('set_property', [property, value]),
+  ))
+  const setTrackProperty = useCallback((property: 'aid' | 'sid', value: number | 'no') =>
+    trackPropertyQueueRef.current(property, value), [])
+
   const commitTimelineSeek = useCallback((percentage: number) => {
     const pct = Math.max(0, Math.min(100, percentage))
     isDraggingRef.current = false
@@ -1951,7 +1962,10 @@ function FullNativeMpvPlayer({
     const bothDone = hasAutoSelectedAudioRef.current && hasAutoSelectedSubRef.current
     if (!bothDone && autoSelectAttemptsRef.current < MAX_AUTO_SELECT && data.length > 0) {
       autoSelectAttemptsRef.current++
-      const { preferredAudio = ['en', 'ja'], preferredSubtitles = ['en'], subtitleMode } = useAppStore.getState()
+      const { preferredAudio = ['en', 'ja'], preferredSubtitles = ['en'], subtitleMode, preferSdhSubtitles, animeAudioMode } = useAppStore.getState()
+      const audioPreferences = playbackItem?.isAnime && animeAudioMode === 'sub'
+        ? ['ja', ...preferredAudio.filter((language) => language !== 'ja')]
+        : preferredAudio
 
       // ── Audio auto-select ──
       if (!hasAutoSelectedAudioRef.current && audio.length > 0) {
@@ -1959,12 +1973,14 @@ function FullNativeMpvPlayer({
         let bestAudioRank = Infinity
         audio.forEach((t) => {
           const code = getLanguageCodeFromTrack(t.lang)
-          const rank = code ? preferredAudio.indexOf(code) : -1
+          const rank = code ? audioPreferences.indexOf(code) : -1
           if (rank !== -1 && rank < bestAudioRank) { bestAudioRank = rank; bestAudioId = t.id }
         })
         if (bestAudioId !== undefined) {
           if (bestAudioId !== selAudio?.id) {
-            sendPlayerCommand('set_property', ['aid', bestAudioId])
+            setTrackProperty('aid', bestAudioId).catch((error) => {
+              logEvent('MPV DEBUG', `preferred audio track ${bestAudioId} failed: ${String(error)}`)
+            })
             setSelectedAudio(bestAudioId)
           }
           hasAutoSelectedAudioRef.current = true
@@ -1985,13 +2001,16 @@ function FullNativeMpvPlayer({
         let bestSubRank = Infinity
           candidates.forEach((t) => {
           const code = getLanguageCodeFromTrack(t.lang)
-          const rank = code ? preferredSubtitles.indexOf(code) : -1
+          const languageRank = code ? preferredSubtitles.indexOf(code) : -1
+          const rank = languageRank >= 0 && preferSdhSubtitles && /\b(?:sdh|cc)\b/i.test(t.label) ? languageRank - 0.25 : languageRank
           if (rank !== -1 && rank < bestSubRank) { bestSubRank = rank; bestSubId = t.id }
         })
         if (bestSubId === undefined && subtitleMode === 'forced') bestSubId = candidates[0]?.id
         if (bestSubId !== undefined) {
           if (bestSubId !== selSub?.id) {
-            sendPlayerCommand('set_property', ['sid', bestSubId])
+            setTrackProperty('sid', bestSubId).catch((error) => {
+              logEvent('MPV DEBUG', `preferred subtitle track ${bestSubId} failed: ${String(error)}`)
+            })
             setSelectedSub(bestSubId)
           }
           hasAutoSelectedSubRef.current = true
@@ -2454,10 +2473,8 @@ function FullNativeMpvPlayer({
           startTime,
           volume: volumeRef.current,
           viewport: buildVideoViewport(),
-          hwdecMode: storeState.hwdecMode,
-          cacheBufferSize: storeState.cacheBufferSize,
-          mpvCacheSecs: storeState.mpvCacheSecs,
-          mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+          hwdecMode: 'auto',
+          videoCacheMode: storeState.videoCacheMode,
           mpvCustomArgs: buildMpvExtraArgs(storeState)
         })
         if (cancelled || session.status === "stopped") return
@@ -2912,10 +2929,8 @@ function FullNativeMpvPlayer({
         startTime: resumeTime,
         volume: volumeRef.current,
         viewport: buildVideoViewport(),
-        hwdecMode: options?.hwdecMode || storeState.hwdecMode,
-        cacheBufferSize: storeState.cacheBufferSize,
-        mpvCacheSecs: storeState.mpvCacheSecs,
-        mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+        hwdecMode: options?.hwdecMode || 'auto',
+        videoCacheMode: storeState.videoCacheMode,
         mpvCustomArgs: buildMpvExtraArgs(launchState)
       })
       applySavedVolume()
@@ -3409,10 +3424,8 @@ function FullNativeMpvPlayer({
         title,
         volume: volumeRef.current,
         viewport: buildVideoViewport(),
-        hwdecMode: storeState.hwdecMode,
-        cacheBufferSize: storeState.cacheBufferSize,
-        mpvCacheSecs: storeState.mpvCacheSecs,
-        mpvNetworkTimeout: storeState.mpvNetworkTimeout,
+        hwdecMode: 'auto',
+        videoCacheMode: storeState.videoCacheMode,
         mpvCustomArgs: buildMpvExtraArgs(storeState)
       })
       setPlayerRunning(true)
@@ -3680,7 +3693,10 @@ function FullNativeMpvPlayer({
 
   const changeAudio = (id: number) => {
     setSelectedAudio(id)
-    command('set_property', ['aid', id])
+    setTrackProperty('aid', id).catch((error) => {
+      logEvent('MPV DEBUG', `audio track ${id} failed: ${String(error)}`)
+      refreshTracks().catch(() => false)
+    })
     setTrackMenu(null)
   }
 
@@ -3812,7 +3828,10 @@ function FullNativeMpvPlayer({
       if (id !== aiSubtitleTrackIdRef.current) {
         sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
       }
-      command('set_property', ['sid', id])
+      setTrackProperty('sid', id).catch((error) => {
+        logEvent('MPV DEBUG', `subtitle track ${id} failed: ${String(error)}`)
+        refreshTracks().catch(() => false)
+      })
       sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
       command('set_property', ['sub-visibility', true])
     }
@@ -3966,7 +3985,7 @@ function FullNativeMpvPlayer({
         >
 
           {/* Compact TV-style control row */}
-          <div className={`player-controls__info order-3 flex items-center justify-between transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mt-1 min-h-12 max-h-16 translate-y-0 overflow-visible opacity-100'}`}>
+          <div className={`player-controls__info order-3 flex items-center justify-between transition-all duration-250 ${trackMenu ? 'relative z-40' : ''} ${showChapters ? 'pointer-events-none max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mt-1 min-h-12 max-h-16 translate-y-0 overflow-visible opacity-100'}`}>
             <div className="flex items-center gap-1">
               <button type="button" aria-label="Media information" title="Info" onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`grid h-10 w-10 place-items-center rounded-full transition-all ${showMediaInfo ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
                 <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6M12 7.4h.01" strokeLinecap="round"/></svg>
@@ -4240,7 +4259,7 @@ function FullNativeMpvPlayer({
             </button>
 
             <div
-              className="order-1 relative h-[3px] w-full flex-none cursor-pointer group transition-[height] duration-150 hover:h-1"
+              className="order-1 relative h-3 w-full flex-none cursor-pointer touch-none group"
               onPointerDown={(event) => {
                 if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
                 if (event.pointerType === 'mouse' && (event.buttons & 1) !== 1) return
@@ -4325,7 +4344,7 @@ function FullNativeMpvPlayer({
                   </span>
                 </div>
               )}
-              <div className="absolute inset-0 rounded-full bg-white/25 group-hover:bg-white/35 transition-colors" />
+              <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/25 group-hover:bg-white/35 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
                 <button
                   key={`${range.type}-${range.start}-${range.end}-${index}`}
@@ -4341,7 +4360,7 @@ function FullNativeMpvPlayer({
                   }}
                   title={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
                   aria-label={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
-                  className={`absolute inset-y-[1px] z-[3] min-w-[3px] rounded-sm opacity-65 transition-all hover:inset-y-[-2px] hover:opacity-100 ${
+                  className={`absolute top-1/2 z-[3] h-[3px] min-w-[3px] -translate-y-1/2 rounded-sm opacity-65 transition-[height,opacity] hover:h-[7px] hover:opacity-100 ${
                     range.type === 'recap'
                       ? 'bg-sky-400/90'
                       : range.type === 'intro'
@@ -4352,7 +4371,7 @@ function FullNativeMpvPlayer({
                 />
               ))}
               <div
-                className="absolute inset-y-0 left-0 z-[1] rounded-full bg-white/90 transition-all"
+                className="absolute left-0 top-1/2 z-[1] h-[3px] -translate-y-1/2 rounded-full bg-white/90 transition-all"
                 style={{ width: `${displayProgressPct}%` }}
               />
               {/* Thumb dot */}
@@ -4380,7 +4399,7 @@ function FullNativeMpvPlayer({
                     commitTimelineSeek(val)
                   }
                 }}
-                className="pointer-events-none absolute inset-0 w-full touch-none opacity-0 h-6 -top-2.5"
+                className="pointer-events-none absolute inset-x-0 top-1/2 h-6 w-full -translate-y-1/2 touch-none opacity-0"
               />
             </div>
           </div>

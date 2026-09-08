@@ -66,7 +66,7 @@ export function buildSmartContext(opts: { title?: string; season?: number; episo
     subtitles: opts.subtitles ?? [],
     mode: opts.mode ?? ((typeof localStorage !== 'undefined' && localStorage.getItem('aurales_smart_play_mode') as SmartPlayMode) || 'best'),
     player: typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ ? 'mpv' : 'web',
-    maxSizeGb: store.cacheBufferSize === 'default' ? 20 : store.cacheBufferSize === 'large' ? 45 : 80,
+    maxSizeGb: 20,
     history: loadReliabilityHistory(),
     playbackMemories: opts.playbackMemories,
   }

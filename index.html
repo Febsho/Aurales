@@ -16,6 +16,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="application-name" content="Aurales" />
     <meta name="theme-color" content="#000000" />
+    <script>
+      // Apply the persisted surface before the first paint. React repeats this
+      // after hydration, but doing it here avoids a bright/incorrect flash on
+      // cold start.
+      try {
+        const background = localStorage.getItem('aurales_theme_background');
+        document.documentElement.dataset.themeBackground = background === 'slate' || background === 'oled' ? background : 'graphite';
+      } catch (_) {}
+    </script>
     <title>Aurales</title>
     <!-- Critical inline styles: paint black immediately, before the JS/CSS bundle arrives -->
     <style>

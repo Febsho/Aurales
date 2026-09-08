@@ -486,9 +486,7 @@ enum NativePlayerBackend {
 #[derive(Clone, PartialEq)]
 struct LibMpvLaunchConfig {
     hwdec_mode: Option<String>,
-    cache_buffer_size: Option<String>,
-    mpv_cache_secs: Option<u32>,
-    mpv_network_timeout: Option<u32>,
+    video_cache_mode: Option<String>,
     mpv_custom_args: Option<String>,
 }
 
@@ -1469,9 +1467,7 @@ pub fn launch_embedded_mpv(
     start_time: Option<f64>,
     volume: Option<f64>,
     hwdec_mode: Option<String>,
-    cache_buffer_size: Option<String>,
-    mpv_cache_secs: Option<u32>,
-    mpv_network_timeout: Option<u32>,
+    video_cache_mode: Option<String>,
     mpv_custom_args: Option<String>,
     x: Option<i32>,
     y: Option<i32>,
@@ -1514,9 +1510,7 @@ pub fn launch_embedded_mpv(
     {
         let launch_config = LibMpvLaunchConfig {
             hwdec_mode: hwdec_mode.clone(),
-            cache_buffer_size: cache_buffer_size.clone(),
-            mpv_cache_secs,
-            mpv_network_timeout,
+            video_cache_mode: video_cache_mode.clone(),
             mpv_custom_args: mpv_custom_args.clone(),
         };
         if try_reuse_libmpv_player(
@@ -1558,9 +1552,7 @@ pub fn launch_embedded_mpv(
         start_time,
         volume,
         hwdec_mode,
-        cache_buffer_size,
-        mpv_cache_secs,
-        mpv_network_timeout,
+        video_cache_mode,
         mpv_custom_args,
         x,
         y,
@@ -2112,9 +2104,7 @@ fn launch_mpv_with_window(
     start_time: Option<f64>,
     volume: Option<f64>,
     hwdec_mode: Option<String>,
-    cache_buffer_size: Option<String>,
-    mpv_cache_secs: Option<u32>,
-    mpv_network_timeout: Option<u32>,
+    video_cache_mode: Option<String>,
     mpv_custom_args: Option<String>,
     x: Option<i32>,
     y: Option<i32>,
@@ -2131,9 +2121,7 @@ fn launch_mpv_with_window(
             start_time,
             volume,
             hwdec_mode,
-            cache_buffer_size,
-            mpv_cache_secs,
-            mpv_network_timeout,
+            video_cache_mode,
             mpv_custom_args,
             x,
             y,
@@ -2147,9 +2135,7 @@ fn launch_mpv_with_window(
     {
         let launch_config = LibMpvLaunchConfig {
             hwdec_mode: hwdec_mode.clone(),
-            cache_buffer_size: cache_buffer_size.clone(),
-            mpv_cache_secs,
-            mpv_network_timeout,
+            video_cache_mode: video_cache_mode.clone(),
             mpv_custom_args: mpv_custom_args.clone(),
         };
 
@@ -2182,8 +2168,8 @@ fn launch_mpv_with_window(
             Some("videotoolbox") => "videotoolbox",
             _ => "auto-safe",
         };
-        let cache_secs = mpv_cache_secs.unwrap_or(60);
-        let requested_network_timeout = mpv_network_timeout.unwrap_or(60);
+        let cache_secs = 60;
+        let requested_network_timeout = 60;
         // Torrent-backed HTTP gateways can accept the TCP/TLS connection
         // immediately while taking longer to produce the first byte for a
         // cold stream. A 15 second timeout made every cold source look broken
@@ -2192,11 +2178,17 @@ fn launch_mpv_with_window(
         let network_timeout = requested_network_timeout.max(60);
         #[cfg(not(target_os = "linux"))]
         let network_timeout = requested_network_timeout;
-        let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
-            Some("large") => ("256MiB", "128MiB"),
-            Some("aggressive") => ("512MiB", "256MiB"),
-            _ => ("150MiB", "75MiB"),
-        };
+        let (max_bytes, max_back_bytes) = ("150MiB", "75MiB");
+        let (cache_on_disk, effective_cache_secs, effective_max_bytes, effective_max_back_bytes) =
+            match video_cache_mode.as_deref() {
+                // Store the seekable stream cache on disk rather than retaining a
+                // feature-length stream in RAM.
+                Some("disk") => ("yes", 86_400, "8GiB", "4GiB"),
+                // Auto keeps disk-backed seeking, but limits its working set to
+                // reduce write activity and heat on portable devices.
+                Some("auto") => ("yes", cache_secs, "256MiB", "128MiB"),
+                _ => ("no", cache_secs, max_bytes, max_back_bytes),
+            };
         let video_x = x.unwrap_or(0);
         let video_y = y.unwrap_or(0);
         let video_width = width.unwrap_or(1).max(1);
@@ -2287,14 +2279,21 @@ fn launch_mpv_with_window(
             set_option("sub-fix-timing", "yes".to_string())?;
             set_option("demuxer-mkv-subtitle-preroll", "yes".to_string())?;
             set_option("cache", "yes".to_string())?;
+            set_option("cache-on-disk", cache_on_disk.to_string())?;
             // Start as soon as mpv has a decodable frame. The cache continues
             // to fill in the background, rather than making a cold stream wait
             // for its initial readahead target before playback is visible.
             set_option("cache-pause-initial", "no".to_string())?;
-            set_option("cache-secs", cache_secs.to_string())?;
-            set_option("demuxer-max-bytes", max_bytes.to_string())?;
-            set_option("demuxer-max-back-bytes", max_back_bytes.to_string())?;
-            set_option("demuxer-readahead-secs", (cache_secs / 2).to_string())?;
+            set_option("cache-secs", effective_cache_secs.to_string())?;
+            set_option("demuxer-max-bytes", effective_max_bytes.to_string())?;
+            set_option(
+                "demuxer-max-back-bytes",
+                effective_max_back_bytes.to_string(),
+            )?;
+            set_option(
+                "demuxer-readahead-secs",
+                (effective_cache_secs / 2).to_string(),
+            )?;
             set_option("demuxer-seekable-cache", "yes".to_string())?;
             set_option("network-timeout", network_timeout.to_string())?;
             set_option("hr-seek", "yes".to_string())?;
@@ -2315,6 +2314,23 @@ fn launch_mpv_with_window(
             }
             if let Some(v) = volume {
                 set_option("volume", v.max(0.0).min(130.0).to_string())?;
+            }
+
+            // These are deliberately best-effort: older bundled libmpv builds
+            // may not expose them, but current builds can keep video running
+            // after a hardware-decoder failure and keep playback alive when an
+            // audio device disappears. Neither changes media quality.
+            for (name, value) in [
+                ("hwdec-software-fallback", "1"),
+                ("audio-fallback-to-null", "yes"),
+            ] {
+                option_log.push(format!("--{}={}", name, value));
+                if let Err(error) = player.set_option(name, value) {
+                    player_debug_log(format!(
+                        "[PLAYER CONFIG] skipped optional --{}={} ({})",
+                        name, value, error
+                    ));
+                }
             }
         }
 

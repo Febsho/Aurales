@@ -102,6 +102,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   // legitimately contain duplicate/canonicalized entries with the same ID.
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
   const [renderedCount, setRenderedCount] = useState(INITIAL_RENDERED_CARDS)
+  const renderMoreFrameRef = useRef(0)
   const handleCardFocus = useCallback((_item: SearchResult, cardIndex?: number) => {
     if (cardIndex != null) setFocusedCardIndex(cardIndex)
   }, [])
@@ -166,12 +167,21 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   )
   useEffect(() => setRenderedCount(INITIAL_RENDERED_CARDS), [rowItems])
   useEffect(() => {
-    // Start with enough artwork for the initial viewport and a few horizontal
-    // scroll steps. The shared queue keeps many Home/Discover shelves from
-    // saturating the network or native image cache at once.
-    const timer = window.setTimeout(() => {
-      void warmCachedImages(rowItems.slice(0, 14).flatMap((item) => [item.poster, item.backdrop, item.logo]))
-    }, 350)
+    // Warming remains useful for later horizontal browsing, but it must start
+    // after the first interaction/paint budget. Starting every shelf's full
+    // artwork queue 150 ms after mount competed with scroll image decoding.
+    const warm = () => {
+      void warmCachedImages(rowItems.flatMap((item) => [item.poster, item.backdrop, item.logo]))
+    }
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+    }
+    if (idleWindow.requestIdleCallback) {
+      const idleId = idleWindow.requestIdleCallback(warm, { timeout: 3_000 })
+      return () => idleWindow.cancelIdleCallback?.(idleId)
+    }
+    const timer = window.setTimeout(warm, 1_000)
     return () => window.clearTimeout(timer)
   }, [rowItems])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
@@ -185,6 +195,17 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       setRenderedCount((count) => Math.min(rowItems.length, count + CARD_RENDER_BATCH))
     }
   }, [renderedCount, rowItems.length])
+  const handleRowScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (renderMoreFrameRef.current) return
+    const element = event.currentTarget
+    renderMoreFrameRef.current = window.requestAnimationFrame(() => {
+      renderMoreFrameRef.current = 0
+      renderMoreCards(element)
+    })
+  }, [renderMoreCards])
+  useEffect(() => () => {
+    if (renderMoreFrameRef.current) window.cancelAnimationFrame(renderMoreFrameRef.current)
+  }, [])
 
   if (visibleItems.length === 0) return null
 
@@ -256,7 +277,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
-        onScroll={(event) => renderMoreCards(event.currentTarget)}
+        onScroll={handleRowScroll}
         className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >

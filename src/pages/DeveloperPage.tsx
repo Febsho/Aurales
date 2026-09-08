@@ -172,11 +172,8 @@ export default function DeveloperPage() {
           title: testTitle,
           startTime: 0,
           volume: 100,
-          hwdecMode: store.hwdecMode,
-          cacheBufferSize: store.cacheBufferSize,
-          mpvCacheSecs: store.mpvCacheSecs,
-          mpvNetworkTimeout: store.mpvNetworkTimeout,
-          mpvCustomArgs: store.mpvCustomArgs,
+          hwdecMode: 'auto',
+          videoCacheMode: store.videoCacheMode,
           viewport: {
             x: 0,
             y: 0,
@@ -201,11 +198,9 @@ export default function DeveloperPage() {
       appVersion: `v${getAppVersion()}`,
       mpvPath: mpvInfo?.path || 'Not Found',
       mpvArgs: {
-        hwdecMode: store.hwdecMode,
-        cacheBufferSize: store.cacheBufferSize,
-        mpvCacheSecs: store.mpvCacheSecs,
-        mpvNetworkTimeout: store.mpvNetworkTimeout,
-        mpvCustomArgs: store.mpvCustomArgs
+        hwdecMode: 'auto',
+        videoCacheMode: store.videoCacheMode,
+        autoHardwareDecoding: true
       },
       playbackState: playbackState || 'No active session',
       thumbnailDebug: thumbnailDebug || 'No thumbnail debug state',

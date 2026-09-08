@@ -32,11 +32,28 @@ export default function DetailContentShell({
     scrollContainer.classList.add('detail-snap-scroll')
 
     let locked = false
+    let sectionTop = section.offsetTop
+    let scrollFrame = 0
+    let transitionFrame = 0
     const updateActive = () => {
-      const nextActive = scrollContainer.scrollTop >= section.offsetTop * 0.72
+      // Scroll events can arrive once per display frame (240 times/sec on a
+      // 240 Hz panel). Keep this path layout-free; the section offset is
+      // refreshed only when layout can actually change.
+      const nextActive = scrollContainer.scrollTop >= sectionTop * 0.72
       if (nextActive === contentActiveRef.current) return
       contentActiveRef.current = nextActive
       setContentActive(nextActive)
+    }
+    const onScroll = () => {
+      if (scrollFrame) return
+      scrollFrame = window.requestAnimationFrame(() => {
+        scrollFrame = 0
+        updateActive()
+      })
+    }
+    const refreshSectionTop = () => {
+      sectionTop = section.offsetTop
+      updateActive()
     }
     const transitionTo = (top: number) => {
       if (locked) return
@@ -55,45 +72,34 @@ export default function DetailContentShell({
           : 1 - Math.pow(-2 * progress + 2, 3) / 2
         scrollContainer.scrollTop = startTop + distance * eased
         updateActive()
-
-        if (progress < 1) {
-          window.requestAnimationFrame(animate)
-        } else {
+        if (progress < 1) transitionFrame = window.requestAnimationFrame(animate)
+        else {
+          transitionFrame = 0
           scrollContainer.style.scrollBehavior = previousBehavior
           locked = false
         }
       }
-
-      window.requestAnimationFrame(animate)
+      transitionFrame = window.requestAnimationFrame(animate)
     }
     let consecutiveUpDelta = 0
     const handleWheel = (event: WheelEvent) => {
       if (event.shiftKey) return
-      const sectionTop = section.offsetTop
       const currentTop = scrollContainer.scrollTop
       const isOverHorizontalScroller = (event.target as HTMLElement | null)?.closest('.episode-scroll, .season-scroll')
-
       if (locked) {
         event.preventDefault()
         return
       }
-
-      // Snap down: at hero, scroll down → jump to content
       if (event.deltaY > 20 && currentTop <= 4) {
         event.preventDefault()
         consecutiveUpDelta = 0
         transitionTo(sectionTop)
         return
       }
-
-      // Snap up: in the content zone, scroll up → jump to hero
-      // Accumulate upward scroll intent so a single flick doesn't trigger it,
-      // but consecutive scroll-up events do. Resets on any downward scroll.
       if (event.deltaY > 0) {
         consecutiveUpDelta = 0
         return
       }
-
       if (event.deltaY < -5 && currentTop > 0 && currentTop <= sectionTop + 200) {
         consecutiveUpDelta += Math.abs(event.deltaY)
         if (consecutiveUpDelta >= 60) {
@@ -103,14 +109,20 @@ export default function DetailContentShell({
         }
       }
     }
-
-    updateActive()
-    scrollContainer.addEventListener('scroll', updateActive, { passive: true })
+    refreshSectionTop()
+    const resize = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(refreshSectionTop)
+      : null
+    resize?.observe(section)
+    scrollContainer.addEventListener('scroll', onScroll, { passive: true })
     scrollContainer.addEventListener('wheel', handleWheel, { passive: false })
     return () => {
       scrollContainer.classList.remove('detail-snap-scroll')
-      scrollContainer.removeEventListener('scroll', updateActive)
+      scrollContainer.removeEventListener('scroll', onScroll)
       scrollContainer.removeEventListener('wheel', handleWheel)
+      resize?.disconnect()
+      if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
+      if (transitionFrame) window.cancelAnimationFrame(transitionFrame)
     }
   }, [])
 

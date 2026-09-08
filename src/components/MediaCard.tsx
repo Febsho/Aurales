@@ -325,7 +325,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         }
         if (!tmdbId) return
         const [poster, metadata] = await Promise.all([
-          getTmdbCleanPoster(displayItem.type, tmdbId),
+          // Better Posters is already the selected poster source. Do not
+          // request a clean TMDB poster only to display it briefly before the
+          // configured Better Posters URL takes over.
+          betterPosters.enabled ? Promise.resolve(undefined) : getTmdbCleanPoster(displayItem.type, tmdbId),
           getTmdbCardMetadata(displayItem.type, tmdbId, displayItem.imdbId),
         ])
         if (!cancelled) {
@@ -335,7 +338,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       } catch (_) { /* keep the catalog poster as a last-resort fallback */ }
     })()
     return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
+  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type, betterPosters.enabled])
 
   useEffect(() => {
     if (!isVisible) return
@@ -616,7 +619,9 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
       || resolvedGenre
     const focusMedia = landscapeBackdrop || posterUrl
-    const cinematicPoster = layout === 'feature' ? cleanTmdbPoster || posterUrl : posterUrl
+    const cinematicPoster = layout === 'feature' && !betterPosters.enabled
+      ? cleanTmdbPoster || posterUrl
+      : posterUrl
     const expanded = cinematicFocused && cinematicExpand
     const cinematicTrailer = hoverPreviewOpen && hoverTrailer
     const cinematicRanked = layout === 'ranked'
@@ -732,7 +737,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     // This row is poster-led even though the cards are wider than the regular
     // poster layout. Respect configured/custom poster artwork before falling
     // back to a backdrop.
-    const featureArt = cleanTmdbPoster || posterUrl || landscapeBackdrop
+    const featureArt = (betterPosters.enabled ? posterUrl : cleanTmdbPoster || posterUrl) || landscapeBackdrop
     const featureTrailer = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
     const featureUsesNativeTrailer = Boolean(featureTrailer && useNativeTrailerPlayer)
     const featureTrailerVisible = featureUsesNativeTrailer ? nativeTrailerVisible : Boolean(featureTrailer)

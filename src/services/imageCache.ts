@@ -74,10 +74,20 @@ export function watchStalledImage(
 const imageWarmups = new Map<string, Promise<void>>()
 const queuedImageWarmups = new Map<string, Promise<void>>()
 const imageWarmupQueue: Array<() => void> = []
+// Match the native cache's bounded downloader. This maximizes cold-cache
+// throughput without allowing background artwork to monopolize connections.
 const IMAGE_WARMUP_CONCURRENCY = 3
 let activeImageWarmups = 0
 
 function runNextImageWarmup(): void {
+  // Do not make a cache-fill task compete with an active wheel/touch gesture.
+  // Chromium exposes this scheduling signal; WebKitGTK simply falls through
+  // to the already conservative concurrency limit.
+  const scheduler = (navigator as Navigator & { scheduling?: { isInputPending?: () => boolean } }).scheduling
+  if (scheduler?.isInputPending?.()) {
+    window.setTimeout(runNextImageWarmup, 32)
+    return
+  }
   while (activeImageWarmups < IMAGE_WARMUP_CONCURRENCY && imageWarmupQueue.length > 0) {
     activeImageWarmups += 1
     imageWarmupQueue.shift()?.()

@@ -8,6 +8,7 @@ import { prefetchLikelyRoutes } from './services/routePrefetch'
 import { markPerformance, measurePerformance } from './services/performanceMetrics'
 import WhoWatching from './components/WhoWatching'
 import ProfileSwitchTransition from './components/ProfileSwitchTransition'
+import { getProfileSetting } from './services/profiles'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -64,7 +65,9 @@ export default function App() {
   const [chooseProfile, setChooseProfile] = useState(() => {
     const switched = sessionStorage.getItem('aurales_profile_switched_v1')
     if (switched) sessionStorage.removeItem('aurales_profile_switched_v1')
-    return !switched
+    // A profile can opt into direct launch. Profile switching still uses its
+    // dedicated transition, so this only removes the startup picker.
+    return !switched && getProfileSetting('aurales_skip_profile_picker') !== 'true'
   })
   const [updatePromptReady, setUpdatePromptReady] = useState(false)
   const addons = useAppStore((s) => s.addons)

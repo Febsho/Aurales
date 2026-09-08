@@ -55,6 +55,7 @@ export default function ContextMenu() {
 
   useLayoutEffect(() => {
     if (!open || !menuRef.current) return
+    let frame = 0
     const updatePosition = () => {
       if (!menuRef.current) return
       const rect = menuRef.current.getBoundingClientRect()
@@ -69,17 +70,25 @@ export default function ContextMenu() {
       if (ay < 8) ay = 8
       setAdjusted({ x: ax, y: ay })
     }
+    const schedulePositionUpdate = () => {
+      if (frame) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        updatePosition()
+      })
+    }
     updatePosition()
     const observer = new ResizeObserver(() => {
-      updatePosition()
+      schedulePositionUpdate()
     })
     observer.observe(menuRef.current)
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
+    window.addEventListener('resize', schedulePositionUpdate)
+    window.addEventListener('scroll', schedulePositionUpdate, true)
     return () => {
       observer.disconnect()
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
+      window.removeEventListener('resize', schedulePositionUpdate)
+      window.removeEventListener('scroll', schedulePositionUpdate, true)
+      if (frame) window.cancelAnimationFrame(frame)
     }
   }, [open, x, y])
 

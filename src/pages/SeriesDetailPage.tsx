@@ -45,6 +45,8 @@ import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import type { AppSeason } from '../services/metadata/types'
 import { getOmdbApiKey } from '../services/apiKeys'
+import { animeSeasonCacheKey, getOrLoadAnimeSeason } from '../services/metadata/animeSeasonCache'
+import { detailProviderRequestCount, markPerformance, measurePerformance, recordDetailProviderRequest, resetDetailProviderRequestCount } from '../services/performanceMetrics'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -192,6 +194,7 @@ async function cachedProviderShow(provider: 'tmdb' | 'tvdb', id: string): Promis
     })
     .finally(() => providerShowPending.delete(key))
 
+  recordDetailProviderRequest()
   providerShowPending.set(key, request)
   return request
 }
@@ -455,7 +458,6 @@ function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number): 
 function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowDetails['seasons'] {
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
-  const cutoff = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())
   const settings = useAppStore.getState()
 
   const hasEpisodeCounts = seasons.some((s) => s.episodeCount > 0)
@@ -463,19 +465,14 @@ function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowD
   return seasons
     .filter((s) => {
       if (isAnime && !settings.includeAnimeSpecials && s.seasonNumber === 0) return false
-      if (isAnime && settings.hideUnairedAnimeSeasons) {
-        if (s.airDate && s.airDate.slice(0, 10) > today) return false
-      }
+      // A future-dated season is announced but not watchable yet. Do not put
+      // it in the selector until its release date arrives.
+      if (s.airDate && s.airDate.slice(0, 10) > today) return false
       // TVDB frequently uses 0 when an anime season's episode summary has not
       // been fetched yet. Keep that season shell visible; its real count and
       // episodes are filled when selected/background-prefetched. Ordinary
       // series retain the established empty-season filtering behavior.
       if (!isAnime && hasEpisodeCounts && s.episodeCount === 0) return false
-      if (s.airDate && (!isAnime || settings.hideUnairedAnimeSeasons)) {
-        const airDate = new Date(s.airDate)
-        if (airDate > cutoff) return false
-        if (s.airDate.slice(0, 10) > today && s.episodeCount === 0) return false
-      }
       return true
     })
     .map((s) => {
@@ -490,6 +487,12 @@ function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowD
       if (b.seasonNumber === 0) return -1
       return a.seasonNumber - b.seasonNumber
     })
+}
+
+function isReleasedEpisode(episode: SeasonDetails['episodes'][number]): boolean {
+  // No date means the episode has not been announced with a release date yet.
+  // It must not render as a blank, playable-looking episode card.
+  return Boolean(episode.airDate && episode.airDate.slice(0, 10) <= new Date().toISOString().slice(0, 10))
 }
 
 function rotateFallback<T>(items: T[], seed: string): T[] {
@@ -549,7 +552,6 @@ export default function SeriesDetailPage() {
   const [detailResolved, setDetailResolved] = useState(false)
   const [seasonError, setSeasonError] = useState<number | null>(null)
   const [seasonAttempt, setSeasonAttempt] = useState(0)
-  const [initialArtworkReady, setInitialArtworkReady] = useState(false)
   const [metadataStatus, setMetadataStatus] = useState<'idle' | 'resolving' | 'resolved' | 'fallback' | 'error'>('idle')
   const [suspiciousStructure, setSuspiciousStructure] = useState(false)
   const tvdbMappedEpisodesRef = useRef<Record<number, SeasonDetails['episodes']>>({})
@@ -561,6 +563,10 @@ export default function SeriesDetailPage() {
   const [watchedEpisodes, setWatchedEpisodes] = useState<Set<string>>(new Set())
   const fetchedSeasonRef = useRef<string | null>(null)
   const seasonRequestsRef = useRef(new Map<string, Promise<SeasonDetails | null>>())
+  const detailMetricPrefixRef = useRef('')
+  const seasonSwitchStartedRef = useRef<{ season: number; cached: boolean } | null>(null)
+  const seasonSelectorMeasuredRef = useRef(false)
+  const firstEpisodesMeasuredRef = useRef(false)
   const episodeScrollRef = useRef<HTMLDivElement>(null)
   const seasonScrollRef = useRef<HTMLDivElement>(null)
   // The episode track only exists once its season resolves, and the season
@@ -800,8 +806,13 @@ export default function SeriesDetailPage() {
 
       if (!active) return
 
-      // Select candidate according to priority order
+      const hasConnectedService = simklConnected || traktConnected || Boolean(pmdbApiKey) || Boolean(mdblistApiKey || hasMdblistOAuth())
+      const localIndex = resumePriorityOrder.indexOf('local')
+      const firstServiceIndex = Math.min(...resumePriorityOrder.filter((provider) => provider !== 'local').map((provider) => resumePriorityOrder.indexOf(provider)))
+      const useLocal = !hasConnectedService || localIndex < firstServiceIndex
+      // Local remains a true fallback unless explicitly moved upward.
       for (const provider of resumePriorityOrder) {
+        if (provider === 'local' && !useLocal) continue
         const found = candidates.find((c) => c.provider === provider)
         if (found) {
           setLiveResumePoint(found)
@@ -809,8 +820,9 @@ export default function SeriesDetailPage() {
         }
       }
 
-      if (candidates.length > 0) {
-        setLiveResumePoint(candidates[0])
+      const fallback = candidates.find((candidate) => candidate.provider !== 'local' || useLocal)
+      if (fallback) {
+        setLiveResumePoint(fallback)
       } else {
         setLiveResumePoint(null)
       }
@@ -897,13 +909,15 @@ export default function SeriesDetailPage() {
     let cancelled = false
 
     async function load() {
+      const metricPrefix = `anime-detail:${id || state.title || 'unknown'}:${Date.now()}`
+      detailMetricPrefixRef.current = metricPrefix
+      markPerformance(`${metricPrefix}:start`)
       // Mount the actual detail shell from navigation data before any SQLite,
       // ID-resolution, addon, TVDB, or season-mapping work. Those requests can
       // take several seconds for anime; they should fill the page progressively
       // instead of holding artwork and structure behind a loading screen.
       setLoading(true)
       setDetailResolved(false)
-      setInitialArtworkReady(false)
       setSeasonError(null)
       setMetadataStatus('resolving')
       setAddonMeta(null)
@@ -912,8 +926,57 @@ export default function SeriesDetailPage() {
       setMalRating(null)
       fetchedSeasonRef.current = null
       seasonRequestsRef.current.clear()
+      seasonSelectorMeasuredRef.current = false
+      firstEpisodesMeasuredRef.current = false
+      resetDetailProviderRequestCount()
       tvdbMappedEpisodesRef.current = {}
       const appManagedMetadata = useAppStore.getState().appManagedMetadata
+
+      // A catalog card can already contain the exact addon meta record. In
+      // direct-addon mode, make it the complete initial detail result instead
+      // of waiting for SQLite and then re-requesting the same addon endpoint.
+      if (!appManagedMetadata && state.addonMeta) {
+        const addonItemId = state.sourceAddonItemId || id || 'unknown'
+        const parsed = addonMetaToShow(state.addonMeta, addonItemId)
+        const addonIsAnime = Boolean(routeIsAnime || parsed.isAnime || state.anilistId || state.malId)
+        const directShow = applyShowArt(applyInitialArtworkPreference({
+          ...parsed,
+          id: id || addonItemId,
+          isAnime: addonIsAnime,
+          seasons: processSeasons(parsed.seasons || [], addonIsAnime),
+        }, 'series', addonIsAnime))
+        const firstSeason = directShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
+          ?? directShow.seasons[0]?.seasonNumber
+          ?? null
+        const selected = resumeProgress?.season != null && directShow.seasons.some((season) => season.seasonNumber === resumeProgress.season)
+          ? resumeProgress.season
+          : firstSeason
+        const seasonDetails: Record<number, SeasonDetails> = {}
+        const episodeMap: Record<number, SeasonDetails['episodes']> = {}
+        if (Array.isArray(state.addonMeta.videos)) {
+          for (const season of directShow.seasons) {
+            const details = addonVideosToSeason(state.addonMeta, season.seasonNumber)
+            seasonDetails[season.seasonNumber] = details
+            episodeMap[season.seasonNumber] = details.episodes
+          }
+        }
+        if (cancelled) return
+        setAddonMeta(state.addonMeta)
+        setShow(directShow)
+        showRef.current = directShow
+        setSeasonCache(seasonDetails)
+        setSelectedSeason(selected)
+        setDetailResolved(true)
+        setMetadataStatus('resolved')
+        setLoading(false)
+        writeSeriesDetailCache(id, state, {
+          show: directShow,
+          selectedSeason: selected,
+          episodeMap,
+          metadataStatus: 'resolved',
+        })
+        return
+      }
 
       const immediateShow: ShowDetails | null = state.title ? applyShowArt(applyInitialArtworkPreference({
         id: id || 'unknown',
@@ -942,8 +1005,19 @@ export default function SeriesDetailPage() {
 
       const cached = await readSeriesDetailCache(id, state)
       if (cached) {
-        showRef.current = cached.show
-        setShow(cached.show)
+        const cachedSeasonEpisodes = cached.selectedSeason == null
+          ? undefined
+          : cached.episodeMap[cached.selectedSeason]
+        // Cached details may outlive an episode's release date. Never restore
+        // a future or undated episode from disk as if it were playable.
+        const releasedCachedEpisodes = cachedSeasonEpisodes?.filter(isReleasedEpisode)
+        const cachedShow = cached.selectedSeason != null
+          && cachedSeasonEpisodes?.length
+          && !releasedCachedEpisodes?.length
+          ? { ...cached.show, seasons: cached.show.seasons.filter((season) => season.seasonNumber !== cached.selectedSeason) }
+          : cached.show
+        showRef.current = cachedShow
+        setShow(cachedShow)
         setSelectedSeason(cached.selectedSeason)
         tvdbMappedEpisodesRef.current = cached.episodeMap
         setMetadataStatus(cached.metadataStatus)
@@ -952,17 +1026,14 @@ export default function SeriesDetailPage() {
         // selected season as well as the show shell; previously we returned
         // early with an empty season cache, forcing the page to wait again (or
         // render no episodes) despite already having the data on disk.
-        const cachedSeason = cached.selectedSeason == null
-          ? undefined
-          : cached.episodeMap[cached.selectedSeason]
-        if (cachedSeason?.length && cached.selectedSeason != null) {
+        if (releasedCachedEpisodes?.length && cached.selectedSeason != null) {
           setDetailResolved(true)
-          const seasonInfo = cached.show.seasons.find((season) => season.seasonNumber === cached.selectedSeason)
+          const seasonInfo = cachedShow.seasons.find((season) => season.seasonNumber === cached.selectedSeason)
           setSeasonCache({
             [cached.selectedSeason]: {
               seasonNumber: cached.selectedSeason,
               name: seasonInfo?.name || `Season ${cached.selectedSeason}`,
-              episodes: cachedSeason,
+              episodes: releasedCachedEpisodes,
             },
           })
           return
@@ -989,7 +1060,7 @@ export default function SeriesDetailPage() {
         // Detail heroes require a genuine landscape image. This independent
         // request avoids a black hero when the configured artwork provider has
         // no backdrop, while never stretching the poster as a substitute.
-        void getTmdbLandscapeBackdrop('series', routeTmdbId).then((backdrop) => {
+        void getTmdbLandscapeBackdrop('series', routeTmdbId, routeIsAnime).then((backdrop) => {
           if (cancelled || !backdrop) return
           setShow((current) => current ? applyShowArt({ ...current, backdrop }) : current)
         }).catch(() => undefined)
@@ -1016,6 +1087,9 @@ export default function SeriesDetailPage() {
             setSelectedSeason(firstSeason)
           }
           setMetadataStatus('resolved')
+          // Normal shows must retain their established immediate shell. Anime
+          // mapping can continue separately, but it must not gate TMDB shows.
+          if (!routeIsAnime) setDetailResolved(true)
           setLoading(false)
         }).catch(() => undefined)
       }
@@ -1044,6 +1118,7 @@ export default function SeriesDetailPage() {
             : tvdbSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? tvdbSeasons[0]?.seasonNumber ?? null
           setSelectedSeason(firstSeason)
           setMetadataStatus('resolved')
+          setDetailResolved(true)
           setLoading(false)
         }).catch(() => undefined)
       }
@@ -1323,6 +1398,13 @@ export default function SeriesDetailPage() {
         // instead of adding its full duration afterward.
         if (tmdbId) {
           animeTmdbMetadata = cachedProviderShow('tmdb', tmdbId).catch(() => null)
+          // Anime detail heroes always use TMDB's original-resolution curated
+          // landscape, even when global catalog artwork is data-saver sized.
+          // Start it alongside TVDB's canonical episode request.
+          void getTmdbLandscapeBackdrop('anime', tmdbId, true).then((backdrop) => {
+            if (cancelled || !backdrop) return
+            setShow((current) => current ? applyShowArt({ ...current, backdrop }) : current)
+          }).catch(() => undefined)
         }
 
         // TVDB is source of truth for anime season/episode structure
@@ -1355,6 +1437,7 @@ export default function SeriesDetailPage() {
               setShow((current) => applyShowArt(preservePresentedArtwork(shell, current)))
               setSelectedSeason(shellSeason)
               setMetadataStatus('resolved')
+              setDetailResolved(true)
               setLoading(false)
             }
 
@@ -1437,6 +1520,22 @@ export default function SeriesDetailPage() {
                 }
               }
               tvdbMappedEpisodesRef.current = episodeMap
+
+              // The selected season is page-critical. Publish the mapper's
+              // canonical result immediately instead of waiting for optional
+              // TMDB prose, title localization, and the final detail merge.
+              const mappedVisibleEpisodes = shellSeason == null ? undefined : episodeMap[shellSeason]
+              if (mappedVisibleEpisodes?.length && shellSeason != null && !cancelled) {
+                const seasonInfo = mappedSeasons.find((season) => season.seasonNumber === shellSeason)
+                setSeasonCache((current) => current[shellSeason] ? current : {
+                  ...current,
+                  [shellSeason]: {
+                    seasonNumber: shellSeason,
+                    name: seasonInfo?.title || `Season ${shellSeason}`,
+                    episodes: mappedVisibleEpisodes,
+                  },
+                })
+              }
 
               appResult = {
                 ...tvdbData,
@@ -1669,6 +1768,7 @@ export default function SeriesDetailPage() {
             : shellSeasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? shellSeasons[0]?.seasonNumber ?? null
           setSelectedSeason(shellSeason)
           setMetadataStatus('resolved')
+          setDetailResolved(true)
           setLoading(false)
         }
 
@@ -1953,17 +2053,33 @@ export default function SeriesDetailPage() {
         ? undefined
         : tvdbMappedEpisodesRef.current[nextSelectedSeason]
       if (isAnime && mappedEpisodes?.length && nextSelectedSeason != null) {
-        let englishEpisodes: SeasonDetails['episodes'] = []
+        const seasonInfo = finalArt.seasons.find((season) => season.seasonNumber === nextSelectedSeason)
+        const mappedSeason: SeasonDetails = {
+          seasonNumber: nextSelectedSeason,
+          name: seasonInfo?.name || `Season ${nextSelectedSeason}`,
+          episodes: mappedEpisodes,
+        }
+        const tvdbSeasonId = cleanId(finalArt.tvdbId)
+        if (tvdbSeasonId) {
+          void getOrLoadAnimeSeason(
+            animeSeasonCacheKey(tvdbSeasonId, nextSelectedSeason, animeStructureSettingsKey()),
+            async () => mappedSeason,
+          )
+        }
+        // TMDB prose is supplementary; it must never delay the canonical TVDB rail.
         const cleanTmdbId = cleanId(finalArt.tmdbId)?.replace(/^tmdb[-:]/i, '')
         if (cleanTmdbId) {
-          try {
-            englishEpisodes = (await tmdbProvider.getSeason(`tmdb-${cleanTmdbId}`, nextSelectedSeason)).episodes
-          } catch (_) { /* retain safe generic English labels below */ }
+          void tmdbProvider.getSeason(`tmdb-${cleanTmdbId}`, nextSelectedSeason).then((english) => {
+            if (cancelled || showRef.current?.id !== finalArt.id) return
+            setSeasonCache((current) => {
+              const canonical = current[nextSelectedSeason] || mappedSeason
+              return { ...current, [nextSelectedSeason]: { ...canonical, episodes: mergeEnglishAnimeEpisodes(canonical.episodes, english.episodes) } }
+            })
+          }).catch(() => undefined)
         }
-        mappedEpisodes = mergeEnglishAnimeEpisodes(mappedEpisodes, englishEpisodes)
         tvdbMappedEpisodesRef.current = {
           ...tvdbMappedEpisodesRef.current,
-          [nextSelectedSeason]: mappedEpisodes,
+          [nextSelectedSeason]: mappedSeason.episodes,
         }
       }
       if (mappedEpisodes?.length && nextSelectedSeason != null) {
@@ -2018,7 +2134,7 @@ export default function SeriesDetailPage() {
       }).catch(() => undefined)
 
       if (finalArt.tmdbId && !finalArt.backdrop) {
-        void getTmdbLandscapeBackdrop('series', finalArt.tmdbId).then((backdrop) => {
+        void getTmdbLandscapeBackdrop('series', finalArt.tmdbId, Boolean(finalArt.isAnime)).then((backdrop) => {
           if (!backdrop) return
           setShow((current) => current?.id === finalArt.id
             ? applyShowArt({ ...current, backdrop })
@@ -2142,7 +2258,9 @@ export default function SeriesDetailPage() {
 
     const applyArt = (data: SeasonDetails) => ({
       ...data,
-      episodes: data.episodes.map((episode) => applyEpisodeArt(episode, { ...show, season: seasonNum })),
+      episodes: data.episodes
+        .filter(isReleasedEpisode)
+        .map((episode) => applyEpisodeArt(episode, { ...show, season: seasonNum })),
     })
 
     const tmdbId = show.tmdbId ? String(show.tmdbId).replace(/^[a-z_]+[-:]/i, '') : (id && /^(?:tmdb)[-:]/i.test(id) ? id.replace(/^[a-z_]+[-:]/i, '') : null)
@@ -2402,7 +2520,14 @@ export default function SeriesDetailPage() {
     const pending = seasonRequestsRef.current.get(requestKey)
     if (pending) return pending
 
-    const request = fetchSeasonUncached(seasonNum)
+    const tvdbId = show.tvdbId ? String(show.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
+    const requestBase = isAnime && tvdbId
+      ? getOrLoadAnimeSeason(animeSeasonCacheKey(tvdbId, seasonNum, animeStructureSettingsKey()), () => {
+        recordDetailProviderRequest()
+        return fetchSeasonUncached(seasonNum)
+      })
+      : (recordDetailProviderRequest(), fetchSeasonUncached(seasonNum))
+    const request = requestBase
       .finally(() => {
         if (seasonRequestsRef.current.get(requestKey) === request) {
           seasonRequestsRef.current.delete(requestKey)
@@ -2413,6 +2538,43 @@ export default function SeriesDetailPage() {
   }
 
   const isCached = selectedSeason !== null && seasonCache[selectedSeason] !== undefined
+  const removeUnavailableSeason = (seasonNumber: number) => {
+    if (!show) return
+    const remaining = show.seasons.filter((season) => season.seasonNumber !== seasonNumber)
+    setShow((current) => current ? { ...current, seasons: current.seasons.filter((season) => season.seasonNumber !== seasonNumber) } : current)
+    setSeasonCache((current) => {
+      const { [seasonNumber]: _removed, ...next } = current
+      return next
+    })
+    setSelectedSeason((current) => current === seasonNumber
+      ? (remaining.find((season) => season.seasonNumber > 0)?.seasonNumber ?? remaining[0]?.seasonNumber ?? null)
+      : current)
+  }
+  useEffect(() => {
+    const prefix = detailMetricPrefixRef.current
+    if (!prefix || !show?.seasons.length || seasonSelectorMeasuredRef.current) return
+    seasonSelectorMeasuredRef.current = true
+    markPerformance(`${prefix}:season-selector`)
+    measurePerformance('anime-detail-time-to-season-selector', `${prefix}:start`, `${prefix}:season-selector`)
+  }, [show?.id, show?.seasons.length])
+
+  useEffect(() => {
+    const prefix = detailMetricPrefixRef.current
+    if (!prefix || !seasonData?.episodes.length) return
+    if (!firstEpisodesMeasuredRef.current) {
+      firstEpisodesMeasuredRef.current = true
+      markPerformance(`${prefix}:first-season-episodes`)
+      measurePerformance('anime-detail-time-to-first-season-episodes', `${prefix}:start`, `${prefix}:first-season-episodes`)
+      console.debug(`[PERF] anime-detail-provider-requests ${detailProviderRequestCount()}`)
+    }
+    const switchStart = seasonSwitchStartedRef.current
+    if (switchStart?.season === selectedSeason) {
+      const end = `${prefix}:season-${selectedSeason}-ready`
+      markPerformance(end)
+      measurePerformance(switchStart.cached ? 'anime-detail-cached-season-switch' : 'anime-detail-uncached-season-switch', `${prefix}:season-${selectedSeason}-selected`, end)
+      seasonSwitchStartedRef.current = null
+    }
+  }, [selectedSeason, seasonData?.seasonNumber, seasonData?.episodes.length])
   useEffect(() => {
     if (!show || !id || selectedSeason === null || isCached) return
 
@@ -2421,7 +2583,8 @@ export default function SeriesDetailPage() {
     fetchSeason(selectedSeason).then((data) => {
       if (cancelled) return
       if (!data || data.episodes.length === 0) {
-        setSeasonError(selectedSeason)
+        if (data) removeUnavailableSeason(selectedSeason)
+        else setSeasonError(selectedSeason)
         return
       }
       setSeasonCache(prev => ({ ...prev, [selectedSeason]: data }))
@@ -2456,7 +2619,8 @@ export default function SeriesDetailPage() {
           const num = uncachedSeasons[nextIndex++]
           const data = await fetchSeason(num)
           if (data && !cancelled) {
-            setSeasonCache(prev => prev[num] ? prev : ({ ...prev, [num]: data }))
+            if (data.episodes.length === 0) removeUnavailableSeason(num)
+            else setSeasonCache(prev => prev[num] ? prev : ({ ...prev, [num]: data }))
           }
         }
       }))
@@ -2706,28 +2870,14 @@ export default function SeriesDetailPage() {
     provider: state.provider,
   }, 'series', routeIsAnime)
 
-  const playButtonReady = Boolean(liveResumePoint || resumeProgress || seasonData?.episodes[0])
-  const artwork = useDetailArtworkReady([
-    show?.backdrop, show?.logo,
-    ...(seasonData?.episodes.slice(0, 4).map(episode => episode.still) || []),
-    ...(show?.cast.slice(0, 4).map(person => person.profilePath) || []),
-    ...(show?.recommendations.slice(0, 4).map(item => item.poster) || []),
-  ], seasonAttempt)
-
-  const initialPlaybackReady = playButtonReady
-    || show?.seasons.length === 0
-    || metadataStatus === 'error'
-    || (seasonError === selectedSeason && selectedSeason !== null)
-
-  useEffect(() => {
-    if (detailResolved && !loading && artwork.ready && initialPlaybackReady) {
-      setInitialArtworkReady(true)
-    }
-  }, [detailResolved, loading, show?.id, artwork.ready, initialPlaybackReady])
+  // Below-the-fold images must not hold a ready detail page behind its loader.
+  const artwork = useDetailArtworkReady([show?.backdrop, show?.logo, show?.poster], seasonAttempt)
 
   // Early provider shells are useful for fetching episodes concurrently, but
   // must not dismiss the loader while final structure is still being resolved.
-  if (!show || !detailResolved || loading || !initialArtworkReady || metadataStatus === 'resolving') {
+  // A resolved provider shell has its own episode skeleton. Do not hide it
+  // behind image decode, cast, recommendation, or season work.
+  if (!show || !detailResolved || loading || metadataStatus === 'resolving') {
     return <DetailLoadingState
       error={seasonError === selectedSeason && selectedSeason !== null ? 'Could not load episodes for this season.' : artwork.failed ? 'Could not load artwork. Please try again.' : undefined}
       onRetry={() => setSeasonAttempt(value => value + 1)}
@@ -2747,6 +2897,12 @@ export default function SeriesDetailPage() {
 
   const selectSeason = (seasonNumber: number) => {
     manuallySelectedSeasonRef.current = true
+    const prefix = detailMetricPrefixRef.current
+    const cached = seasonCache[seasonNumber] !== undefined
+    if (prefix) {
+      markPerformance(`${prefix}:season-${seasonNumber}-selected`)
+      seasonSwitchStartedRef.current = { season: seasonNumber, cached }
+    }
     setSelectedSeason(seasonNumber)
     episodeScrollRef.current?.scrollTo({ left: 0, behavior: 'auto' })
     window.requestAnimationFrame(() => {

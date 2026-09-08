@@ -1,7 +1,13 @@
-type MetricName = 'bootstrap-to-shell' | 'shell-to-home-content' | 'route-to-usable'
+type MetricName = string
 
 const enabled = import.meta.env.DEV
 const marks = new Map<string, number>()
+let detailProviderRequests = 0
+
+/** Detail-page providers call this only when starting a real request, not on a cache or in-flight hit. */
+export function resetDetailProviderRequestCount(): void { detailProviderRequests = 0 }
+export function recordDetailProviderRequest(): void { detailProviderRequests++ }
+export function detailProviderRequestCount(): number { return detailProviderRequests }
 
 export function markPerformance(name: string): void {
   if (!enabled || typeof performance === 'undefined') return

@@ -18,7 +18,7 @@ vi.mock('./reliabilityHistory', () => ({
 }))
 vi.mock('../../stores/appStore', () => ({
   useAppStore: {
-    getState: () => ({ preferredAudio: [], preferredSubtitles: [], cacheBufferSize: 'default' }),
+    getState: () => ({ preferredAudio: [], preferredSubtitles: [] }),
   },
 }))
 

@@ -390,8 +390,14 @@ export default function MovieDetailPage() {
 
       if (!active) return
 
-      // Select candidate according to priority order
+      const hasConnectedService = simklConnected || traktConnected || Boolean(pmdbApiKey) || Boolean(mdblistApiKey || hasMdblistOAuth())
+      const localIndex = resumePriorityOrder.indexOf('local')
+      const firstServiceIndex = Math.min(...resumePriorityOrder.filter((provider) => provider !== 'local').map((provider) => resumePriorityOrder.indexOf(provider)))
+      const useLocal = !hasConnectedService || localIndex < firstServiceIndex
+      // Connected services win by default. Local is used only with no service
+      // connected, or when the person deliberately dragged it above them.
       for (const provider of resumePriorityOrder) {
+        if (provider === 'local' && !useLocal) continue
         const found = candidates.find((c) => c.provider === provider)
         if (found) {
           setLiveResumePoint(found)
@@ -399,8 +405,9 @@ export default function MovieDetailPage() {
         }
       }
 
-      if (candidates.length > 0) {
-        setLiveResumePoint(candidates[0])
+      const fallback = candidates.find((candidate) => candidate.provider !== 'local' || useLocal)
+      if (fallback) {
+        setLiveResumePoint(fallback)
       } else {
         setLiveResumePoint(null)
       }
@@ -421,6 +428,29 @@ export default function MovieDetailPage() {
       setInitialArtworkReady(false)
       setMalRating(null)
       setLoading(true)
+      const appManagedMetadata = useAppStore.getState().appManagedMetadata
+      const artKey = artworkSettingsKey()
+      const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
+
+      // Catalog cards retain the raw addon meta. When direct addon metadata is
+      // selected, it is already the requested record, so publish it before any
+      // cache or network work rather than asking the addon for it again.
+      if (!appManagedMetadata && state.addonMeta) {
+        const directMovie = applyMovieArt(applyInitialArtworkPreference({
+          ...addonMetaToMovie(state.addonMeta, state.sourceAddonItemId || id || 'unknown'),
+          id: id || state.sourceAddonItemId || 'unknown',
+        }, 'movie', Boolean(state.isAnime || state.anilistId || state.malId)))
+        if (cancelled) return
+        setMovie(directMovie)
+        setLoading(false)
+        if (movieCacheKey) {
+          void cacheSet(movieCacheKey, directMovie, {
+            category: CACHE_CATEGORIES.DETAIL_PAGE,
+            ttlSeconds: CACHE_TTLS.DETAIL_PAGE,
+          })
+        }
+        return
+      }
 
       // Mount the real detail structure from navigation/catalog data before
       // SQLite, addon metadata, ID mapping, or TMDB's multi-endpoint request.
@@ -446,8 +476,6 @@ export default function MovieDetailPage() {
       }) : null
       setMovie(immediateMovie)
 
-      const artKey = artworkSettingsKey()
-      const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
       if (movieCacheKey) {
         const cached = await cacheGet<MovieDetails>(movieCacheKey)
         if (cancelled) return
@@ -470,8 +498,6 @@ export default function MovieDetailPage() {
         malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
         anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
-      const appManagedMetadata = useAppStore.getState().appManagedMetadata
-
       // Early resolve anime IDs if they are AniList / MAL but we don't have TMDB ID
       if (appManagedMetadata && (knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
         try {

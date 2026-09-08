@@ -155,9 +155,10 @@ function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: s
     addonUrl,
     sourceAddonId: addonId,
     sourceAddonItemId: String(meta.id || ''),
-    // Some addons include complete series metadata in catalog responses.
-    // Preserve it so details do not request the same episode data again.
-    addonMeta: Array.isArray(meta.videos) && meta.videos.length > 0 ? meta : undefined,
+    // The catalog response is already the addon's authoritative metadata.
+    // Keep it with the card so its detail page can render immediately instead
+    // of fetching and parsing the exact same meta record a second time.
+    addonMeta: meta,
   }
 }
 

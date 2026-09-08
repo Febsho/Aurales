@@ -153,9 +153,13 @@ interface AppState {
   preferredSubtitles: string[]
   subtitleMode: 'show' | 'forced' | 'hide'
   preferredAudio: string[]
+  preferSdhSubtitles: boolean
+  animeAudioMode: 'sub' | 'dub'
   setPreferredSubtitles: (langs: string[]) => void
   setSubtitleMode: (mode: 'show' | 'forced' | 'hide') => void
   setPreferredAudio: (langs: string[]) => void
+  setPreferSdhSubtitles: (enabled: boolean) => void
+  setAnimeAudioMode: (mode: 'sub' | 'dub') => void
 
   continueWatchingSource: ProgressProvider
   continueWatchingLimit: number
@@ -226,7 +230,7 @@ interface AppState {
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
   interfaceTheme: InterfaceTheme
-  themeBackground: 'theme' | 'oled'
+  themeBackground: 'graphite' | 'slate' | 'oled'
   navigationStyle: 'sidebar' | 'topbar'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
   showRatingsOnCards: boolean
@@ -238,11 +242,10 @@ interface AppState {
   discoveryRegion: string
   discoveryMinRating: number
   discoveryIncludeAdult: boolean
-  hwdecMode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox'
   isolatedPlaybackMode: boolean
   isolatedPlaybackHwdec: 'auto-safe' | 'no'
   isolatedPlaybackResume: boolean
-  cacheBufferSize: 'default' | 'large' | 'aggressive'
+  videoCacheMode: 'memory' | 'disk' | 'auto'
   audioPassthrough: boolean
   autoSkipSegments: boolean
   showSkipIntroButton: boolean
@@ -308,9 +311,6 @@ interface AppState {
   avoidJapaneseSeasonNames: boolean
   setUseGenericAnimeSeasonLabels: (val: boolean) => void
   setAvoidJapaneseSeasonNames: (val: boolean) => void
-  setMovieMetadataSource: (src: 'tmdb' | 'tvdb') => void
-  setSeriesMetadataSource: (src: 'tvdb' | 'tmdb') => void
-  setAnimeMetadataSource: (src: 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb') => void
   setMovieMetadataFallback: (val: boolean) => void
   setSeriesMetadataFallback: (val: boolean) => void
   setAnimeMetadataFallback: (val: boolean) => void
@@ -359,7 +359,7 @@ interface AppState {
 
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
   setInterfaceTheme: (theme: InterfaceTheme) => void
-  setThemeBackground: (bg: 'theme' | 'oled') => void
+  setThemeBackground: (bg: 'graphite' | 'slate' | 'oled') => void
   setNavigationStyle: (style: 'sidebar' | 'topbar') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
   setShowRatingsOnCards: (show: boolean) => void
@@ -371,11 +371,10 @@ interface AppState {
   setDiscoveryRegion: (region: string) => void
   setDiscoveryMinRating: (rating: number) => void
   setDiscoveryIncludeAdult: (include: boolean) => void
-  setHwdecMode: (mode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox') => void
   setIsolatedPlaybackMode: (value: boolean) => void
   setIsolatedPlaybackHwdec: (mode: 'auto-safe' | 'no') => void
   setIsolatedPlaybackResume: (value: boolean) => void
-  setCacheBufferSize: (size: 'default' | 'large' | 'aggressive') => void
+  setVideoCacheMode: (mode: 'memory' | 'disk' | 'auto') => void
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
   setShowSkipIntroButton: (val: boolean) => void
@@ -413,14 +412,8 @@ interface AppState {
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
 
-  mpvCacheSecs: number
-  mpvNetworkTimeout: number
-  mpvCustomArgs: string
   playerQualityProfile: PlayerQualityProfile
   seekStepSeconds: number
-  setMpvCacheSecs: (secs: number) => void
-  setMpvNetworkTimeout: (secs: number) => void
-  setMpvCustomArgs: (args: string) => void
   setPlayerQualityProfile: (profile: PlayerQualityProfile) => void
   setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
@@ -778,6 +771,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   preferredSubtitles: loadPersistedPreferredSubtitles(),
   subtitleMode: loadPersistedSubtitleMode(),
   preferredAudio: loadPersistedPreferredAudio(),
+  preferSdhSubtitles: localStorage.getItem(profileStorageKey('aurales_prefer_sdh_subtitles')) === 'true',
+  animeAudioMode: localStorage.getItem(profileStorageKey('aurales_anime_audio_mode')) === 'dub' ? 'dub' : 'sub',
   setPreferredSubtitles: (langs) => {
     localStorage.setItem(profileStorageKey('aurales_preferred_subtitles'), JSON.stringify(langs))
     enqueueSyncRecord('profile-preferences', 'language-playback', {
@@ -809,6 +804,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
     set({ preferredAudio: langs })
   },
+  setPreferSdhSubtitles: (enabled) => { localStorage.setItem(profileStorageKey('aurales_prefer_sdh_subtitles'), String(enabled)); set({ preferSdhSubtitles: enabled }) },
+  setAnimeAudioMode: (mode) => { localStorage.setItem(profileStorageKey('aurales_anime_audio_mode'), mode); set({ animeAudioMode: mode }) },
 
   continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
@@ -846,15 +843,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   resumePriorityOrder: (() => {
     try {
       const raw = localStorage.getItem('aurales_resume_priority')
-      if (raw) return JSON.parse(raw) as ProgressProvider[]
+      const saved = raw ? JSON.parse(raw) as ProgressProvider[] : []
+      const all: ProgressProvider[] = ['simkl', 'trakt', 'pmdb', 'mdblist', 'local']
+      const order = [...new Set([...saved, ...all])].filter((provider): provider is ProgressProvider => all.includes(provider as ProgressProvider))
+      // Existing installs used Local first. Treat it as a fallback until the
+      // user deliberately moves it above a service in the priority list.
+      if (localStorage.getItem('aurales_resume_local_priority_override') !== 'true') {
+        return [...order.filter((provider) => provider !== 'local'), 'local']
+      }
+      return order
     } catch (_) { /* ignore */ }
-    return ['local', 'simkl', 'trakt', 'pmdb', 'mdblist'] as ProgressProvider[]
+    return ['simkl', 'trakt', 'pmdb', 'mdblist', 'local'] as ProgressProvider[]
   })(),
 
   // New settings options initial values
   accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
   interfaceTheme: loadInterfaceTheme(),
-  themeBackground: (localStorage.getItem('aurales_theme_background') || 'theme') as 'theme' | 'oled',
+  // `theme` was the original name for the soft graphite surface. Keep old
+  // installations on that visually-identical option when they update.
+  themeBackground: (() => {
+    const saved = localStorage.getItem('aurales_theme_background')
+    return saved === 'slate' || saved === 'oled' ? saved : 'graphite'
+  })() as 'graphite' | 'slate' | 'oled',
   navigationStyle: (localStorage.getItem('aurales_navigation_style') || (loadInterfaceTheme() === 'cinematic' ? 'topbar' : 'sidebar')) as 'sidebar' | 'topbar',
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') === 'true',
@@ -872,11 +882,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
   discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
   discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
-  hwdecMode: (localStorage.getItem('aurales_hwdec_mode') || 'auto') as 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox',
   isolatedPlaybackMode: false,
   isolatedPlaybackHwdec: (localStorage.getItem('aurales_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
   isolatedPlaybackResume: localStorage.getItem('aurales_isolated_resume') === 'true',
-  cacheBufferSize: (localStorage.getItem('aurales_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
+  videoCacheMode: (() => {
+    const mode = localStorage.getItem('aurales_video_cache_mode')
+    return mode === 'memory' || mode === 'disk' ? mode : 'auto'
+  })() as 'memory' | 'disk' | 'auto',
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
   autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
   showSkipIntroButton: localStorage.getItem('aurales_show_skip_intro_button') !== 'false',
@@ -994,7 +1006,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     else localStorage.removeItem(profileStorageKey('aurales_fixed_hero_manual_item'))
     set({ fixedHeroManualItem: item })
   },
-  setResumePriorityOrder: (order) => { localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order }) },
+  setResumePriorityOrder: (order) => {
+    const localIndex = order.indexOf('local')
+    localStorage.setItem('aurales_resume_local_priority_override', String(localIndex >= 0 && localIndex < order.length - 1))
+    localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order })
+  },
 
   setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
   setInterfaceTheme: () => { persistInterfaceTheme('cinematic'); set({ interfaceTheme: 'cinematic' }) },
@@ -1018,11 +1034,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); invalidateCatalogData(); set({ discoveryRegion: region }) },
   setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
-  setHwdecMode: (mode) => { localStorage.setItem('aurales_hwdec_mode', mode); set({ hwdecMode: mode }) },
   setIsolatedPlaybackMode: (value) => { localStorage.removeItem('aurales_isolated_playback'); set({ isolatedPlaybackMode: value }) },
   setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('aurales_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
   setIsolatedPlaybackResume: (value) => { localStorage.setItem('aurales_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
-  setCacheBufferSize: (size) => { localStorage.setItem('aurales_cache_buffer_size', size); set({ cacheBufferSize: size }) },
+  setVideoCacheMode: (mode) => { localStorage.setItem('aurales_video_cache_mode', mode); set({ videoCacheMode: mode }) },
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => {
     localStorage.setItem('aurales_auto_skip_segments', String(val))
@@ -1190,22 +1205,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
-  mpvCacheSecs: Number(localStorage.getItem('aurales_mpv_cache_secs') || '60'),
-  mpvNetworkTimeout: Number(localStorage.getItem('aurales_mpv_network_timeout') || '60'),
-  mpvCustomArgs: localStorage.getItem('aurales_mpv_custom_args') || '',
   playerQualityProfile: (localStorage.getItem('aurales_player_quality_profile') || 'balanced') as PlayerQualityProfile,
   seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
-  setMpvCacheSecs: (secs) => { localStorage.setItem('aurales_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
-  setMpvNetworkTimeout: (secs) => { localStorage.setItem('aurales_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
-  setMpvCustomArgs: (args) => { localStorage.setItem('aurales_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
   setPlayerQualityProfile: (profile) => { localStorage.setItem('aurales_player_quality_profile', profile); set({ playerQualityProfile: profile }) },
   setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
-    localStorage.setItem('aurales_hwdec_mode', 'auto')
-    localStorage.setItem('aurales_cache_buffer_size', 'default')
-    localStorage.setItem('aurales_mpv_cache_secs', '60')
-    localStorage.setItem('aurales_mpv_network_timeout', '60')
-    localStorage.setItem('aurales_mpv_custom_args', '')
+    localStorage.removeItem('aurales_hwdec_mode')
+    localStorage.setItem('aurales_video_cache_mode', 'auto')
+    localStorage.removeItem('aurales_cache_buffer_size')
+    localStorage.removeItem('aurales_mpv_cache_secs')
+    localStorage.removeItem('aurales_mpv_network_timeout')
+    localStorage.removeItem('aurales_mpv_custom_args')
     localStorage.setItem('aurales_player_quality_profile', 'balanced')
     localStorage.setItem('aurales_playback_preload_mode', 'smart')
     localStorage.setItem('aurales_show_skip_intro_button', 'true')
@@ -1218,11 +1228,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_show_player_loading_indicator', 'true')
     localStorage.removeItem('aurales_preload_playback_sources')
     set({
-      hwdecMode: 'auto',
-      cacheBufferSize: 'default',
-      mpvCacheSecs: 60,
-      mpvNetworkTimeout: 60,
-      mpvCustomArgs: '',
+      videoCacheMode: 'auto',
       playerQualityProfile: 'balanced',
       playbackPreloadMode: 'smart',
       showSkipIntroButton: true,
@@ -1261,6 +1267,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       preferredSubtitles: loadPersistedPreferredSubtitles(),
       subtitleMode: loadPersistedSubtitleMode(),
       preferredAudio: loadPersistedPreferredAudio(),
+      preferSdhSubtitles: localStorage.getItem(profileStorageKey('aurales_prefer_sdh_subtitles')) === 'true',
+      animeAudioMode: localStorage.getItem(profileStorageKey('aurales_anime_audio_mode')) === 'dub' ? 'dub' : 'sub',
       posterSize: (getProfileSetting('aurales_poster_size') || 'default') as AppState['posterSize'],
       heroTrailerDelay: Number(getProfileSetting('aurales_hero_trailer_delay') || '3'),
       homeHeroMode: getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic',
@@ -1287,9 +1295,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     invalidateCatalogData()
     set({ betterPosters: settings })
   },
-  movieMetadataSource: (localStorage.getItem('aurales_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
-  seriesMetadataSource: (localStorage.getItem('aurales_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
-  animeMetadataSource: (localStorage.getItem('aurales_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',
+  // Primary providers are fixed to keep metadata behavior predictable.
+  movieMetadataSource: 'tmdb',
+  seriesMetadataSource: 'tvdb',
+  animeMetadataSource: 'tvdb',
   movieMetadataFallback: false,
   seriesMetadataFallback: false,
   animeMetadataFallback: false,
@@ -1304,9 +1313,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',
   useGenericAnimeSeasonLabels: localStorage.getItem('aurales_generic_anime_season_labels') !== 'false',
   avoidJapaneseSeasonNames: localStorage.getItem('aurales_avoid_jp_season_names') !== 'false',
-  setMovieMetadataSource: (src) => { localStorage.setItem('aurales_movie_meta_src', src); invalidateCatalogData(); set({ movieMetadataSource: src }); get().clearAnimeCache() },
-  setSeriesMetadataSource: (src) => { localStorage.setItem('aurales_series_meta_src', src); invalidateCatalogData(); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
-  setAnimeMetadataSource: (src) => { localStorage.setItem('aurales_anime_meta_src', src); invalidateCatalogData(); set({ animeMetadataSource: src }); get().clearAnimeCache() },
   setMovieMetadataFallback: (val) => { localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
   setSeriesMetadataFallback: (val) => { localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
   setAnimeMetadataFallback: (val) => { localStorage.setItem('aurales_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },

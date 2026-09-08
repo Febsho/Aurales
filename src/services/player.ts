@@ -47,9 +47,7 @@ export interface PlaybackRequest {
   subtitleUrl?: string
   volume?: number
   hwdecMode?: string
-  cacheBufferSize?: string
-  mpvCacheSecs?: number
-  mpvNetworkTimeout?: number
+  videoCacheMode?: 'memory' | 'disk' | 'auto'
   mpvCustomArgs?: string
   viewport?: {
     x: number
@@ -159,9 +157,7 @@ export async function launchEmbeddedPlayer(request: PlaybackRequest, owner: Embe
     startTime: request.startTime || undefined,
     volume: request.volume ?? undefined,
     hwdecMode: request.hwdecMode || undefined,
-    cacheBufferSize: request.cacheBufferSize || undefined,
-    mpvCacheSecs: request.mpvCacheSecs || undefined,
-    mpvNetworkTimeout: request.mpvNetworkTimeout || undefined,
+    videoCacheMode: request.videoCacheMode || undefined,
     mpvCustomArgs: request.mpvCustomArgs || undefined,
     x: request.viewport?.x,
     y: request.viewport?.y,

@@ -2,6 +2,7 @@ import { tvdbProvider } from '../tvdb'
 import { isLikelyJapaneseOnly } from './animeTitleResolver'
 import type { AppEpisode, AppSeason } from './types'
 import type { SeasonDetails } from '../../types'
+import { recordDetailProviderRequest } from '../performanceMetrics'
 
 export interface AnimeSeasonMappingOptions {
   hideUnairedSeasons: boolean
@@ -84,6 +85,7 @@ export async function mapTvdbSeasons(
         seasonNumber: number,
         requestPriority?: 'interactive' | 'background',
       ) => Promise<SeasonDetails>
+      recordDetailProviderRequest()
       const data = await settleWithin(
         getSeason(`tvdb-${tvdbId}`, season.seasonNumber, priority),
         opts.requestTimeoutMs,

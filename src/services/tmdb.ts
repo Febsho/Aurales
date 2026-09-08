@@ -139,10 +139,11 @@ function sortedBackdrops(images: Record<string, unknown>): Record<string, unknow
 // Prefer TMDB's curated primary backdrop (the first image on its title page).
 // Vote sorting is only a fallback when the title has no primary path.
 // just whatever order TMDB returned — often a bad close-up — so fall back to
-function pickBestBackdrop(images: Record<string, unknown>, primaryPath?: string): string | undefined {
-  if (primaryPath) return `${IMG_BASE}/${backdropSize()}${primaryPath}`
+function pickBestBackdrop(images: Record<string, unknown>, primaryPath?: string, forceOriginal = false): string | undefined {
+  const size = forceOriginal ? 'original' : backdropSize()
+  if (primaryPath) return `${IMG_BASE}/${size}${primaryPath}`
   const top = sortedBackdrops(images)[0]
-  return top ? `${IMG_BASE}/${backdropSize()}${top.file_path}` : undefined
+  return top ? `${IMG_BASE}/${size}${top.file_path}` : undefined
 }
 
 function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
@@ -197,20 +198,25 @@ export async function getTmdbCleanPoster(type: 'movie' | 'series' | 'show' | 'an
   return result ?? undefined
 }
 
-export async function getTmdbLandscapeBackdrop(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
+export async function getTmdbLandscapeBackdrop(
+  type: 'movie' | 'series' | 'show' | 'anime',
+  tmdbId: string | number,
+  forceOriginal = false,
+): Promise<string | undefined> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const mediaType = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
-  const result = await cachedFetch<string | null>(`tmdb_backdrop_v4:${mediaType}:${id}`, async (cacheContext) => {
+  const qualityKey = forceOriginal ? 'original' : 'configured'
+  const result = await cachedFetch<string | null>(`tmdb_backdrop_v5:${qualityKey}:${mediaType}:${id}`, async (cacheContext) => {
     const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
     try {
       const [details, images] = await Promise.all([
         tmdbFetch(`/${mediaType}/${id}`, {}, { priority }) as Promise<Record<string, unknown>>,
         tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'en,ja,xx,null' }, { priority }) as Promise<Record<string, unknown>>,
       ])
-      return pickBestBackdrop(images, details.backdrop_path as string) || null
+      return pickBestBackdrop(images, details.backdrop_path as string, forceOriginal) || null
     } catch (_) {
       return null
     }
