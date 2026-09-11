@@ -1,6 +1,7 @@
 import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
 import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
 import { outboxReady, removeOutboxRecords, takeOutboxBatch } from './outbox'
+import { runSyncBatch } from './syncBatch'
 import {
   AURALES_SYNC_SCHEMA_VERSION,
   enqueueSyncRecord,
@@ -122,9 +123,13 @@ export async function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded
   // queued, so the batch is capped by bytes too. The rest of a large snapshot
   // stays in the outbox for the next pass.
   const outbox = takeOutboxBatch()
-  const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor: config.cursor, records: outbox }) })
-  if (!response.ok) { setSyncConfig({ lastError: `Sync failed (${response.status})` }); throw new Error(`Sync failed (${response.status})`) }
-  const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
+  let body: { cursor?: string; records?: SyncRecord[] }
+  try {
+    body = await runSyncBatch({ endpoint: config.endpoint, accessToken: config.accessToken, schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor: config.cursor, records: outbox, mode: 'sync' }, fetcher)
+  } catch (error) {
+    setSyncConfig({ lastError: error instanceof Error ? error.message : String(error) })
+    throw error
+  }
   applyRemoteRecords(body.records || [])
   const sent = new Set(outbox.map((record) => record.recordId))
   removeOutboxRecords(sent)
@@ -165,9 +170,13 @@ export async function downloadSyncNow(fetcher: typeof fetch = fetch): Promise<{ 
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
   let cursor = '0'; let downloaded = 0
   do {
-    const response = await fetcher(`${config.endpoint.replace(/\/$/, '')}/v1/sync`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.accessToken}` }, body: JSON.stringify({ schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor, records: [] }) })
-    if (!response.ok) { setSyncConfig({ lastError: `Download failed (${response.status})` }); throw new Error(`Download failed (${response.status})`) }
-    const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
+    let body: { cursor?: string; records?: SyncRecord[] }
+    try {
+      body = await runSyncBatch({ endpoint: config.endpoint, accessToken: config.accessToken, schemaVersion: AURALES_SYNC_SCHEMA_VERSION, deviceId: getDeviceId(), deviceName: config.deviceName || 'Aurales Desktop', cursor, records: [], mode: 'download' }, fetcher)
+    } catch (error) {
+      setSyncConfig({ lastError: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
     const records = body.records || []
     applyRemoteRecords(records); downloaded += records.length
     const nextCursor = body.cursor || cursor

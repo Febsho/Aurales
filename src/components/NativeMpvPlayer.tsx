@@ -8,7 +8,7 @@ import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, startThumbnailGeneration, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, type ThumbnailMetadata } from '../services/player'
+import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, startThumbnailGeneration, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -35,7 +35,9 @@ import { getAddonStreams, getStreamAddons } from '../services/addons'
 import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from '../services/streams/preloadManager'
 import { canonicalStreamKey } from '../services/streams/preloadUtils'
 import { buildSmartContext, preparedStreamRegistry } from '../services/streams/preparedStreams'
-import { rankStreams, type SmartStream } from '../services/streams/smartScoring'
+import { type SmartStream } from '../services/streams/smartScoring'
+import { rankStreamCandidates } from '../services/streams/nativeScoring'
+import { loadStreamCandidatesNative } from '../services/streams/streamCandidateLoader'
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
 import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack, APP_LANGUAGES } from '../stores/appStore'
@@ -1668,11 +1670,9 @@ function FullNativeMpvPlayer({
       ? `${item.localId}:${item.season}:${item.episode}`
       : item.localId
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
-    // Credit boundaries are stronger evidence than a generic percentage. If
-    // they are unavailable, keep the fallback conservative so a long credit
-    // roll is not left as an accidental Continue Watching entry.
-    const reachedCredits = skips.some((segment) => segment.credits_start_ms != null && time * 1000 >= segment.credits_start_ms)
-    const isCompleted = completedFlag || reachedCredits || progressPct >= 90
+    // A stream may expose an inaccurate credits boundary at startup. Preserve
+    // it as resumable progress until the user has actually watched 80%.
+    const isCompleted = completedFlag || shouldMarkWatched(progressPct)
     logEvent('PLAYBACK SYNC DEBUG', `Save watch progress local DB: ${Math.round(time)}s / ${Math.round(dur)}s (Completed: ${isCompleted})`)
     useAppStore.getState().setWatchProgress(key, {
       id: key,
@@ -1690,7 +1690,7 @@ function FullNativeMpvPlayer({
       imdbId: item.imdbId,
       tmdbId: item.tmdbId,
     })
-  }, [skips])
+  }, [])
 
   /**
    * Save resume position to PMDB and (only on explicit close/end) scrobble.
@@ -2187,9 +2187,13 @@ function FullNativeMpvPlayer({
   useLayoutEffect(() => {
     fullPlayerMountCount += 1
     document.documentElement.classList.add('full-player-active')
+    document.body.style.setProperty('background', 'transparent', 'important')
     return () => {
       fullPlayerMountCount = Math.max(0, fullPlayerMountCount - 1)
-      if (fullPlayerMountCount === 0) document.documentElement.classList.remove('full-player-active')
+      if (fullPlayerMountCount === 0) {
+        document.documentElement.classList.remove('full-player-active')
+        document.body.style.removeProperty('background')
+      }
     }
   }, [])
 
@@ -3327,7 +3331,10 @@ function FullNativeMpvPlayer({
         const rawResults = await streamPreloadManager.request(nextRequest, { priority: StreamPreloadPriority.PLAYBACK })
         if (!ownsSession()) return
         const results = await annotateTorBoxStreams(rawResults).catch(() => rawResults)
-        const top = rankStreams(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }))
+        const top = (await rankStreamCandidates(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }), {
+          cancelGroup: `streams:up-next:${item.imdbId}`,
+          priority: 'playback',
+        }))
           .find((candidate) => candidate.score > -500)
         if (top) {
           foundUrl = getPlayableStreamUrl(top.stream) || await resolveTorBoxStream(top.stream, {
@@ -3344,7 +3351,26 @@ function FullNativeMpvPlayer({
     // 3) Last resort: lenient per-addon loop — some addons only respond here.
     if (!foundUrl) {
       const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
+      try {
+        const native = await loadStreamCandidatesNative('series', streamId, getStreamAddons('series'), {
+          cancelGroup: `streams:up-next-fallback:${item.imdbId}`,
+          priority: 'playback',
+        })
+        if (!ownsSession()) return
+        const valid = native.candidates.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+        if (valid) {
+          foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
+            title,
+            season: nextEp.season,
+            episode: nextEp.episode,
+          }).catch(() => null)
+          chosenStream = valid
+        }
+      } catch (_) {
+        // The established per-addon loop below remains the compatibility path.
+      }
       for (const addon of getStreamAddons('series')) {
+        if (foundUrl) break
         try {
           const rawStreams = await getAddonStreams(addon.url, 'series', streamId)
           if (!ownsSession()) return
@@ -3832,7 +3858,6 @@ function FullNativeMpvPlayer({
         logEvent('MPV DEBUG', `subtitle track ${id} failed: ${String(error)}`)
         refreshTracks().catch(() => false)
       })
-      sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
       command('set_property', ['sub-visibility', true])
     }
     setTrackMenu(null)

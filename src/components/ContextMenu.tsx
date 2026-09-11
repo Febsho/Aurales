@@ -319,6 +319,13 @@ export default function ContextMenu() {
     close()
   }, [target, enrichedItem, toast, close])
 
+  const handleSelectSource = useCallback(() => {
+    if (!target || target.kind === 'season' || !target.onSelectSource) return
+    const selectSource = target.onSelectSource
+    close()
+    selectSource()
+  }, [target, close])
+
   const handleRecommendationFeedback = useCallback((kind: RecommendationFeedbackKind) => {
     if (!target) return
     const item = enrichedItem || target.item
@@ -404,6 +411,16 @@ export default function ContextMenu() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+          {target.kind !== 'season' && target.onSelectSource && (
+            <div className="px-1.5 py-1.5 border-b border-white/[0.12]">
+              <button onClick={handleSelectSource} className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
+                <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="text-sm font-semibold text-white/90">Select source</span>
+              </button>
             </div>
           )}
           {providerStates.length > 0 && (

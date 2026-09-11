@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { useAppStore } from '../stores/appStore'
+import { useAppStore, type ProgressProvider } from '../stores/appStore'
 import { refreshSimklPlaybackCache } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
@@ -13,7 +13,6 @@ const StreamSelector = lazy(() => import('./StreamSelector'))
 import type { HomeRowConfig, SearchResult } from '../types'
 import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
-import { useContextMenu } from '../hooks/useContextMenu'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import {
   getContinueWatchingAccountScope,
@@ -31,13 +30,13 @@ import { continueWatchingKey, continueWatchingVisibility, suppressContinueWatchi
 
 type SourceType = ContinueWatchingSource
 
-const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
-  { value: 'local', label: 'Local' },
-  { value: 'simkl', label: 'Simkl' },
-  { value: 'trakt', label: 'Trakt' },
-  { value: 'pmdb', label: 'PMDB' },
-  { value: 'mdblist', label: 'MDBList' },
-  { value: 'anilist', label: 'AniList' },
+const PROGRESS_SOURCE_OPTIONS: { id: ProgressProvider; label: string }[] = [
+  { id: 'local', label: 'Local' },
+  { id: 'trakt', label: 'Trakt' },
+  { id: 'simkl', label: 'Simkl' },
+  { id: 'anilist', label: 'AniList' },
+  { id: 'pmdb', label: 'PublicMetaDB' },
+  { id: 'mdblist', label: 'MDBList' },
 ]
 
 function revealContinueCard(card: HTMLElement) {
@@ -74,9 +73,9 @@ const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
 const cwRevalidatedThisSession = new Set<string>()
 
 export default function ContinueWatchingRow({ row, headerLeftControls, headerRightControls }: ContinueWatchingRowProps) {
-  const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
-  const source = (row.sourceType || continueWatchingSource) as SourceType
+  const source = primaryProgressProvider as SourceType
   const accountScope = getContinueWatchingAccountScope(source)
   const startupSnapshot = readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
   const cwKey = `${source}:${accountScope || 'unscoped'}:${continueWatchingLimit}`
@@ -98,12 +97,17 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   } | null>(null)
   const [cwMenu, setCwMenu] = useState<{ x: number; y: number; item: ContinueWatchingItem } | null>(null)
   const cwMenuRef = useRef<HTMLDivElement>(null)
+  const [sourceMenu, setSourceMenu] = useState<{ x: number; y: number } | null>(null)
 
   const navigate = useNavigate()
   const watchProgress = useAppStore((s) => s.watchProgress)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
-  const updateHomeRow = useAppStore((s) => s.updateHomeRow)
-  const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
+  const setPrimaryProgressProvider = useAppStore((s) => s.setPrimaryProgressProvider)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const pmdbConnected = useAppStore((s) => Boolean(s.pmdbApiKey))
+  const mdblistConnected = useAppStore((s) => Boolean(s.mdblistApiKey)) || hasMdblistOAuth()
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed'
   const [focusedFixedItemId, setFocusedFixedItemId] = useState<string | null>(null)
@@ -139,13 +143,6 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       document.removeEventListener('keydown', handleKey)
     }
   }, [cwMenu])
-
-  const changeSource = (next: SourceType) => {
-    updateHomeRow(row.id, { sourceType: next })
-    if (next === 'local' || next === 'trakt' || next === 'simkl' || next === 'pmdb' || next === 'mdblist' || next === 'anilist') {
-      setContinueWatchingSource(next)
-    }
-  }
 
   const scroll = (direction: 'left' | 'right') => {
     if (!scrollRef.current) return
@@ -504,44 +501,45 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     return () => { cancelled = true }
   }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision])
 
-  // ── Source selector (always rendered in header) ─────────────────────────────
-  const simklConnected = useAppStore((s) => s.simklConnected)
-  const traktConnected = useAppStore((s) => s.traktConnected)
-  const anilistConnected = useAppStore((s) => s.anilistConnected)
-  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistConnected = !!useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
-
-  const visibleSources = SOURCE_OPTIONS.filter((opt) => {
-    switch (opt.value) {
-      case 'local': return true
-      case 'simkl': return simklConnected
-      case 'trakt': return traktConnected
-      case 'anilist': return anilistConnected
-      case 'pmdb': return !!pmdbApiKey
-      case 'mdblist': return mdblistConnected
-      default: return false
-    }
-  })
-
-  const sourceSelector = (
-    <div className="flex items-center gap-0.5 bg-white/5 rounded-lg p-0.5">
-      {visibleSources.map((opt) => (
-        <button
-          key={opt.value}
-          onClick={() => changeSource(opt.value)}
-          className={`px-2.5 py-1 rounded-md text-label font-semibold transition-all ${
-            source === opt.value
-              ? 'bg-white/15 text-white'
-              : 'text-white/60 hover:text-white/70'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  )
-
   const displayTitle = row.title
+  const sourceConnections: Record<ProgressProvider, boolean> = {
+    local: true,
+    trakt: traktConnected,
+    simkl: simklConnected,
+    anilist: anilistConnected,
+    pmdb: pmdbConnected,
+    mdblist: mdblistConnected,
+  }
+  const titleClassName = cinematic
+    ? 'text-sm font-light tracking-wider uppercase text-white/60'
+    : 'text-xl font-bold tracking-tight text-white/95'
+  const sourceTitle = (
+    <h2
+      className={`${titleClassName} cursor-context-menu`}
+      title="Right-click to select the progress source"
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setCwMenu(null)
+        setSourceMenu({ x: event.clientX, y: event.clientY })
+      }}
+    >
+      {displayTitle}
+    </h2>
+  )
+  const sourceMenuPortal = sourceMenu ? (
+    <ContinueWatchingSourceMenu
+      x={sourceMenu.x}
+      y={sourceMenu.y}
+      selected={primaryProgressProvider}
+      connections={sourceConnections}
+      onSelect={(nextSource) => {
+        setPrimaryProgressProvider(nextSource)
+        setSourceMenu(null)
+      }}
+      onClose={() => setSourceMenu(null)}
+    />
+  ) : null
 
   const playItem = (item: ContinueWatchingItem) => setStreamSelectorData({
     mediaId: item.mediaId,
@@ -592,10 +590,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
+            {sourceTitle}
           </div>
           <div className="flex items-center gap-3">
-            {sourceSelector}
             {headerRightControls}
           </div>
         </div>
@@ -604,6 +601,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             <div key={i} className="flex-shrink-0 w-72 aspect-video bg-neutral-800/40 rounded-xl" />
           ))}
         </div>
+        {sourceMenuPortal}
       </div>
     )
   }
@@ -614,10 +612,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{displayTitle}</h2>
+            {sourceTitle}
           </div>
           <div className="flex items-center gap-3">
-            {sourceSelector}
             {headerRightControls}
           </div>
         </div>
@@ -630,6 +627,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             ))}
           </div>
         </div>
+        {sourceMenuPortal}
       </div>
     )
   }
@@ -639,10 +637,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       <div className="flex items-center justify-between px-6 mb-4 relative z-[60]">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className={cinematic ? 'text-sm font-light tracking-wider uppercase text-white/60' : 'text-xl font-bold tracking-tight text-white/95'}>{displayTitle}</h2>
+          {sourceTitle}
         </div>
         <div className="flex items-center gap-3">
-          {sourceSelector}
           {headerRightControls}
           <div className="flex gap-1">
             <button
@@ -891,7 +888,87 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           }}
         />
       )}
+      {sourceMenuPortal}
     </section>
+  )
+}
+
+function ContinueWatchingSourceMenu({
+  x,
+  y,
+  selected,
+  connections,
+  onSelect,
+  onClose,
+}: {
+  x: number
+  y: number
+  selected: ProgressProvider
+  connections: Record<ProgressProvider, boolean>
+  onSelect: (source: ProgressProvider) => void
+  onClose: () => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [adjusted, setAdjusted] = useState({ x, y })
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    const rect = menu.getBoundingClientRect()
+    setAdjusted({
+      x: Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)),
+    })
+  }, [x, y])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
+
+  return createPortal(
+    <div className="fixed inset-0 z-[300]" onClick={onClose} onContextMenu={(event) => event.preventDefault()}>
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label="Continue Watching source"
+        className="context-menu-glass fixed min-w-[230px] rounded-2xl border border-white/[0.12]"
+        style={{ left: adjusted.x, top: adjusted.y, animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)' }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="relative">
+          <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <p className="text-sm font-semibold text-white">Continue Watching source</p>
+            <p className="text-label text-white/50 mt-0.5">Use one connection for all watch data</p>
+          </div>
+          <div className="px-1.5 py-1.5">
+            {PROGRESS_SOURCE_OPTIONS.map((option) => {
+              const connected = connections[option.id]
+              const active = selected === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={active}
+                  disabled={!connected}
+                  onClick={() => onSelect(option.id)}
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors"
+                >
+                  <span className={`w-4 text-center ${active ? 'text-accent' : 'text-white/25'}`}>{active ? '✓' : '○'}</span>
+                  <span className={`flex-1 text-sm ${active ? 'font-semibold text-white' : 'text-white/70'}`}>{option.label}</span>
+                  {!connected && <span className="text-[10px] font-semibold uppercase tracking-wide text-white/25">Not connected</span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 

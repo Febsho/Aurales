@@ -3,7 +3,6 @@ import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { useAppStore } from './stores/appStore'
-import type { ProgressProvider } from './stores/appStore'
 import { prefetchLikelyRoutes } from './services/routePrefetch'
 import { markPerformance, measurePerformance } from './services/performanceMetrics'
 import WhoWatching from './components/WhoWatching'
@@ -95,22 +94,9 @@ export default function App() {
   const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
 
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const setWatchedCheckmarkSources = useAppStore((s) => s.setWatchedCheckmarkSources)
-  const traktConnected = useAppStore((s) => s.traktConnected)
-  const simklConnected = useAppStore((s) => s.simklConnected)
-  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
-  const anilistConnected = useAppStore((s) => s.anilistConnected)
-  const automaticWatchedSources: ProgressProvider[] = [
-    'local',
-    ...(traktConnected ? ['trakt' as const] : []),
-    ...(simklConnected ? ['simkl' as const] : []),
-    ...(pmdbApiKey ? ['pmdb' as const] : []),
-    ...(mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens') ? ['mdblist' as const] : []),
-    ...(anilistConnected ? ['anilist' as const] : []),
-  ]
-  const automaticWatchedSourcesKey = automaticWatchedSources.join(',')
 
   useEffect(() => {
     markPerformance('app-shell-visible')
@@ -194,9 +180,9 @@ export default function App() {
   }, [chooseProfile])
 
   useEffect(() => {
-    if (watchedCheckmarkSources.join(',') === automaticWatchedSourcesKey) return
-    setWatchedCheckmarkSources(automaticWatchedSourcesKey.split(',') as ProgressProvider[])
-  }, [automaticWatchedSourcesKey, setWatchedCheckmarkSources, watchedCheckmarkSources])
+    if (watchedCheckmarkSources.length === 1 && watchedCheckmarkSources[0] === primaryProgressProvider) return
+    setWatchedCheckmarkSources([primaryProgressProvider])
+  }, [primaryProgressProvider, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
     if (chooseProfile) return

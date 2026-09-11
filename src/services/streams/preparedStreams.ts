@@ -2,7 +2,8 @@ import type { SubtitleResult } from '../../types'
 import { useAppStore } from '../../stores/appStore'
 import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from './preloadManager'
 import { canonicalStreamKey, streamUrlTtlSeconds } from './preloadUtils'
-import { rankStreams, type SmartPlayMode, type SmartScoreContext, type SmartStream } from './smartScoring'
+import { type SmartPlayMode, type SmartScoreContext, type SmartStream } from './smartScoring'
+import { rankStreamCandidates } from './nativeScoring'
 import type { PlaybackPreference } from './playbackMemory'
 import { getPlayableStreamUrl } from './playableUrl'
 import { loadReliabilityHistory } from './reliabilityHistory'
@@ -120,11 +121,11 @@ class PreparedStreamRegistry {
       const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
       if (opts.signal?.aborted) { this.drop(entry); return null }
 
-      const ranked = rankStreams(streams as SmartStream[], buildSmartContext({
+      const ranked = (await rankStreamCandidates(streams as SmartStream[], buildSmartContext({
         title: opts.title,
         season: request.seasonEpisode?.season,
         episode: request.seasonEpisode?.episode,
-      })).filter((candidate) => candidate.score > -500)
+      }), { cancelGroup: `streams:prepare:${mediaKey}`, priority: opts.priority === StreamPreloadPriority.PLAYBACK ? 'playback' : 'visible', signal: opts.signal })).filter((candidate) => candidate.score > -500)
       const candidates = ranked.slice(0, 2)
       if (candidates.length === 0) {
         this.drop(entry)

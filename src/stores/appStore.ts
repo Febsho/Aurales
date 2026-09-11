@@ -23,16 +23,6 @@ function invalidateCatalogData(): void {
 
 export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
-function loadAutomaticWatchedCheckmarkSources(): ProgressProvider[] {
-  const sources: ProgressProvider[] = ['local']
-  if (localStorage.getItem('trakt_tokens')) sources.push('trakt')
-  if (localStorage.getItem('simkl_token')) sources.push('simkl')
-  if (localStorage.getItem('pmdb_api_key')) sources.push('pmdb')
-  if (localStorage.getItem('mdblist_api_key') || localStorage.getItem('mdblist_oauth_tokens')) sources.push('mdblist')
-  if (localStorage.getItem('anilist_token')) sources.push('anilist')
-  return sources
-}
-
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
 export type PlayerQualityProfile = 'performance' | 'balanced' | 'quality'
@@ -162,6 +152,8 @@ interface AppState {
   setAnimeAudioMode: (mode: 'sub' | 'dub') => void
 
   continueWatchingSource: ProgressProvider
+  /** One authoritative account for resumes, watched badges, and episode state. */
+  primaryProgressProvider: ProgressProvider
   continueWatchingLimit: number
   watchedCheckmarkSources: ProgressProvider[]
   pmdbApiKey: string
@@ -181,6 +173,7 @@ interface AppState {
   resumePriorityOrder: ProgressProvider[]
 
   setContinueWatchingSource: (src: ProgressProvider) => void
+  setPrimaryProgressProvider: (src: ProgressProvider) => void
   setContinueWatchingLimit: (limit: number) => void
   setResumePriorityOrder: (order: ProgressProvider[]) => void
   setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
@@ -807,9 +800,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPreferSdhSubtitles: (enabled) => { localStorage.setItem(profileStorageKey('aurales_prefer_sdh_subtitles'), String(enabled)); set({ preferSdhSubtitles: enabled }) },
   setAnimeAudioMode: (mode) => { localStorage.setItem(profileStorageKey('aurales_anime_audio_mode'), mode); set({ animeAudioMode: mode }) },
 
-  continueWatchingSource: (localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
+  // Migrate the former Continue Watching-only choice into the unified source.
+  continueWatchingSource: (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
+  primaryProgressProvider: (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
-  watchedCheckmarkSources: loadAutomaticWatchedCheckmarkSources(),
+  watchedCheckmarkSources: [(localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider],
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
@@ -940,7 +935,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     return ['imdb', 'rottentomatoes', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd', 'myanimelist']
   })(),
 
-  setContinueWatchingSource: (src) => { localStorage.setItem('aurales_cw_source', src); set({ continueWatchingSource: src }) },
+  setContinueWatchingSource: (src) => { get().setPrimaryProgressProvider(src) },
+  setPrimaryProgressProvider: (src) => {
+    localStorage.setItem('aurales_primary_progress_service', src)
+    // Keep the old key in sync for existing Continue Watching snapshots.
+    localStorage.setItem('aurales_cw_source', src)
+    set({ primaryProgressProvider: src, continueWatchingSource: src, watchedCheckmarkSources: [src], resumePriorityOrder: [src] })
+  },
   setContinueWatchingLimit: (limit) => { localStorage.setItem('aurales_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
   setWatchedCheckmarkSources: (sources) => {
     localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))

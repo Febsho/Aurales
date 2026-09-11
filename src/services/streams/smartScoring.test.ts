@@ -9,6 +9,7 @@ describe('smart stream scoring', () => {
   it('ranks a matching 1080p web source above cam and fake sources', () => {
     const ranked = rankStreams([stream('Example Movie trailer 2160p'), stream('Example Movie CAM 720p'), stream('Example Movie 1080p WEB-DL')], context)
     expect(ranked[0].stream.title).toContain('WEB-DL')
+    expect(ranked.map(({ score }) => score)).toEqual([72, -3, -42])
   })
 
   it('strongly penalizes prior failures and bad reports', () => {

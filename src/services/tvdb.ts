@@ -199,15 +199,20 @@ export const tvdbProvider: MetadataProvider = {
   async search(query: string, _type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
     const data = await tvdbFetch('/search', { query, type: 'series' }, { priority: 'interactive', cancelGroup: context?.cancelGroup }) as Record<string, unknown>
     const results = (data.data as Record<string, unknown>[]) || []
-    return results.map((r) => ({
-      id: `tvdb-${r.tvdb_id || r.id}`,
-      title: r.name as string,
-      type: 'series' as const,
-      year: (r.first_air_time as string)?.slice(0, 4) ? parseInt((r.first_air_time as string).slice(0, 4)) : undefined,
-      poster: r.image_url as string | undefined,
-      overview: r.overview as string,
-      provider: 'tvdb',
-    }))
+    return results.map((r) => {
+      const rawTvdbId = r.tvdb_id || r.id
+      const tvdbId = Number(rawTvdbId)
+      return {
+        id: `tvdb-${rawTvdbId}`,
+        title: r.name as string,
+        type: 'series' as const,
+        year: (r.first_air_time as string)?.slice(0, 4) ? parseInt((r.first_air_time as string).slice(0, 4)) : undefined,
+        poster: r.image_url as string | undefined,
+        overview: r.overview as string,
+        tvdbId: Number.isFinite(tvdbId) ? tvdbId : undefined,
+        provider: 'tvdb',
+      }
+    })
   },
 
   async getMovie(id: string): Promise<MovieDetails> {

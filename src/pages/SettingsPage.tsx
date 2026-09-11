@@ -77,6 +77,7 @@ const BACKUP_KEYS = [
   'orynt_preferred_subtitles',
   'orynt_preferred_audio',
   'orynt_cw_source',
+  'aurales_primary_progress_service',
   'orynt_cw_limit',
   'orynt_watched_checkmark_sources',
   'orynt_watchlist_target',
@@ -1937,6 +1938,22 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
+              <SettingSection title="Primary progress service" description="One account is authoritative for Continue Watching, watched checkmarks, episode state, and Better Posters watch status.">
+                <SettingRow label="Use for all watch data" description="Choose a connected service, or Local to keep watch data only on this device.">
+                  <SelectMenu
+                    value={store.primaryProgressProvider}
+                    onChange={(event) => store.setPrimaryProgressProvider(event.target.value as import('../stores/appStore').ProgressProvider)}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                  >
+                    <option value="local">Local</option>
+                    <option value="trakt" disabled={!store.traktConnected}>Trakt{store.traktConnected ? '' : ' — not connected'}</option>
+                    <option value="simkl" disabled={!store.simklConnected}>Simkl{store.simklConnected ? '' : ' — not connected'}</option>
+                    <option value="anilist" disabled={!store.anilistConnected}>AniList{store.anilistConnected ? '' : ' — not connected'}</option>
+                    <option value="pmdb" disabled={!store.pmdbApiKey}>PublicMetaDB{store.pmdbApiKey ? '' : ' — not connected'}</option>
+                    <option value="mdblist" disabled={!store.mdblistApiKey && !hasMdblistOAuth()}>MDBList{store.mdblistApiKey || hasMdblistOAuth() ? '' : ' — not connected'}</option>
+                  </SelectMenu>
+                </SettingRow>
+              </SettingSection>
               <AccountsHub integrations={[
                 {
                   id: 'trakt', name: 'Trakt', iconService: 'trakt', group: 'history', wide: true,
@@ -2352,7 +2369,7 @@ export default function SettingsPage() {
           {activeTab === 'progress' && (
             <>
               {/* ─── Global Settings ─── */}
-              <SettingSection title="Continue Watching" description="Every connected service has its own Continue Watching — switch between them directly on the Home row. Use each service's 'Save Resume Position' below to opt out.">
+              <SettingSection title="Continue Watching" description="Uses the primary progress service selected in Accounts. Use that service's ‘Save Resume Position’ below to opt out of sending playback updates.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
                   <SelectMenu
                     value={store.continueWatchingLimit}
@@ -2366,16 +2383,6 @@ export default function SettingsPage() {
                   </SelectMenu>
                 </SettingRow>
 
-              </SettingSection>
-
-              {/* ─── Play Button Resume Priority ─── */}
-              <SettingSection
-                title="Play Button Resume Priority"
-                description="Connected services are checked first. Local stays as a fallback unless you drag it above them; it is used automatically when no service is connected."
-              >
-                <div className="px-6 py-4">
-                  <ResumePriorityList />
-                </div>
               </SettingSection>
 
               {/* ─── Per-Service Settings ─── */}

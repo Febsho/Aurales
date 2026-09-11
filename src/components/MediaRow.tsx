@@ -162,8 +162,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     [shouldShowAll, visibleItems],
   )
   const renderedItems = useMemo(
-    () => rowItems.slice(0, renderedCount),
-    [rowItems, renderedCount],
+    // A list is vertically laid out and has no horizontal edge at which to
+    // request another batch, so applying shelf progressive rendering here
+    // would permanently hide everything after the initial batch.
+    () => layout === 'list' ? rowItems : rowItems.slice(0, renderedCount),
+    [layout, rowItems, renderedCount],
   )
   useEffect(() => setRenderedCount(INITIAL_RENDERED_CARDS), [rowItems])
   useEffect(() => {

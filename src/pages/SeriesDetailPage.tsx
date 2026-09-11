@@ -18,7 +18,7 @@ import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import useEdgeFade from '../hooks/useEdgeFade'
 import DetailHero from '../components/media/DetailHero'
-import { cacheGet, cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
+import { cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import DetailContentShell from '../components/media/DetailContentShell'
 import DetailLoadingState from '../components/media/DetailLoadingState'
@@ -45,7 +45,9 @@ import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import type { AppSeason } from '../services/metadata/types'
 import { getOmdbApiKey } from '../services/apiKeys'
+import { loadDetailPage } from '../services/metadata/detailPageLoader'
 import { animeSeasonCacheKey, getOrLoadAnimeSeason } from '../services/metadata/animeSeasonCache'
+import { loadAnimeSeason } from '../services/metadata/animeSeasonLoader'
 import { detailProviderRequestCount, markPerformance, measurePerformance, recordDetailProviderRequest, resetDetailProviderRequestCount } from '../services/performanceMetrics'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
@@ -161,7 +163,6 @@ interface SeriesDetailCacheEntry {
   metadataStatus: 'resolved' | 'fallback' | 'error'
 }
 const seriesDetailMemCache = new Map<string, { entry: SeriesDetailCacheEntry; timestamp: number }>()
-const providerShowPending = new Map<string, Promise<ShowDetails>>()
 
 function preservePresentedArtwork(next: ShowDetails, current?: ShowDetails | null): ShowDetails {
   if (!current) return next
@@ -174,29 +175,7 @@ function preservePresentedArtwork(next: ShowDetails, current?: ShowDetails | nul
 }
 
 async function cachedProviderShow(provider: 'tmdb' | 'tvdb', id: string): Promise<ShowDetails> {
-  const cleanProviderId = id.replace(/^(tmdb|tvdb)[-:]/i, '')
-  const key = `detail:series-provider:v2:${provider}:${cleanProviderId}`
-  const cached = await cacheGet<ShowDetails>(key)
-  if (cached?.data) return cached.data
-
-  const existing = providerShowPending.get(key)
-  if (existing) return existing
-
-  const request = (provider === 'tmdb'
-    ? tmdbProvider.getShow(`tmdb-${cleanProviderId}`)
-    : tvdbProvider.getShow(`tvdb-${cleanProviderId}`))
-    .then((show) => {
-      void cacheSet(key, show, {
-        category: CACHE_CATEGORIES.DETAIL_PAGE,
-        ttlSeconds: CACHE_TTLS.TVDB_SEASON,
-      })
-      return show
-    })
-    .finally(() => providerShowPending.delete(key))
-
-  recordDetailProviderRequest()
-  providerShowPending.set(key, request)
-  return request
+  return loadDetailPage(provider, id)
 }
 
 function animeStructureSettingsKey(): string {
@@ -557,6 +536,7 @@ export default function SeriesDetailPage() {
   const tvdbMappedEpisodesRef = useRef<Record<number, SeasonDetails['episodes']>>({})
   const [streamOpen, setStreamOpen] = useState(false)
   const [streamEpisode, setStreamEpisode] = useState<{ season: number; episode: number } | null>(null)
+  const [forceManualSourceSelection, setForceManualSourceSelection] = useState(false)
   const [streamResolving, setStreamResolving] = useState(false)
   const autoPlayHandledRef = useRef(false)
   const detailStreamPreloadRef = useRef<string | null>(null)
@@ -574,6 +554,7 @@ export default function SeriesDetailPage() {
   useEdgeFade(episodeScrollRef, [seasonData])
   useEdgeFade(seasonScrollRef, [show])
   const [showSeasonArrows, setShowSeasonArrows] = useState(false)
+  const [episodeScrollState, setEpisodeScrollState] = useState({ canGoBack: false, canGoForward: false })
   const manuallySelectedSeasonRef = useRef(false)
   const resumeSeasonAppliedForShowRef = useRef<string | null>(null)
 
@@ -585,16 +566,41 @@ export default function SeriesDetailPage() {
     container.scrollTo({ left: Math.max(0, left), behavior })
   }
 
+  const syncEpisodeScrollState = () => {
+    const container = episodeScrollRef.current
+    if (!container) return
+    const overflows = container.scrollWidth > container.clientWidth + 2
+    setEpisodeScrollState({
+      canGoBack: overflows && container.scrollLeft > 2,
+      canGoForward: overflows && container.scrollLeft + container.clientWidth < container.scrollWidth - 2,
+    })
+  }
+
+  useEffect(() => {
+    const container = episodeScrollRef.current
+    if (!container) return
+    const onScroll = () => syncEpisodeScrollState()
+    const resize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onScroll) : null
+    onScroll()
+    container.addEventListener('scroll', onScroll, { passive: true })
+    resize?.observe(container)
+    return () => {
+      container.removeEventListener('scroll', onScroll)
+      resize?.disconnect()
+    }
+  }, [seasonData])
+
   useEffect(() => {
     const episode = seasonData?.episodes[0]
     if (!show || !state.autoPlay || autoPlayHandledRef.current || !episode) return
     autoPlayHandledRef.current = true
+    setForceManualSourceSelection(false)
     setStreamEpisode({ season: episode.seasonNumber, episode: episode.episodeNumber })
     setStreamOpen(true)
   }, [show, seasonData, state.autoPlay])
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
-  const resumePriorityOrder = useAppStore((s) => s.resumePriorityOrder)
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const simklConnected = useAppStore((s) => s.simklConnected)
@@ -655,7 +661,7 @@ export default function SeriesDetailPage() {
       }[] = []
 
       // 1. Local
-      if (resumeProgress) {
+      if (primaryProgressProvider === 'local' && resumeProgress) {
         candidates.push({
           provider: 'local',
           season: resumeProgress.season!,
@@ -668,7 +674,7 @@ export default function SeriesDetailPage() {
 
       const fetchPromises: Promise<void>[] = []
 
-      if (resumePriorityOrder.includes('simkl') && simklConnected) {
+      if (primaryProgressProvider === 'simkl' && simklConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getSimklPlaybackProgress()
@@ -704,7 +710,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('trakt') && traktConnected) {
+      if (primaryProgressProvider === 'trakt' && traktConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getTraktPlaybackProgress()
@@ -737,7 +743,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('pmdb') && pmdbApiKey) {
+      if (primaryProgressProvider === 'pmdb' && pmdbApiKey) {
         fetchPromises.push((async () => {
           try {
             const raw = await getPMDBPlaybackProgress()
@@ -765,7 +771,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('mdblist') && (mdblistApiKey || hasMdblistOAuth())) {
+      if (primaryProgressProvider === 'mdblist' && (mdblistApiKey || hasMdblistOAuth())) {
         fetchPromises.push((async () => {
           try {
             const raw = await getMdblistPlaybackProgress()
@@ -806,26 +812,7 @@ export default function SeriesDetailPage() {
 
       if (!active) return
 
-      const hasConnectedService = simklConnected || traktConnected || Boolean(pmdbApiKey) || Boolean(mdblistApiKey || hasMdblistOAuth())
-      const localIndex = resumePriorityOrder.indexOf('local')
-      const firstServiceIndex = Math.min(...resumePriorityOrder.filter((provider) => provider !== 'local').map((provider) => resumePriorityOrder.indexOf(provider)))
-      const useLocal = !hasConnectedService || localIndex < firstServiceIndex
-      // Local remains a true fallback unless explicitly moved upward.
-      for (const provider of resumePriorityOrder) {
-        if (provider === 'local' && !useLocal) continue
-        const found = candidates.find((c) => c.provider === provider)
-        if (found) {
-          setLiveResumePoint(found)
-          return
-        }
-      }
-
-      const fallback = candidates.find((candidate) => candidate.provider !== 'local' || useLocal)
-      if (fallback) {
-        setLiveResumePoint(fallback)
-      } else {
-        setLiveResumePoint(null)
-      }
+      setLiveResumePoint(candidates.find((candidate) => candidate.provider === primaryProgressProvider) || null)
     }
 
     fetchPoints()
@@ -833,7 +820,7 @@ export default function SeriesDetailPage() {
     return () => {
       active = false
     }
-  }, [show, resumeProgress, resumePriorityOrder, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
+  }, [show, resumeProgress, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
 
   useEffect(() => {
     manuallySelectedSeasonRef.current = false
@@ -860,8 +847,6 @@ export default function SeriesDetailPage() {
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
-  const anilistConnected = useAppStore((s) => s.anilistConnected)
-  const animeTrackingProvider = useAppStore((s) => s.animeTrackingProvider)
   const showCtxMenu = useContextMenu((s) => s.show)
   const blurSpoilers = useAppStore((s) => s.blurSpoilers)
   const blurThumbnails = useAppStore((s) => s.blurThumbnails)
@@ -2367,12 +2352,14 @@ export default function SeriesDetailPage() {
       }
 
       try {
-        const getSeason = tvdbProvider.getSeason as (
+        const getTvdbSeason = tvdbProvider.getSeason as (
           showId: string,
           seasonNumber: number,
           priority?: 'visible' | 'interactive',
         ) => Promise<SeasonDetails>
-        const data = await getSeason(`tvdb-${tvdbId}`, seasonNum, isAnimeShow ? 'interactive' : 'visible')
+        const data = isAnimeShow
+          ? await loadAnimeSeason(tvdbId, seasonNum)
+          : await getTvdbSeason(`tvdb-${tvdbId}`, seasonNum, 'visible')
         if (data.episodes.length === 0) return null
         if (isAnimeShow) {
           const today = new Date().toISOString().slice(0, 10)
@@ -2743,15 +2730,9 @@ export default function SeriesDetailPage() {
       appSeasonEpCounts,
     })
 
-    // For anime, honour the "Anime Tracking Provider: AniList" setting by consulting
-    // AniList even when the user hasn't toggled it into the global watched sources.
-    const effectiveSources = isAnime && anilistConnected && animeTrackingProvider === 'anilist' && !watchedCheckmarkSources.includes('anilist')
-      ? [...watchedCheckmarkSources, 'anilist' as const]
-      : watchedCheckmarkSources
-
     // Check visible season first via batch
     const visibleLookups = visibleSeason.episodes.map(toLookup)
-    batchIsWatchedFromProviders(visibleLookups, effectiveSources, completedIdsRef.current).then((watchedKeys) => {
+    batchIsWatchedFromProviders(visibleLookups, watchedCheckmarkSources, completedIdsRef.current).then((watchedKeys) => {
       if (cancelled) return
       setWatchedEpisodes((prev) => {
         const next = new Set(prev)
@@ -2767,7 +2748,7 @@ export default function SeriesDetailPage() {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime, anilistConnected, animeTrackingProvider])
+  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
@@ -2890,7 +2871,8 @@ export default function SeriesDetailPage() {
 
 
 
-  const handlePlayEpisode = (seasonNum: number, episodeNum: number) => {
+  const handlePlayEpisode = (seasonNum: number, episodeNum: number, selectSource = false) => {
+    setForceManualSourceSelection(selectSource)
     setStreamEpisode({ season: seasonNum, episode: episodeNum })
     setStreamOpen(true)
   }
@@ -2915,6 +2897,28 @@ export default function SeriesDetailPage() {
     if (!container) return
     const amount = Math.max(320, container.clientWidth * 0.7)
     container.scrollBy({ left: direction === 'left' ? -amount : amount, behavior: 'smooth' })
+  }
+
+  const scrollEpisodes = (direction: 'left' | 'right') => {
+    const container = episodeScrollRef.current
+    if (!container) return
+    const cards = Array.from(container.children) as HTMLElement[]
+    if (cards.length === 0) return
+
+    // Four cards fill the viewport, but the next page begins after the gap
+    // following card four. Scrolling by clientWidth omitted that gap and made
+    // every click drift farther off alignment. Snap to the actual card stride.
+    const cardStride = cards[1]
+      ? cards[1].offsetLeft - cards[0].offsetLeft
+      : cards[0].offsetWidth
+    const pageStride = cardStride * 4
+    const lastPage = Math.max(0, Math.ceil(cards.length / 4) - 1)
+    const atEnd = container.scrollLeft + container.clientWidth >= container.scrollWidth - 2
+    const currentPage = atEnd
+      ? lastPage
+      : Math.max(0, Math.min(lastPage, Math.round(container.scrollLeft / pageStride)))
+    const targetPage = Math.max(0, Math.min(lastPage, currentPage + (direction === 'left' ? -1 : 1)))
+    container.scrollTo({ left: targetPage * pageStride, behavior: 'smooth' })
   }
 
   const handleSeasonWheel = (event: React.WheelEvent<HTMLDivElement>) => {
@@ -3031,6 +3035,20 @@ export default function SeriesDetailPage() {
                   </svg>
                 }
                 onClick={() => handlePlayEpisode(defaultEpisode.season, defaultEpisode.episode)}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  const episode = allEpisodes.find((candidate) =>
+                    candidate.seasonNumber === defaultEpisode.season && candidate.episodeNumber === defaultEpisode.episode
+                  )
+                  if (!episode) return
+                  const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
+                  const appSeasonCounts = isAnime ? show.seasons.filter((season) => season.seasonNumber > 0).map((season) => ({ season: season.seasonNumber, count: season.episodeCount })).sort((left, right) => left.season - right.season) : undefined
+                  showCtxMenu(event.clientX, event.clientY, {
+                    kind: 'episode', item: searchResult, episode, seasonNumber: episode.seasonNumber,
+                    showImdbId: show.imdbId, appSeasonCounts,
+                    onSelectSource: () => handlePlayEpisode(episode.seasonNumber, episode.episodeNumber, true),
+                  })
+                }}
               >
                 {allEpisodesWatched
                   ? 'Rewatch'
@@ -3201,7 +3219,17 @@ export default function SeriesDetailPage() {
         </div>
 
         {seasonData && (
-          <div className="shelf-fade">
+          <div className="episode-rail relative">
+          <button
+            type="button"
+            onClick={() => scrollEpisodes('left')}
+            disabled={!episodeScrollState.canGoBack}
+            className="episode-rail__arrow episode-rail__arrow--left"
+            aria-label="Previous four episodes"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          <div className="episode-rail__viewport">
           <div
             ref={episodeScrollRef}
             onWheel={handleEpisodeWheel}
@@ -3234,7 +3262,15 @@ export default function SeriesDetailPage() {
                       if (!show) return
                       const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
                       const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
-                      showCtxMenu(e.clientX, e.clientY, { kind: 'episode', item: searchResult, episode: ep, seasonNumber: ep.seasonNumber, showImdbId: show.imdbId, appSeasonCounts })
+                      showCtxMenu(e.clientX, e.clientY, {
+                        kind: 'episode',
+                        item: searchResult,
+                        episode: ep,
+                        seasonNumber: ep.seasonNumber,
+                        showImdbId: show.imdbId,
+                        appSeasonCounts,
+                        onSelectSource: () => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber, true),
+                      })
                     }}
                     className="episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer"
                   >
@@ -3402,6 +3438,16 @@ export default function SeriesDetailPage() {
             })()}
           </div>
           </div>
+          <button
+            type="button"
+            onClick={() => scrollEpisodes('right')}
+            disabled={!episodeScrollState.canGoForward}
+            className="episode-rail__arrow episode-rail__arrow--right"
+            aria-label="Next four episodes"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          </div>
         )}
         {!seasonData && show && (
           <div className="flex gap-6 overflow-x-hidden pb-8">
@@ -3419,7 +3465,7 @@ export default function SeriesDetailPage() {
 
       <StreamSelector
         open={streamOpen}
-        onClose={() => { setStreamOpen(false); setStreamEpisode(null) }}
+        onClose={() => { setStreamOpen(false); setStreamEpisode(null); setForceManualSourceSelection(false) }}
         mediaType="series"
         mediaId={streamId}
         title={show.title}
@@ -3432,6 +3478,7 @@ export default function SeriesDetailPage() {
         anilistId={show.anilistId != null ? Number(show.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        forceManualSelection={forceManualSourceSelection}
         onResolvingChange={setStreamResolving}
       />
 

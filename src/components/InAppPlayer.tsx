@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
-import { formatTime, openRouterChat } from '../services/player'
+import { formatTime, openRouterChat, shouldMarkWatched } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -15,6 +15,7 @@ import {
 } from '../services/trakt/scrobble'
 import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
+import { savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -64,6 +65,24 @@ interface PreparedSubtitle {
 function srtToVtt(input: string): string {
   const normalized = input.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
+}
+
+async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?: number; season?: number; episode?: number }> {
+  const tmdbId = item.tmdbId
+  if (!item.isAnime || item.contentType !== 'series' || item.tvdbId == null || item.season == null || item.episode == null) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+
+  try {
+    const { mapTvdbEpisodeToAnimeProviders, shouldFlattenPmdbAnimeEpisodes } = await import('../services/animeLists')
+    const mapped = await mapTvdbEpisodeToAnimeProviders(item.tvdbId, item.season, item.episode)
+    if (!mapped?.tmdbId) return { tmdbId, season: item.season, episode: item.episode }
+    return await shouldFlattenPmdbAnimeEpisodes(item.tvdbId, mapped.tmdbId)
+      ? { tmdbId: mapped.tmdbId, season: 1, episode: mapped.episode }
+      : { tmdbId: mapped.tmdbId, season: mapped.season, episode: mapped.episode }
+  } catch (_) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
 }
 
 async function fetchSubtitleText(url: string): Promise<string> {
@@ -146,6 +165,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
+  const lastPmdbPlaybackSaveRef = useRef(0)
   const playbackStartedRef = useRef(false)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
@@ -169,9 +189,12 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
+  const scrobblePmdb = useAppStore((s) => s.scrobblePmdb)
   const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
   const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   // This player is portaled next to #root. Hide the application shell while it
@@ -217,6 +240,31 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const saveAniListScrobble = (progress: number) => {
     if (!playbackItem || !scrobbleAnilist || !playbackItem.isAnime) return
     saveAniListProgressMapped(playbackItem, progress).catch(() => {})
+  }
+
+  // The primary progress provider controls the UI source only. Every enabled
+  // account keeps receiving playback state, including PMDB in the WebView
+  // fallback player (which previously lagged behind the native player).
+  const syncPmdbPlayback = (time: number, dur: number, allowScrobble = false) => {
+    if (!playbackItem || !pmdbApiKey || dur <= 0) return
+    const progress = time / dur
+    const mediaType = playbackItem.contentType === 'series' ? 'tv' : 'movie'
+    resolvePmdbPlaybackEpisode(playbackItem).then((target) => {
+      if (allowScrobble && scrobblePmdb && target.tmdbId && progress >= 0.9 && dur >= 180) {
+        return scrobblePMDB(target.tmdbId, mediaType, target.season, target.episode)
+      }
+      if (pmdbSaveResumePosition) {
+        return savePMDBPlaybackProgress(
+          target.tmdbId,
+          mediaType,
+          target.season,
+          target.episode,
+          Math.floor(time * 1000),
+          Math.floor(dur * 1000),
+          playbackItem.imdbId,
+        ).then(() => undefined)
+      }
+    }).catch(() => {})
   }
 
   const handleTranslateSubtitle = async (langCode: string, langName: string) => {
@@ -277,7 +325,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       : playbackItem.localId
 
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
-    const isCompleted = completedFlag || progressPct >= 85
+    const isCompleted = completedFlag || shouldMarkWatched(progressPct)
 
     useAppStore.getState().setWatchProgress(key, {
       id: key,
@@ -318,6 +366,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setPaused(false)
     playbackStartedRef.current = false
     lastAniListPlaybackSaveRef.current = 0
+    lastPmdbPlaybackSaveRef.current = 0
     video.volume = volume
     video.muted = false
     video.load()
@@ -617,6 +666,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
       saveAniListScrobble(progress)
+      syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
       if (progress >= 0.85) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
@@ -643,6 +693,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
       saveAniListScrobble(progress)
+      syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
       if (progress >= 0.85) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
@@ -666,6 +717,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         traktScrobbleStop(traktPayload).catch(() => {})
       }
       saveAniListScrobble(1)
+      syncPmdbPlayback(dur, dur, true)
       sendMdblistScrobble('stop', 1)
       import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
     }
@@ -741,6 +793,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     if (playbackItem && scrobbleAnilist && playbackItem.isAnime && dur > 0 && time - lastAniListPlaybackSaveRef.current >= 60) {
       lastAniListPlaybackSaveRef.current = time
       saveAniListProgressMapped(playbackItem, time / dur).catch(() => {})
+    }
+    if (time - lastPmdbPlaybackSaveRef.current >= 60) {
+      lastPmdbPlaybackSaveRef.current = time
+      syncPmdbPlayback(time, dur)
     }
   }
 

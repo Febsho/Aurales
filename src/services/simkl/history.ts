@@ -97,16 +97,16 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
   const statuses = ['watching', 'completed', 'hold', 'dropped']
   const responses = await Promise.all(
     statuses.flatMap((status) => (['shows', 'anime'] as const).map((type) =>
-      simklRequest<SimklApiItem[]>(
+      simklRequest<unknown>(
         // Simkl exposes the TVDB season/episode for anime only with
         // full_anime_seasons. Without it, cours and specials frequently use
         // different numbering and a watched anime episode appears unwatched.
         `/sync/all-items/${type}/${status}?extended=${type === 'anime' ? 'full_anime_seasons' : 'full'}&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
-      ).then((items) => (items || []).map((item) => ({ ...item, status }))).catch(() => [])
+      ).then((response) => normalizeSimklHistoryItems(response, status as SimklWatchlistItem['status'])).catch(() => [])
     ))
   )
   const merged = new Map<string, SimklWatchlistItem>()
-  for (const item of responses.flatMap((data) => toHistoryItems(data ?? []))) {
+  for (const item of responses.flat()) {
     const key = `${item.type}:${item.simklId || item.imdbId || item.tvdbId || item.id}`
     const existing = merged.get(key)
     if (!existing) {
@@ -314,6 +314,13 @@ export async function removeEpisodeWatchedOnSimkl(
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function toHistoryItems(raw: any): SimklWatchlistItem[] {
+  return normalizeSimklHistoryItems(raw)
+}
+
+export function normalizeSimklHistoryItems(
+  raw: any,
+  statusOverride?: SimklWatchlistItem['status'],
+): SimklWatchlistItem[] {
   if (!raw) return []
   let items: any[] = []
   if (Array.isArray(raw)) {
@@ -349,7 +356,7 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
       tvdbId: ids.tvdb,
       imdbId: ids.imdb,
       malId: ids.mal,
-      status: (r.status || 'completed') as SimklWatchlistItem['status'],
+      status: statusOverride || (r.status || 'completed') as SimklWatchlistItem['status'],
       watchedAt: r.last_watched_at,
       watchedEpisodes: extractWatchedEpisodes(r),
       watchedEpisodesCount: r.watched_episodes_count,

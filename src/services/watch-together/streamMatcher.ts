@@ -4,7 +4,8 @@ import { getAddonStreams, getStreamAddons } from '../addons'
 import { getPlayableStreamUrl, isPlayableStream } from '../streams/playableUrl'
 import { streamPreloadManager, StreamPreloadPriority } from '../streams/preloadManager'
 import { buildSmartContext } from '../streams/preparedStreams'
-import { rankStreams, type SmartStream } from '../streams/smartScoring'
+import { type SmartStream } from '../streams/smartScoring'
+import { rankStreamCandidates } from '../streams/nativeScoring'
 import { probeStreamUrl } from '../streams/streamProbe'
 import type { LocalSourceCandidate } from '../../stores/watchTogetherStore'
 import { annotateTorBoxStreams, resolveTorBoxStream } from '../torbox'
@@ -86,11 +87,11 @@ export async function resolveLocalSourceCandidates(
   if (signal?.aborted) return []
   const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
 
-  const ranked = rankStreams(streams as SmartStream[], buildSmartContext({
+  const ranked = (await rankStreamCandidates(streams as SmartStream[], buildSmartContext({
     title: media.title,
     season: episode?.seasonNumber,
     episode: episode?.episodeNumber,
-  })).filter(({ score }) => score > -500)
+  }), { cancelGroup: 'streams:watch-together', priority: 'playback', signal })).filter(({ score }) => score > -500)
 
   // Probe the leading candidates. Remaining ranked sources stay available as
   // runtime fallbacks because some providers reject lightweight HTTP probes.

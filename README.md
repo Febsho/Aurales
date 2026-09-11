@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.8-white?style=flat-square" alt="Version 0.3.8" />
+  <img src="https://img.shields.io/badge/version-0.3.9-white?style=flat-square" alt="Version 0.3.9" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
   <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
@@ -103,16 +103,16 @@ Aurales is built for people who want a polished place to decide what to watch an
 
 ## Download & Install
 
-Download version **0.3.8** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+Download version **0.3.9** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
 
-### Version 0.3.8 highlights
+### Version 0.3.9 highlights
 
-- Addon-provided movie and series metadata now opens directly without a second
-  metadata fetch when app-managed metadata is disabled.
-- Anime detail pages prioritize the selected season and an original-resolution
-  TMDB backdrop, while Better Posters render before clean TMDB poster art.
-- Series details consistently align content rails and hide unreleased episodes
-  and season entries.
+- Closing a movie or episode now clears its temporary playback source, so
+  reopening returns to the source selector instead of relaunching the old URL.
+- Stream selection and playback recovery use native candidate ranking while
+  keeping manual source selection available on demand.
+- Continue Watching, metadata loading, and native playback reliability have
+  received further performance and stability improvements.
 
 ### Windows
 
@@ -158,9 +158,9 @@ Download and install Aurales directly from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.8/Aurales_0.3.8_amd64.flatpak \
-  -o Aurales_0.3.8_amd64.flatpak
-flatpak install --user -y ./Aurales_0.3.8_amd64.flatpak
+  https://github.com/Febsho/Aurales/releases/download/v0.3.9/Aurales_0.3.9_amd64.flatpak \
+  -o Aurales_0.3.9_amd64.flatpak
+flatpak install --user -y ./Aurales_0.3.9_amd64.flatpak
 flatpak run com.aurales.app
 ```
 
@@ -178,7 +178,7 @@ Download Aurales directly from GitHub, install it for your user, and launch it:
 ```bash
 mkdir -p ~/.local/bin
 curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.3.8/Aurales_0.3.8_amd64.AppImage \
+  https://github.com/Febsho/Aurales/releases/download/v0.3.9/Aurales_0.3.9_amd64.AppImage \
   -o ~/.local/bin/aurales
 chmod +x ~/.local/bin/aurales
 ~/.local/bin/aurales
@@ -235,7 +235,7 @@ Linux release bundles can be built with:
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
 ```
 
-Tagged releases are created by pushing a tag such as `v0.3.8`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Tagged releases are created by pushing a tag such as `v0.3.9`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
 
 ---
 

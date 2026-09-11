@@ -6,6 +6,7 @@ import { canonicalStreamKey, resolveNextEpisodeWith, streamUrlTtlSeconds } from 
 export { canonicalStreamKey } from './preloadUtils'
 import { cacheGet, cacheSet } from '../cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../cache/constants'
+import { loadStreamCandidatesNative } from './streamCandidateLoader'
 
 export const StreamPreloadPriority = {
   PLAYBACK: 100,
@@ -262,7 +263,59 @@ class StreamPreloadManager {
         if (usable && flight.priority < StreamPreloadPriority.PLAYBACK) break
       }
     } else {
-      await Promise.all(addons.map(processAddon))
+      let nativeHandled = false
+      if (flight.priority >= StreamPreloadPriority.PLAYBACK) {
+        const streamIds = addons.map((addon) => {
+          const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId
+            ? request.sourceAddonItemId
+            : cleanId(request.mediaId)
+          return request.seasonEpisode && baseId ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
+        })
+        const streamId = streamIds[0]
+        if (streamId && streamIds.every((candidate) => candidate === streamId)) {
+          const missing: InstalledAddon[] = []
+          const now = Date.now()
+          for (const addon of addons) {
+            const cached = await cacheGet<AddonCacheEntry>(cacheKey(mediaKey, addon, streamId))
+            if (cached?.data && cached.data.staleUntil > now) {
+              results.set(addon.manifest.id, this.decorate(cached.data.streams, addon))
+              this.emit(flight, results, true, false)
+            }
+            if (!cached?.data || cached.stale || cached.data.expiresAt <= now) missing.push(addon)
+          }
+          if (missing.length === 0) {
+            nativeHandled = true
+          } else {
+            const started = performance.now()
+            try {
+              const native = await loadStreamCandidatesNative(request.mediaType, streamId, missing, {
+                cancelGroup: `streams:preload:${mediaKey}`,
+                priority: 'playback',
+              })
+              const failed = new Set(native.failures.map((failure) => failure.addonId))
+              const latency = Math.round(performance.now() - started)
+              for (const addon of missing) {
+                const streams = native.candidates.filter((stream) => stream.addonId === addon.manifest.id)
+                if (failed.has(addon.manifest.id)) {
+                  this.recordStats(addon.manifest.id, false, latency, 0)
+                  continue
+                }
+                this.recordStats(addon.manifest.id, true, latency, streams.length)
+                const undecorated = streams.map(({ addonId: _addonId, addonName: _addonName, ...stream }) => stream)
+                const ttl = safeTtl(request, undecorated)
+                const entry = { streams: undecorated, fetchedAt: Date.now(), expiresAt: Date.now() + ttl * 1000, staleUntil: Date.now() + ttl * 1000 + STALE_WINDOW_MS }
+                await cacheSet(cacheKey(mediaKey, addon, streamId), entry, { category: CACHE_CATEGORIES.STREAM_PRELOAD, ttlSeconds: ttl })
+                results.set(addon.manifest.id, streams)
+                this.emit(flight, results, false, false)
+              }
+              nativeHandled = true
+            } catch (error) {
+              devLog('Native candidate batch unavailable; using compatibility scheduler', error)
+            }
+          }
+        }
+      }
+      if (!nativeHandled) await Promise.all(addons.map(processAddon))
     }
     const final = [...results.values()].flat()
     flight.latest = final

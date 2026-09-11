@@ -1,4 +1,5 @@
 mod commands;
+mod core;
 mod db;
 mod image_cache;
 mod libmpv_player;
@@ -212,6 +213,7 @@ pub fn run() {
 
             let database = Database::new(app_dir).expect("failed to initialize database");
             app.manage(database);
+            app.manage(core::detail_page::DetailPageCoordinator::default());
 
             Ok(())
         })
@@ -296,9 +298,23 @@ pub fn run() {
             commands::cache_entry_clear_category,
             commands::cache_entry_clear_expired,
             commands::cache_entry_stats,
+            commands::normalize_provider_metadata,
+            commands::validate_anime_tvdb_structure,
+            commands::select_anime_title,
+            commands::resolve_anime_season_title,
+            commands::resolve_anime_episode_mapping,
+            commands::lookup_anime_mappings,
+            commands::resolve_anime_ids,
+            commands::load_detail_page,
+            commands::load_anime_season,
+            commands::load_addon_catalog,
+            commands::load_addon_meta,
+            commands::load_stream_candidates,
+            commands::rank_stream_candidates,
             commands::sync_password_store,
             commands::sync_password_load,
             commands::sync_password_delete,
+            commands::sync_batch,
             image_cache::image_cache_configure,
             image_cache::image_cache_stats,
             image_cache::image_cache_clear,

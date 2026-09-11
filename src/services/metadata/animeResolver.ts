@@ -1,10 +1,10 @@
 import { tvdbProvider } from '../tvdb'
 import { tmdbProvider } from '../tmdb'
-import { normalizeMovie, normalizeShow, selectAnimeTitle } from './metadataNormalizer'
+import { normalizeMovieWithNativeFallback, normalizeShowWithNativeFallback, selectAnimeTitleWithNativeFallback } from './metadataNormalizer'
 import { useAppStore } from '../../stores/appStore'
 import { mapTvdbSeasons } from './tvdbSeasonMapper'
-import { validateAnimeTvdbStructure, scoreAnimeStructure, debugAnimeMapping } from './animeStructureValidator'
-import { resolveSeasonTitles } from './animeTitleResolver'
+import { validateAnimeTvdbStructureWithNativeFallback, debugAnimeMapping } from './animeStructureValidator'
+import { resolveSeasonTitlesWithNativeFallback } from './animeTitleResolver'
 import type { AddonMediaInput, AnimeTitleLanguage, AnimeTitlePreference, AppMediaItem, AppSeason, ResolvedExternalIds } from './types'
 import { anilistRequest } from '../anilist'
 
@@ -133,9 +133,9 @@ async function tryTmdbSeasonsFallback(tmdbId: number, options: AnimeResolverOpti
   }
 }
 
-function applySeasonTitleResolution(seasons: AppSeason[], options: AnimeResolverOptions): AppSeason[] {
-  return seasons.map((s) => {
-    const resolved = resolveSeasonTitles(
+async function applySeasonTitleResolution(seasons: AppSeason[], options: AnimeResolverOptions): Promise<AppSeason[]> {
+  return Promise.all(seasons.map(async (s) => {
+    const resolved = await resolveSeasonTitlesWithNativeFallback(
       s.title,
       s.seasonNumber,
       options.titlePreference,
@@ -148,7 +148,7 @@ function applySeasonTitleResolution(seasons: AppSeason[], options: AnimeResolver
       originalTitle: resolved.originalTitle || s.originalTitle,
       nativeTitle: resolved.nativeTitle || s.nativeTitle,
     }
-  })
+  }))
 }
 
 export async function resolveAnimeMetadata(
@@ -173,9 +173,9 @@ export async function resolveAnimeMetadata(
       source === 'anilist' ? Promise.resolve(null) : getAniListTitles(ids),
     ])
     if (!movie) return null
-    const normalized = normalizeMovie(movie, { ...input, ...ids })
+    const normalized = await normalizeMovieWithNativeFallback(movie, { ...input, ...ids })
     const anilistTitles = selectedSource?.titles || fallbackTitles
-    const selected = selectAnimeTitle({
+    const selected = await selectAnimeTitleWithNativeFallback({
       english: anilistTitles?.english || movie.title,
       romaji: anilistTitles?.romaji || input.title,
       native: anilistTitles?.native || movie.originalTitle,
@@ -231,10 +231,10 @@ export async function resolveAnimeMetadata(
 
   if (!details) return null
 
-  const normalized = normalizeShow(details, { ...input, ...ids }, 'anime')
+  const normalized = await normalizeShowWithNativeFallback(details, { ...input, ...ids }, 'anime')
 
   const anilistTitles = selectedSource?.titles || fallbackTitles
-  const selected = selectAnimeTitle(
+  const selected = await selectAnimeTitleWithNativeFallback(
     {
       english: anilistTitles?.english || details.title,
       romaji: anilistTitles?.romaji || input.title,
@@ -261,7 +261,7 @@ export async function resolveAnimeMetadata(
       getAniListRelations(ids),
     ])
     let mappedSeasons = initialMappedSeasons
-    const validation = validateAnimeTvdbStructure(mappedSeasons, relations.hasSequels)
+    const validation = await validateAnimeTvdbStructureWithNativeFallback(mappedSeasons, relations.hasSequels)
 
     debugAnimeMapping({
       localMediaId: normalized.id,
@@ -286,7 +286,7 @@ export async function resolveAnimeMetadata(
       if (ids.tmdbId) {
         const tmdbSeasons = await tryTmdbSeasonsFallback(ids.tmdbId, options)
         if (tmdbSeasons) {
-          const tmdbValidation = validateAnimeTvdbStructure(tmdbSeasons, relations.hasSequels)
+          const tmdbValidation = await validateAnimeTvdbStructureWithNativeFallback(tmdbSeasons, relations.hasSequels)
           const tmdbScore = tmdbValidation.score
           const tvdbScore = validation.score
           console.log('[animeResolver] Score comparison — TVDB:', tvdbScore, 'TMDB:', tmdbScore)
@@ -300,7 +300,7 @@ export async function resolveAnimeMetadata(
     }
 
     // Apply season title resolution
-    mappedSeasons = applySeasonTitleResolution(mappedSeasons, options)
+    mappedSeasons = await applySeasonTitleResolution(mappedSeasons, options)
     normalized.seasons = mappedSeasons
   }
 

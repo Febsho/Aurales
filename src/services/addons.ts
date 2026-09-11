@@ -6,6 +6,7 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 import { recoverArtworkSource } from './imageCache'
+import { loadAddonCatalogNative, loadAddonMetaNative, nativeAddonCatalogAvailable } from './addonCatalogLoader'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -181,22 +182,42 @@ async function fetchAddonCatalog(
   const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
 
   try {
-    const data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
-      label: addonLabel(addonUrl),
-      kind: 'addon',
-      dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
-      priority: requestContext?.priority || 'visible',
-      cancelGroup: requestContext?.cancelGroup,
-      timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
-      retry: 'interactive-once',
-    })
+    let data: { metas?: Record<string, unknown>[] }
+    if (nativeAddonCatalogAvailable()) {
+      try {
+        data = { metas: await loadAddonCatalogNative(addonUrl, type, catalogId, extra, requestContext) as Record<string, unknown>[] }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error
+        console.warn('[addons] Native catalog load failed, using compatibility path:', error)
+        data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
+          label: addonLabel(addonUrl),
+          kind: 'addon',
+          dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
+          priority: requestContext?.priority || 'visible',
+          cancelGroup: requestContext?.cancelGroup,
+          timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+          retry: 'interactive-once',
+        })
+      }
+    } else {
+      data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
+        priority: requestContext?.priority || 'visible',
+        cancelGroup: requestContext?.cancelGroup,
+        timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+        retry: 'interactive-once',
+      })
+    }
     const raw = ((data.metas || []) as Record<string, unknown>[]).filter((m) => m.id)
     const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
     // Catalogs are previews. Resolving every result here used to turn one
     // addon request into dozens of metadata/artwork calls before first paint.
     // Visible cards and detail pages enrich only what the user can see.
     return previews
-  } catch (_) {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
     return []
   }
 }
@@ -292,6 +313,14 @@ export async function getAddonMeta(
     const source = baseUrl(addonUrl)
     const key = `addon-meta:v1:${source}:${type}:${id}`
     return await cachedFetch<Record<string, unknown>>(key, async () => {
+      if (nativeAddonCatalogAvailable()) {
+        try {
+          return await loadAddonMetaNative(addonUrl, type, id)
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error
+          console.warn('[addons] Native metadata load failed, using compatibility path:', error)
+        }
+      }
       const data = await coordinatedJson<{ meta?: Record<string, unknown> }>(`${source}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, {}, {
         label: addonLabel(addonUrl),
         kind: 'addon',

@@ -18,4 +18,8 @@ describe('BetterPosters URL generation', () => {
       language: 'de',
     })).toBe('https://btttr.cc/poster-rqa/imdb/poster-default/{imdb_id}.jpg?tag=none&lang=de&rs=RT')
   })
+
+  it('does not include a watched-state display preference', () => {
+    expect(DEFAULT_BETTER_POSTERS_SETTINGS).not.toHaveProperty('watchProgress')
+  })
 })

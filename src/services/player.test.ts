@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 
-import { getPlayerSnapshot } from './player'
+import { getPlayerSnapshot, shouldMarkWatched } from './player'
 
 describe('player snapshot', () => {
   beforeEach(() => invoke.mockReset())
@@ -25,5 +25,12 @@ describe('player snapshot', () => {
     await expect(getPlayerSnapshot()).resolves.toEqual(snapshot)
     expect(invoke).toHaveBeenCalledTimes(1)
     expect(invoke).toHaveBeenCalledWith('get_player_snapshot')
+  })
+})
+
+describe('watched threshold', () => {
+  it('keeps playback resumable below 80% and completes it at 80%', () => {
+    expect(shouldMarkWatched(79.99)).toBe(false)
+    expect(shouldMarkWatched(80)).toBe(true)
   })
 })

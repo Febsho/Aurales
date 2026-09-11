@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import type { SearchResult, EpisodeDetails } from '../types'
 
 export type ContextMenuTarget =
-  | { kind: 'media'; item: SearchResult }
-  | { kind: 'episode'; item: SearchResult; episode: EpisodeDetails; seasonNumber: number; showImdbId?: string; appSeasonCounts?: { season: number; count: number }[] }
+  | { kind: 'media'; item: SearchResult; onSelectSource?: () => void }
+  | { kind: 'episode'; item: SearchResult; episode: EpisodeDetails; seasonNumber: number; showImdbId?: string; appSeasonCounts?: { season: number; count: number }[]; onSelectSource?: () => void }
   | { kind: 'season'; item: SearchResult; seasonNumber: number; episodeCount: number; showImdbId?: string; appSeasonCounts?: { season: number; count: number }[] }
 
 export type ProviderKey = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'

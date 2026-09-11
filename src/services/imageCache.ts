@@ -78,6 +78,15 @@ const imageWarmupQueue: Array<() => void> = []
 // throughput without allowing background artwork to monopolize connections.
 const IMAGE_WARMUP_CONCURRENCY = 3
 let activeImageWarmups = 0
+let imageWarmupWakeup: number | null = null
+
+function scheduleImageWarmup(): void {
+  if (imageWarmupWakeup !== null) return
+  imageWarmupWakeup = window.setTimeout(() => {
+    imageWarmupWakeup = null
+    runNextImageWarmup()
+  }, 32)
+}
 
 function runNextImageWarmup(): void {
   // Do not make a cache-fill task compete with an active wheel/touch gesture.
@@ -85,7 +94,7 @@ function runNextImageWarmup(): void {
   // to the already conservative concurrency limit.
   const scheduler = (navigator as Navigator & { scheduling?: { isInputPending?: () => boolean } }).scheduling
   if (scheduler?.isInputPending?.()) {
-    window.setTimeout(runNextImageWarmup, 32)
+    scheduleImageWarmup()
     return
   }
   while (activeImageWarmups < IMAGE_WARMUP_CONCURRENCY && imageWarmupQueue.length > 0) {
@@ -126,7 +135,7 @@ export function warmCachedImage(url: string | undefined): Promise<void> {
  */
 export function warmCachedImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = [...new Set(urls.filter((url): url is string => Boolean(url)))]
-  return Promise.all(uniqueUrls.map((url) => {
+  const requests = uniqueUrls.map((url) => {
     const source = cachedImage(url)
     if (!source) return Promise.resolve()
     const existing = queuedImageWarmups.get(source)
@@ -143,9 +152,12 @@ export function warmCachedImages(urls: Array<string | undefined>): Promise<void>
         runNextImageWarmup()
       })
     })
-    runNextImageWarmup()
     return request
-  })).then(() => undefined)
+  })
+  // Enqueue the full batch before waking the scheduler so a shelf can only
+  // create one input-pending retry timer, not one per image URL.
+  runNextImageWarmup()
+  return Promise.all(requests).then(() => undefined)
 }
 
 export async function configureImageCache(maxMb: number, keepDays: number): Promise<void> {

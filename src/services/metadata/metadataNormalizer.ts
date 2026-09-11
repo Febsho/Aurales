@@ -1,4 +1,5 @@
 import type { MovieDetails, SearchResult, ShowDetails } from '../../types'
+import { invoke } from '@tauri-apps/api/core'
 import type { AddonMediaInput, AnimeTitleLanguage, AppMediaItem, AppSeason, MediaKind } from './types'
 
 const numberId = (value: unknown): number | undefined => {
@@ -26,6 +27,17 @@ export function selectAnimeTitle(
     : preference === 'native' ? titles.native || titles.romaji || titles.english
     : auto
   return { title: title || 'Unknown', originalTitle: titles.native, localizedTitle: titles.english || titles.romaji }
+}
+
+export async function selectAnimeTitleWithNativeFallback(
+  titles: { english?: string; romaji?: string; native?: string },
+  preference: AnimeTitleLanguage,
+): Promise<{ title: string; originalTitle?: string; localizedTitle?: string }> {
+  try {
+    return await invoke<{ title: string; originalTitle?: string; localizedTitle?: string }>('select_anime_title', { request: { titles, preference } })
+  } catch (_) {
+    return selectAnimeTitle(titles, preference)
+  }
 }
 
 export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): AppMediaItem {
@@ -69,6 +81,50 @@ export function normalizeShow(details: ShowDetails, input: AddonMediaInput, kind
     sourceMetadataProvider: details.provider === 'tvdb' ? 'tvdb' : 'tmdb', sourceAddonId: input.addonId,
     sourceAddonItemId: input.id, updatedAt: new Date().toISOString(),
   }
+}
+
+/**
+ * Native compatibility path for provider-response normalization. The legacy
+ * synchronous normalizer remains the authoritative fallback for web builds,
+ * older binaries, and any native serialization mismatch.
+ */
+export async function normalizeMovieWithNativeFallback(details: MovieDetails, input: AddonMediaInput): Promise<AppMediaItem> {
+  return normalizeWithNativeFallback('movie', details, input, () => normalizeMovie(details, input))
+}
+
+export async function normalizeShowWithNativeFallback(
+  details: ShowDetails,
+  input: AddonMediaInput,
+  kind: Extract<MediaKind, 'show' | 'anime'>,
+): Promise<AppMediaItem> {
+  return normalizeWithNativeFallback(kind, details, input, () => normalizeShow(details, input, kind))
+}
+
+async function normalizeWithNativeFallback(
+  kind: MediaKind,
+  details: MovieDetails | ShowDetails,
+  input: AddonMediaInput,
+  fallback: () => AppMediaItem,
+): Promise<AppMediaItem> {
+  // `numberId` intentionally accepts unusual legacy values (nested objects,
+  // hexadecimal and fractional strings). They stay on the proven JS path:
+  // moving this rare compatibility coercion offers no native-work benefit.
+  if (!canUseNativeNormalizer(details, input)) return fallback()
+  try {
+    return await invoke<AppMediaItem>('normalize_provider_metadata', {
+      request: { kind, details, input, updatedAt: new Date().toISOString() },
+    })
+  } catch {
+    return fallback()
+  }
+}
+
+function canUseNativeNormalizer(details: MovieDetails | ShowDetails, input: AddonMediaInput): boolean {
+  return [
+    details.tmdbId, details.tvdbId, details.anilistId, details.malId,
+    input.tmdbId, input.tvdbId, input.anilistId, input.malId,
+  ].every((value) => value == null || (typeof value === 'number' && Number.isSafeInteger(value))
+    || (typeof value === 'string' && /^(?:[a-z]+-)?\d+$/i.test(value)))
 }
 
 export function addonFallback(input: AddonMediaInput, kind: MediaKind): AppMediaItem {

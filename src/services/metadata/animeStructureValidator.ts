@@ -1,4 +1,5 @@
 import type { AppSeason, AnimeStructureValidation } from './types'
+import { invoke } from '@tauri-apps/api/core'
 
 export function validateAnimeTvdbStructure(
   seasons: AppSeason[],
@@ -44,6 +45,36 @@ export function validateAnimeTvdbStructure(
     seasonCount,
     totalEpisodeCount,
     score: scoreAnimeStructure(seasons, expectedMultiSeason),
+  }
+}
+
+/**
+ * Uses the native aggregate validator when its compact DTO is supported.
+ * The synchronous implementation remains the compatibility authority for
+ * browser builds, older binaries, and any unexpected IPC failure.
+ */
+export async function validateAnimeTvdbStructureWithNativeFallback(
+  seasons: AppSeason[],
+  expectedMultiSeason = false,
+): Promise<AnimeStructureValidation> {
+  try {
+    return await invoke<AnimeStructureValidation>('validate_anime_tvdb_structure', {
+      request: {
+        expectedMultiSeason,
+        seasons: seasons.map((season) => ({
+          seasonNumber: season.seasonNumber,
+          airDate: season.airDate,
+          episodes: season.episodes.map((episode) => ({
+            episodeNumber: episode.episodeNumber,
+            absoluteEpisodeNumber: episode.absoluteEpisodeNumber,
+            isReleased: episode.isReleased,
+            airDate: episode.airDate,
+          })),
+        })),
+      },
+    })
+  } catch {
+    return validateAnimeTvdbStructure(seasons, expectedMultiSeason)
   }
 }
 

@@ -17,6 +17,10 @@ const DEFAULT_SEARCH_ENGINES = {
   series: 'tvdb' as SearchEngineId,
   anime: 'mal' as SearchEngineId,
 }
+const STANDALONE_FALLBACK_ENGINES = {
+  movie: ['cinemeta'] as SearchEngineId[],
+  series: ['cinemeta', 'tvmaze'] as SearchEngineId[],
+}
 
 function loadSearchHistory(): string[] {
   try {
@@ -155,6 +159,8 @@ function isAnime(item: SearchResult): boolean {
   if (item.isAnime) return true
   if (item.provider === 'mal') return true
   if (item.provider === 'anilist' || item.malId || item.anilistId) return true
+  const animated = item.genreIds?.includes(16) || item.genres?.some((genre) => genre.toLowerCase() === 'animation')
+  if (animated && ['ja', 'zh', 'ko'].includes(item.originalLanguage || '')) return true
   return false
 }
 
@@ -234,7 +240,7 @@ export default function SearchPage() {
       setResults(ranked)
     }
 
-    const fireEngine = (engineId: SearchEngineId, type: 'movie' | 'series') => {
+    const fireEngine = (engineId: SearchEngineId, type?: 'movie' | 'series') => {
       const engine = searchEngines[engineId]
       if (!engine) return
       const p = engine.search(text, type, { cancelGroup: requestGroup }).then(mergeAndShow).catch(() => {})
@@ -258,10 +264,20 @@ export default function SearchPage() {
     fireEngine(DEFAULT_SEARCH_ENGINES.series, 'series')
     usedEngines.add(DEFAULT_SEARCH_ENGINES.series)
 
-    // Jikan's anime search returns both anime movies and series in one result
-    // set, so one request keeps the default search fast without dropping either.
+    // Jikan returns anime movies and series in one response. Do not apply a
+    // series-only filter here or anime movies disappear from standalone search.
     if (!usedEngines.has(DEFAULT_SEARCH_ENGINES.anime)) {
-      fireEngine(DEFAULT_SEARCH_ENGINES.anime, 'series')
+      fireEngine(DEFAULT_SEARCH_ENGINES.anime)
+    }
+
+    // Search must remain useful with no metadata addon installed. These
+    // keyless providers run alongside the richer primary providers, so they
+    // also cover provider outages and fresh installs without delaying results.
+    for (const engineId of STANDALONE_FALLBACK_ENGINES.movie) {
+      if (!usedEngines.has(engineId)) fireEngine(engineId, 'movie')
+    }
+    for (const engineId of STANDALONE_FALLBACK_ENGINES.series) {
+      if (!usedEngines.has(engineId)) fireEngine(engineId, 'series')
     }
 
     // Addon searches

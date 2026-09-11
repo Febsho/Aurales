@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core'
+
 interface AnimeMapping {
   anidb_id?: number
   anilist_id?: number
@@ -35,6 +37,15 @@ let activePromise: Promise<AnimeMapping[]> | null = null
 let lastFetchFailureAt = 0
 
 type WorkerLookupPlatform = 'mal' | 'anilist' | 'tvdb' | 'tmdb' | 'imdb'
+interface NativeAnimeLookupResponse {
+  entries: AnimeMapping[]
+  count: number
+  stale: boolean
+}
+interface NativeAnimeResolutionResponse {
+  mapping: AnimeMapping | null
+  stale: boolean
+}
 let mappingWorker: Worker | null = null
 let mappingWorkerFailed = false
 let nextWorkerRequestId = 1
@@ -76,6 +87,31 @@ function workerRequest<T>(message: Record<string, unknown>): Promise<T | null> |
   })
 }
 
+function nativeAnimeLookupAvailable(): boolean {
+  return typeof window !== 'undefined'
+    && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+}
+
+async function nativeLookup(platform: WorkerLookupPlatform, key: string | number): Promise<AnimeMapping[] | null> {
+  if (!nativeAnimeLookupAvailable()) return null
+  try {
+    const response = await invoke<NativeAnimeLookupResponse>('lookup_anime_mappings', {
+      request: {
+        platform,
+        key: String(key),
+        count: false,
+        priority: 'visible',
+        cancelGroup: `anime-map:${platform}:${key}`,
+        timeoutMs: 10_000,
+      },
+    })
+    return Array.isArray(response.entries) ? response.entries : null
+  } catch (error) {
+    console.warn('[anime-lists] Native lookup failed, using worker compatibility path:', error)
+    return null
+  }
+}
+
 async function workerLookup(platform: WorkerLookupPlatform, key: string | number): Promise<AnimeMapping[] | null> {
   const cacheKey = `${platform}:${key}`
   const cached = workerLookupCache.get(cacheKey)
@@ -115,6 +151,118 @@ function getTvdbEpisodeOffset(entry: AnimeMapping): number {
 
 function getTmdbEpisodeOffset(entry: AnimeMapping): number {
   return entry.episode_offset?.tmdb ?? 0
+}
+
+/** Compact, normalized Fribb candidate used by the Rust cour arithmetic. */
+export interface AnimeEpisodeResolutionEntry {
+  anilistId?: number
+  malId?: number
+  simklId?: number
+  traktId?: number
+  tvdbId?: number
+  tmdbId?: number
+  tvdbSeason?: number
+  tvdbEpisodeOffset: number
+  tmdbEpisodeOffset: number
+  traktSeason?: number
+  tmdbSeason?: number
+}
+
+export type AnimeEpisodeResolutionOperation = 'anilistToTvdb' | 'tvdbToAnilist' | 'tvdbToProviders'
+
+export interface AnimeEpisodeResolutionRequest {
+  operation: AnimeEpisodeResolutionOperation
+  entries: AnimeEpisodeResolutionEntry[]
+  season: number
+  episode: number
+}
+
+type AnimeEpisodeResolutionResult =
+  | { tvdbId: number; season: number; episode: number }
+  | { anilistId: number; absoluteEpisode: number }
+  | AnimeProviderEpisodeMapping
+
+function toEpisodeResolutionEntry(entry: AnimeMapping): AnimeEpisodeResolutionEntry {
+  return {
+    anilistId: entry.anilist_id,
+    malId: entry.mal_id,
+    simklId: entry.simkl_id,
+    traktId: entry.trakt_id,
+    tvdbId: entry.tvdb_id,
+    tmdbId: extractTmdbId(entry.themoviedb_id),
+    tvdbSeason: getTvdbSeason(entry),
+    tvdbEpisodeOffset: getTvdbEpisodeOffset(entry),
+    tmdbEpisodeOffset: getTmdbEpisodeOffset(entry),
+    traktSeason: entry.season?.trakt,
+    tmdbSeason: entry.season?.tmdb,
+  }
+}
+
+function resolveAnimeEpisodeMappingLegacy(
+  request: AnimeEpisodeResolutionRequest,
+): AnimeEpisodeResolutionResult | null {
+  if (request.operation === 'anilistToTvdb') {
+    const entries = request.entries
+      .filter((entry) => entry.tvdbSeason != null && entry.tvdbId != null)
+      .sort((left, right) => left.tvdbEpisodeOffset - right.tvdbEpisodeOffset)
+    let matched = entries[0]
+    for (const entry of entries) {
+      if (request.episode > entry.tvdbEpisodeOffset) matched = entry
+      else break
+    }
+    return matched ? {
+      tvdbId: matched.tvdbId!,
+      season: matched.tvdbSeason!,
+      episode: request.episode - matched.tvdbEpisodeOffset,
+    } : null
+  }
+
+  if (request.operation === 'tvdbToAnilist') {
+    const entries = request.entries
+      .filter((entry) => entry.tvdbSeason === request.season && entry.anilistId != null)
+      .sort((left, right) => left.tvdbEpisodeOffset - right.tvdbEpisodeOffset)
+    let matched = entries[0]
+    for (const entry of entries) {
+      if (request.episode > entry.tvdbEpisodeOffset) matched = entry
+      else break
+    }
+    return matched ? {
+      anilistId: matched.anilistId!,
+      absoluteEpisode: request.episode - matched.tvdbEpisodeOffset,
+    } : null
+  }
+
+  const matched = request.entries
+    .filter((entry) => entry.tvdbSeason === request.season && entry.tvdbEpisodeOffset < request.episode)
+    .sort((left, right) => right.tvdbEpisodeOffset - left.tvdbEpisodeOffset)[0]
+  if (!matched) return null
+  const relativeEpisode = request.episode - matched.tvdbEpisodeOffset
+  return {
+    anilistId: matched.anilistId,
+    malId: matched.malId,
+    simklId: matched.simklId,
+    traktId: matched.traktId,
+    tmdbId: matched.tmdbId,
+    episode: relativeEpisode,
+    season: matched.traktSeason ?? request.season,
+    tmdbSeason: matched.tmdbSeason ?? request.season,
+    tmdbEpisode: relativeEpisode + matched.tmdbEpisodeOffset,
+  }
+}
+
+/**
+ * Uses Rust for deterministic Fribb cour arithmetic while retaining the
+ * existing TypeScript resolver for browsers, older binaries, and IPC errors.
+ * Candidate lookup remains local so its worker/cache semantics do not change.
+ */
+export async function resolveAnimeEpisodeMappingWithNativeFallback(
+  request: AnimeEpisodeResolutionRequest,
+): Promise<AnimeEpisodeResolutionResult | null> {
+  try {
+    return await invoke<AnimeEpisodeResolutionResult | null>('resolve_anime_episode_mapping', { request })
+  } catch (_) {
+    return resolveAnimeEpisodeMappingLegacy(request)
+  }
 }
 
 export interface AnimeTmdbSeasonSegment {
@@ -293,6 +441,19 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
 }
 
 export async function getStoredAnimeListEntryCount(): Promise<number> {
+  if (nativeAnimeLookupAvailable()) {
+    try {
+      const response = await invoke<NativeAnimeLookupResponse>('lookup_anime_mappings', {
+        request: {
+          count: true,
+          priority: 'background',
+          cancelGroup: 'anime-map:count',
+          timeoutMs: 10_000,
+        },
+      })
+      return response.count
+    } catch (_) { /* use the existing browser cache */ }
+  }
   const workerCount = workerRequest<number>({ type: 'count' })
   if (workerCount) {
     const count = await workerCount
@@ -306,11 +467,13 @@ export async function getStoredAnimeListEntryCount(): Promise<number> {
 
 // Warm Fribb in a worker. Downloading, JSON.parse, and indexing never touch the
 // React thread, so opening an anime cannot freeze scrolling or playback.
-void workerRequest<number>({ type: 'count' })
+if (!nativeAnimeLookupAvailable()) void workerRequest<number>({ type: 'count' })
 
 // ── Indexed lookups (O(1)) ──────────────────────────────────────────
 
 export async function lookupByAniListId(anilistId: number): Promise<AnimeMapping[]> {
+  const native = await nativeLookup('anilist', anilistId)
+  if (native !== null) return native
   const workerResult = await workerLookup('anilist', anilistId)
   if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
   await loadAnimeLists()
@@ -318,6 +481,8 @@ export async function lookupByAniListId(anilistId: number): Promise<AnimeMapping
 }
 
 export async function lookupByMalId(malId: number): Promise<AnimeMapping[]> {
+  const native = await nativeLookup('mal', malId)
+  if (native !== null) return native
   const workerResult = await workerLookup('mal', malId)
   if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
   await loadAnimeLists()
@@ -327,6 +492,8 @@ export async function lookupByMalId(malId: number): Promise<AnimeMapping[]> {
 export async function lookupByTvdbId(tvdbId: number | string): Promise<AnimeMapping[]> {
   const num = Number(String(tvdbId).replace(/^tvdb[-:]/i, ''))
   if (isNaN(num)) return []
+  const native = await nativeLookup('tvdb', num)
+  if (native !== null) return native
   const workerResult = await workerLookup('tvdb', num)
   if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
   await loadAnimeLists()
@@ -336,6 +503,8 @@ export async function lookupByTvdbId(tvdbId: number | string): Promise<AnimeMapp
 export async function lookupByTmdbId(tmdbId: number | string): Promise<AnimeMapping[]> {
   const num = Number(String(tmdbId).replace(/^tmdb[-:]/i, ''))
   if (isNaN(num)) return []
+  const native = await nativeLookup('tmdb', num)
+  if (native !== null) return native
   const workerResult = await workerLookup('tmdb', num)
   if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
   await loadAnimeLists()
@@ -343,6 +512,8 @@ export async function lookupByTmdbId(tmdbId: number | string): Promise<AnimeMapp
 }
 
 export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | undefined> {
+  const native = await nativeLookup('imdb', imdbId)
+  if (native !== null) return native[0]
   const workerResult = await workerLookup('imdb', imdbId)
   if (workerResult !== null || typeof Worker !== 'undefined') return workerResult?.[0]
   await loadAnimeLists()
@@ -378,12 +549,36 @@ export async function resolveAnimeIds(known: {
 
   // 1. Instant local lookup via indexed maps (O(1))
   let match: AnimeMapping | undefined
+  let nativeResolved = false
+  if (nativeAnimeLookupAvailable()) {
+    try {
+      const response = await invoke<NativeAnimeResolutionResponse>('resolve_anime_ids', {
+        request: {
+          anilistId: anilistId != null && !isNaN(anilistId) ? String(anilistId) : undefined,
+          malId: malId != null && !isNaN(malId) ? String(malId) : undefined,
+          tvdbId: tvdbId != null && !isNaN(tvdbId) ? String(tvdbId) : undefined,
+          tmdbId: tmdbId != null && !isNaN(tmdbId) ? String(tmdbId) : undefined,
+          imdbId,
+          contentType: known.contentType,
+          priority: 'visible',
+          cancelGroup: `anime-resolve:${malId || ''}:${anilistId || ''}:${tvdbId || ''}:${tmdbId || ''}:${imdbId || ''}:${known.contentType || ''}`,
+          timeoutMs: 10_000,
+        },
+      })
+      match = response.mapping || undefined
+      nativeResolved = true
+    } catch (error) {
+      console.warn('[anime-lists] Native ID resolution failed, using worker compatibility path:', error)
+    }
+  }
 
-  if (malId != null && !isNaN(malId)) match = selectBestMapping(await lookupByMalId(malId), known)
-  if (!match && anilistId != null && !isNaN(anilistId)) match = selectBestMapping(await lookupByAniListId(anilistId), known)
-  if (!match && tvdbId != null && !isNaN(tvdbId)) match = selectBestMapping(await lookupByTvdbId(tvdbId), known)
-  if (!match && tmdbId != null && !isNaN(tmdbId)) match = selectBestMapping(await lookupByTmdbId(tmdbId), known)
-  if (!match && imdbId != null) match = await lookupByImdbId(imdbId)
+  if (!nativeResolved) {
+    if (malId != null && !isNaN(malId)) match = selectBestMapping(await lookupByMalId(malId), known)
+    if (!match && anilistId != null && !isNaN(anilistId)) match = selectBestMapping(await lookupByAniListId(anilistId), known)
+    if (!match && tvdbId != null && !isNaN(tvdbId)) match = selectBestMapping(await lookupByTvdbId(tvdbId), known)
+    if (!match && tmdbId != null && !isNaN(tmdbId)) match = selectBestMapping(await lookupByTmdbId(tmdbId), known)
+    if (!match && imdbId != null) match = await lookupByImdbId(imdbId)
+  }
 
   if (match) {
     const base = {
@@ -468,28 +663,12 @@ export async function mapAniListEpisodeToTvdb(
   absoluteEpisode: number
 ): Promise<{ season: number; episode: number; tvdbId: number } | null> {
   const entries = await lookupByAniListId(anilistId)
-  if (entries.length === 0) return null
-
-  const sorted = entries
-    .filter((e) => getTvdbSeason(e) != null && e.tvdb_id != null)
-    .sort((a, b) => getTvdbEpisodeOffset(a) - getTvdbEpisodeOffset(b))
-
-  if (sorted.length === 0) return null
-
-  let matched = sorted[0]
-  for (const entry of sorted) {
-    if (absoluteEpisode > getTvdbEpisodeOffset(entry)) {
-      matched = entry
-    } else {
-      break
-    }
-  }
-
-  return {
-    season: getTvdbSeason(matched)!,
-    episode: absoluteEpisode - getTvdbEpisodeOffset(matched),
-    tvdbId: matched.tvdb_id!,
-  }
+  return resolveAnimeEpisodeMappingWithNativeFallback({
+    operation: 'anilistToTvdb',
+    entries: entries.map(toEpisodeResolutionEntry),
+    season: 0,
+    episode: absoluteEpisode,
+  }) as Promise<{ season: number; episode: number; tvdbId: number } | null>
 }
 
 export async function mapTvdbEpisodeToAniList(
@@ -498,22 +677,12 @@ export async function mapTvdbEpisodeToAniList(
   episode: number
 ): Promise<{ anilistId: number; absoluteEpisode: number } | null> {
   const entries = await lookupByTvdbId(tvdbId)
-  const seasonEntries = (entries || [])
-    .filter((e) => getTvdbSeason(e) === season && e.anilist_id != null)
-    .sort((a, b) => getTvdbEpisodeOffset(a) - getTvdbEpisodeOffset(b))
-  let entry = seasonEntries[0]
-  for (const candidate of seasonEntries) {
-    if (episode > getTvdbEpisodeOffset(candidate)) entry = candidate
-    else break
-  }
-
-  if (!entry) return null
-
-  return {
-    anilistId: entry.anilist_id!,
-    // AniList progress is relative to the matched cour/media entry.
-    absoluteEpisode: episode - getTvdbEpisodeOffset(entry),
-  }
+  return resolveAnimeEpisodeMappingWithNativeFallback({
+    operation: 'tvdbToAnilist',
+    entries: entries.map(toEpisodeResolutionEntry),
+    season,
+    episode,
+  }) as Promise<{ anilistId: number; absoluteEpisode: number } | null>
 }
 
 export async function mapTvdbEpisodeToAnimeProviders(
@@ -550,23 +719,12 @@ export async function mapTvdbEpisodeToAnimeProvidersLocal(
   episode: number,
 ): Promise<AnimeProviderEpisodeMapping | null> {
   const entries = await lookupByTvdbId(tvdbId)
-  const entry = entries
-    ?.filter((candidate) => getTvdbSeason(candidate) === season)
-    .filter((candidate) => getTvdbEpisodeOffset(candidate) < episode)
-    .sort((left, right) => getTvdbEpisodeOffset(right) - getTvdbEpisodeOffset(left))[0]
-  if (!entry) return null
-  const relativeEpisode = episode - getTvdbEpisodeOffset(entry)
-  return {
-    anilistId: entry.anilist_id,
-    malId: entry.mal_id,
-    simklId: entry.simkl_id,
-    traktId: entry.trakt_id,
-    tmdbId: extractTmdbId(entry.themoviedb_id),
-    episode: relativeEpisode,
-    season: entry.season?.trakt ?? season,
-    tmdbSeason: entry.season?.tmdb ?? season,
-    tmdbEpisode: relativeEpisode + getTmdbEpisodeOffset(entry),
-  }
+  return resolveAnimeEpisodeMappingWithNativeFallback({
+    operation: 'tvdbToProviders',
+    entries: entries.map(toEpisodeResolutionEntry),
+    season,
+    episode,
+  }) as Promise<AnimeProviderEpisodeMapping | null>
 }
 
 /**

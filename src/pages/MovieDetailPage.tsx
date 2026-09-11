@@ -25,6 +25,7 @@ import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/tra
 import { getPMDBPlaybackProgress } from '../services/pmdb'
 import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
+import { loadMovieDetailPage } from '../services/metadata/detailPageLoader'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
@@ -33,6 +34,7 @@ import { usePreparedStream } from '../hooks/usePreparedStream'
 import { useStreamFeatures } from '../hooks/useStreamFeatures'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
+import { useContextMenu } from '../hooks/useContextMenu'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -207,13 +209,13 @@ export default function MovieDetailPage() {
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [initialArtworkReady, setInitialArtworkReady] = useState(false)
   const [streamOpen, setStreamOpen] = useState(false)
+  const [forceManualSourceSelection, setForceManualSourceSelection] = useState(false)
   const [streamResolving, setStreamResolving] = useState(false)
   const autoPlayHandledRef = useRef(false)
+  const showCtxMenu = useContextMenu((state) => state.show)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
-  const anilistConnected = useAppStore((s) => s.anilistConnected)
-  const animeTrackingProvider = useAppStore((s) => s.animeTrackingProvider)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const artProviders = useAppStore((s) => s.artProviders)
@@ -236,6 +238,7 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!movie || !state.autoPlay || autoPlayHandledRef.current) return
     autoPlayHandledRef.current = true
+    setForceManualSourceSelection(false)
     setStreamOpen(true)
   }, [movie, state.autoPlay])
 
@@ -254,7 +257,7 @@ export default function MovieDetailPage() {
 
   const hasProgress = progressItem && !progressItem.completed && progressItem.progressSeconds > 5
 
-  const resumePriorityOrder = useAppStore((s) => s.resumePriorityOrder)
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const simklConnected = useAppStore((s) => s.simklConnected)
@@ -280,7 +283,7 @@ export default function MovieDetailPage() {
       }[] = []
 
       // 1. Local
-      if (progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
+      if (primaryProgressProvider === 'local' && progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
         candidates.push({
           provider: 'local',
           progressSeconds: progressItem.progressSeconds,
@@ -291,7 +294,7 @@ export default function MovieDetailPage() {
 
       const fetchPromises: Promise<void>[] = []
 
-      if (resumePriorityOrder.includes('simkl') && simklConnected) {
+      if (primaryProgressProvider === 'simkl' && simklConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getSimklPlaybackProgress()
@@ -316,7 +319,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('trakt') && traktConnected) {
+      if (primaryProgressProvider === 'trakt' && traktConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getTraktPlaybackProgress()
@@ -340,7 +343,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('pmdb') && pmdbApiKey) {
+      if (primaryProgressProvider === 'pmdb' && pmdbApiKey) {
         fetchPromises.push((async () => {
           try {
             const raw = await getPMDBPlaybackProgress()
@@ -360,7 +363,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (resumePriorityOrder.includes('mdblist') && (mdblistApiKey || hasMdblistOAuth())) {
+      if (primaryProgressProvider === 'mdblist' && (mdblistApiKey || hasMdblistOAuth())) {
         fetchPromises.push((async () => {
           try {
             const raw = await getMdblistPlaybackProgress()
@@ -390,27 +393,7 @@ export default function MovieDetailPage() {
 
       if (!active) return
 
-      const hasConnectedService = simklConnected || traktConnected || Boolean(pmdbApiKey) || Boolean(mdblistApiKey || hasMdblistOAuth())
-      const localIndex = resumePriorityOrder.indexOf('local')
-      const firstServiceIndex = Math.min(...resumePriorityOrder.filter((provider) => provider !== 'local').map((provider) => resumePriorityOrder.indexOf(provider)))
-      const useLocal = !hasConnectedService || localIndex < firstServiceIndex
-      // Connected services win by default. Local is used only with no service
-      // connected, or when the person deliberately dragged it above them.
-      for (const provider of resumePriorityOrder) {
-        if (provider === 'local' && !useLocal) continue
-        const found = candidates.find((c) => c.provider === provider)
-        if (found) {
-          setLiveResumePoint(found)
-          return
-        }
-      }
-
-      const fallback = candidates.find((candidate) => candidate.provider !== 'local' || useLocal)
-      if (fallback) {
-        setLiveResumePoint(fallback)
-      } else {
-        setLiveResumePoint(null)
-      }
+      setLiveResumePoint(candidates.find((candidate) => candidate.provider === primaryProgressProvider) || null)
     }
 
     fetchPoints()
@@ -418,7 +401,7 @@ export default function MovieDetailPage() {
     return () => {
       active = false
     }
-  }, [movie, progressItem, resumePriorityOrder, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
+  }, [movie, progressItem, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
 
 
   useEffect(() => {
@@ -621,7 +604,7 @@ export default function MovieDetailPage() {
       let appResult: MovieDetails | null = null
       if (tmdbId) {
         try {
-          appResult = await tmdbProvider.getMovie(`tmdb-${tmdbId}`)
+          appResult = await loadMovieDetailPage(tmdbId)
           appResult = {
             ...appResult,
             id: id || appResult.id,
@@ -736,9 +719,6 @@ export default function MovieDetailPage() {
     if (!movie) return
     let cancelled = false
     const isAnimeMovie = Boolean(movie.isAnime || movie.anilistId || movie.malId)
-    const effectiveSources = isAnimeMovie && anilistConnected && animeTrackingProvider === 'anilist' && !watchedCheckmarkSources.includes('anilist')
-      ? [...watchedCheckmarkSources, 'anilist' as const]
-      : watchedCheckmarkSources
     isWatchedFromProviders({
       id: movie.id,
       type: 'movie',
@@ -750,13 +730,13 @@ export default function MovieDetailPage() {
       malId: movie.malId,
       anilistId: movie.anilistId,
       isAnime: isAnimeMovie,
-    }, effectiveSources, watchedProgress).then((watched) => {
+    }, watchedCheckmarkSources, watchedProgress).then((watched) => {
       if (!cancelled) setMovieWatched(watched)
     }).catch(() => {
       if (!cancelled) setMovieWatched(false)
     })
     return () => { cancelled = true }
-  }, [movie, watchedCheckmarkSources, watchedProgress, anilistConnected, animeTrackingProvider])
+  }, [movie, watchedCheckmarkSources, watchedProgress])
 
   useEffect(() => {
     if (!movie || movie.recommendations.length > 0) return
@@ -886,7 +866,22 @@ export default function MovieDetailPage() {
                   <path d="M8 5v14l11-7z" />
                 </svg>
               }
-              onClick={() => setStreamOpen(true)}
+              onClick={() => { setForceManualSourceSelection(false); setStreamOpen(true) }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                showCtxMenu(event.clientX, event.clientY, {
+                  kind: 'media',
+                  item: {
+                    id: movie.id, title: movie.title, type: 'movie', year: movie.year,
+                    poster: movie.poster, backdrop: movie.backdrop, logo: movie.logo,
+                    overview: movie.overview, rating: movie.rating, genres: movie.genres,
+                    provider: movie.provider || 'local', imdbId: movie.imdbId,
+                    tmdbId: movie.tmdbId, tvdbId: movie.tvdbId, malId: movie.malId,
+                    anilistId: movie.anilistId, isAnime: movie.isAnime,
+                  },
+                  onSelectSource: () => { setForceManualSourceSelection(true); setStreamOpen(true) },
+                })
+              }}
             >
               {(() => {
                 if (movieWatched) return 'Rewatch'
@@ -992,7 +987,7 @@ export default function MovieDetailPage() {
 
       <StreamSelector
         open={streamOpen}
-        onClose={() => setStreamOpen(false)}
+        onClose={() => { setStreamOpen(false); setForceManualSourceSelection(false) }}
         mediaType="movie"
         mediaId={streamId}
         title={movie.title}
@@ -1003,6 +998,7 @@ export default function MovieDetailPage() {
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        forceManualSelection={forceManualSourceSelection}
         onResolvingChange={setStreamResolving}
       />
 

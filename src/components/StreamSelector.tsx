@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState, useEffect, useRef } from 'react'
+import { lazy, Suspense, useMemo, useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { StreamResult, SubtitleResult } from '../types'
 import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
@@ -15,7 +15,8 @@ import { getBestKnownTime as wtBestKnownTime, play as wtPlay, useManualLocalSour
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { getPlayerSnapshot, stopEmbeddedPlayer } from '../services/player'
 import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
-import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
+import { type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
+import { rankStreamCandidates } from '../services/streams/nativeScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
 import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
 import { classifyPlaybackFailure, diagnosticForStream, recoveryCandidates, type SourceDiagnostic } from '../services/streams/playbackHealth'
@@ -64,6 +65,7 @@ interface StreamSelectorProps {
   anilistId?: number
   sourceAddonId?: string
   sourceAddonItemId?: string
+  forceManualSelection?: boolean
   onResolvingChange?: (resolving: boolean) => void
 }
 
@@ -132,7 +134,7 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
   },
 ]
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, onResolvingChange }: StreamSelectorProps) {
+export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, forceManualSelection = false, onResolvingChange }: StreamSelectorProps) {
   const nativePlayerAvailable = useNativePlayerSupported()
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
@@ -158,6 +160,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const warmedStreamUrlsRef = useRef(new Map<string, string>())
   const warmingStreamUrlsRef = useRef(new Set<string>())
   const resumeSmartFallbackRef = useRef<(failed: AddonStream) => void>(() => {})
+  const rankingGenerationRef = useRef(0)
   const hadPlaybackRef = useRef(false)
   const playbackEvidenceTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
@@ -168,6 +171,12 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const automaticStreamRecovery = useAppStore((s) => s.automaticStreamRecovery)
   const sessionFailedSourcesRef = useRef(new Set<string>())
   const sessionFailedAddonsRef = useRef(new Map<string, number>())
+
+  // A manual open must win before passive Smart Play effects get a chance to
+  // consume a prepared source or start ranking. Layout effects run first.
+  useLayoutEffect(() => {
+    if (open) manualSelectionRequestedRef.current = forceManualSelection
+  }, [open, forceManualSelection, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
 
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
   const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') !== 'false')
@@ -553,10 +562,11 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   useEffect(() => {
     if (!open) return
     autoSmartStartedRef.current = false
-    manualSelectionRequestedRef.current = false
+    manualSelectionRequestedRef.current = forceManualSelection
     fastPathTriedRef.current = false
     pendingSmartFallbackRef.current = null
-  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode, refreshRevision])
+    rankingGenerationRef.current += 1
+  }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode, refreshRevision, forceManualSelection])
 
   if (!open) return null
 
@@ -617,8 +627,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     }).finally(() => warmingStreamUrlsRef.current.delete(url))
   }
 
-  const rankSelectorStreams = (candidates: AddonStream[]): AddonStream[] =>
-    rankStreams(candidates as SmartStream[], buildSmartContext({
+  const rankSelectorStreams = async (candidates: AddonStream[]): Promise<AddonStream[]> =>
+    (await rankStreamCandidates(candidates as SmartStream[], buildSmartContext({
       title, season: seasonEpisode?.season, episode: seasonEpisode?.episode, subtitles, mode: smartMode,
       playbackMemories: (() => {
         const memory = loadPlaybackMemory()
@@ -626,14 +636,24 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         const series = mediaType === 'series' ? seriesPlaybackMemoryKey(String(tmdbId || mediaId)) : undefined
         return [memory[exact], series ? memory[series] : undefined].filter((value): value is NonNullable<typeof value> => Boolean(value))
       })(),
-    })).filter((candidate) => candidate.score > -500).map((candidate) => candidate.stream as AddonStream)
+    }), { cancelGroup: 'streams:selector', priority: 'playback' }))
+      .filter((candidate) => candidate.score > -500)
+      .map((candidate) => candidate.stream as AddonStream)
 
   const selectorMediaKey = (): string => canonicalStreamKey({
     mediaType, mediaId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''), tmdbId, seasonEpisode,
   })
 
-  const startSmartPlay = () => {
-    const ranked = rankSelectorStreams(providerStreams)
+  const startSmartPlay = async () => {
+    const generation = ++rankingGenerationRef.current
+    let ranked: AddonStream[]
+    try {
+      ranked = await rankSelectorStreams(providerStreams)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      throw error
+    }
+    if (generation !== rankingGenerationRef.current || manualSelectionRequestedRef.current || hadPlaybackRef.current) return
     // A validated prepared stream beats pure heuristics: move it to the front
     // and play it via its probed (post-redirect) URL.
     let urlOverride: string | undefined
@@ -666,9 +686,18 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   startSmartPlayRef.current = startSmartPlay
   handlePlayRef.current = handlePlay
 
-  const resumeSmartFallback = (failed: AddonStream) => {
+  const resumeSmartFallback = async (_failed: AddonStream) => {
     if (!smartActiveRef.current) return
-    const ranked = recoveryCandidates(rankSelectorStreams(providerStreams), sessionFailedSourcesRef.current, sessionFailedAddonsRef.current)
+    const generation = ++rankingGenerationRef.current
+    let rankedStreams: AddonStream[]
+    try {
+      rankedStreams = await rankSelectorStreams(providerStreams)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      throw error
+    }
+    if (generation !== rankingGenerationRef.current || !smartActiveRef.current) return
+    const ranked = recoveryCandidates(rankedStreams, sessionFailedSourcesRef.current, sessionFailedAddonsRef.current)
     smartQueueRef.current = new SmartFallbackQueue(ranked)
     const next = smartQueueRef.current.next()
     if (!next) { smartActiveRef.current = false; setSmartStatus('No more working streams were found.'); return }
@@ -694,7 +723,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       // Fast path started before the addon fetch settled — build the fallback
       // queue now, or wait for results if none have arrived yet.
       if (filteredStreams.length === 0) { pendingSmartFallbackRef.current = playback.stream; return }
-      resumeSmartFallback(playback.stream)
+      void resumeSmartFallback(playback.stream)
       return
     }
     const next = smartQueueRef.current.next()
@@ -740,6 +769,14 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     setPlayback(null)
   }
 
+  // The selector remains mounted by its detail page while it is closed. Clear
+  // the in-memory playback source before notifying that page, otherwise a
+  // subsequent open of the same episode immediately renders this old player.
+  const closeSelector = () => {
+    setPlayback(null)
+    onClose()
+  }
+
   const displayTitle = seasonEpisode
     ? `${title} S${seasonEpisode.season}E${seasonEpisode.episode}`
     : title
@@ -783,7 +820,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           startTime={playback.startTime}
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
-          onClose={onClose}
+          onClose={closeSelector}
           onPickAnother={pickAnotherManually}
           onPlaybackError={handlePlaybackError}
           onPlaybackStarted={handlePlaybackStarted}
@@ -805,7 +842,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
         startTime={playback.startTime}
           poster={artwork?.poster}
           backdrop={artwork?.backdrop}
-          onClose={onClose}
+          onClose={closeSelector}
           onPickAnother={pickAnotherManually}
           onPlaybackError={handlePlaybackError}
           onPlaybackStarted={handlePlaybackStarted}
@@ -817,7 +854,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[10000] overflow-hidden bg-[#070809] text-white" onClick={onClose}>
+    <div className="fixed inset-0 z-[10000] overflow-hidden bg-[#070809] text-white" onClick={closeSelector}>
       {(artwork?.backdrop || artwork?.poster) && (
         <img
           src={cachedImage(artwork.backdrop || artwork.poster)}
@@ -847,7 +884,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
               </div>
             </div>
             <div className="flex flex-shrink-0 items-center">
-              <button onClick={onClose} aria-label="Close source selector" className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.06] text-white/65 transition-colors hover:bg-white/[0.12] hover:text-white">
+              <button onClick={closeSelector} aria-label="Close source selector" className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.06] text-white/65 transition-colors hover:bg-white/[0.12] hover:text-white">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>

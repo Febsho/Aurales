@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { resolveMetadataBatch, cachedFetch } = vi.hoisted(() => ({
+const { resolveMetadataBatch, cachedFetch, invokeMock } = vi.hoisted(() => ({
   resolveMetadataBatch: vi.fn(),
   cachedFetch: vi.fn(async (_key: string, fetcher: () => Promise<unknown>) => fetcher()),
+  invokeMock: vi.fn(),
 }))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
 vi.mock('./metadata', () => ({
   appMediaToSearchResult: vi.fn(),
@@ -20,6 +23,8 @@ describe('addon catalog metadata preference', () => {
   beforeEach(() => {
     resolveMetadataBatch.mockReset()
     cachedFetch.mockClear()
+    invokeMock.mockReset()
+    vi.stubGlobal('window', {})
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key: string) => key === 'aurales_app_managed_metadata' ? 'false' : null),
     })
@@ -76,6 +81,75 @@ describe('addon catalog metadata preference', () => {
     expect(result[0].addonMeta).toEqual(expect.objectContaining({ videos }))
   })
 
+  it('activates the native catalog path without changing normalized output', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    const videos = [{ season: 1, episode: 1, name: 'Episode 1' }]
+    invokeMock.mockResolvedValue({
+      stale: false,
+      metas: [{
+        id: 'addon-show-1',
+        type: 'series',
+        name: 'Addon Show',
+        releaseInfo: '2025-2026',
+        imdbRating: '8.4',
+        poster: 'https://images.example/poster.jpg',
+        videos,
+      }],
+    })
+
+    const result = await getAddonCatalog(
+      'https://addon.example/manifest.json',
+      'series',
+      'top',
+      undefined,
+      'example.addon',
+    )
+
+    expect(result).toEqual([expect.objectContaining({
+      id: 'addon-show-1',
+      title: 'Addon Show',
+      type: 'series',
+      year: 2025,
+      rating: 8.4,
+      provider: 'addon',
+      sourceAddonId: 'example.addon',
+      addonMeta: expect.objectContaining({ videos }),
+    })])
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not convert stale native navigation into an empty catalog result', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockResolvedValue({ stale: true, metas: [] })
+
+    await expect(getAddonCatalog(
+      'https://addon.example/manifest.json',
+      'series',
+      'old-search',
+      undefined,
+      'example.addon',
+      false,
+      { cancelGroup: 'search' },
+    )).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps the catalog compatibility path available on native failure', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('native unavailable'))
+
+    const result = await getAddonCatalog(
+      'https://addon.example/manifest.json',
+      'series',
+      'fallback',
+      undefined,
+      'example.addon',
+    )
+
+    expect(result).toEqual([expect.objectContaining({ id: 'addon-show-1', title: 'Addon Show' })])
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('stores successful addon detail metadata in the detail cache', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -93,6 +167,44 @@ describe('addon catalog metadata preference', () => {
       expect.any(Function),
       expect.objectContaining({ category: 'detail_page' }),
     )
+  })
+
+  it('uses native addon detail metadata inside the existing detail cache contract', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    const meta = { id: 'addon-show-1', name: 'Addon Show', videos: [{ season: 1, episode: 1 }] }
+    invokeMock.mockResolvedValue({ meta, stale: false })
+
+    await expect(getAddonMeta(
+      'https://addon.example/manifest.json',
+      'series',
+      'addon-show-1',
+    )).resolves.toEqual(meta)
+
+    expect(invokeMock).toHaveBeenCalledWith('load_addon_meta', expect.objectContaining({
+      request: expect.objectContaining({ id: 'addon-show-1', mediaType: 'series' }),
+    }))
+    expect(fetch).not.toHaveBeenCalled()
+    expect(cachedFetch).toHaveBeenCalledWith(
+      expect.stringContaining('addon-meta:v1:'),
+      expect.any(Function),
+      expect.objectContaining({ category: 'detail_page' }),
+    )
+  })
+
+  it('keeps the addon metadata compatibility path available on native failure', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('native unavailable'))
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ meta: { id: 'addon-show-1', name: 'Fallback Show' } }),
+    })))
+
+    await expect(getAddonMeta(
+      'https://addon.example/manifest.json',
+      'series',
+      'addon-show-1',
+    )).resolves.toEqual({ id: 'addon-show-1', name: 'Fallback Show' })
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it('limits simultaneous catalog requests to one addon', async () => {

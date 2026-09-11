@@ -1,335 +1,179 @@
+use crate::core::addon_catalog::{self, LoadAddonCatalogRequest, LoadAddonCatalogResponse};
+use crate::core::addon_meta::{self, LoadAddonMetaRequest, LoadAddonMetaResponse};
+use crate::core::anime::{
+    self, AnimeEpisodeResolution, AnimeEpisodeResolutionRequest, AnimeSeasonTitle,
+    AnimeSeasonTitleRequest, AnimeStructureRequest, AnimeStructureValidation, AnimeTitleSelection,
+    AnimeTitleSelectionRequest,
+};
+use crate::core::anime_lookup::{
+    self, LookupAnimeMappingsRequest, LookupAnimeMappingsResponse, ResolveAnimeIdsRequest,
+    ResolveAnimeIdsResponse,
+};
+use crate::core::anime_season::{self, LoadAnimeSeasonRequest};
+use crate::core::cache;
+use crate::core::cache::CacheEntry;
+use crate::core::catalog;
+use crate::core::catalog::{AddonRecord, HomeRow};
+use crate::core::detail_page::{
+    self, DetailPageCoordinator, LoadDetailPageRequest, LoadDetailPageResponse,
+};
+use crate::core::discord;
+use crate::core::metadata::{self, AppMediaItem, MetadataLookup, NormalizeProviderMetadataRequest};
+use crate::core::platform;
+use crate::core::player;
+use crate::core::providers;
+use crate::core::request;
+use crate::core::request::ProxyResponse;
+use crate::core::request::StreamProbeResponse;
+use crate::core::settings;
+use crate::core::settings::Setting;
+use crate::core::stream_candidates::{
+    self, LoadStreamCandidatesRequest, LoadStreamCandidatesResponse,
+};
+use crate::core::streams::{self, RankStreamCandidatesRequest, RankStreamCandidatesResponse};
+use crate::core::subtitles;
+use crate::core::sync;
+use crate::core::sync::{SyncBatchRequest, SyncBatchResponse, WatchProgress};
 use crate::db::Database;
 use crate::libmpv_player::{self, LibMpvPlayer};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde::Serialize;
 use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicIsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
 
-const SYNC_KEYRING_SERVICE: &str = "com.aurales.app.sync";
+#[tauri::command]
+pub async fn load_detail_page(
+    request: LoadDetailPageRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadDetailPageResponse, String> {
+    detail_page::load_detail_page(&coordinator, &db, request).await
+}
 
-fn sync_keyring_entry(email: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(SYNC_KEYRING_SERVICE, email).map_err(|error| error.to_string())
+#[tauri::command]
+pub async fn load_anime_season(
+    request: LoadAnimeSeasonRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadDetailPageResponse, String> {
+    anime_season::load_anime_season(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub async fn rank_stream_candidates(
+    request: RankStreamCandidatesRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<RankStreamCandidatesResponse, String> {
+    streams::rank_stream_candidates(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_stream_candidates(
+    request: LoadStreamCandidatesRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadStreamCandidatesResponse, String> {
+    stream_candidates::load_stream_candidates(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_addon_catalog(
+    request: LoadAddonCatalogRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadAddonCatalogResponse, String> {
+    addon_catalog::load_addon_catalog(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_addon_meta(
+    request: LoadAddonMetaRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadAddonMetaResponse, String> {
+    addon_meta::load_addon_meta(&coordinator, request).await
+}
+
+/// Compatibility adapter for the frontend metadata normalizer. It deliberately
+/// owns no provider/network/cache work; those remain on their legacy paths
+/// until their behavior has separate parity coverage.
+#[tauri::command]
+pub fn normalize_provider_metadata(
+    request: NormalizeProviderMetadataRequest,
+) -> Result<AppMediaItem, String> {
+    Ok(metadata::normalize_provider_metadata(request))
+}
+
+#[tauri::command]
+pub fn validate_anime_tvdb_structure(
+    request: AnimeStructureRequest,
+) -> Result<AnimeStructureValidation, String> {
+    Ok(anime::validate_structure(request))
+}
+
+#[tauri::command]
+pub fn select_anime_title(
+    request: AnimeTitleSelectionRequest,
+) -> Result<AnimeTitleSelection, String> {
+    Ok(anime::select_title(request))
+}
+
+#[tauri::command]
+pub fn resolve_anime_season_title(
+    request: AnimeSeasonTitleRequest,
+) -> Result<AnimeSeasonTitle, String> {
+    Ok(anime::resolve_season_title(request))
+}
+
+/// Compatibility adapter for deterministic Fribb cour/episode arithmetic.
+/// The frontend still owns its browser-worker-backed Fribb index and retains a
+/// local fallback while provider/network mapping is migrated separately.
+#[tauri::command]
+pub fn resolve_anime_episode_mapping(
+    request: AnimeEpisodeResolutionRequest,
+) -> Result<Option<AnimeEpisodeResolution>, String> {
+    Ok(anime::resolve_episode_mapping(request))
+}
+
+#[tauri::command]
+pub async fn lookup_anime_mappings(
+    request: LookupAnimeMappingsRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LookupAnimeMappingsResponse, String> {
+    anime_lookup::lookup_anime_mappings(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub async fn resolve_anime_ids(
+    request: ResolveAnimeIdsRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<ResolveAnimeIdsResponse, String> {
+    anime_lookup::resolve_anime_ids(&coordinator, &db, request).await
 }
 
 #[tauri::command]
 pub fn sync_password_store(email: String, password: String) -> Result<(), String> {
-    sync_keyring_entry(&email)?
-        .set_password(&password)
-        .map_err(|error| error.to_string())
+    sync::store_password(email, password)
 }
 
 #[tauri::command]
 pub fn sync_password_load(email: String) -> Result<Option<String>, String> {
-    match sync_keyring_entry(&email)?.get_password() {
-        Ok(password) => Ok(Some(password)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
+    sync::load_password(email)
 }
 
 #[tauri::command]
 pub fn sync_password_delete(email: String) -> Result<(), String> {
-    match sync_keyring_entry(&email)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    sync::delete_password(email)
 }
 
-// ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
-
-#[cfg(target_os = "windows")]
-type DiscordIpcStream = std::fs::File;
-#[cfg(unix)]
-type DiscordIpcStream = std::os::unix::net::UnixStream;
-
-static DISCORD_PIPE: OnceLock<Mutex<Option<DiscordIpcStream>>> = OnceLock::new();
-
-fn discord_pipe() -> &'static Mutex<Option<DiscordIpcStream>> {
-    DISCORD_PIPE.get_or_init(|| Mutex::new(None))
-}
-
-const DISCORD_APP_ID: &str = "1514350347227893951";
-
-#[cfg(unix)]
-fn discord_ipc_candidates() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for variable in ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"] {
-        if let Some(value) = std::env::var_os(variable) {
-            let path = PathBuf::from(value);
-            if !roots.contains(&path) {
-                roots.push(path);
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // XDG_RUNTIME_DIR is normally /run/user/<uid>, but some launchers do
-        // not pass it through to the application.
-        let user_runtime = PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
-        if !roots.contains(&user_runtime) {
-            roots.push(user_runtime);
-        }
-    }
-    let tmp = PathBuf::from("/tmp");
-    if !roots.contains(&tmp) {
-        roots.push(tmp);
-    }
-
-    let mut candidates = Vec::new();
-    for root in roots {
-        for index in 0..10 {
-            let socket_name = format!("discord-ipc-{}", index);
-            candidates.push(root.join(&socket_name));
-            // Discord installed through Flatpak or Snap can place its socket
-            // below the desktop runtime directory instead of directly in it.
-            candidates.push(root.join("app/com.discordapp.Discord").join(&socket_name));
-            candidates.push(root.join("snap.discord").join(&socket_name));
-            candidates.push(
-                root.join(".flatpak/com.discordapp.Discord/xdg-run")
-                    .join(&socket_name),
-            );
-        }
-    }
-    candidates
-}
-
-fn discord_ipc_encode(opcode: u32, payload: &str) -> Vec<u8> {
-    let len = payload.len() as u32;
-    let mut buf = Vec::with_capacity(8 + payload.len());
-    buf.extend_from_slice(&opcode.to_le_bytes());
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(payload.as_bytes());
-    buf
-}
-
-fn discord_ipc_connect() -> Result<(), String> {
-    use std::io::{Read, Write};
-
-    let mut guard = discord_pipe().lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    let mut pipe = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(r"\\.\pipe\discord-ipc-0")
-        .map_err(|e| format!("Discord not running or IPC unavailable: {}", e))?;
-
-    #[cfg(unix)]
-    let mut pipe = {
-        use std::os::unix::net::UnixStream;
-
-        let mut failures = Vec::new();
-        let mut connected = None;
-        for path in discord_ipc_candidates() {
-            match UnixStream::connect(&path) {
-                Ok(stream) => {
-                    connected = Some(stream);
-                    break;
-                }
-                Err(error) if path.exists() => {
-                    failures.push(format!("{}: {}", path.display(), error))
-                }
-                Err(_) => {}
-            }
-        }
-
-        let stream = connected.ok_or_else(|| {
-            if failures.is_empty() {
-                "Discord not running or no Discord IPC socket was found".to_string()
-            } else {
-                format!(
-                    "Discord IPC sockets were unavailable: {}",
-                    failures.join("; ")
-                )
-            }
-        })?;
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .map_err(|e| format!("Failed to configure Discord IPC read timeout: {}", e))?;
-        stream
-            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
-            .map_err(|e| format!("Failed to configure Discord IPC write timeout: {}", e))?;
-        stream
-    };
-
-    let handshake = serde_json::json!({
-        "v": 1,
-        "client_id": DISCORD_APP_ID
-    })
-    .to_string();
-
-    pipe.write_all(&discord_ipc_encode(0, &handshake))
-        .map_err(|e| format!("Failed to send Discord handshake: {}", e))?;
-
-    // Read response (DISPATCH with READY event) with a bounded wait — a stale
-    // or unresponsive Discord pipe must never hang the caller indefinitely.
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
-
-        let handle = HANDLE(pipe.as_raw_handle());
-        let mut mode = PIPE_NOWAIT;
-        unsafe {
-            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
-        }
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
-        let mut response = Vec::new();
-        let mut chunk = [0u8; 4096];
-        let got_response = loop {
-            match pipe.read(&mut chunk) {
-                Ok(n) if n > 0 => {
-                    response.extend_from_slice(&chunk[..n]);
-                    if response.len() >= 8 {
-                        let body_len = u32::from_le_bytes([
-                            response[4],
-                            response[5],
-                            response[6],
-                            response[7],
-                        ]) as usize;
-                        if response.len() >= 8 + body_len {
-                            break true;
-                        }
-                    }
-                }
-                _ => {
-                    if std::time::Instant::now() >= deadline {
-                        break false;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-            }
-        };
-
-        let mut mode = PIPE_WAIT;
-        unsafe {
-            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
-        }
-
-        if !got_response {
-            return Err("Discord handshake timed out".to_string());
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut header = [0u8; 8];
-        pipe.read_exact(&mut header)
-            .map_err(|e| format!("Failed to read Discord handshake response: {}", e))?;
-        let response_len =
-            u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-        let mut body = vec![0u8; response_len];
-        pipe.read_exact(&mut body)
-            .map_err(|e| format!("Failed to read Discord response body: {}", e))?;
-    }
-
-    *guard = Some(pipe);
-    Ok(())
-}
-
-fn discord_ipc_set_activity(activity: serde_json::Value) -> Result<(), String> {
-    use std::io::Write;
-
-    discord_ipc_connect()?;
-    let mut guard = discord_pipe().lock().map_err(|e| e.to_string())?;
-    let pipe = guard
-        .as_mut()
-        .ok_or_else(|| "Discord IPC not connected".to_string())?;
-
-    let nonce = format!(
-        "{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-
-    let payload = serde_json::json!({
-        "cmd": "SET_ACTIVITY",
-        "args": {
-            "pid": std::process::id(),
-            "activity": activity
-        },
-        "nonce": nonce
-    })
-    .to_string();
-
-    if let Err(e) = pipe.write_all(&discord_ipc_encode(1, &payload)) {
-        *guard = None;
-        return Err(format!("Failed to send Discord activity: {}", e));
-    }
-
-    // Drain response (we don't need it but must read to keep pipe healthy)
-    // Use non-blocking approach — set pipe to NOWAIT, read what's there, restore
-    #[cfg(target_os = "windows")]
-    {
-        use std::io::Read;
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
-        let handle = HANDLE(pipe.as_raw_handle());
-        let mut mode = PIPE_NOWAIT;
-        unsafe {
-            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let mut drain = [0u8; 4096];
-        let _ = pipe.read(&mut drain);
-        let mut mode = PIPE_WAIT;
-        unsafe {
-            let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
-        }
-    }
-
-    // Discord replies to every command. Drain those replies on Unix too so a
-    // long playback session cannot eventually fill the socket buffer.
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        pipe.set_nonblocking(true)
-            .map_err(|e| format!("Failed to configure Discord IPC socket: {}", e))?;
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let mut drain = [0u8; 8192];
-        loop {
-            match pipe.read(&mut drain) {
-                Ok(0) => {
-                    *guard = None;
-                    return Err("Discord IPC connection closed".to_string());
-                }
-                Ok(n) if n == drain.len() => continue,
-                Ok(_) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => {
-                    *guard = None;
-                    return Err(format!("Failed to read Discord IPC response: {}", error));
-                }
-            }
-        }
-        pipe.set_nonblocking(false)
-            .map_err(|e| format!("Failed to restore Discord IPC socket: {}", e))?;
-    }
-
-    Ok(())
-}
-
-fn discord_ipc_clear_activity() -> Result<(), String> {
-    discord_ipc_set_activity(serde_json::json!(null))
-}
-
-fn discord_ipc_disconnect() {
-    if let Ok(mut guard) = discord_pipe().lock() {
-        *guard = None;
-    }
+#[tauri::command]
+pub async fn sync_batch(
+    request: SyncBatchRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<SyncBatchResponse, String> {
+    sync::sync_batch(&coordinator, request).await
 }
 
 // Async + spawn_blocking: these commands do blocking pipe I/O. As sync
@@ -347,61 +191,32 @@ pub async fn discord_set_activity(
     end_timestamp: Option<u64>,
     activity_type: Option<u32>,
 ) -> Result<(), String> {
-    let mut activity = serde_json::json!({});
-
-    // 0=Playing, 1=Streaming, 2=Listening, 3=Watching, 5=Competing
-    activity["type"] = serde_json::json!(activity_type.unwrap_or(0));
-
-    if let Some(d) = details {
-        activity["details"] = serde_json::json!(d);
-    }
-    if let Some(s) = state {
-        activity["state"] = serde_json::json!(s);
-    }
-
-    let mut assets = serde_json::json!({});
-    if let Some(li) = large_image {
-        assets["large_image"] = serde_json::json!(li);
-    }
-    if let Some(lt) = large_text {
-        assets["large_text"] = serde_json::json!(lt);
-    }
-    if let Some(si) = small_image {
-        assets["small_image"] = serde_json::json!(si);
-    }
-    if let Some(st) = small_text {
-        assets["small_text"] = serde_json::json!(st);
-    }
-    if assets != serde_json::json!({}) {
-        activity["assets"] = assets;
-    }
-
-    let mut timestamps = serde_json::json!({});
-    if let Some(ts) = start_timestamp {
-        timestamps["start"] = serde_json::json!(ts);
-    }
-    if let Some(ts) = end_timestamp {
-        timestamps["end"] = serde_json::json!(ts);
-    }
-    if timestamps != serde_json::json!({}) {
-        activity["timestamps"] = timestamps;
-    }
-
-    tauri::async_runtime::spawn_blocking(move || discord_ipc_set_activity(activity))
+    let activity = discord::Activity {
+        details,
+        state,
+        large_image,
+        large_text,
+        small_image,
+        small_text,
+        start_timestamp,
+        end_timestamp,
+        activity_type,
+    };
+    tauri::async_runtime::spawn_blocking(move || discord::set_activity(activity))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn discord_clear_activity() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(discord_ipc_clear_activity)
+    tauri::async_runtime::spawn_blocking(discord::clear_activity)
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn discord_disconnect() -> Result<(), String> {
-    discord_ipc_disconnect();
+    discord::disconnect();
     Ok(())
 }
 
@@ -420,24 +235,6 @@ pub fn discord_disconnect() -> Result<(), String> {
 #[cfg(target_os = "windows")]
 static MPV_HOST_ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
 static MPV_PIPE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static SIMKL_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
-static ANILIST_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-struct SimklCallbackGuard;
-
-impl Drop for SimklCallbackGuard {
-    fn drop(&mut self) {
-        SIMKL_CALLBACK_ACTIVE.store(false, Ordering::SeqCst);
-    }
-}
-
-struct AnilistCallbackGuard;
-
-impl Drop for AnilistCallbackGuard {
-    fn drop(&mut self) {
-        ANILIST_CALLBACK_ACTIVE.store(false, Ordering::SeqCst);
-    }
-}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn transparent_host_proc(
@@ -561,13 +358,6 @@ pub(crate) fn player_debug_log(message: impl Into<String>) {
     }
 }
 
-fn stable_stream_hash(value: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
 fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
     NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
 }
@@ -595,9 +385,9 @@ pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
         .unwrap_or(false);
     if should_clear {
         if let Some(mut player) = state.take() {
-            if let NativePlayerBackend::LibMpv { player: _libmpv } = &mut player.backend {
+            if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
                 #[cfg(target_os = "linux")]
-                crate::linux_render_surface::detach(_libmpv);
+                crate::linux_render_surface::detach(libmpv);
             }
             cleanup_player_windows(player.host_hwnd, player.video_hwnd);
         }
@@ -605,245 +395,69 @@ pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Setting {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct WatchProgress {
-    pub id: String,
-    pub media_type: String,
-    pub media_id: String,
-    pub season: Option<i32>,
-    pub episode: Option<i32>,
-    pub progress_seconds: f64,
-    pub duration_seconds: f64,
-    pub completed: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct HomeRow {
-    pub id: String,
-    pub title: String,
-    pub addon_id: Option<String>,
-    pub catalog_type: Option<String>,
-    pub catalog_id: Option<String>,
-    pub layout: String,
-    pub enabled: bool,
-    pub sort_order: i32,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct AddonRecord {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub url: String,
-    pub manifest_json: String,
-    pub enabled: bool,
-}
-
 #[tauri::command]
 pub fn get_setting(key: String, db: State<Database>) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
-        row.get(0)
-    })
-    .ok()
+    settings::get_setting(&db, key)
 }
 
 #[tauri::command]
 pub fn set_setting(key: String, value: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-        [&key, &value],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    settings::set_setting(&db, key, value)
 }
 
 #[tauri::command]
 pub fn get_all_settings(db: State<Database>) -> Vec<Setting> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT key, value FROM settings").unwrap();
-    stmt.query_map([], |row| {
-        Ok(Setting {
-            key: row.get(0)?,
-            value: row.get(1)?,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    settings::get_all_settings(&db)
 }
 
 #[tauri::command]
 pub fn save_watch_progress(progress: WatchProgress, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO watch_progress (id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
-        rusqlite::params![
-            progress.id,
-            progress.media_type,
-            progress.media_id,
-            progress.season,
-            progress.episode,
-            progress.progress_seconds,
-            progress.duration_seconds,
-            progress.completed as i32,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    sync::save_watch_progress(&db, progress)
 }
 
 #[tauri::command]
 pub fn get_watch_progress(media_id: String, db: State<Database>) -> Option<WatchProgress> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row(
-        "SELECT id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed FROM watch_progress WHERE media_id = ?1 ORDER BY updated_at DESC LIMIT 1",
-        [&media_id],
-        |row| {
-            Ok(WatchProgress {
-                id: row.get(0)?,
-                media_type: row.get(1)?,
-                media_id: row.get(2)?,
-                season: row.get(3)?,
-                episode: row.get(4)?,
-                progress_seconds: row.get(5)?,
-                duration_seconds: row.get(6)?,
-                completed: row.get::<_, i32>(7)? != 0,
-            })
-        },
-    )
-    .ok()
+    sync::get_watch_progress(&db, media_id)
 }
 
 #[tauri::command]
 pub fn save_home_rows(rows: Vec<HomeRow>, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM home_rows", [])
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        conn.execute(
-            "INSERT INTO home_rows (id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                row.id,
-                row.title,
-                row.addon_id,
-                row.catalog_type,
-                row.catalog_id,
-                row.layout,
-                row.enabled as i32,
-                row.sort_order,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    catalog::save_home_rows(&db, rows)
 }
 
 #[tauri::command]
 pub fn get_home_rows(db: State<Database>) -> Vec<HomeRow> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order FROM home_rows ORDER BY sort_order")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(HomeRow {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            addon_id: row.get(2)?,
-            catalog_type: row.get(3)?,
-            catalog_id: row.get(4)?,
-            layout: row.get(5)?,
-            enabled: row.get::<_, i32>(6)? != 0,
-            sort_order: row.get(7)?,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    catalog::get_home_rows(&db)
 }
 
 #[tauri::command]
 pub fn save_addon(addon: AddonRecord, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO addons (id, name, version, url, manifest_json, enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![
-            addon.id,
-            addon.name,
-            addon.version,
-            addon.url,
-            addon.manifest_json,
-            addon.enabled as i32,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    catalog::save_addon(&db, addon)
 }
 
 #[tauri::command]
 pub fn remove_addon(addon_id: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM addons WHERE id = ?1", [&addon_id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    catalog::remove_addon(&db, addon_id)
 }
 
 #[tauri::command]
 pub fn get_addons(db: State<Database>) -> Vec<AddonRecord> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id, name, version, url, manifest_json, enabled FROM addons")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(AddonRecord {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            version: row.get(2)?,
-            url: row.get(3)?,
-            manifest_json: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    catalog::get_addons(&db)
 }
 
 #[tauri::command]
 pub fn cache_metadata(key: String, data: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata_cache (cache_key, data_json, cached_at) VALUES (?1, ?2, datetime('now'))",
-        [&key, &data],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::metadata_set(&db, key, data)
 }
 
 #[tauri::command]
 pub fn get_cached_metadata(key: String, db: State<Database>) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row(
-        "SELECT data_json FROM metadata_cache WHERE cache_key = ?1",
-        [&key],
-        |row| row.get(0),
-    )
-    .ok()
+    cache::metadata_get(&db, key)
 }
 
 #[tauri::command]
 pub fn clear_cache(db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM metadata_cache", [])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::clear_metadata(&db)
 }
 
 #[tauri::command]
@@ -854,61 +468,7 @@ pub fn save_app_metadata(
     media_type: String,
     db: State<Database>,
 ) -> Result<(), String> {
-    let media: serde_json::Value = serde_json::from_str(&media_json).map_err(|e| e.to_string())?;
-    let id = media
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing media id")?;
-    let title = media
-        .get("title")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing media title")?;
-    let updated_at = media
-        .get("updatedAt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let text = |key: &str| media.get(key).and_then(|v| v.as_str());
-    let integer = |key: &str| media.get(key).and_then(|v| v.as_i64());
-    let real = |key: &str| media.get(key).and_then(|v| v.as_f64());
-    let genres = media
-        .get("genres")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "[]".into());
-    let provider = text("sourceMetadataProvider").unwrap_or("fallback_addon");
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO app_media (id, media_type, title, original_title, localized_title, year, overview, poster, backdrop, logo, genres_json, runtime, rating, age_rating, language, country, tmdb_id, tvdb_id, imdb_id, trakt_id, simkl_id, anilist_id, mal_id, source_metadata_provider, source_addon_id, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
-        rusqlite::params![id, media_type, title, text("originalTitle"), text("localizedTitle"), integer("year"), text("overview"), text("poster"), text("backdrop"), text("logo"), genres, integer("runtime"), real("rating"), text("ageRating"), text("language"), text("country"), integer("tmdbId"), integer("tvdbId"), text("imdbId"), integer("traktId"), integer("simklId"), integer("anilistId"), integer("malId"), provider, addon_id, media_json, updated_at]
-    ).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    if let Some(seasons) = media.get("seasons").and_then(|v| v.as_array()) {
-        for season in seasons {
-            let season_id = season.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            tx.execute("INSERT OR REPLACE INTO app_seasons (id, local_media_id, season_number, title, overview, poster, episode_count, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![season_id, id, season.get("seasonNumber").and_then(|v| v.as_i64()), season.get("title").and_then(|v| v.as_str()), season.get("overview").and_then(|v| v.as_str()), season.get("poster").and_then(|v| v.as_str()), season.get("episodeCount").and_then(|v| v.as_i64()), season.to_string(), updated_at]).map_err(|e| e.to_string())?;
-            if let Some(episodes) = season.get("episodes").and_then(|v| v.as_array()) {
-                for episode in episodes {
-                    tx.execute("INSERT OR REPLACE INTO app_episodes (id, local_media_id, season_id, season_number, episode_number, absolute_episode_number, title, overview, still, air_date, runtime, tmdb_id, tvdb_id, anilist_id, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![episode.get("id").and_then(|v| v.as_str()), id, season_id, episode.get("seasonNumber").and_then(|v| v.as_i64()), episode.get("episodeNumber").and_then(|v| v.as_i64()), episode.get("absoluteEpisodeNumber").and_then(|v| v.as_i64()), episode.get("title").and_then(|v| v.as_str()), episode.get("overview").and_then(|v| v.as_str()), episode.get("still").and_then(|v| v.as_str()), episode.get("airDate").and_then(|v| v.as_str()), episode.get("runtime").and_then(|v| v.as_i64()), episode.get("tmdbId").and_then(|v| v.as_i64()), episode.get("tvdbId").and_then(|v| v.as_i64()), episode.get("anilistId").and_then(|v| v.as_i64()), episode.to_string(), updated_at]).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-    let mapping_id = format!("{}:{}", addon_id, addon_item_id);
-    tx.execute("INSERT OR REPLACE INTO addon_media_mappings (id, addon_id, addon_item_id, local_media_id, media_type, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,COALESCE((SELECT created_at FROM addon_media_mappings WHERE id=?1),datetime('now')),datetime('now'))", rusqlite::params![mapping_id, addon_id, addon_item_id, id, media_type]).map_err(|e| e.to_string())?;
-    let log_id = format!(
-        "{}:{}:{}",
-        addon_id,
-        addon_item_id,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    tx.execute("INSERT INTO metadata_resolution_log (id, addon_id, addon_item_id, local_media_id, status, reason, created_at) VALUES (?1,?2,?3,?4,?5,?6,datetime('now'))", rusqlite::params![log_id, addon_id, addon_item_id, id, if provider == "fallback_addon" { "fallback" } else { "resolved" }, provider]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    metadata::save_persisted_metadata(&db, media_json, addon_id, addon_item_id, media_type)
 }
 
 #[tauri::command]
@@ -917,8 +477,7 @@ pub fn get_app_metadata_for_addon(
     addon_item_id: String,
     db: State<Database>,
 ) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row("SELECT m.raw_json FROM app_media m JOIN addon_media_mappings a ON a.local_media_id=m.id WHERE a.addon_id=?1 AND a.addon_item_id=?2", rusqlite::params![addon_id, addon_item_id], |row| row.get(0)).ok()
+    metadata::get_persisted_for_addon(&db, addon_id, addon_item_id)
 }
 
 #[tauri::command]
@@ -930,145 +489,24 @@ pub fn get_app_metadata_by_ids(
     anilist_id: Option<i64>,
     db: State<Database>,
 ) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-
-    // 1. Try by id first
-    if let Some(ref id_str) = id {
-        if let Ok(json) = conn.query_row(
-            "SELECT raw_json FROM app_media WHERE id = ?1",
-            [id_str],
-            |row| row.get::<_, String>(0),
-        ) {
-            return Some(json);
-        }
-    }
-
-    // 2. Try by imdb_id
-    if let Some(ref imdb) = imdb_id {
-        if !imdb.is_empty() {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-                [imdb],
-                |row| row.get::<_, String>(0),
-            ) {
-                return Some(json);
-            }
-        }
-    }
-
-    // 3. Try by tmdb_id
-    if let Some(tmdb) = tmdb_id {
-        if tmdb > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
-                [tmdb],
-                |row| row.get::<_, String>(0),
-            ) {
-                return Some(json);
-            }
-        }
-    }
-
-    // 4. Try by tvdb_id
-    if let Some(tvdb) = tvdb_id {
-        if tvdb > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
-                [tvdb],
-                |row| row.get::<_, String>(0),
-            ) {
-                return Some(json);
-            }
-        }
-    }
-
-    // 5. Try by anilist_id
-    if let Some(anilist) = anilist_id {
-        if anilist > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
-                [anilist],
-                |row| row.get::<_, String>(0),
-            ) {
-                return Some(json);
-            }
-        }
-    }
-
-    None
+    metadata::get_persisted_by_ids(
+        &db,
+        &MetadataLookup {
+            id,
+            imdb_id,
+            tmdb_id,
+            tvdb_id,
+            anilist_id,
+        },
+    )
 }
 
 #[tauri::command]
 pub fn get_app_metadata_by_ids_batch(
-    items: Vec<serde_json::Value>,
+    items: Vec<MetadataLookup>,
     db: State<Database>,
 ) -> Vec<Option<String>> {
-    let conn = db.conn.lock().unwrap();
-    items
-        .iter()
-        .map(|item| {
-            let id = item.get("id").and_then(|v| v.as_str());
-            let imdb_id = item.get("imdbId").and_then(|v| v.as_str());
-            let tmdb_id = item.get("tmdbId").and_then(|v| v.as_i64());
-            let tvdb_id = item.get("tvdbId").and_then(|v| v.as_i64());
-            let anilist_id = item.get("anilistId").and_then(|v| v.as_i64());
-
-            if let Some(id_str) = id {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE id = ?1",
-                    [id_str],
-                    |row| row.get::<_, String>(0),
-                ) {
-                    return Some(json);
-                }
-            }
-            if let Some(imdb) = imdb_id {
-                if !imdb.is_empty() {
-                    if let Ok(json) = conn.query_row(
-                        "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-                        [imdb],
-                        |row| row.get::<_, String>(0),
-                    ) {
-                        return Some(json);
-                    }
-                }
-            }
-            if let Some(tmdb) = tmdb_id {
-                if tmdb > 0 {
-                    if let Ok(json) = conn.query_row(
-                        "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
-                        [tmdb],
-                        |row| row.get::<_, String>(0),
-                    ) {
-                        return Some(json);
-                    }
-                }
-            }
-            if let Some(tvdb) = tvdb_id {
-                if tvdb > 0 {
-                    if let Ok(json) = conn.query_row(
-                        "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
-                        [tvdb],
-                        |row| row.get::<_, String>(0),
-                    ) {
-                        return Some(json);
-                    }
-                }
-            }
-            if let Some(anilist) = anilist_id {
-                if anilist > 0 {
-                    if let Ok(json) = conn.query_row(
-                        "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
-                        [anilist],
-                        |row| row.get::<_, String>(0),
-                    ) {
-                        return Some(json);
-                    }
-                }
-            }
-            None
-        })
-        .collect()
+    metadata::get_persisted_by_ids_batch(&db, items)
 }
 
 #[tauri::command]
@@ -1077,40 +515,7 @@ pub fn delete_app_metadata(
     addon_item_id: String,
     db: State<Database>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-
-    let local_media_id: Option<String> = tx.query_row(
-        "SELECT local_media_id FROM addon_media_mappings WHERE addon_id = ?1 AND addon_item_id = ?2",
-        rusqlite::params![addon_id, addon_item_id],
-        |row| row.get(0)
-    ).ok();
-
-    if let Some(id) = local_media_id {
-        tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&id])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&id])
-            .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM anime_season_mappings WHERE local_media_id = ?1",
-            [&id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM anime_episode_mappings WHERE local_media_id = ?1",
-            [&id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_media WHERE id = ?1", [&id])
-            .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM addon_media_mappings WHERE local_media_id = ?1",
-            [&id],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())
+    metadata::delete_persisted_metadata(&db, addon_id, addon_item_id)
 }
 
 #[tauri::command]
@@ -1118,45 +523,12 @@ pub fn hard_reset_anime_metadata(
     local_media_id: String,
     db: State<Database>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM app_seasons WHERE local_media_id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM app_episodes WHERE local_media_id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM anime_season_mappings WHERE local_media_id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM anime_episode_mappings WHERE local_media_id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM metadata_resolution_log WHERE local_media_id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "UPDATE app_media SET raw_json = NULL, updated_at = NULL WHERE id = ?1",
-        [&local_media_id],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    metadata::hard_reset_anime_metadata(&db, local_media_id)
 }
 
 #[tauri::command]
 pub fn clear_app_metadata(db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute_batch("DELETE FROM app_episodes; DELETE FROM app_seasons; DELETE FROM addon_media_mappings; DELETE FROM app_media; DELETE FROM metadata_resolution_log;").map_err(|e| e.to_string())
+    metadata::clear_persisted_metadata(&db)
 }
 
 #[tauri::command]
@@ -1192,7 +564,7 @@ pub fn launch_mpv(
         }
     }
 
-    if let Some(mpv) = find_mpv() {
+    if let Some(mpv) = player::find_mpv() {
         Command::new(&mpv)
             .args(&args)
             .spawn()
@@ -1203,83 +575,6 @@ pub fn launch_mpv(
     Err("Failed to launch mpv: no mpv executable was found (bundled or on PATH). Reinstall Aurales or install mpv.".to_string())
 }
 
-#[cfg(target_os = "windows")]
-const MPV_BINARY_NAMES: &[&str] = &["mpv.exe", "mpv-x86_64-pc-windows-msvc.exe"];
-#[cfg(target_os = "linux")]
-const MPV_BINARY_NAMES: &[&str] = &["mpv", "mpv-x86_64-unknown-linux-gnu"];
-#[cfg(target_os = "macos")]
-const MPV_BINARY_NAMES: &[&str] = &["mpv", "mpv-aarch64-apple-darwin", "mpv-x86_64-apple-darwin"];
-
-#[cfg(target_os = "windows")]
-const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp.exe", "yt-dlp-x86_64-pc-windows-msvc.exe"];
-#[cfg(target_os = "linux")]
-const YTDLP_BINARY_NAMES: &[&str] = &["yt-dlp", "yt-dlp-x86_64-unknown-linux-gnu"];
-#[cfg(target_os = "macos")]
-const YTDLP_BINARY_NAMES: &[&str] = &[
-    "yt-dlp",
-    "yt-dlp-aarch64-apple-darwin",
-    "yt-dlp-x86_64-apple-darwin",
-];
-
-fn binary_candidates(names: &[&str]) -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in names {
-                candidates.push(dir.join(name));
-                candidates.push(dir.join("binaries").join(name));
-            }
-        }
-    }
-    for name in names {
-        candidates.push(PathBuf::from("src-tauri").join("binaries").join(name));
-    }
-    candidates
-}
-
-#[cfg_attr(target_os = "windows", allow(dead_code))]
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-fn mpv_candidates() -> Vec<PathBuf> {
-    binary_candidates(MPV_BINARY_NAMES)
-}
-
-fn find_mpv() -> Option<PathBuf> {
-    if let Some(found) = mpv_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
-    {
-        return Some(found);
-    }
-    // Linux/macOS installs commonly rely on a system mpv rather than a bundled one.
-    #[cfg(not(target_os = "windows"))]
-    {
-        return find_in_path("mpv");
-    }
-    #[cfg(target_os = "windows")]
-    None
-}
-
-fn find_ytdlp() -> Option<PathBuf> {
-    if let Some(found) = binary_candidates(YTDLP_BINARY_NAMES)
-        .into_iter()
-        .find(|candidate| candidate.exists())
-    {
-        return Some(found);
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        return find_in_path("yt-dlp");
-    }
-    #[cfg(target_os = "windows")]
-    None
-}
-
 // Resolves a YouTube video to direct stream URLs via the bundled yt-dlp
 // (1080p video + audio; yt-dlp handles YouTube's anti-bot measures and keeps
 // itself current). Returns the printed URLs: [video] or [video, audio].
@@ -1288,64 +583,9 @@ pub async fn ytdlp_resolve(
     video_id: String,
     max_height: Option<u32>,
 ) -> Result<Vec<String>, String> {
-    if video_id.len() != 11
-        || !video_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("Invalid YouTube video id.".to_string());
-    }
-    let ytdlp = find_ytdlp().ok_or_else(|| "yt-dlp binary not found.".to_string())?;
-    let max_height = max_height.unwrap_or(2160).clamp(360, 2160);
-    tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
-        let mut command = std::process::Command::new(&ytdlp);
-        let format = if max_height <= 1080 {
-            format!("bv*[height<={max_height}][vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/b[height<={max_height}][protocol^=http]")
-        } else {
-            format!("bv*[height<={max_height}][vcodec!^=av01][protocol^=http]+ba[protocol^=http]/b[height<={max_height}][protocol^=http]")
-        };
-        command
-            .arg("-f")
-            .arg(format)
-            // Resolution wins first, then bitrate. This keeps a strong 1080p
-            // AVC stream where that is the source maximum while allowing
-            // VP9/AV1 1440p and 4K streams instead of capping every Hero at
-            // YouTube's often heavily-compressed 1080p AVC rendition.
-            .arg("-S")
-            .arg("res:2160,fps,br")
-            .arg("--no-playlist")
-            .arg("--no-warnings")
-            .arg("--quiet")
-            .arg("--get-url")
-            .arg(format!("https://www.youtube.com/watch?v={video_id}"));
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let output = command
-            .output()
-            .map_err(|e| format!("Failed to run yt-dlp: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "yt-dlp failed: {}",
-                stderr.lines().last().unwrap_or("unknown error")
-            ));
-        }
-        let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| l.starts_with("http"))
-            .collect();
-        if urls.is_empty() {
-            return Err("yt-dlp returned no stream URLs.".to_string());
-        }
-        Ok(urls)
-    })
-    .await
-    .map_err(|e| format!("yt-dlp task failed: {e}"))?
+    tokio::task::spawn_blocking(move || player::resolve_ytdlp(video_id, max_height))
+        .await
+        .map_err(|e| format!("yt-dlp task failed: {e}"))?
 }
 
 /// Reuse a live libmpv instance for a new stream instead of tearing it down.
@@ -1432,14 +672,20 @@ fn try_reuse_libmpv_player(
                 h,
             );
             #[cfg(target_os = "linux")]
-            crate::linux_render_surface::resize(_app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
+            crate::linux_render_surface::resize(
+                _app,
+                x.unwrap_or(0),
+                y.unwrap_or(0),
+                w,
+                h,
+            )?;
         }
     }
 
     player_debug_log(format!(
         "[PLAYER START] session={} stream={} backend=libmpv reuse=in-place",
         session_id,
-        stable_stream_hash(url)
+        player::stable_stream_hash(url)
     ));
 
     if let Err(error) = player.command(
@@ -1534,9 +780,9 @@ pub fn launch_embedded_mpv(
     #[cfg(target_os = "windows")]
     let hwnd = main_window_hwnd(&app)?;
 
-    // Linux uses libmpv's Render API inside GTK and does not require a native
-    // X11 window ID. Keep a non-zero host marker for the shared player state.
     #[cfg(target_os = "linux")]
+    // Linux uses libmpv's Render API inside GTK and does not require a native
+    // X11 window ID. Keep a non-zero host marker for shared player state.
     let hwnd = 1;
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -1591,8 +837,9 @@ pub fn launch_minimal_mpv(
 ) -> Result<MinimalPlayerInfo, String> {
     stop_embedded_mpv()?;
 
-    let mpv = find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
-    let stream_hash = stable_stream_hash(&url);
+    let mpv =
+        player::find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
+    let stream_hash = player::stable_stream_hash(&url);
     let session_id = format!(
         "minimal-{}-{}",
         std::process::id(),
@@ -1805,10 +1052,7 @@ pub fn clear_player_debug_logs() -> Result<(), String> {
 
 #[tauri::command]
 pub fn select_local_video_file() -> Option<String> {
-    rfd::FileDialog::new()
-        .add_filter("Video", &["mkv", "mp4", "webm", "avi", "mov", "m4v", "ts"])
-        .pick_file()
-        .map(|path| path.to_string_lossy().into_owned())
+    platform::select_local_video_file()
 }
 
 #[cfg(target_os = "windows")]
@@ -2183,10 +1427,12 @@ fn launch_mpv_with_window(
             match video_cache_mode.as_deref() {
                 // Store the seekable stream cache on disk rather than retaining a
                 // feature-length stream in RAM.
-                Some("disk") => ("yes", 86_400, "8GiB", "4GiB"),
+                // Disk cache should make seeking resilient without eagerly
+                // downloading a feature-length remote stream in the background.
+                Some("disk") => ("yes", 1_800, "1GiB", "512MiB"),
                 // Auto keeps disk-backed seeking, but limits its working set to
                 // reduce write activity and heat on portable devices.
-                Some("auto") => ("yes", cache_secs, "256MiB", "128MiB"),
+                Some("auto") => ("yes", cache_secs, "256MiB", "256MiB"),
                 _ => ("no", cache_secs, max_bytes, max_back_bytes),
             };
         let video_x = x.unwrap_or(0);
@@ -2209,7 +1455,7 @@ fn launch_mpv_with_window(
         player_debug_log(format!(
             "[PLAYER START] session={} stream={} hwdec={} backend=libmpv dll={}",
             session_id,
-            stable_stream_hash(&url),
+            player::stable_stream_hash(&url),
             hwdec,
             libmpv.display()
         ));
@@ -2351,6 +1597,9 @@ fn launch_mpv_with_window(
             video_width,
             video_height,
         ) {
+            player_debug_log(format!(
+                "[LINUX RENDER] initialization failed: {error}"
+            ));
             player.shutdown();
             return Err(error);
         }
@@ -2423,7 +1672,7 @@ fn launch_mpv_with_window(
         }
     }
 
-    let mpv = find_mpv().ok_or_else(|| {
+    let mpv = player::find_mpv().ok_or_else(|| {
         "Failed to launch embedded mpv: bundled mpv executable was not found. Reinstall with the NSIS setup exe.".to_string()
     })?;
 
@@ -2568,7 +1817,7 @@ fn launch_mpv_with_window(
     player_debug_log(format!(
         "[PLAYER START] session={} stream={} hwdec={} args=embedded-buffered",
         normal_session,
-        stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
+        player::stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
         hwdec
     ));
     // Full argument list (minus the stream URL) — shows which settings-derived
@@ -3328,58 +2577,18 @@ pub fn stop_embedded_mpv() -> Result<(), String> {
 // the Rust process (no browser origin header) rather than from the WebView.
 // This is identical in spirit to how Simkl auth is handled via ureq.
 
-#[derive(Serialize, Deserialize)]
-pub struct PmdbProxyResponse {
-    pub status: u16,
-    pub ok: bool,
-    /// Raw response body as a string. The JS side JSON.parse()s it.
-    pub body: String,
-}
-
 #[tauri::command]
 pub async fn pmdb_request(
     method: String,
     url: String,
     api_key: String,
     body: Option<String>,
-) -> Result<PmdbProxyResponse, String> {
-    let method = method.to_uppercase();
-    let api_key = api_key.trim().to_string();
+) -> Result<ProxyResponse, String> {
+    let (method, api_key) = request::normalize_pmdb_request(method, api_key);
 
-    tokio::task::spawn_blocking(move || -> Result<PmdbProxyResponse, String> {
-        let req = ureq::request(&method, &url)
-            .set("Authorization", &format!("Bearer {}", api_key))
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json");
-
-        let response = match &body {
-            Some(b) => req.send_string(b),
-            None => req.call(),
-        };
-
-        match response {
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: true,
-                    body: text,
-                })
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: false,
-                    body: text,
-                })
-            }
-            Err(other) => Err(format!("Network error contacting PMDB: {other}")),
-        }
-    })
-    .await
-    .map_err(|e| format!("PMDB request task panicked: {e}"))?
+    tokio::task::spawn_blocking(move || request::pmdb_request(method, url, api_key, body))
+        .await
+        .map_err(|e| format!("PMDB request task panicked: {e}"))?
 }
 
 // ─── TorBox proxy (bypasses WebView CORS) ───────────────────────────────────
@@ -3391,60 +2600,15 @@ pub async fn torbox_request(
     token: Option<String>,
     body: Option<String>,
     content_type: Option<String>,
-) -> Result<PmdbProxyResponse, String> {
-    let method = method.to_uppercase();
-    if method != "GET" && method != "POST" {
-        return Err("Unsupported TorBox request method".to_string());
-    }
-    if !path.starts_with('/') || path.contains("..") || path.contains("//") {
-        return Err("Invalid TorBox API path".to_string());
-    }
-    let url = format!("https://api.torbox.app/v1/api{}", path);
-    let token = token.unwrap_or_default().trim().to_string();
-    let content_type = content_type.unwrap_or_else(|| "application/json".to_string());
+) -> Result<ProxyResponse, String> {
+    let (method, path, token, content_type) =
+        request::normalize_torbox_request(method, path, token, content_type)?;
 
-    tokio::task::spawn_blocking(move || -> Result<PmdbProxyResponse, String> {
-        let mut req = ureq::request(&method, &url)
-            .set("Accept", "application/json")
-            .set("Content-Type", &content_type);
-        if !token.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {}", token));
-        }
-        let response = match &body {
-            Some(value) => req.send_string(value),
-            None => req.call(),
-        };
-        match response {
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: true,
-                    body: text,
-                })
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: false,
-                    body: text,
-                })
-            }
-            Err(other) => Err(format!("Network error contacting TorBox: {other}")),
-        }
+    tokio::task::spawn_blocking(move || {
+        request::torbox_request(method, path, token, body, content_type)
     })
     .await
     .map_err(|error| format!("TorBox request task failed: {error}"))?
-}
-
-fn validate_http_url(url: &str) -> Result<(), String> {
-    if url.starts_with("https://") || url.starts_with("http://") {
-        Ok(())
-    } else {
-        Err("Only HTTP(S) subtitle URLs are supported.".to_string())
-    }
 }
 
 // How this copy of Aurales was installed, so the UI knows whether the built-in
@@ -3457,11 +2621,7 @@ fn validate_http_url(url: &str) -> Result<(), String> {
 // sandbox. Flatpak installs update through `flatpak update` instead.
 #[tauri::command]
 pub fn install_kind() -> &'static str {
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists() {
-        return "flatpak";
-    }
-    "self-updating"
+    platform::install_kind()
 }
 
 #[derive(Clone, Serialize)]
@@ -3472,32 +2632,17 @@ struct FlatpakUpdateProgress {
     stage: &'static str,
 }
 
-fn flatpak_release_asset_url(version: &str) -> Result<String, String> {
-    let valid = !version.is_empty()
-        && version.len() <= 64
-        && version.starts_with(|character: char| character.is_ascii_digit())
-        && version.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+')
-        });
-    if !valid {
-        return Err("The update version returned by the server is invalid.".to_string());
-    }
-    Ok(format!(
-        "https://github.com/Febsho/Aurales/releases/download/v{version}/Aurales_{version}_amd64.flatpak"
-    ))
-}
-
 /// Downloads and reinstalls a standalone Flatpak bundle without blocking the
 /// WebView. The sandbox cannot modify /app, so installation is delegated to
 /// the host through flatpak-spawn after the bundle has been downloaded into
 /// the app cache (which is host-visible below ~/.var/app).
 #[tauri::command]
 pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
-    if install_kind() != "flatpak" {
+    if platform::install_kind() != "flatpak" {
         return Err("The Flatpak update path is only available inside Flatpak.".to_string());
     }
 
-    let url = flatpak_release_asset_url(&version)?;
+    let url = platform::flatpak_release_asset_url(&version)?;
     let cache_dir = app
         .path()
         .app_cache_dir()
@@ -3611,48 +2756,14 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
     Ok(())
 }
 
-#[cfg(test)]
-mod flatpak_update_tests {
-    use super::flatpak_release_asset_url;
-
-    #[test]
-    fn builds_a_fixed_github_asset_url() {
-        assert_eq!(
-            flatpak_release_asset_url("0.2.8").unwrap(),
-            "https://github.com/Febsho/Aurales/releases/download/v0.2.8/Aurales_0.2.8_amd64.flatpak"
-        );
-    }
-
-    #[test]
-    fn rejects_version_path_injection() {
-        assert!(flatpak_release_asset_url("../../latest").is_err());
-        assert!(flatpak_release_asset_url("0.2.8;rm").is_err());
-    }
-}
-
 // Fetches the latest GitHub release (tag, name, body markdown) so the update
 // prompt can show real patch notes. Uses the same build-time PAT as the
 // updater since the repo is private.
 #[tauri::command]
 pub async fn github_release_notes() -> Result<String, String> {
-    tokio::task::spawn_blocking(|| -> Result<String, String> {
-        let mut request = ureq::get("https://api.github.com/repos/Febsho/Aurales/releases/latest")
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "Aurales-App");
-        if let Some(token) = option_env!("AURALES_UPDATE_TOKEN") {
-            if !token.is_empty() {
-                request = request.set("Authorization", &format!("Bearer {token}"));
-            }
-        }
-        let response = request
-            .call()
-            .map_err(|e| format!("GitHub release lookup failed: {e}"))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read GitHub response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("GitHub release task failed: {e}"))?
+    tokio::task::spawn_blocking(request::github_release_notes)
+        .await
+        .map_err(|e| format!("GitHub release task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -3664,48 +2775,17 @@ pub async fn ytproxy_port() -> Result<u16, String> {
 // stream URLs are bound to the same IP family the proxy fetches chunks with.
 #[tauri::command]
 pub async fn innertube_player(body: String, user_agent: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = crate::ytproxy::agent()
-            .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-            .set("Content-Type", "application/json")
-            .set("User-Agent", &user_agent)
-            .send_string(&body)
-            .map_err(|e| format!("Innertube request failed: {e}"))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read Innertube response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Innertube task failed: {e}"))?
+    tokio::task::spawn_blocking(move || request::innertube_player(body, user_agent))
+        .await
+        .map_err(|e| format!("Innertube task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn http_get_text(url: String) -> Result<String, String> {
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get(&url)
-            .set("Accept", "application/json, text/plain, */*")
-            .set("Accept-Language", "en-US,en;q=0.9")
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
-            .call()
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("HTTP request task failed: {e}"))?
-}
-
-#[derive(serde::Serialize)]
-pub struct StreamProbeResponse {
-    status: u16,
-    content_type: Option<String>,
-    accept_ranges: bool,
-    content_length: Option<u64>,
-    final_url: String,
-    sampled_bytes: u64,
-    elapsed_ms: u64,
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::get_text(url))
+        .await
+        .map_err(|e| format!("HTTP request task failed: {e}"))?
 }
 
 // Lightweight warm-up for a prepared direct stream: a small ranged GET (many
@@ -3716,67 +2796,10 @@ pub async fn http_probe_stream(
     url: String,
     timeout_ms: Option<u64>,
 ) -> Result<StreamProbeResponse, String> {
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<StreamProbeResponse, String> {
-        let started = std::time::Instant::now();
-        const SAMPLE_BYTES: u64 = 256 * 1024;
-        let agent = ureq::builder()
-            .timeout(std::time::Duration::from_millis(timeout_ms.unwrap_or(4_000)))
-            .build();
-        let result = agent
-            .get(&url)
-            .set("Range", &format!("bytes=0-{}", SAMPLE_BYTES - 1))
-            .set("Accept", "*/*")
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
-            .call();
-        let response = match result {
-            Ok(response) => response,
-            // HTTP error statuses (403/404/410/...) are probe results, not errors.
-            Err(ureq::Error::Status(_, response)) => response,
-            Err(e) => return Err(format!("Stream probe failed: {e}")),
-        };
-        let status = response.status();
-        let content_type = response
-            .header("Content-Type")
-            .map(|value| value.to_string());
-        let accept_ranges = status == 206
-            || response
-                .header("Accept-Ranges")
-                .map(|value| value.to_ascii_lowercase().contains("bytes"))
-                .unwrap_or(false);
-        // Prefer the full size from Content-Range ("bytes 0-1/12345"); fall
-        // back to Content-Length (which is the range length on a 206).
-        let content_length = response
-            .header("Content-Range")
-            .and_then(|value| value.rsplit('/').next())
-            .and_then(|total| total.trim().parse::<u64>().ok())
-            .or_else(|| {
-                if status == 206 {
-                    None
-                } else {
-                    response
-                        .header("Content-Length")
-                        .and_then(|value| value.trim().parse::<u64>().ok())
-                }
-            });
-        let final_url = response.get_url().to_string();
-        // Drain at most the sample range so the connection closes cleanly; never
-        // read the whole body of a non-ranged 200 response.
-        let mut reader = std::io::Read::take(response.into_reader(), SAMPLE_BYTES);
-        let sampled_bytes = std::io::copy(&mut reader, &mut std::io::sink()).unwrap_or(0);
-        let elapsed_ms = started.elapsed().as_millis().max(1) as u64;
-        Ok(StreamProbeResponse {
-            status,
-            content_type,
-            accept_ranges,
-            content_length,
-            final_url,
-            sampled_bytes,
-            elapsed_ms,
-        })
-    })
-    .await
-    .map_err(|e| format!("Stream probe task failed: {e}"))?
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::probe_stream(url, timeout_ms))
+        .await
+        .map_err(|e| format!("Stream probe task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -3786,38 +2809,10 @@ pub async fn http_request(
     headers: std::collections::HashMap<String, String>,
     body: Option<String>,
 ) -> Result<String, String> {
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let mut req = match method.to_uppercase().as_str() {
-            "GET" => ureq::get(&url),
-            "POST" => ureq::post(&url),
-            "PUT" => ureq::put(&url),
-            "DELETE" => ureq::delete(&url),
-            "PATCH" => ureq::patch(&url),
-            _ => return Err(format!("Unsupported HTTP method: {method}")),
-        };
-        for (k, v) in &headers {
-            req = req.set(k, v);
-        }
-        let response = if let Some(b) = body {
-            req.send_string(&b)
-        } else {
-            req.call()
-        }
-        .map_err(|e| {
-            if let ureq::Error::Status(code, resp) = e {
-                let body = resp.into_string().unwrap_or_default();
-                format!("{code}:{body}")
-            } else {
-                format!("HTTP request failed: {e}")
-            }
-        })?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("HTTP request task failed: {e}"))?
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::request_text(method, url, headers, body))
+        .await
+        .map_err(|e| format!("HTTP request task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -3825,138 +2820,38 @@ pub async fn openrouter_chat(
     api_key: String,
     request_body: serde_json::Value,
 ) -> Result<String, String> {
-    let api_key = api_key.trim().to_string();
-    if api_key.is_empty() {
-        return Err("OpenRouter API key is required.".to_string());
-    }
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://openrouter.ai/api/v1/chat/completions")
-            .set("Authorization", &format!("Bearer {api_key}"))
-            .set("Content-Type", "application/json")
-            .set("HTTP-Referer", "https://github.com/itsrenoria/aurales")
-            .set("X-Title", "Aurales Media Player")
-            .send_json(request_body)
-            .map_err(|error| read_ureq_error("OpenRouter", error))?;
-        response
-            .into_string()
-            .map_err(|error| format!("Failed to read OpenRouter response: {error}"))
-    })
-    .await
-    .map_err(|error| format!("OpenRouter request task failed: {error}"))?
-}
-
-fn safe_subtitle_name(file_name: &str) -> String {
-    let cleaned: String = file_name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "subtitle.srt".to_string()
-    } else {
-        cleaned
-    }
+    tokio::task::spawn_blocking(move || request::openrouter_chat(api_key, request_body))
+        .await
+        .map_err(|error| format!("OpenRouter request task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn download_subtitle(url: String, file_name: String) -> Result<String, String> {
-    use std::io::Read;
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get(&url)
-            .set("Accept", "text/vtt, application/x-subrip, text/plain, */*")
-            .call()
-            .map_err(|e| format!("Subtitle download failed: {e}"))?;
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024)
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("Failed to read subtitle: {e}"))?;
-        if bytes.is_empty() {
-            return Err("Subtitle provider returned an empty file.".to_string());
-        }
-        let dir = std::env::temp_dir().join("aurales-subtitles");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
-        let path = dir.join(format!(
-            "{}-{}",
-            chrono::Utc::now().timestamp_millis(),
-            safe_subtitle_name(&file_name)
-        ));
-        std::fs::write(&path, bytes).map_err(|e| format!("Failed to cache subtitle: {e}"))?;
-        Ok(path.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|e| format!("Subtitle download task failed: {e}"))?
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || subtitles::download(url, file_name))
+        .await
+        .map_err(|e| format!("Subtitle download task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn write_temp_subtitle(content: String, extension: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        if content.trim().is_empty() {
-            return Err("Translated subtitle content is empty.".to_string());
-        }
-        let extension: String = extension
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .take(5)
-            .collect();
-        let extension = if extension.is_empty() {
-            "srt"
-        } else {
-            extension.as_str()
-        };
-        let dir = std::env::temp_dir().join("aurales-subtitles");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
-        let path = dir.join(format!(
-            "translated-{}.{}",
-            chrono::Utc::now().timestamp_millis(),
-            extension
-        ));
-        std::fs::write(&path, content.as_bytes())
-            .map_err(|e| format!("Failed to write translated subtitle: {e}"))?;
-        Ok(path.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|e| format!("Subtitle write task failed: {e}"))?
-}
-
-fn validate_subtitle_cache_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let cache_dir = std::env::temp_dir().join("aurales-subtitles");
-    let candidate = std::path::PathBuf::from(path);
-    if candidate.parent() == Some(cache_dir.as_path()) {
-        Ok(candidate)
-    } else {
-        Err("Subtitle file is outside Aurales' temporary cache.".to_string())
-    }
+    tokio::task::spawn_blocking(move || subtitles::write_temp(content, extension))
+        .await
+        .map_err(|e| format!("Subtitle write task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn read_temp_subtitle(path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let path = validate_subtitle_cache_path(&path)?;
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read subtitle cache: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Subtitle read task failed: {e}"))?
+    tokio::task::spawn_blocking(move || subtitles::read_temp(path))
+        .await
+        .map_err(|e| format!("Subtitle read task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn update_temp_subtitle(path: String, content: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let path = validate_subtitle_cache_path(&path)?;
-        std::fs::write(path, content.as_bytes())
-            .map_err(|e| format!("Failed to update subtitle cache: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Subtitle update task failed: {e}"))?
+    tokio::task::spawn_blocking(move || subtitles::update_temp(path, content))
+        .await
+        .map_err(|e| format!("Subtitle update task failed: {e}"))?
 }
 
 /// Extracts a single embedded subtitle stream from `url` to SRT text using
@@ -3966,182 +2861,32 @@ pub async fn update_temp_subtitle(path: String, content: String) -> Result<(), S
 /// pre-translate embedded subtitles ahead of playback.
 #[tauri::command]
 pub async fn extract_embedded_subtitle(url: String, sub_index: u32) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let ffmpeg = crate::thumbnails::find_ffmpeg();
-        let mut command = std::process::Command::new(&ffmpeg);
-        command
-            .arg("-y")
-            .arg("-nostdin")
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error");
-        if url.starts_with("http://") || url.starts_with("https://") {
-            command
-                .arg("-seekable")
-                .arg("1")
-                .arg("-rw_timeout")
-                .arg("30000000");
-        }
-        command
-            .arg("-i")
-            .arg(&url)
-            .arg("-map")
-            .arg(format!("0:s:{sub_index}"))
-            .arg("-c:s")
-            .arg("srt")
-            .arg("-f")
-            .arg("srt")
-            .arg("pipe:1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let output = command
-            .output()
-            .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "ffmpeg subtitle extract failed: {}",
-                stderr.lines().last().unwrap_or("unknown error")
-            ));
-        }
-        let srt = String::from_utf8_lossy(&output.stdout).to_string();
-        if srt.trim().is_empty() {
-            return Err("No subtitle data extracted from the source track.".to_string());
-        }
-        Ok(srt)
-    })
-    .await
-    .map_err(|e| format!("Subtitle extract task failed: {e}"))?
+    tokio::task::spawn_blocking(move || subtitles::extract_embedded(url, sub_index))
+        .await
+        .map_err(|e| format!("Subtitle extract task failed: {e}"))?
 }
 
 // ─── Simkl OAuth commands ─────────────────────────────────────────────────────
 
-fn read_ureq_error(provider: &str, err: ureq::Error) -> String {
-    match err {
-        ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
-            if body.is_empty() {
-                format!("{provider} request failed: HTTP {status}")
-            } else {
-                format!("{provider} request failed: HTTP {status}: {body}")
-            }
-        }
-        other => format!("{provider} request failed: {other}"),
-    }
-}
-
 #[tauri::command]
 pub async fn request_simkl_pin(client_id: String) -> Result<String, String> {
-    let client_id = client_id.trim().to_string();
-    if client_id.is_empty() {
-        return Err("SIMKL client ID is required".to_string());
-    }
-
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get("https://api.simkl.com/oauth/pin")
-            .query("client_id", &client_id)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| read_ureq_error("Simkl PIN request", e))?;
-
-        let body = response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl PIN response body: {}", e))?;
-        let data: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse Simkl PIN response: {e}: {body}"))?;
-
-        if data.get("result").and_then(|v| v.as_str()) != Some("OK") {
-            return Err(format!("Simkl PIN request failed: {body}"));
-        }
-
-        Ok(body)
-    })
-    .await
-    .map_err(|e| format!("Simkl PIN request task panicked: {}", e))?
+    tokio::task::spawn_blocking(move || providers::request_simkl_pin(client_id))
+        .await
+        .map_err(|e| format!("Simkl PIN request task panicked: {}", e))?
 }
 
 #[tauri::command]
 pub async fn check_simkl_pin(user_code: String, client_id: String) -> Result<String, String> {
-    let user_code = user_code.trim().to_string();
-    let client_id = client_id.trim().to_string();
-    if user_code.is_empty() {
-        return Err("SIMKL user code is required".to_string());
-    }
-    if client_id.is_empty() {
-        return Err("SIMKL client ID is required".to_string());
-    }
-
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let url = format!("https://api.simkl.com/oauth/pin/{user_code}");
-        let response = ureq::get(&url)
-            .query("client_id", &client_id)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| read_ureq_error("Simkl PIN check", e))?;
-
-        let body = response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl PIN check response body: {}", e))?;
-        let data: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse Simkl PIN check response: {e}: {body}"))?;
-
-        if data.get("result").and_then(|v| v.as_str()) == Some("OK")
-            && data.get("access_token").and_then(|v| v.as_str()).is_some()
-        {
-            return Ok(serde_json::json!({
-                "status": "approved",
-                "access_token": data.get("access_token").and_then(|v| v.as_str()).unwrap_or_default(),
-                "token_type": "Bearer",
-                "scope": data.get("scope").and_then(|v| v.as_str()).unwrap_or_default(),
-            })
-            .to_string());
-        }
-
-        Ok(serde_json::json!({
-            "status": "pending",
-            "message": data.get("message").and_then(|v| v.as_str()).unwrap_or("Waiting for Simkl approval."),
-        })
-        .to_string())
-    })
-    .await
-    .map_err(|e| format!("Simkl PIN check task panicked: {}", e))?
+    tokio::task::spawn_blocking(move || providers::check_simkl_pin(user_code, client_id))
+        .await
+        .map_err(|e| format!("Simkl PIN check task panicked: {}", e))?
 }
 
 #[tauri::command]
 pub async fn fetch_simkl_user(access_token: String, client_id: String) -> Result<String, String> {
-    let access_token = access_token.trim().to_string();
-    let client_id = client_id.trim().to_string();
-    if access_token.is_empty() {
-        return Err("SIMKL access token is required".to_string());
-    }
-    if client_id.is_empty() {
-        return Err("SIMKL client ID is required".to_string());
-    }
-
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get("https://api.simkl.com/users/settings")
-            .query("client_id", &client_id)
-            .query("app-name", "Aurales")
-            .query("app-version", env!("CARGO_PKG_VERSION"))
-            .set("Authorization", &format!("Bearer {access_token}"))
-            .set("simkl-api-key", &client_id)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| read_ureq_error("Simkl user fetch", e))?;
-
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl user response body: {}", e))
-    })
-    .await
-    .map_err(|e| format!("Simkl user fetch task panicked: {}", e))?
+    tokio::task::spawn_blocking(move || providers::fetch_simkl_user(access_token, client_id))
+        .await
+        .map_err(|e| format!("Simkl user fetch task panicked: {}", e))?
 }
 
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for Simkl's
@@ -4151,88 +2896,7 @@ pub async fn fetch_simkl_user(access_token: String, client_id: String) -> Result
 /// ready when Simkl redirects back.
 #[tauri::command]
 pub async fn start_simkl_callback_server() -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    if SIMKL_CALLBACK_ACTIVE
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("Simkl authorization is already waiting for a browser callback. Finish the open Simkl tab or wait a moment before trying again.".to_string());
-    }
-    let _guard = SimklCallbackGuard;
-
-    let listener = TcpListener::bind("127.0.0.1:42814")
-        .await
-        .map_err(|e| format!("Failed to bind Simkl callback port 42814: {}", e))?;
-
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), listener.accept())
-            .await
-            .map_err(|_| "Timed out waiting for Simkl OAuth callback.".to_string())?
-            .map_err(|e| format!("Failed to accept Simkl OAuth callback: {}", e))?;
-
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Failed to read Simkl callback request: {}", e))?;
-
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let code = parse_oauth_code(&request)
-        .ok_or_else(|| "Simkl OAuth callback did not contain a 'code' parameter".to_string())?;
-
-    // Respond with a friendly page so the user knows they can close the tab.
-    let html = concat!(
-        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
-        "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
-        "<h2>Connected to Simkl!</h2>",
-        "<p>You can close this tab and return to Aurales.</p>",
-        "</body></html>",
-    );
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html,
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-
-    Ok(code)
-}
-
-fn parse_oauth_code(request: &str) -> Option<String> {
-    parse_oauth_param(request, "code")
-}
-
-fn parse_oauth_param(request: &str, key: &str) -> Option<String> {
-    // First line of an HTTP request: "GET /path?code=xxxx&state=... HTTP/1.1"
-    let first_line = request.lines().next()?;
-    let path = first_line.split_whitespace().nth(1)?;
-    let query = path.split('?').nth(1)?;
-    for param in query.split('&') {
-        if let Some(value) = param.strip_prefix(&format!("{key}=")) {
-            return Some(percent_decode(value));
-        }
-    }
-    None
-}
-
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                decoded.push(hex);
-                i += 3;
-                continue;
-            }
-        }
-        decoded.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&decoded).to_string()
+    providers::wait_for_simkl_callback().await
 }
 
 /// Exchanges a Simkl authorization code for an access token.
@@ -4247,35 +2911,8 @@ pub async fn exchange_simkl_token(
     client_id: String,
     redirect_uri: String,
 ) -> Result<String, String> {
-    // Resolved at compile time — will be None if the env var was absent.
-    const CLIENT_SECRET: Option<&str> = option_env!("SIMKL_CLIENT_SECRET");
-    let client_secret = CLIENT_SECRET
-        .ok_or_else(|| {
-            "SIMKL_CLIENT_SECRET was not set at build time. \
-             Rebuild the app with the env var exported to enable Simkl login."
-                .to_string()
-        })?
-        .to_string();
-
-    let body = serde_json::json!({
-        "code":          code,
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "redirect_uri":  redirect_uri,
-        "grant_type":    "authorization_code"
-    })
-    .to_string();
-
-    // ureq is a blocking HTTP client — run it outside the async executor.
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://api.simkl.com/oauth/token")
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json")
-            .send_string(&body)
-            .map_err(|e| format!("Simkl token exchange request failed: {}", e))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl token response body: {}", e))
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_simkl_token(code, client_id, redirect_uri)
     })
     .await
     .map_err(|e| format!("Simkl token exchange task panicked: {}", e))?
@@ -4286,7 +2923,7 @@ pub async fn exchange_simkl_token(
 #[allow(deprecated)] // tauri-plugin-shell::Shell::open is deprecated in favour of
                      // tauri-plugin-opener; switch once opener is added to Cargo.toml.
 pub fn open_simkl_auth(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    validate_http_url(&url)?;
+    request::validate_http_url(&url)?;
     // Some Linux browser launchers keep the `open` process alive until the
     // browser window closes. Never let that block the Tauri command queue:
     // OAuth/device-code polling must be able to continue while the browser is
@@ -4304,43 +2941,25 @@ pub fn open_simkl_auth(app: tauri::AppHandle, url: String) -> Result<(), String>
 /// OAuth redirect. Returns the `code` query parameter from the redirect URL.
 #[tauri::command]
 pub async fn start_anilist_callback_server() -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
 
-    if ANILIST_CALLBACK_ACTIVE
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("AniList authorization is already waiting for a browser callback. Finish the open AniList tab or wait a moment before trying again.".to_string());
-    }
-    let _guard = AnilistCallbackGuard;
+    let (listener, _guard) = providers::begin_anilist_callback().await?;
 
-    // The registered redirect uses `localhost`. Bind IPv4 consistently rather
-    // than selecting IPv6 first: browsers fall back from localhost to IPv4,
-    // while IPv4-only systems cannot reach an [::1]-only listener.
-    let listener = TcpListener::bind("127.0.0.1:42814")
-        .await
-        .map_err(|e| format!("Failed to bind callback port 42814: {}", e))?;
+    let mut stream = providers::accept_oauth_callback(
+        &listener,
+        120,
+        "Timed out waiting for OAuth callback.",
+        "Failed to accept OAuth callback",
+    )
+    .await?;
 
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
-            .await
-            .map_err(|_| "Timed out waiting for OAuth callback.".to_string())?
-            .map_err(|e| format!("Failed to accept OAuth callback: {}", e))?;
-
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Failed to read AniList callback request: {}", e))?;
-
-    let request = String::from_utf8_lossy(&buf[..n]);
-    if let Some(token) = parse_oauth_param(&request, "access_token") {
-        write_oauth_success_response(&mut stream, "Connected!").await;
+    let request = providers::read_oauth_callback(&mut stream, "AniList").await?;
+    if let Some(token) = providers::parse_oauth_param(&request, "access_token") {
+        providers::write_oauth_success_response(&mut stream, "Connected!").await;
         return Ok(token);
     }
-    if let Some(code) = parse_oauth_code(&request) {
-        write_oauth_success_response(&mut stream, "Authorization received").await;
+    if let Some(code) = providers::parse_oauth_code(&request) {
+        providers::write_oauth_success_response(&mut stream, "Authorization received").await;
         return Ok(code);
     }
 
@@ -4364,38 +2983,19 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
     );
     let _ = stream.write_all(response.as_bytes()).await;
 
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
-            .await
-            .map_err(|_| "Timed out waiting for AniList access token relay.".to_string())?
-            .map_err(|e| format!("Failed to accept AniList token relay: {}", e))?;
+    let mut stream = providers::accept_oauth_callback(
+        &listener,
+        15,
+        "Timed out waiting for AniList access token relay.",
+        "Failed to accept AniList token relay",
+    )
+    .await?;
 
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Failed to read AniList token relay request: {}", e))?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let token = parse_oauth_param(&request, "access_token")
+    let request = providers::read_oauth_callback(&mut stream, "AniList token relay").await?;
+    let token = providers::parse_oauth_param(&request, "access_token")
         .ok_or_else(|| "AniList OAuth callback did not contain an access token.".to_string())?;
-    write_oauth_success_response(&mut stream, "Connected!").await;
+    providers::write_oauth_success_response(&mut stream, "Connected!").await;
     Ok(token)
-}
-
-async fn write_oauth_success_response(stream: &mut tokio::net::TcpStream, title: &str) {
-    use tokio::io::AsyncWriteExt;
-    let html = format!(
-        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>\
-         <body style=\"font-family:sans-serif;text-align:center;padding:60px\">\
-         <h2>{title}</h2><p>You can close this tab and return to Aurales.</p>\
-         </body></html>"
-    );
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html,
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
 }
 
 /// Exchanges an AniList authorization code for an access token.
@@ -4406,125 +3006,25 @@ pub async fn exchange_anilist_token(
     client_id: String,
     redirect_uri: String,
 ) -> Result<String, String> {
-    const CLIENT_SECRET: Option<&str> = option_env!("ANILIST_CLIENT_SECRET");
-    let client_id = client_id.trim().to_string();
-    let client_secret = CLIENT_SECRET
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "AniList login is not configured in this build. Set \
-             ANILIST_CLIENT_SECRET when building Aurales."
-                .to_string()
-        })?
-        .to_string();
-    let redirect_uri = redirect_uri.trim().to_string();
-    let code = code.trim().to_string();
-
-    if client_id.is_empty() {
-        return Err("AniList client ID is required".to_string());
-    }
-    if client_secret.is_empty() {
-        return Err("AniList client secret is required".to_string());
-    }
-
-    // ureq is a blocking HTTP client — run it outside the async executor.
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        // AniList's token endpoint expects a JSON body — a form-encoded POST is
-        // rejected with `unsupported_grant_type` because its OAuth server only
-        // parses grant_type out of JSON. Match the documented request exactly.
-        let result = ureq::post("https://anilist.co/api/v2/oauth/token")
-            .set("Accept", "application/json")
-            .send_json(ureq::json!({
-                "grant_type": "authorization_code",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "code": code,
-            }));
-        match result {
-            Ok(response) => response
-                .into_string()
-                .map_err(|e| format!("Failed to read AniList token response body: {}", e))
-                .and_then(parse_anilist_access_token),
-            // Surface AniList's own error JSON (e.g. invalid_grant) instead of a
-            // bare status code, so the settings page can show why it failed.
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                Err(anilist_oauth_error(status, &body))
-            }
-            Err(e) => Err(format!("AniList token exchange request failed: {}", e)),
-        }
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_anilist_token(code, client_id, redirect_uri)
     })
     .await
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?
 }
 
-fn parse_anilist_access_token(body: String) -> Result<String, String> {
-    let data: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| "AniList returned an invalid token response.".to_string())?;
-    data.get("access_token")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| anilist_oauth_error(200, &body))
-}
-
-fn anilist_oauth_error(status: u16, body: &str) -> String {
-    if let Ok(data) = serde_json::from_str::<serde_json::Value>(body) {
-        let message = data
-            .get("message")
-            .or_else(|| data.get("error_description"))
-            .or_else(|| data.get("error"))
-            .and_then(|value| value.as_str());
-        if let Some(message) = message {
-            return format!("AniList login failed: {message}");
-        }
-    }
-    format!("AniList token exchange failed ({status}).")
-}
-
 #[cfg(test)]
-mod anilist_oauth_tests {
-    use super::{anilist_oauth_error, parse_anilist_access_token, parse_oauth_code};
+mod anilist_callback_tests {
+    use crate::core::providers::parse_oauth_code;
 
     #[test]
     fn parses_authorization_callback_code() {
         let request = "GET /?code=abc%2B123 HTTP/1.1\r\nHost: localhost\r\n\r\n";
         assert_eq!(parse_oauth_code(request).as_deref(), Some("abc+123"));
     }
-
-    #[test]
-    fn extracts_only_the_access_token_from_token_response() {
-        let response =
-            r#"{"token_type":"Bearer","expires_in":31536000,"access_token":"jwt-token"}"#;
-        assert_eq!(
-            parse_anilist_access_token(response.to_string()).as_deref(),
-            Ok("jwt-token")
-        );
-    }
-
-    #[test]
-    fn surfaces_anilist_oauth_message() {
-        let body = r#"{"error":"invalid_grant","message":"Authorization code expired"}"#;
-        assert_eq!(
-            anilist_oauth_error(400, body),
-            "AniList login failed: Authorization code expired"
-        );
-    }
 }
 
 // ─── Cache Entries ──────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct CacheEntry {
-    pub key: String,
-    pub value: String,
-    pub category: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
-    pub updated_at: String,
-}
 
 #[tauri::command]
 pub fn cache_entry_set(
@@ -4534,162 +3034,44 @@ pub fn cache_entry_set(
     ttl_seconds: Option<i64>,
     db: State<Database>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let expires_at = ttl_seconds.map(|ttl| {
-        format!(
-            "{}",
-            chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::seconds(ttl))
-                .unwrap_or_else(chrono::Utc::now)
-                .format("%Y-%m-%d %H:%M:%S")
-        )
-    });
-    conn.execute(
-        "INSERT OR REPLACE INTO cache_entries (key, value, category, expires_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
-        rusqlite::params![key, value, category, expires_at],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::entry_set(&db, key, value, category, ttl_seconds)
 }
 
 #[tauri::command]
 pub fn cache_entry_get(key: String, db: State<Database>) -> Option<CacheEntry> {
-    let conn = db.conn.lock().ok()?;
-    conn.query_row(
-        "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
-        rusqlite::params![key],
-        |row| {
-            Ok(CacheEntry {
-                key: row.get(0)?,
-                value: row.get(1)?,
-                category: row.get(2)?,
-                created_at: row.get(3)?,
-                expires_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        },
-    )
-    .ok()
+    cache::entry_get(&db, key)
 }
 
 #[tauri::command]
 pub fn cache_entry_get_many(keys: Vec<String>, db: State<Database>) -> Vec<CacheEntry> {
-    if keys.is_empty() {
-        return vec![];
-    }
-    let conn = match db.conn.lock() {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    // One prepared IN query avoids an IPC-triggered N+1 scan when Home seeds
-    // several shelf caches at startup. The primary-key lookup remains indexed.
-    let placeholders = std::iter::repeat("?")
-        .take(keys.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key IN ({})",
-        placeholders
-    );
-    let mut statement = match conn.prepare(&sql) {
-        Ok(statement) => statement,
-        Err(_) => return vec![],
-    };
-    let rows = match statement.query_map(rusqlite::params_from_iter(keys.iter()), |row| {
-        Ok(CacheEntry {
-            key: row.get(0)?,
-            value: row.get(1)?,
-            category: row.get(2)?,
-            created_at: row.get(3)?,
-            expires_at: row.get(4)?,
-            updated_at: row.get(5)?,
-        })
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return vec![],
-    };
-    rows.filter_map(Result::ok).collect()
+    cache::entry_get_many(&db, keys)
 }
 
 #[tauri::command]
 pub fn cache_entry_clear_category(category: String, db: State<Database>) -> Result<u64, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let count = conn
-        .execute(
-            "DELETE FROM cache_entries WHERE category = ?1",
-            rusqlite::params![category],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(count as u64)
+    let cleared = cache::clear_category(&db, category.clone())?;
+    if category == "anime_mapping" {
+        anime_lookup::clear_memory_cache();
+    }
+    Ok(cleared)
 }
 
 #[tauri::command]
 pub fn cache_entry_clear_expired(db: State<Database>) -> Result<u64, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let count = conn
-        .execute(
-            "DELETE FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            rusqlite::params![],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(count as u64)
+    cache::clear_expired(&db)
 }
 
 #[tauri::command]
 pub fn cache_entry_stats(db: State<Database>) -> Result<serde_json::Value, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cache_entries", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    let expired: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let mut stmt = conn
-        .prepare("SELECT category, COUNT(*) FROM cache_entries GROUP BY category")
-        .map_err(|e| e.to_string())?;
-    let by_category: std::collections::HashMap<String, i64> = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(serde_json::json!({
-        "totalEntries": total,
-        "expiredEntries": expired,
-        "byCategory": by_category,
-    }))
+    cache::stats(&db)
 }
 
 #[tauri::command]
 pub fn get_mpv_info() -> Result<serde_json::Value, String> {
-    let path = find_mpv()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Not Found".to_string());
-    let libmpv_path = libmpv_player::find_libmpv()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Not Found".to_string());
-    let candidates: Vec<String> = mpv_candidates()
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    let libmpv_candidates: Vec<String> = libmpv_player::libmpv_candidates()
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    Ok(serde_json::json!({
-        "path": path,
-        "libmpvPath": libmpv_path,
-        "candidates": candidates,
-        "libmpvCandidates": libmpv_candidates,
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-    }))
+    Ok(player::diagnostics(
+        player::find_mpv(),
+        libmpv_player::find_libmpv(),
+        player::mpv_candidates(),
+        libmpv_player::libmpv_candidates(),
+    ))
 }

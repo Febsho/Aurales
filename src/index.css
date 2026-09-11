@@ -2931,6 +2931,57 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
   padding-top: 1.25rem;
 }
 
+/* Keep the desktop episode rail deliberate: four complete cards per page,
+   with dedicated controls instead of a clipped fifth card at the edge. */
+.episode-rail {
+  padding-inline: 4.25rem;
+}
+
+.episode-rail__arrow {
+  position: absolute;
+  z-index: 20;
+  top: 8.5rem;
+  display: flex;
+  width: 3rem;
+  height: 3rem;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  border: 1px solid rgba(255, 255, 255, .10);
+  border-radius: .9rem;
+  background: rgba(255, 255, 255, .055);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .06), 0 .65rem 1.8rem rgba(0, 0, 0, .28);
+  color: rgba(255, 255, 255, .68);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  transition: transform .18s ease, background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease;
+}
+
+.episode-rail__arrow:hover:not(:disabled) {
+  transform: translateY(-50%) scale(1.04);
+  border-color: rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .11);
+  color: white;
+}
+
+.episode-rail__arrow:active:not(:disabled) {
+  transform: translateY(-50%) scale(.96);
+}
+
+.episode-rail__arrow:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, .8);
+  outline-offset: 3px;
+}
+
+.episode-rail__arrow:disabled {
+  cursor: default;
+  pointer-events: none;
+  opacity: .16;
+}
+
+.episode-rail__arrow--left { left: -.75rem; }
+.episode-rail__arrow--right { right: -.75rem; }
+
 .season-scroll::-webkit-scrollbar {
   height: 8px;
 }
@@ -3232,7 +3283,7 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
 }
 
 .episode-showcase-card {
-  width: clamp(22rem, 23vw, 32rem);
+  width: calc((100% - (3 * 1.75rem)) / 4);
   scroll-snap-align: start;
 }
 
@@ -3273,6 +3324,14 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
 
   .episode-showcase-card {
     width: min(84vw, 24rem);
+  }
+
+  .episode-rail {
+    padding-inline: 0;
+  }
+
+  .episode-rail__arrow {
+    display: none;
   }
 
   .trailer-showcase-card {

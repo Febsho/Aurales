@@ -258,5 +258,5 @@ export function calculateProgress(current: number, total: number): number {
 }
 
 export function shouldMarkWatched(progress: number): boolean {
-  return progress >= 85
+  return progress >= 80
 }
