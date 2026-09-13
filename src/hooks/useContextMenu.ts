@@ -6,7 +6,7 @@ export type ContextMenuTarget =
   | { kind: 'episode'; item: SearchResult; episode: EpisodeDetails; seasonNumber: number; showImdbId?: string; appSeasonCounts?: { season: number; count: number }[]; onSelectSource?: () => void }
   | { kind: 'season'; item: SearchResult; seasonNumber: number; episodeCount: number; showImdbId?: string; appSeasonCounts?: { season: number; count: number }[] }
 
-export type ProviderKey = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+export type ProviderKey = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
 
 export interface ProviderWatchState {
   provider: ProviderKey

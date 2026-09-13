@@ -14,6 +14,7 @@ export function providerCacheScope(sourceType?: string): string {
   if (sourceType === 'anilist') return parsedAccount('anilist_account', 'id') || 'anonymous'
   if (sourceType === 'pmdb' || sourceType === 'pmdb-picks') return localStorage.getItem('aurales_cw_credential_scope:pmdb') || 'anonymous'
   if (sourceType === 'mdblist') return localStorage.getItem('aurales_cw_credential_scope:mdblist') || 'anonymous'
+  if (sourceType === 'jellyfin' || sourceType === 'webdav') return 'native-server-v1'
   return 'public'
 }
 
@@ -26,7 +27,8 @@ export function simklRowCacheKey(row: HomeRowConfig): string {
 }
 
 export function providerRowCacheKey(row: HomeRowConfig): string {
-  return `home:provider:${row.sourceType}:${providerCacheScope(row.sourceType)}:${row.providerListId}:${row.sortBy || 'default'}`
+  const version = row.sourceType === 'jellyfin' || row.sourceType === 'webdav' ? 'preview-v1:' : ''
+  return `home:provider:${version}${row.sourceType}:${providerCacheScope(row.sourceType)}:${row.providerListId}:${row.sortBy || 'default'}`
 }
 
 export function addonRowCacheKey(row: HomeRowConfig): string {
@@ -54,7 +56,7 @@ export function heroRowCacheKey(row: HomeRowConfig): string {
   })}`
 }
 
-const PROVIDER_SOURCES = ['trakt', 'pmdb', 'pmdb-picks', 'mdblist', 'anilist']
+const PROVIDER_SOURCES = ['trakt', 'pmdb', 'pmdb-picks', 'mdblist', 'anilist', 'jellyfin', 'webdav']
 
 /** Cache key for any configured shelf, or null for rows without a sqlite-backed cache. */
 export function homeRowCacheKey(row: HomeRowConfig): string | null {

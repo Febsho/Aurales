@@ -13,7 +13,7 @@ import {
   buildEpisodeScrobble,
   buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
-import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
+import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
 import { savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
@@ -30,6 +30,7 @@ import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../s
 import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
+import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 
 interface InAppPlayerProps {
   url: string
@@ -50,6 +51,7 @@ interface InAppPlayerProps {
 interface AudioTrackInfo {
   id: string
   label: string
+  language?: string
   index: number
   enabled: boolean
 }
@@ -195,6 +197,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
+  const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   // This player is portaled next to #root. Hide the application shell while it
@@ -224,16 +227,19 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const openrouterModel = useAppStore((s) => s.openrouterModel)
 
   const sendMdblistScrobble = (action: 'start' | 'pause' | 'stop', progress: number) => {
-    if (!playbackItem || !scrobbleMdblistEnabled || !mdblistApiKey) return
+    if (!playbackItem || !mdblistApiKey) return
     const progressPct = Math.round(progress * 10000) / 100
+    const effectiveAction = mdblistPlaybackAction(action, progressPct, scrobbleMdblistEnabled, mdblistSaveResumePosition)
+    if (!effectiveAction) return
     scrobbleMdblist(
-      action,
+      effectiveAction,
       playbackItem.tmdbId,
       playbackItem.contentType === 'movie' ? 'movie' : 'series',
       progressPct,
       playbackItem.season,
       playbackItem.episode,
-      playbackItem.imdbId
+      playbackItem.imdbId,
+      playbackItem.tvdbId
     ).catch(() => {})
   }
 
@@ -445,25 +451,24 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
   // ── Auto-select subtitle track by language priority ──
   useEffect(() => {
-    const { preferredSubtitles: preferredSubs = ['en'], subtitleMode } = useAppStore.getState()
-    if (subtitleMode === 'hide') {
+    const { preferredSubtitles: preferredSubs = ['en'], subtitleMode, preferSdhSubtitles } = useAppStore.getState()
+    if (preparedSubtitles.length === 0) return
+    const selectedAudioTrack = audioTracks.find((track) => String(track.index) === selectedAudio)
+    const selection = selectStartupSubtitle({
+      tracks: preparedSubtitles.map((track, index) => ({ ...track, index })),
+      preferred: preferredSubs,
+      preferSdh: preferSdhSubtitles,
+      mode: subtitleMode,
+      selectedAudioLanguage: selectedAudioTrack?.language,
+      normalize: getLanguageCodeFromTrack,
+    })
+    if (selection.kind === 'off') {
       setSelectedSubtitle('off')
       if (videoRef.current) Array.from(videoRef.current.textTracks).forEach((track) => { track.mode = 'disabled' })
       return
     }
-    if (preparedSubtitles.length === 0) return
-    const candidates = subtitleMode === 'forced'
-      ? preparedSubtitles.map((track, index) => ({ track, index })).filter(({ track }) => track.forced)
-      : preparedSubtitles.map((track, index) => ({ track, index }))
-    let bestIdx = -1
-    let bestRank = Infinity
-    candidates.forEach(({ track: t, index: idx }) => {
-      const code = getLanguageCodeFromTrack(t.lang)
-      const rank = code ? preferredSubs.indexOf(code) : -1
-      if (rank !== -1 && rank < bestRank) { bestRank = rank; bestIdx = idx }
-    })
-    if (bestIdx === -1 && subtitleMode === 'forced') bestIdx = candidates[0]?.index ?? -1
-    if (bestIdx !== -1) {
+    if (selection.kind === 'track') {
+      const bestIdx = selection.track.index
       setSelectedSubtitle(String(bestIdx))
       if (videoRef.current) {
         setTimeout(() => {
@@ -474,7 +479,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         }, 100)
       }
     }
-  }, [preparedSubtitles])
+  }, [audioTracks, preparedSubtitles, selectedAudio])
 
   // ── Watch Together sync ───────────────────────────────────────────────────
   const wtIgnoreNextEvent = useRef(false)
@@ -573,6 +578,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     const next = Array.from(tracks).map((track, index) => ({
       id: track.id || String(index),
       label: track.label || getLanguageNameFromTrack(track.language) || `Audio ${index + 1}`,
+      language: track.language,
       index,
       enabled: track.enabled,
     }))
@@ -582,14 +588,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     }
 
     // Auto-select audio by language priority
-    const preferredAudio = useAppStore.getState().preferredAudio || ['en', 'ja']
-    let bestIdx = -1
-    let bestRank = Infinity
-    Array.from(tracks).forEach((t, idx) => {
-      const code = getLanguageCodeFromTrack(t.language)
-      const rank = code ? preferredAudio.indexOf(code) : -1
-      if (rank !== -1 && rank < bestRank) { bestRank = rank; bestIdx = idx }
-    })
+    const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
+    const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+    const bestIdx = selectPreferredLanguageTrack(
+      Array.from(tracks).map((track, index) => ({ lang: track.language, index })),
+      audioPreferences,
+      getLanguageCodeFromTrack,
+    )?.index ?? -1
     if (bestIdx !== -1) {
       Array.from(tracks).forEach((t, idx) => { t.enabled = idx === bestIdx })
       next.forEach((t, idx) => { t.enabled = idx === bestIdx })
@@ -668,7 +673,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       saveAniListScrobble(progress)
       syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
-      if (progress >= 0.85) {
+      if (progress >= 0.8) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
       }
     }
@@ -695,7 +700,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       saveAniListScrobble(progress)
       syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
-      if (progress >= 0.85) {
+      if (progress >= 0.8) {
         import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
       }
     }

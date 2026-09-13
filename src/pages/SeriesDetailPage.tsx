@@ -152,6 +152,8 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  sourceConnectionId?: string
+  sourceItemId?: string
   addonMeta?: Record<string, unknown>
   autoPlay?: boolean
 }
@@ -163,6 +165,17 @@ interface SeriesDetailCacheEntry {
   metadataStatus: 'resolved' | 'fallback' | 'error'
 }
 const seriesDetailMemCache = new Map<string, { entry: SeriesDetailCacheEntry; timestamp: number }>()
+const MAX_SERIES_DETAIL_MEMORY_ENTRIES = 120
+
+function rememberSeriesDetail(key: string, value: { entry: SeriesDetailCacheEntry; timestamp: number }): void {
+  seriesDetailMemCache.delete(key)
+  seriesDetailMemCache.set(key, value)
+  while (seriesDetailMemCache.size > MAX_SERIES_DETAIL_MEMORY_ENTRIES) {
+    const oldest = seriesDetailMemCache.keys().next().value
+    if (!oldest) break
+    seriesDetailMemCache.delete(oldest)
+  }
+}
 
 function preservePresentedArtwork(next: ShowDetails, current?: ShowDetails | null): ShowDetails {
   if (!current) return next
@@ -241,7 +254,10 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
           isLikelyJapaneseOnly(episode.name) || Boolean(episode.overview && isLikelyJapaneseOnly(episode.overview)),
         ))
       )
-      if (!staleJapaneseAnime) return mem.entry
+      if (!staleJapaneseAnime) {
+        rememberSeriesDetail(`detail:series:${key}`, mem)
+        return mem.entry
+      }
     }
   }
   const diskKeys = keys.map((key) => `detail:series:${key}`)
@@ -256,7 +272,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
         ))
       )
       if (staleJapaneseAnime) continue
-      for (const k of keys) seriesDetailMemCache.set(`detail:series:${k}`, { entry: result.data, timestamp: Date.now() })
+      for (const k of keys) rememberSeriesDetail(`detail:series:${k}`, { entry: result.data, timestamp: Date.now() })
       return result.data
     }
   }
@@ -293,7 +309,7 @@ function writeSeriesDetailCache(id: string | undefined, state: LocationState, en
     ttlSeconds: entry.show.isAnime ? null : CACHE_TTLS.TVDB_SEASON,
   }
   for (const key of keys) {
-    seriesDetailMemCache.set(`detail:series:${key}`, { entry, timestamp: Date.now() })
+    rememberSeriesDetail(`detail:series:${key}`, { entry, timestamp: Date.now() })
     void cacheSet(`detail:series:${key}`, entry, opts)
   }
 }
@@ -777,7 +793,7 @@ export default function SeriesDetailPage() {
             const raw = await getMdblistPlaybackProgress()
             const matches = raw
               .filter((item) => {
-                if (item.type !== 'show') return false
+                if (item.type !== 'episode') return false
                 return (
                   fuzzyIdsMatch(item.show?.ids?.tmdb, show!.tmdbId) ||
                   fuzzyIdsMatch(item.show?.ids?.imdb, show!.imdbId)
@@ -2395,7 +2411,10 @@ export default function SeriesDetailPage() {
           }
           return applyArt(tagged)
         }
-      } catch (_) { /* fall through */ }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error
+        // Provider failures may still use the established season fallback.
+      }
       return null
     }
 
@@ -2612,7 +2631,8 @@ export default function SeriesDetailPage() {
         }
       }))
     }
-    prefetch()
+    // Superseded native season work rejects instead of starting another provider.
+    void prefetch().catch(() => undefined)
 
     return () => { cancelled = true }
   }, [show?.id, id, seasonNumbersSignature, addonMeta, isAnime, selectedSeason, isCached])
@@ -3478,6 +3498,8 @@ export default function SeriesDetailPage() {
         anilistId={show.anilistId != null ? Number(show.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        sourceConnectionId={state.sourceConnectionId}
+        sourceItemId={state.sourceItemId}
         forceManualSelection={forceManualSourceSelection}
         onResolvingChange={setStreamResolving}
       />

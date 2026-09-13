@@ -308,6 +308,57 @@ impl Database {
                 watched_at TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Server integrations keep only non-secret configuration here.
+            -- Passwords and access tokens are stored in the operating-system keyring.
+            CREATE TABLE IF NOT EXISTS server_connections (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                server_url TEXT NOT NULL,
+                username TEXT,
+                auth_mode TEXT NOT NULL,
+                base_directory TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_error TEXT,
+                server_name TEXT,
+                user_name TEXT,
+                last_tested_at TEXT,
+                last_refreshed_at TEXT,
+                refresh_cursor TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS server_catalog_items (
+                connection_id TEXT NOT NULL,
+                source_item_id TEXT NOT NULL,
+                catalog_ids_json TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                year INTEGER,
+                season INTEGER,
+                episode INTEGER,
+                parent_source_item_id TEXT,
+                tmdb_id TEXT,
+                tvdb_id TEXT,
+                imdb_id TEXT,
+                anilist_id TEXT,
+                mal_id TEXT,
+                poster TEXT,
+                backdrop TEXT,
+                updated_marker TEXT,
+                raw_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(connection_id, source_item_id),
+                FOREIGN KEY(connection_id) REFERENCES server_connections(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection ON server_catalog_items(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_tmdb ON server_catalog_items(tmdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_tvdb ON server_catalog_items(tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_anilist ON server_catalog_items(anilist_id);
             ",
         )?;
         Ok(())

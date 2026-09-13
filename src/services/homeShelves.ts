@@ -8,7 +8,7 @@ export interface PendingShelfSelection {
   existingId?: string
 }
 
-export type CatalogPickerSource = 'builtin' | 'smart' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks' | 'mdblist'
+export type CatalogPickerSource = 'builtin' | 'smart' | 'addons' | 'simkl' | 'trakt' | 'anilist' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'jellyfin' | 'webdav'
 export type CatalogContentType = 'movie' | 'series' | 'anime' | 'unknown'
 
 export interface CatalogPickerItem {

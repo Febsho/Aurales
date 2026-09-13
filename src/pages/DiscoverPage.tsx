@@ -28,6 +28,8 @@ import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { berlinDaySeed, getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
 import { DISCOVERY_ALGORITHM_VERSION, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
 import { getActiveProfileId } from '../services/profiles'
+import { getServerCatalogItems, listServerCatalogs } from '../services/serverIntegrations'
+import { dedupeMediaItems } from '../services/mediaPresentation'
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
   28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
@@ -337,6 +339,35 @@ export default function DiscoverPage() {
   const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
   const [trailerOpen, setTrailerOpen] = useState(false)
   const [initialWaitComplete, setInitialWaitComplete] = useState(false)
+  const [serverDiscoverItems, setServerDiscoverItems] = useState<SearchResult[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const catalogs = await listServerCatalogs()
+        const relevant = catalogs.filter((catalog) => {
+          if (catalog.kind !== 'library') return false
+          if (tab === 'movies') return catalog.contentType === 'movie' || catalog.catalogId === 'movies'
+          if (tab === 'anime') return catalog.contentType === 'anime' || catalog.catalogId === 'anime'
+          return catalog.contentType === 'series' || catalog.catalogId === 'series'
+        })
+        const settled = await Promise.allSettled(relevant.map((catalog) => (
+          getServerCatalogItems(catalog.connectionId, catalog.catalogId, 40)
+        )))
+        if (cancelled) return
+        const merged = dedupeMediaItems(settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []))
+          .filter((item) => tab === 'anime' ? item.isAnime : tab === 'movies' ? item.type === 'movie' && !item.isAnime : item.type === 'series' && !item.isAnime)
+          .slice(0, 40)
+        setServerDiscoverItems(merged)
+      } catch {
+        if (!cancelled) setServerDiscoverItems([])
+      }
+    }
+    void load()
+    window.addEventListener('aurales:server-catalogs-changed', load)
+    return () => { cancelled = true; window.removeEventListener('aurales:server-catalogs-changed', load) }
+  }, [tab])
   // Rank against the start of the day, not the exact mount time, so recency scoring
   // is identical on every visit within a day (a source of visit-to-visit reshuffling)
   const [berlinDateKey, setBerlinDateKey] = useState(() => getBerlinDateKey())
@@ -814,6 +845,7 @@ export default function DiscoverPage() {
             {heroPool.length > 1 && <div className="absolute bottom-7 right-8 z-10 flex items-center gap-1.5" onClick={(event)=>event.stopPropagation()}>{heroPool.map((entry, index) => <button key={String(entry.item.id)} onClick={()=>setHeroIndex(index)} aria-label={`Go to recommendation ${index+1}`} className={`cursor-pointer rounded-full transition-all duration-300 ${index === activeHeroIndex ? 'h-2 w-7 bg-white' : 'h-2 w-2 bg-white/25 hover:bg-white/50'}`} />)}</div>}
           </section> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="mx-6 mb-8 animate-pulse"><div className="h-[430px] rounded-[2rem] bg-white/[.06]"/><div className="mt-5 flex gap-4 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-64 w-44 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
           {personalizedSections.map((section, sectionIndex) => <div key={section.id} className="row-contain"><MediaRow title={section.title} items={section.items.map((entry)=>entry.item)} layout={sectionIndex === 0 ? 'ranked' : section.id==='made-for-you'||section.id==='mode' ? 'feature' : 'poster'} showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(section.title)}`} /></div>)}
+          {serverDiscoverItems.length > 0 && <div className="row-contain"><MediaRow title="From Your Servers" items={serverDiscoverItems} layout="poster" showAllPath={`/catalog/discover-servers-${tab}?title=${encodeURIComponent('From Your Servers')}`} /></div>}
           {whyOpen && heroRecommendation && <div role="dialog" aria-modal="true" className="fixed inset-0 z-[10000] grid place-items-center bg-black/65 p-6" onClick={()=>setWhyOpen(false)}><div className="max-w-lg rounded-3xl border border-white/15 bg-[#111] p-6" onClick={(event)=>event.stopPropagation()}><h2 className="text-xl font-black">Why {heroRecommendation.item.title}?</h2><p className="my-3 text-sm text-white/60">Based on your local Aurales activity and title metadata.</p>{heroRecommendation.reasons.map((reason)=><div key={reason.code} className="mb-2 rounded-xl bg-white/[.05] p-3 text-sm">{reason.label}</div>)}<div className="mt-4 flex flex-wrap gap-2"><button onClick={()=>submitFeedback(heroRecommendation.item,'more-like-this')} className="rounded-full bg-white/10 px-3 py-2 text-xs font-bold">More like this</button><button onClick={()=>submitFeedback(heroRecommendation.item,'less-like-this')} className="rounded-full bg-white/10 px-3 py-2 text-xs font-bold">Less like this</button><button onClick={()=>submitFeedback(heroRecommendation.item,'already-seen')} className="rounded-full bg-white/10 px-3 py-2 text-xs font-bold">I've seen this</button><button onClick={()=>submitFeedback(heroRecommendation.item,'hide')} className="rounded-full bg-white/10 px-3 py-2 text-xs font-bold">Hide title</button></div>{import.meta.env.DEV&&<pre className="mt-4 overflow-auto rounded-xl bg-black p-3 text-xs text-white/60">{JSON.stringify({source:heroRecommendation.source,cacheAgeSeconds:newestCandidateCacheTimestamp?Math.round((rankingNow-newestCandidateCacheTimestamp)/1000):null,reasons:heroRecommendation.reasons,score:heroRecommendation.score},null,2)}</pre>}<button onClick={()=>setWhyOpen(false)} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Close</button></div></div>}
           {trailerOpen&&heroTrailer&&<div role="dialog" aria-modal="true" aria-label="Trailer" className="fixed inset-0 z-[10000] grid place-items-center bg-black/80 p-6" onClick={()=>setTrailerOpen(false)}><div className="aspect-video w-[min(70rem,92vw)] overflow-hidden rounded-3xl border border-white/15 bg-black" onClick={(event)=>event.stopPropagation()}><TrailerPreview trailer={heroTrailer} title={heroRecommendation?.item.title||'Trailer'} muted={false} eager/></div></div>}
         </>

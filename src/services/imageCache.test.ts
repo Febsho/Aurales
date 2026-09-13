@@ -25,6 +25,13 @@ describe('cachedImage', () => {
     expect(convertFileSrc).toHaveBeenCalledWith(source, 'imgcache')
   })
 
+  it('uses a distinct high-resolution cache variant for detail backdrops', () => {
+    const source = 'https://image.tmdb.org/t/p/original/backdrop.jpg?lang=en'
+    const cacheSource = `${source}#aurales-cache=backdrop`
+    expect(cachedImage(source, 'backdrop')).toBe(`imgcache://localhost/${encodeURIComponent(cacheSource)}`)
+    expect(convertFileSrc).toHaveBeenCalledWith(cacheSource, 'imgcache')
+  })
+
   it('does not route data URLs through the cache', () => {
     expect(cachedImage('data:image/png;base64,abc')).toBe('data:image/png;base64,abc')
     expect(convertFileSrc).not.toHaveBeenCalled()

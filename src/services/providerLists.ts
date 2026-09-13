@@ -25,6 +25,7 @@ import { CACHE_CATEGORIES } from './cache/constants'
 import { providerCacheScope } from './cache/homeRowCacheKeys'
 import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
 import { dedupeMediaItems } from './mediaPresentation'
+import { getServerCatalogItems, parseServerCatalogListId } from './serverIntegrations'
 
 function providerListCacheKey(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): string {
   const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : providerCacheScope(row.sourceType)
@@ -47,7 +48,13 @@ export const MDBLIST_LIST_SOURCES = [
   { id: 'watchlist', label: 'MDBList - Watchlist', layout: 'poster' as const },
 ]
 
-export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, forceRefresh = false): Promise<SearchResult[]> {
+export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, forceRefresh = false, maxItems?: number): Promise<SearchResult[]> {
+  // Native media servers already read their durable SQLite catalog cache.
+  // Bypassing the generic immutable provider-list cache ensures a completed
+  // incremental refresh is visible the next time a shelf/page is opened.
+  if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+    return loadProviderListItems(row, maxItems)
+  }
   const key = providerListCacheKey(row)
   if (forceRefresh) {
     const fresh = await loadProviderListItems(row)
@@ -60,7 +67,7 @@ export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType'
   })
 }
 
-async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
+async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, maxItems?: number): Promise<SearchResult[]> {
   const id = row.providerListId || ''
   let items: SearchResult[] = []
   if (row.sourceType === 'anilist') {
@@ -73,9 +80,18 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
     items = (await getPMDBPickItems(id)).map(pmdbPickItemToSearchResult)
   } else if (row.sourceType === 'mdblist') {
     items = await getMdblistProviderList(id)
+  } else if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+    const catalog = parseServerCatalogListId(id)
+    if (catalog) items = await getServerCatalogItems(catalog.connectionId, catalog.catalogId, maxItems)
   }
 
   if (items.length > 0) {
+    // Server scans already persist presentation-ready metadata and artwork.
+    // Re-enriching every native library item here is both redundant and, for
+    // large libraries, can create thousands of background metadata requests.
+    if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+      return dedupeMediaItems(items)
+    }
     if (row.sourceType === 'anilist') {
       const seenAnilistId = new Set<number>()
       const deduplicated = items.filter((item) => {

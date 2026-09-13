@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
+import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { getTmdbApiKey } from '../services/apiKeys'
 import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, startThumbnailGeneration, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
@@ -27,7 +28,7 @@ import {
   removePMDBWatched,
   lookupTmdbId
 } from '../services/pmdb'
-import { scrobbleMdblist, hasMdblistOAuth } from '../services/mdblist'
+import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
 import { saveAniListProgress, saveAniListProgressMapped } from '../services/anilist'
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
@@ -58,7 +59,9 @@ import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
 import { recordPlaybackSample } from '../services/viewingActivity'
 import PlayerDebugPanel from './PlayerDebugPanel'
 import { collectNativePlayerDebugSnapshot, type NativePlayerDebugSnapshot } from '../services/playerDebug'
+import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 import { annotateTorBoxStreams, resolveTorBoxStream } from '../services/torbox'
+import { clearSeekrPreview, getSeekrPreview, seekrCueAt, type SeekrPreviewCue, type SeekrPreviewData, type SeekrPreviewRequest } from '../services/seekrPreview'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +93,7 @@ interface MpvTrack {
   'external-filename'?: string
   filename?: string
   'ff-index'?: number
+  'src-id'?: number
 }
 
 interface TrackOption {
@@ -122,14 +126,19 @@ interface TimelinePreview {
   time: number
 }
 
-function ScrubThumbnailImage({ src, onInvalid }: { src: string; onInvalid: () => void }) {
+type TimelineThumbnail = string | { cue: SeekrPreviewCue }
+
+function ScrubThumbnailImage({ thumbnail, onInvalid }: { thumbnail: TimelineThumbnail; onInvalid: () => void }) {
   const [loaded, setLoaded] = useState(false)
+  const seekrCue = typeof thumbnail === 'string' ? null : thumbnail.cue
+  const src = typeof thumbnail === 'string' ? thumbnail : thumbnail.cue.spriteUrl
   return (
-    <div className={`h-[135px] w-60 overflow-hidden rounded-xl transition-opacity duration-100 ${loaded ? 'border border-white/20 opacity-100 shadow-[0_18px_55px_rgba(0,0,0,0.72)] ring-1 ring-black/50' : 'opacity-0'}`}>
+    <div className={`relative h-[135px] w-60 overflow-hidden rounded-xl transition-opacity duration-100 ${loaded ? 'border border-white/20 opacity-100 shadow-[0_18px_55px_rgba(0,0,0,0.72)] ring-1 ring-black/50' : 'opacity-0'}`}>
       <img
         src={src}
         alt=""
-        className="h-full w-full object-cover"
+        className={seekrCue ? 'absolute max-w-none origin-top-left scale-75' : 'h-full w-full object-cover'}
+        style={seekrCue ? { left: -seekrCue.x * 0.75, top: -seekrCue.y * 0.75 } : undefined}
         draggable={false}
         onLoad={() => setLoaded(true)}
         onError={onInvalid}
@@ -713,14 +722,8 @@ function wtControlBlocked(): boolean {
 }
 
 // mpv args derived from settings that aren't first-class launch params.
-function buildMpvExtraArgs(storeState: { audioPassthrough: boolean; playerQualityProfile: 'performance' | 'balanced' | 'quality' }): string {
-  // These mirror mpv's safe renderer presets: the default stays conservative,
-  // while users with weaker or stronger GPUs get a one-choice tuning option.
-  const qualityArgs = storeState.playerQualityProfile === 'performance'
-    ? '--scale=bilinear --cscale=bilinear --dscale=bilinear --dither=no --deband=no --vd-lavc-fast=yes --interpolation=no --hdr-compute-peak=no'
-    : storeState.playerQualityProfile === 'quality'
-      ? '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
-      : ''
+function buildMpvExtraArgs(storeState: { audioPassthrough: boolean }): string {
+  const qualityArgs = '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
   const parts = [qualityArgs]
   if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
     parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
@@ -826,6 +829,7 @@ function FullNativeMpvPlayer({
     delayedPlayerTimersRef.current.clear()
   }, [])
   const loadedSubtitleUrlsRef = useRef<Set<string>>(new Set())
+  const subtitleMirrorPendingRef = useRef<string | null>(null)
   const autoSkippedSegmentsRef = useRef<Set<string>>(new Set())
   const subtitleSourcesRef = useRef<Map<string, SubtitleSource>>(new Map())
   const subtitleTrackSourcesRef = useRef<Map<number, SubtitleSource>>(new Map())
@@ -835,6 +839,7 @@ function FullNativeMpvPlayer({
   const lastSavedTimeRef = useRef(0)
   const lastSimklPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
+  const lastMdblistPlaybackSaveRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastVolumeEnforceRef = useRef(0)
   const lastPauseRef = useRef<boolean | null>(null)
@@ -940,7 +945,8 @@ function FullNativeMpvPlayer({
 
   // Timeline Preview (timestamp bubble while scrubbing)
   const [timelinePreview, setTimelinePreview] = useState<TimelinePreview>({ visible: false, leftPct: 0, time: 0 })
-  const [timelineThumbnail, setTimelineThumbnail] = useState<string | null>(null)
+  const [timelineThumbnail, setTimelineThumbnail] = useState<TimelineThumbnail | null>(null)
+  const [seekrLookupRevision, setSeekrLookupRevision] = useState(0)
   const [mediaBadges, setMediaBadges] = useState<string[]>([])
   const [chapters, setChapters] = useState<PlayerChapter[]>([])
   const [showChapters, setShowChapters] = useState(false)
@@ -961,6 +967,8 @@ function FullNativeMpvPlayer({
   const nativeThumbnailResolvedRef = useRef(0)
   const timelinePreviewTimeRef = useRef(0)
   const timelineThumbnailMetadataRef = useRef<Map<number, ThumbnailMetadata>>(new Map())
+  const seekrPreviewRef = useRef<SeekrPreviewData | null>(null)
+  const seekrPreviewRequestRef = useRef<SeekrPreviewRequest | null>(null)
   const chapterThumbnailWaitersRef = useRef<Map<string, (path: string | null) => void>>(new Map())
   const timelinePreviewVisibleRef = useRef(false)
   const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1296,7 +1304,13 @@ function FullNativeMpvPlayer({
     // The refined five-second cache is preferred, with the minute wave as an
     // early fallback. No decoder or filesystem request is started here.
     const cachedThumbnail = cachedTimelineThumbnailAt(time)
-    setTimelineThumbnail(cachedThumbnail)
+    const seekrCue = seekrPreviewRef.current && seekrCueAt(seekrPreviewRef.current, time)
+    setTimelineThumbnail(seekrCue ? { cue: seekrCue } : cachedThumbnail)
+
+    // A parsed Seekr cue is already an exact preview. Keep the established
+    // ThumbFast/FFmpeg path completely idle in this case; it remains the
+    // fallback for every missing, failed, or invalid Seekr lookup.
+    if (seekrCue) return
 
     const requestId = ++thumbnailRequestRef.current
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
@@ -1357,6 +1371,35 @@ function FullNativeMpvPlayer({
       }
     }, 140)
   }, [cachedTimelineThumbnailAt, duration, getThumbnailMediaId, scrubThumbnailPreviews, url])
+
+  // Seekr is an optional, one-shot native lookup. It never participates in
+  // player startup and it cannot prevent the established thumbnail providers.
+  useEffect(() => {
+    seekrPreviewRef.current = null
+    seekrPreviewRequestRef.current = null
+    if (!playerReady || !scrubThumbnailPreviews || duration <= 0) return
+    const item = currentItemRef.current
+    const localId = item?.localId || ''
+    const localTmdbId = /^tmdb-(\d+)$/.exec(localId)?.[1]
+    const tmdbId = tmdbIdRef.current || item?.tmdbId || (localTmdbId ? Number(localTmdbId) : undefined)
+    const imdbId = item?.imdbId || (/^tt\d+$/i.test(localId) ? localId : undefined)
+    const request = item?.contentType === 'series' && tmdbId && item.season != null && item.episode != null
+      ? { duration, showTmdbId: tmdbId, season: item.season, episode: item.episode }
+      : { duration, tmdbId, imdbId }
+    seekrPreviewRequestRef.current = request
+    let cancelled = false
+    getSeekrPreview(request).then((preview) => {
+      if (cancelled || !preview) return
+      seekrPreviewRef.current = preview
+      // Preload the first unique sheets once. Their URLs are signed but carry
+      // no API key; only native code ever performs the authenticated lookup.
+      for (const spriteUrl of [...new Set(preview.cues.map((cue) => cue.spriteUrl))].slice(0, 2)) {
+        const image = new Image()
+        image.src = spriteUrl
+      }
+    })
+    return () => { cancelled = true; seekrPreviewRef.current = null }
+  }, [duration, playerReady, scrubThumbnailPreviews, seekrLookupRevision, url])
 
   const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -1761,15 +1804,15 @@ function FullNativeMpvPlayer({
     const mediaType = isEpisodic ? 'series' : 'movie'
     const progressPct = Math.max(0, Math.min(100, (pos / dur) * 100))
 
-    if (allowScrobble && scrobbleMdblistEnabled && progressPct >= 90 && dur >= 180) {
-      return scrobbleMdblist('stop', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
-    }
-
-    if (mdblistSaveResumePosition) {
-      return scrobbleMdblist('pause', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId).catch(() => {})
-    }
-
-    return Promise.resolve()
+    const action = mdblistPlaybackAction(
+      allowScrobble ? 'stop' : 'pause',
+      progressPct,
+      scrobbleMdblistEnabled,
+      mdblistSaveResumePosition,
+    )
+    return action
+      ? scrobbleMdblist(action, tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
+      : Promise.resolve()
   }, [mdblistApiKey, mdblistSaveResumePosition, scrobbleMdblistEnabled])
 
   // ─ Controls visibility ────────────────────────────────────────────────────
@@ -1870,11 +1913,13 @@ function FullNativeMpvPlayer({
       return Boolean(code && preferred.includes(code))
     })
     const forcedTracks = available.filter(({ track }) => /\bforced\b/i.test(track.label || ''))
-    const initial = state.subtitleMode === 'hide'
-      ? []
-      : state.subtitleMode === 'forced'
-        ? forcedTracks
-        : preferredTracks.length > 0 ? preferredTracks : available.slice(0, 2)
+    // Matching-audio behavior cannot be decided until mpv reports the chosen
+    // audio track. Load both normal preferred and forced candidates now so the
+    // later selector can apply Show / Forced / Hide correctly.
+    const initialBase = preferredTracks.length > 0 ? preferredTracks : available.slice(0, 2)
+    const initial = [...initialBase, ...forcedTracks].filter((candidate, index, all) =>
+      all.findIndex((entry) => entry.track.url === candidate.track.url) === index
+    )
     // Download only the tracks needed for auto-selection during startup.
     // The complete catalog is loaded when the user opens the subtitle menu.
     const selectedTracks = (loadAll ? available : initial).slice(0, loadAll ? undefined : 4)
@@ -1921,6 +1966,19 @@ function FullNativeMpvPlayer({
   const refreshTracks = useCallback(async () => {
     const data = await getPlayerProperty('track-list') as MpvTrack[]
     if (!Array.isArray(data)) return false
+    const embeddedSubs = data.filter((track) => track.type === 'sub' && !track.external)
+    const embeddedBySource = new Map(
+      embeddedSubs
+        .filter((track) => track['src-id'] != null && track['ff-index'] != null)
+        .map((track) => [`${track['src-id']}:${track['ff-index']}`, track]),
+    )
+    const mirroredEmbedded = new Map<string, MpvTrack>()
+    data
+      .filter((track) => track.type === 'sub' && track.external)
+      .forEach((track) => {
+        const key = `${track['src-id']}:${track['ff-index']}`
+        if (embeddedBySource.has(key)) mirroredEmbedded.set(key, track)
+      })
     const trackSources = new Map<number, SubtitleSource>()
     data
       .filter((t) => t.type === 'sub')
@@ -1942,9 +2000,33 @@ function FullNativeMpvPlayer({
       // Hide the AI-translated track from the list — it's driven only by the
       // "Live Translate" toggle, not picked as a normal subtitle option.
       .filter((t) => t.id !== aiSubtitleTrackIdRef.current && !t.title?.endsWith('(Translated)'))
+      // The same media is attached as a subtitle-only source so changing an
+      // embedded track cannot seek the primary audio/video demuxer. Show those
+      // mirrored tracks in place of their buffering-prone originals.
+      .filter((t) => t.external || (
+        subtitleMirrorPendingRef.current === null
+        && !mirroredEmbedded.has(`${t['src-id']}:${t['ff-index']}`)
+      ))
       .map((t) => {
-        const label = trackLabel(t, `Sub ${t.id}`)
-        return { id: t.id, label, lang: t.lang, priority: trackPriority(t), forced: Boolean(t.forced || subtitleTrackSourcesRef.current.get(t.id)?.forced || /\bforced\b/i.test(label)) }
+        const original = t.external ? embeddedBySource.get(`${t['src-id']}:${t['ff-index']}`) : undefined
+        const displayTrack = original
+          ? {
+              ...t,
+              external: false,
+              title: original.title,
+              lang: t.lang || original.lang,
+              default: t.default || original.default,
+              forced: t.forced || original.forced,
+            }
+          : t
+        const label = trackLabel(displayTrack, `Sub ${t.id}`)
+        return {
+          id: t.id,
+          label,
+          lang: displayTrack.lang,
+          priority: trackPriority(displayTrack),
+          forced: Boolean(displayTrack.forced || subtitleTrackSourcesRef.current.get(t.id)?.forced || /\bforced\b/i.test(label)),
+        }
       })
       .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label))
     const selAudio = data.find((t) => t.type === 'audio' && t.selected)
@@ -1952,7 +2034,12 @@ function FullNativeMpvPlayer({
     setAudioTracks(audio)
     setSubTracks(subs)
     if (selAudio) setSelectedAudio(selAudio.id)
-    if (selSub) setSelectedSub(selSub.id)
+    if (selSub) {
+      const mirror = !selSub.external
+        ? mirroredEmbedded.get(`${selSub['src-id']}:${selSub['ff-index']}`)
+        : undefined
+      setSelectedSub(mirror?.id ?? selSub.id)
+    }
     else setSelectedSub('no')
 
     // Auto-select preferred audio + subtitle tracks independently.
@@ -1963,20 +2050,14 @@ function FullNativeMpvPlayer({
     if (!bothDone && autoSelectAttemptsRef.current < MAX_AUTO_SELECT && data.length > 0) {
       autoSelectAttemptsRef.current++
       const { preferredAudio = ['en', 'ja'], preferredSubtitles = ['en'], subtitleMode, preferSdhSubtitles, animeAudioMode } = useAppStore.getState()
-      const audioPreferences = playbackItem?.isAnime && animeAudioMode === 'sub'
-        ? ['ja', ...preferredAudio.filter((language) => language !== 'ja')]
-        : preferredAudio
+      const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+      let chosenAudioId = selAudio?.id
 
       // ── Audio auto-select ──
       if (!hasAutoSelectedAudioRef.current && audio.length > 0) {
-        let bestAudioId: number | undefined
-        let bestAudioRank = Infinity
-        audio.forEach((t) => {
-          const code = getLanguageCodeFromTrack(t.lang)
-          const rank = code ? audioPreferences.indexOf(code) : -1
-          if (rank !== -1 && rank < bestAudioRank) { bestAudioRank = rank; bestAudioId = t.id }
-        })
+        const bestAudioId = selectPreferredLanguageTrack(audio, audioPreferences, getLanguageCodeFromTrack)?.id
         if (bestAudioId !== undefined) {
+          chosenAudioId = bestAudioId
           if (bestAudioId !== selAudio?.id) {
             setTrackProperty('aid', bestAudioId).catch((error) => {
               logEvent('MPV DEBUG', `preferred audio track ${bestAudioId} failed: ${String(error)}`)
@@ -1991,22 +2072,20 @@ function FullNativeMpvPlayer({
 
       // ── Subtitle auto-select ──
       if (!hasAutoSelectedSubRef.current) {
-        if (subtitleMode === 'hide') {
+        const subtitleSelection = selectStartupSubtitle({
+          tracks: subs,
+          preferred: preferredSubtitles,
+          preferSdh: preferSdhSubtitles,
+          mode: subtitleMode,
+          selectedAudioLanguage: audio.find((track) => track.id === chosenAudioId)?.lang,
+          normalize: getLanguageCodeFromTrack,
+        })
+        if (subtitleSelection.kind === 'off') {
           if (selSub) sendPlayerCommand('set_property', ['sid', 'no'])
           setSelectedSub('no')
           hasAutoSelectedSubRef.current = true
-        } else if (subs.length > 0) {
-          const candidates = subtitleMode === 'forced' ? subs.filter((track) => track.forced) : subs
-        let bestSubId: number | undefined
-        let bestSubRank = Infinity
-          candidates.forEach((t) => {
-          const code = getLanguageCodeFromTrack(t.lang)
-          const languageRank = code ? preferredSubtitles.indexOf(code) : -1
-          const rank = languageRank >= 0 && preferSdhSubtitles && /\b(?:sdh|cc)\b/i.test(t.label) ? languageRank - 0.25 : languageRank
-          if (rank !== -1 && rank < bestSubRank) { bestSubRank = rank; bestSubId = t.id }
-        })
-        if (bestSubId === undefined && subtitleMode === 'forced') bestSubId = candidates[0]?.id
-        if (bestSubId !== undefined) {
+        } else if (subtitleSelection.kind === 'track') {
+          const bestSubId = subtitleSelection.track.id
           if (bestSubId !== selSub?.id) {
             setTrackProperty('sid', bestSubId).catch((error) => {
               logEvent('MPV DEBUG', `preferred subtitle track ${bestSubId} failed: ${String(error)}`)
@@ -2017,12 +2096,30 @@ function FullNativeMpvPlayer({
         } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
           hasAutoSelectedSubRef.current = true
         }
-        }
       }
     }
     setTracksLoaded(audio.length > 0 || subs.length > 0)
     return audio.length > 0 || subs.length > 0
   }, [])
+
+  const mirrorEmbeddedSubtitles = useCallback((source: string) => {
+    // mpv opens this as a separate subtitle demuxer. Its refresh seeks stay on
+    // that connection and cannot drain or pause the primary A/V packet queue.
+    subtitleMirrorPendingRef.current = source
+    sendPlayerCommand('sub-add', [source, 'auto'])
+      .then(() => {
+        if (subtitleMirrorPendingRef.current !== source) return false
+        subtitleMirrorPendingRef.current = null
+        return refreshTracks()
+      })
+      .catch((error) => {
+        if (subtitleMirrorPendingRef.current === source) {
+          subtitleMirrorPendingRef.current = null
+          refreshTracks().catch(() => false)
+        }
+        logEvent('MPV DEBUG', `subtitle mirror failed: ${String(error)}`)
+      })
+  }, [refreshTracks])
 
   // ─ Live subtitle translation ─────────────────────────────────────────────
   // Fast 200ms poll. Translation fires concurrently (non-blocking) so the poll
@@ -2471,6 +2568,7 @@ function FullNativeMpvPlayer({
       try {
         logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with URL hash: ${playerUrlHash(url)}`)
         const storeState = useAppStore.getState()
+        markPerformance('mpv-init-start')
         await launchEmbeddedPlayer({
           url,
           title,
@@ -2481,7 +2579,10 @@ function FullNativeMpvPlayer({
           videoCacheMode: storeState.videoCacheMode,
           mpvCustomArgs: buildMpvExtraArgs(storeState)
         })
+        markPerformance('mpv-initialized')
+        measurePerformance('mpv-initialization', 'mpv-init-start', 'mpv-initialized')
         if (cancelled || session.status === "stopped") return
+        mirrorEmbeddedSubtitles(streamUrl)
         setPlayerRunning(true)
         session.status = "playing"
         showControls()
@@ -2554,7 +2655,7 @@ function FullNativeMpvPlayer({
           if (scrobbleMdblistEnabled && mdblistApiKey) {
             const pct = Math.round(startProgress * 10000) / 100
             const mediaType = playbackItem.contentType === 'movie' ? 'movie' : 'series'
-            scrobbleMdblist('start', tmdbIdRef.current, mediaType, pct, playbackItem.season, playbackItem.episode, playbackItem.imdbId).catch(() => {})
+            scrobbleMdblist('start', tmdbIdRef.current, mediaType, pct, playbackItem.season, playbackItem.episode, playbackItem.imdbId, playbackItem.tvdbId).catch(() => {})
           }
 
           // Resolve TMDB ID then fetch skips from PMDB + IntroDB and merge
@@ -2564,7 +2665,10 @@ function FullNativeMpvPlayer({
                 const isEpisodic = playbackItem.contentType === 'series'
                 const preferredType = isEpisodic ? 'tv' : 'movie'
                 const mapping = await lookupTmdbId('imdb', playbackItem.imdbId, preferredType)
-                if (mapping) tmdbIdRef.current = mapping.tmdbId
+                if (mapping) {
+                  tmdbIdRef.current = mapping.tmdbId
+                  setSeekrLookupRevision((revision) => revision + 1)
+                }
               } catch (_) {}
             }
             const isEpisodic = playbackItem.contentType === 'series'
@@ -2653,7 +2757,7 @@ function FullNativeMpvPlayer({
       }, 50)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, title])
+  }, [url, title, mirrorEmbeddedSubtitles])
 
   useEffect(() => {
     let disposed = false
@@ -2668,6 +2772,11 @@ function FullNativeMpvPlayer({
       // FILE_LOADED means headers were parsed; PLAYBACK_RESTART means decoded
       // playback actually began. Only the latter should dismiss loading.
       if (event.payload.eventId !== 21) return
+      if (!playerReadyRef.current) {
+        markPerformance('player-video-ready')
+        measurePerformance('mpv-init-to-video-ready', 'mpv-init-start', 'player-video-ready')
+        measurePerformance('play-to-video-ready', 'player-play-request', 'player-video-ready')
+      }
       playerReadyRef.current = true
       setPlayerRunning(true)
       setPlayerReady(true)
@@ -2937,6 +3046,7 @@ function FullNativeMpvPlayer({
         videoCacheMode: storeState.videoCacheMode,
         mpvCustomArgs: buildMpvExtraArgs(launchState)
       })
+      mirrorEmbeddedSubtitles(url)
       applySavedVolume()
       logEvent('PLAYER DEBUG', `Player restarted successfully`)
     } catch (err) {
@@ -2944,7 +3054,7 @@ function FullNativeMpvPlayer({
       setError('Playback recovery failed. Choose another stream and try again.')
       logEvent('PLAYER DEBUG', `Auto-restart failed: ${err}`)
     }
-  }, [url, title, applySavedVolume])
+  }, [url, title, applySavedVolume, mirrorEmbeddedSubtitles])
 
   restartPlaybackRef.current = (resumeTime, options) => { void triggerRestart(resumeTime, options) }
 
@@ -3022,9 +3132,20 @@ function FullNativeMpvPlayer({
           lastDemuxerCacheDurRef.current = demuxerCacheDur
           logEvent('MPV DEBUG', `demuxer-cache-duration changed: ${demuxerCacheDur}s`)
         }
+        const didReachEof = eofReached === true && lastEofReachedRef.current !== true
         if (eofReached !== null && eofReached !== lastEofReachedRef.current) {
           lastEofReachedRef.current = eofReached
           logEvent('MPV DEBUG', `eof-reached changed: ${eofReached}`)
+        }
+        // Signed Seekr sprite URLs are only useful while this item is playing.
+        // Release them at actual EOF even when an Up Next overlay keeps the
+        // player mounted for the next episode.
+        if (didReachEof) {
+          const seekrRequest = seekrPreviewRequestRef.current
+          if (seekrRequest) {
+            clearSeekrPreview(seekrRequest)
+            seekrPreviewRequestRef.current = null
+          }
         }
         if (idleActive !== null && idleActive !== lastIdleActiveRef.current) {
           lastIdleActiveRef.current = idleActive
@@ -3129,6 +3250,9 @@ function FullNativeMpvPlayer({
           if (item && pmdbApiKey && pmdbSaveResumePosition && (tmdbIdRef.current || item.imdbId) && pos - lastPmdbPlaybackSaveRef.current >= 60) {
             lastPmdbPlaybackSaveRef.current = pos
             savePMDBProgressHelper(pos, dur, false)
+          }
+          if (item && mdblistApiKey && mdblistSaveResumePosition && (tmdbIdRef.current || item.imdbId || item.tvdbId) && pos - lastMdblistPlaybackSaveRef.current >= 60) {
+            lastMdblistPlaybackSaveRef.current = pos
             saveMdblistProgressHelper(pos, dur, false)
           }
 
@@ -3348,16 +3472,28 @@ function FullNativeMpvPlayer({
       } catch (_) {}
     }
 
-    // 3) Last resort: lenient per-addon loop — some addons only respond here.
+    // 3) Native batch, with the legacy per-addon loop only when that native
+    //    operation is unavailable.
     if (!foundUrl) {
       const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
+      const addons = getStreamAddons('series')
+      let fallbackAddons = addons
       try {
-        const native = await loadStreamCandidatesNative('series', streamId, getStreamAddons('series'), {
+        const native = await loadStreamCandidatesNative('series', streamId, addons, {
           cancelGroup: `streams:up-next-fallback:${item.imdbId}`,
           priority: 'playback',
         })
+        // Native loading preserves raw Stremio candidates. Apply the same
+        // TorBox annotation used below before deciding whether a torrent is
+        // playable, then re-check ownership after that asynchronous work.
+        const streams = await annotateTorBoxStreams(native.candidates).catch(() => native.candidates)
         if (!ownsSession()) return
-        const valid = native.candidates.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+        // A completed native batch already queried every successful addon.
+        // Retry only provider failures through the legacy transport.
+        fallbackAddons = native.failures.length > 0
+          ? addons.filter((addon) => native.failures.some((failure) => failure.addonId === addon.manifest.id))
+          : []
+        const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
         if (valid) {
           foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
             title,
@@ -3366,25 +3502,33 @@ function FullNativeMpvPlayer({
           }).catch(() => null)
           chosenStream = valid
         }
-      } catch (_) {
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setIsAutoSearching(false)
+          return
+        }
         // The established per-addon loop below remains the compatibility path.
       }
-      for (const addon of getStreamAddons('series')) {
-        if (foundUrl) break
-        try {
-          const rawStreams = await getAddonStreams(addon.url, 'series', streamId)
-          if (!ownsSession()) return
-          const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
-          const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
-          if (valid) {
-            foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
-              title,
-              season: nextEp.season,
-              episode: nextEp.episode,
-            }).catch(() => null)
-            if (foundUrl) break
-          }
-        } catch (_) {}
+      // A successful native batch only retries addons it reported as failed;
+      // empty or unplayable responses are not fetched twice.
+      if (!foundUrl) {
+        for (const addon of fallbackAddons) {
+          if (foundUrl) break
+          try {
+            const rawStreams = await getAddonStreams(addon.url, 'series', streamId)
+            if (!ownsSession()) return
+            const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
+            const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+            if (valid) {
+              foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
+                title,
+                season: nextEp.season,
+                episode: nextEp.episode,
+              }).catch(() => null)
+              if (foundUrl) break
+            }
+          } catch (_) {}
+        }
       }
     }
 
@@ -3454,6 +3598,7 @@ function FullNativeMpvPlayer({
         videoCacheMode: storeState.videoCacheMode,
         mpvCustomArgs: buildMpvExtraArgs(storeState)
       })
+      mirrorEmbeddedSubtitles(foundUrl)
       setPlayerRunning(true)
       applySavedVolume()
       // Feed the same reliability history the stream selector uses (paths 1/2
@@ -3549,7 +3694,7 @@ function FullNativeMpvPlayer({
       setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout])
+  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
 
   useEffect(() => {
     if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
@@ -4359,9 +4504,15 @@ function FullNativeMpvPlayer({
                 >
                   {scrubThumbnailPreviews && timelineThumbnail && (
                     <ScrubThumbnailImage
-                      key={timelineThumbnail}
-                      src={timelineThumbnail}
-                      onInvalid={() => setTimelineThumbnail(null)}
+                      key={typeof timelineThumbnail === 'string' ? timelineThumbnail : `${timelineThumbnail.cue.spriteUrl}:${timelineThumbnail.cue.x}:${timelineThumbnail.cue.y}`}
+                      thumbnail={timelineThumbnail}
+                      onInvalid={() => {
+                        seekrPreviewRef.current = null
+                        setTimelineThumbnail(null)
+                        // A revoked/expired signed sprite URL must hand the
+                        // same hover back to the established providers.
+                        window.setTimeout(() => updateTimelinePreviewAtPct(timelinePreview.leftPct), 0)
+                      }}
                     />
                   )}
                   <span className="mt-2 block text-center text-sm font-bold tabular-nums text-white [text-shadow:0_2px_8px_rgba(0,0,0,0.95)]">

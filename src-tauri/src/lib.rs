@@ -5,6 +5,7 @@ mod image_cache;
 mod libmpv_player;
 #[cfg(target_os = "linux")]
 mod linux_render_surface;
+mod seekr;
 mod thumbnails;
 mod ytproxy;
 
@@ -161,14 +162,21 @@ pub fn run() {
 
         // The Linux player renders through GTK's GLArea and libmpv's Render
         // API, so video/UI composition no longer depends on X11 window
-        // stacking. WebKitGTK itself still crashes on some native-Wayland GPU
-        // combinations (notably transparent hybrid-GPU windows). Prefer its
-        // mature XWayland backend when available; pure Wayland systems remain
-        // supported, and AURALES_NATIVE_WAYLAND=1 opts in explicitly.
-        let native_wayland = std::env::var("AURALES_NATIVE_WAYLAND")
+        // stacking. Native Wayland keeps pointer and keyboard input attached
+        // to the GTK WebView; XWayland can leave a borderless Tauri window
+        // visible but unable to receive interaction under KWin.
+        let native_wayland_requested = std::env::var("AURALES_NATIVE_WAYLAND")
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
-        if !native_wayland && std::env::var_os("DISPLAY").is_some() {
+        let wayland_session = std::env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+        let force_x11 = std::env::var("AURALES_FORCE_X11")
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        if !force_x11 && (native_wayland_requested || wayland_session) {
+            std::env::set_var("GDK_BACKEND", "wayland");
+        } else if std::env::var_os("DISPLAY").is_some() {
             std::env::set_var("GDK_BACKEND", "x11");
         }
     }
@@ -256,6 +264,8 @@ pub fn run() {
             commands::get_thumbnail_metadata,
             commands::get_or_queue_scrub_thumbnail,
             commands::prefetch_thumbnail_sprite,
+            commands::get_seekr_preview,
+            commands::clear_seekr_preview,
             commands::get_thumbnail_debug_state,
             commands::mpv_get_property,
             commands::get_player_snapshot,
@@ -315,6 +325,16 @@ pub fn run() {
             commands::sync_password_load,
             commands::sync_password_delete,
             commands::sync_batch,
+            commands::list_server_connections,
+            commands::save_server_connection,
+            commands::remove_server_connection,
+            commands::set_server_connection_enabled,
+            commands::test_server_connection,
+            commands::refresh_server_catalog,
+            commands::list_server_catalogs,
+            commands::get_server_catalog_items,
+            commands::search_server_catalogs,
+            commands::get_server_streams,
             image_cache::image_cache_configure,
             image_cache::image_cache_stats,
             image_cache::image_cache_clear,

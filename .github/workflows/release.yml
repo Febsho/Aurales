@@ -150,6 +150,7 @@ jobs:
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
           ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
           VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
         with:
           tagName: v__VERSION__
           releaseName: 'Aurales v__VERSION__'
@@ -178,6 +179,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
           ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
         run: |
           npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
           cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb

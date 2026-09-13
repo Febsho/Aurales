@@ -6,6 +6,17 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 // shell is enriched later, and make return visits and season changes instant.
 const memory = new Map<string, SeasonDetails>()
 const pending = new Map<string, Promise<SeasonDetails | null>>()
+const MAX_MEMORY_SEASONS = 120
+
+function rememberSeason(key: string, season: SeasonDetails): void {
+  memory.delete(key)
+  memory.set(key, season)
+  while (memory.size > MAX_MEMORY_SEASONS) {
+    const oldest = memory.keys().next().value
+    if (!oldest) break
+    memory.delete(oldest)
+  }
+}
 
 export function animeSeasonCacheKey(tvdbId: string | number, season: number, settingsKey: string): string {
   return `anime-tvdb-season:v1:${settingsKey}:${String(tvdbId).replace(/^[a-z_]+[-:]/i, '')}:${season}`
@@ -13,10 +24,13 @@ export function animeSeasonCacheKey(tvdbId: string | number, season: number, set
 
 export async function getCachedAnimeSeason(key: string): Promise<SeasonDetails | null> {
   const hot = memory.get(key)
-  if (hot) return hot
+  if (hot) {
+    rememberSeason(key, hot)
+    return hot
+  }
   const cached = await cacheGet<SeasonDetails>(key)
   if (!cached?.data) return null
-  memory.set(key, cached.data)
+  rememberSeason(key, cached.data)
   return cached.data
 }
 
@@ -27,7 +41,7 @@ export async function getOrLoadAnimeSeason(key: string, load: () => Promise<Seas
   if (inFlight) return inFlight
   const request = load().then(async (season) => {
     if (!season || season.episodes.length === 0) return season
-    memory.set(key, season)
+    rememberSeason(key, season)
     await cacheSet(key, season, { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: CACHE_TTLS.ANIME_MAPPING_FINISHED })
     return season
   }).finally(() => pending.delete(key))

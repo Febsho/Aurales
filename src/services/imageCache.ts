@@ -24,9 +24,11 @@ export function recoverArtworkSource(url: string): string {
   return /^https?:\/\//i.test(candidate) ? candidate : url
 }
 
-export function cachedImage(url: string): string
-export function cachedImage(url: string | undefined): string | undefined
-export function cachedImage(url: string | undefined): string | undefined {
+export type ImageCacheVariant = 'card' | 'backdrop'
+
+export function cachedImage(url: string, variant?: ImageCacheVariant): string
+export function cachedImage(url: string | undefined, variant?: ImageCacheVariant): string | undefined
+export function cachedImage(url: string | undefined, variant: ImageCacheVariant = 'card'): string | undefined {
   if (!url) return url
   const source = recoverArtworkSource(url)
   if (!isTauri() || !/^https?:\/\//i.test(source)) return source
@@ -34,7 +36,13 @@ export function cachedImage(url: string | undefined): string | undefined {
     // The native handler bounds concurrent misses and deduplicates requests
     // for the same URL. convertFileSrc also emits the platform-correct custom
     // protocol URL (imgcache:// on Linux, http://imgcache.localhost on Windows).
-    return convertFileSrc(source, 'imgcache')
+    // Full-bleed detail artwork needs a larger cached derivative than a shelf
+    // card. A URL fragment creates a separate native cache key without
+    // changing the provider request (fragments are never sent over HTTP).
+    const cacheSource = variant === 'backdrop'
+      ? `${source}${source.includes('#') ? '&' : '#'}aurales-cache=backdrop`
+      : source
+    return convertFileSrc(cacheSource, 'imgcache')
   } catch (_) {
     return source
   }
@@ -71,7 +79,29 @@ export function watchStalledImage(
   return () => window.clearTimeout(timer)
 }
 
+// Keep a *small* hot set of images that were explicitly warmed. Holding every
+// DOM <img> that happens to load retains its card, row and decoded bitmap for
+// the whole session, which turns long Home feeds into an unbounded renderer
+// memory leak. WebKit's normal HTTP cache remains responsible for all ordinary
+// images; this only avoids duplicate work for the most recently warmed art.
 const imageWarmups = new Map<string, Promise<void>>()
+const sessionDecodedImages = new Map<string, HTMLImageElement>()
+// Full-resolution provider artwork can be far larger than its card. A dozen
+// entries covers the viewport and next rail batch without pinning hundreds of
+// megabytes in WebKit's decoded-image memory.
+const MAX_SESSION_DECODED_IMAGES = 12
+
+function rememberDecodedImage(source: string, image: HTMLImageElement): void {
+  // Map insertion order gives us a compact LRU without retaining the DOM for
+  // every poster the user has scrolled past.
+  sessionDecodedImages.delete(source)
+  sessionDecodedImages.set(source, image)
+  while (sessionDecodedImages.size > MAX_SESSION_DECODED_IMAGES) {
+    const oldest = sessionDecodedImages.keys().next().value
+    if (!oldest) break
+    sessionDecodedImages.delete(oldest)
+  }
+}
 const queuedImageWarmups = new Map<string, Promise<void>>()
 const imageWarmupQueue: Array<() => void> = []
 // Match the native cache's bounded downloader. This maximizes cold-cache
@@ -109,18 +139,22 @@ export function warmCachedImage(url: string | undefined): Promise<void> {
   if (!url) return Promise.resolve()
   const source = cachedImage(url)
   if (!source) return Promise.resolve()
+  if (sessionDecodedImages.has(source)) return Promise.resolve()
   const existing = imageWarmups.get(source)
   if (existing) return existing
 
   const request = new Promise<void>((resolve) => {
     const image = new Image()
     image.decoding = 'async'
-    image.onload = () => resolve()
+    image.onload = () => {
+      rememberDecodedImage(source, image)
+      resolve()
+    }
     image.onerror = () => resolve()
     image.src = source
   }).finally(() => {
-    // The decoded resource remains in the browser cache; only release our
-    // promise bookkeeping.
+    // Keep successful decodes above, but release failed attempts so a later
+    // origin/cache recovery can retry them.
     imageWarmups.delete(source)
   })
   imageWarmups.set(source, request)

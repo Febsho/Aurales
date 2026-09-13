@@ -35,6 +35,15 @@ describe('anime season native compatibility loader', () => {
     ))
   })
 
+  it('refreshes stale cache through the legacy provider on older binaries', async () => {
+    mocks.cacheGet.mockResolvedValue({ data: season, stale: true, age: 1 })
+    mocks.invoke.mockRejectedValue(new Error('unknown command'))
+    mocks.getSeason.mockResolvedValue(season)
+    await expect(loadAnimeSeason(42, 1)).resolves.toEqual(season)
+    await vi.waitFor(() => expect(mocks.getSeason).toHaveBeenCalledWith('tvdb-42', 1))
+    expect(mocks.cacheSet).not.toHaveBeenCalled()
+  })
+
   it('preserves the provider fallback on a native error', async () => {
     mocks.invoke.mockRejectedValue(new Error('native unavailable'))
     mocks.getSeason.mockResolvedValue(season)

@@ -84,7 +84,7 @@ pub async fn sync_batch(
         "cursor": request.cursor,
         "records": request.records,
     });
-    let key = sync_request_key(&endpoint, &body);
+    let key = sync_request_key(&endpoint, &request.access_token, &body);
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(30_000).clamp(1_000, 60_000));
     let token = request.access_token;
     let mode = request.mode;
@@ -123,9 +123,11 @@ fn sync_endpoint(endpoint: &str) -> Result<String, String> {
     Ok(endpoint)
 }
 
-fn sync_request_key(endpoint: &str, body: &Value) -> String {
+fn sync_request_key(endpoint: &str, access_token: &str, body: &Value) -> String {
     let mut hasher = DefaultHasher::new();
     endpoint.hash(&mut hasher);
+    // Different signed-in accounts must never share a batch response.
+    access_token.hash(&mut hasher);
     body.to_string().hash(&mut hasher);
     format!("sync-batch:{:016x}", hasher.finish())
 }
@@ -246,9 +248,18 @@ mod tests {
         assert!(sync_endpoint("file:///tmp/sync").is_err());
         let body = json!({"cursor":"1","records":[]});
         assert_eq!(
-            sync_request_key("https://sync.example/v1/sync", &body),
-            sync_request_key("https://sync.example/v1/sync", &body)
+            sync_request_key("https://sync.example/v1/sync", "account-a", &body),
+            sync_request_key("https://sync.example/v1/sync", "account-a", &body)
         );
+    }
+
+    #[test]
+    fn isolates_identical_sync_batches_between_accounts() {
+        let body = json!({"cursor":"0","records":[]});
+        let a = sync_request_key("https://sync.example/v1/sync", "account-a", &body);
+        let b = sync_request_key("https://sync.example/v1/sync", "account-b", &body);
+        assert_ne!(a, b);
+        assert!(!a.contains("account-a"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { MediaRowSkeleton } from '../components/ui/Skeleton'
 import { getAddonCatalog } from '../services/addons'
 import { searchEngines, type SearchEngineId } from '../services/searchEngines'
 import { cancelRequestGroup } from '../services/network/requestCoordinator'
+import { searchServerCatalogs } from '../services/serverIntegrations'
 
 const SEARCH_HISTORY_KEY = 'orynt_search_history'
 const MAX_HISTORY = 10
@@ -298,6 +299,11 @@ export default function SearchPage() {
       const p = addonP.then(mergeAndShow).catch(() => {})
       pending.push(p)
     }
+
+    // Native servers are an additional, failure-isolated source. Their items
+    // carry canonical metadata IDs, so the normal ranking pass deduplicates
+    // them against TMDB/TVDB/AniList results and keeps a single detail page.
+    pending.push(searchServerCatalogs(text).then(mergeAndShow).catch(() => {}))
 
     await Promise.allSettled(pending)
     if (requestId !== requestIdRef.current) return

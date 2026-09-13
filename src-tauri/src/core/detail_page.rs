@@ -3,11 +3,12 @@ use crate::db::Database;
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore};
+mod coordinator;
+pub use coordinator::DetailPageCoordinator;
+#[cfg(test)]
+use coordinator::PriorityLimiter;
+pub(crate) use coordinator::{priority_score, SharedResult};
 
 const TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL: &str = "https://image.tmdb.org/t/p";
@@ -43,253 +44,6 @@ pub struct LoadDetailPageResponse {
     pub data: Value,
     pub stale: bool,
     pub cache_status: String,
-}
-
-#[derive(Clone)]
-pub(crate) struct SharedResult {
-    pub(crate) data: Value,
-    pub(crate) cache_status: String,
-}
-
-#[derive(Default)]
-struct CoordinatorState {
-    inflight: HashMap<String, watch::Sender<Option<Result<SharedResult, String>>>>,
-    groups: HashMap<String, (String, u64)>,
-}
-
-pub struct DetailPageCoordinator {
-    state: Mutex<CoordinatorState>,
-    limiter: Arc<PriorityLimiter>,
-    provider_limiters: Mutex<HashMap<String, Arc<Semaphore>>>,
-}
-
-impl Default for DetailPageCoordinator {
-    fn default() -> Self {
-        Self {
-            state: Mutex::new(CoordinatorState::default()),
-            limiter: Arc::new(PriorityLimiter::new(4)),
-            provider_limiters: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-struct PriorityWaiter {
-    priority: u8,
-    sequence: u64,
-    sender: oneshot::Sender<()>,
-}
-
-struct PriorityLimitState {
-    active: usize,
-    sequence: u64,
-    waiting: Vec<PriorityWaiter>,
-}
-
-struct PriorityLimiter {
-    limit: usize,
-    state: Mutex<PriorityLimitState>,
-}
-
-impl PriorityLimiter {
-    fn new(limit: usize) -> Self {
-        Self {
-            limit,
-            state: Mutex::new(PriorityLimitState {
-                active: 0,
-                sequence: 0,
-                waiting: vec![],
-            }),
-        }
-    }
-
-    async fn acquire(self: &Arc<Self>, priority: u8) -> Result<PriorityPermit, String> {
-        let receiver = {
-            let mut state = self.state.lock().await;
-            if state.active < self.limit {
-                state.active += 1;
-                None
-            } else {
-                let sequence = state.sequence;
-                state.sequence = state.sequence.saturating_add(1);
-                let (sender, receiver) = oneshot::channel();
-                state.waiting.push(PriorityWaiter {
-                    priority,
-                    sequence,
-                    sender,
-                });
-                Some(receiver)
-            }
-        };
-        if let Some(receiver) = receiver {
-            receiver
-                .await
-                .map_err(|_| "Detail request coordinator closed".to_string())?;
-        }
-        Ok(PriorityPermit {
-            limiter: self.clone(),
-        })
-    }
-
-    async fn release(&self) {
-        let mut state = self.state.lock().await;
-        state.active = state.active.saturating_sub(1);
-        while state.active < self.limit && !state.waiting.is_empty() {
-            let index = state
-                .waiting
-                .iter()
-                .enumerate()
-                .max_by(|(_, left), (_, right)| {
-                    left.priority
-                        .cmp(&right.priority)
-                        .then_with(|| right.sequence.cmp(&left.sequence))
-                })
-                .map(|(index, _)| index)
-                .unwrap_or_default();
-            let waiter = state.waiting.swap_remove(index);
-            if waiter.sender.send(()).is_ok() {
-                state.active += 1;
-                break;
-            }
-        }
-    }
-}
-
-struct PriorityPermit {
-    limiter: Arc<PriorityLimiter>,
-}
-
-impl Drop for PriorityPermit {
-    fn drop(&mut self) {
-        let limiter = self.limiter.clone();
-        tokio::spawn(async move { limiter.release().await });
-    }
-}
-
-pub(crate) fn priority_score(priority: &str) -> u8 {
-    match priority {
-        "playback" => 4,
-        "interactive" => 3,
-        "visible" => 2,
-        "background" => 1,
-        _ => 2,
-    }
-}
-
-impl DetailPageCoordinator {
-    /// Preserve the frontend coordinator's one-active-request-per-addon
-    /// contract while allowing unrelated providers to progress concurrently.
-    pub(crate) async fn acquire_provider(
-        &self,
-        provider: &str,
-    ) -> Result<OwnedSemaphorePermit, String> {
-        let limiter = {
-            let mut limiters = self.provider_limiters.lock().await;
-            limiters
-                .entry(provider.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(1)))
-                .clone()
-        };
-        limiter
-            .acquire_owned()
-            .await
-            .map_err(|_| "Provider request coordinator closed".to_string())
-    }
-
-    async fn begin(
-        &self,
-        key: &str,
-        group: &str,
-    ) -> (
-        u64,
-        Option<watch::Receiver<Option<Result<SharedResult, String>>>>,
-        Option<watch::Sender<Option<Result<SharedResult, String>>>>,
-    ) {
-        let mut state = self.state.lock().await;
-        let generation = match state.groups.get(group) {
-            Some((active_key, generation)) if active_key == key => *generation,
-            Some((_, generation)) => generation.saturating_add(1),
-            None => 1,
-        };
-        state
-            .groups
-            .insert(group.to_string(), (key.to_string(), generation));
-
-        if let Some(sender) = state.inflight.get(key) {
-            return (generation, Some(sender.subscribe()), None);
-        }
-
-        let (sender, _) = watch::channel(None);
-        state.inflight.insert(key.to_string(), sender.clone());
-        (generation, None, Some(sender))
-    }
-
-    async fn is_stale(&self, key: &str, group: &str, generation: u64) -> bool {
-        self.state
-            .lock()
-            .await
-            .groups
-            .get(group)
-            .map(|(active_key, active_generation)| {
-                active_key != key || *active_generation != generation
-            })
-            .unwrap_or(true)
-    }
-
-    async fn finish(&self, key: &str) {
-        self.state.lock().await.inflight.remove(key);
-    }
-
-    pub(crate) async fn run<F, Fut>(
-        &self,
-        key: String,
-        group: String,
-        priority: u8,
-        timeout: Duration,
-        operation: F,
-    ) -> Result<LoadDetailPageResponse, String>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<SharedResult, String>>,
-    {
-        let (generation, follower, leader) = self.begin(&key, &group).await;
-        let result = if let Some(mut receiver) = follower {
-            loop {
-                if let Some(result) = receiver.borrow().clone() {
-                    break result;
-                }
-                receiver
-                    .changed()
-                    .await
-                    .map_err(|_| "Detail request was cancelled".to_string())?;
-            }
-        } else {
-            let sender = leader.expect("a new request always owns a sender");
-            let result = match tokio::time::timeout(timeout, async {
-                let permit = self.limiter.acquire(priority).await?;
-                if self.is_stale(&key, &group, generation).await {
-                    drop(permit);
-                    return Err("Detail request was superseded".to_string());
-                }
-                let result = operation().await;
-                drop(permit);
-                result
-            })
-            .await
-            {
-                Ok(result) => result,
-                Err(_) => Err("Detail request timed out".to_string()),
-            };
-            let _ = sender.send(Some(result.clone()));
-            self.finish(&key).await;
-            result
-        }?;
-
-        Ok(LoadDetailPageResponse {
-            data: result.data,
-            stale: self.is_stale(&key, &group, generation).await,
-            cache_status: result.cache_status,
-        })
-    }
 }
 
 pub async fn load_detail_page(
@@ -1627,7 +1381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operation_timeout_is_reported() {
+    async fn started_operation_preserves_result_after_soft_deadline() {
         let coordinator = DetailPageCoordinator::default();
         let result = coordinator
             .run(
@@ -1644,7 +1398,85 @@ mod tests {
                 },
             )
             .await;
+        assert_eq!(result.unwrap().data, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn timeout_drains_started_worker_before_returning_result() {
+        let coordinator = DetailPageCoordinator::default();
+        let finished = Arc::new(AtomicUsize::new(0));
+        let worker_finished = finished.clone();
+        let result = coordinator
+            .run(
+                "blocking".into(),
+                "detail".into(),
+                2,
+                Duration::from_millis(5),
+                || async move {
+                    tokio::task::spawn_blocking(move || {
+                        std::thread::sleep(Duration::from_millis(30));
+                        worker_finished.store(1, Ordering::SeqCst);
+                    })
+                    .await
+                    .unwrap();
+                    Ok(SharedResult {
+                        data: Value::Null,
+                        cache_status: "miss".into(),
+                    })
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap().data, Value::Null);
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_operations_still_time_out_without_starting_work() {
+        let coordinator = Arc::new(DetailPageCoordinator::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut tasks = Vec::new();
+        for index in 0..4 {
+            let coordinator = coordinator.clone();
+            let active = active.clone();
+            let release = release.clone();
+            tasks.push(tokio::spawn(async move {
+                coordinator
+                    .run(
+                        format!("busy:{index}"),
+                        format!("busy:{index}"),
+                        2,
+                        Duration::from_secs(1),
+                        || async move {
+                            active.fetch_add(1, Ordering::SeqCst);
+                            release.notified().await;
+                            Ok(SharedResult {
+                                data: Value::Null,
+                                cache_status: "miss".into(),
+                            })
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }));
+        }
+        while active.load(Ordering::SeqCst) < 4 {
+            tokio::task::yield_now().await;
+        }
+        let result = coordinator
+            .run(
+                "queued".into(),
+                "queued".into(),
+                2,
+                Duration::from_millis(5),
+                || async { panic!("queued operation must not start") },
+            )
+            .await;
         assert_eq!(result.unwrap_err(), "Detail request timed out");
+        release.notify_waiters();
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 
     #[tokio::test]

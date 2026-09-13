@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
-import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
+import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders, resolveBetterPoster } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbCleanPoster, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { cachedImage, retryImageFromSource, warmCachedImage } from '../services/imageCache'
@@ -47,6 +47,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const mouseFollowFrameRef = useRef<number | null>(null)
   const mouseFollowPointerRef = useRef<{ card: HTMLButtonElement; x: number; y: number } | null>(null)
   const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
+  // Resolve the final Better Poster well before the card can enter view. The
+  // regular visibility gate remains tight so provider metadata still avoids
+  // fanning out during scroll.
+  const isPosterApproaching = useVisibilityOnce(cardRef, { rootMargin: '1000px' })
   const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
   const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
@@ -81,6 +85,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [cleanTmdbPoster, setCleanTmdbPoster] = useState<string | undefined>(undefined)
   const [cleanTmdbLogo, setCleanTmdbLogo] = useState<string | undefined>(undefined)
   const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
+  const [betterPosterUnavailable, setBetterPosterUnavailable] = useState(false)
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
   // Provider artwork is enrichment, not a prerequisite for a usable card.
   // This becomes true on deliberate focus/hover, so a shelf of already
@@ -116,6 +121,22 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
   const customPosterNeedsImdbId = betterPosters.enabled || customArtUrls.posterUrl.includes('{imdb_id}')
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+
+  useEffect(() => {
+    if (!isPosterApproaching || disableArtOverride || !betterPosters.enabled || customArt.poster) return
+    let cancelled = false
+    setBetterPosterUnavailable(false)
+    void resolveBetterPoster(displayItem).then((poster) => {
+      if (cancelled) return
+      if (poster) setResolvedCustomArt((current) => current.poster === poster ? current : { ...current, poster })
+      else setBetterPosterUnavailable(true)
+    })
+    return () => { cancelled = true }
+  }, [
+    isPosterApproaching, disableArtOverride, betterPosters.enabled, customArt.poster,
+    displayItem.id, displayItem.type, displayItem.imdbId, displayItem.tmdbId,
+    displayItem.tvdbId, displayItem.malId, displayItem.anilistId,
+  ])
   const mouseFollowEnabled = !homeCardAnimations && !reducedMotion
   const handleMouseFollow = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (!mouseFollowEnabled) return
@@ -310,14 +331,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   }, [posterSize])
 
   const isCompleted = primaryProgressProvider === 'local' ? localCompleted : providerWatched
-  // Better Posters are static images; watched state remains a live Aurales
-  // overlay while the artwork integration is enabled.
+  // Show in-progress playback on cards when local progress is selected.
   const showBetterPostersWatchState = primaryProgressProvider === 'local'
-  const watchedBadge = betterPosters.enabled && isCompleted && (
-    <div className="absolute bottom-2.5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/70 px-2 py-1 text-meta font-bold text-white/85 backdrop-blur-md">
-      <span aria-hidden="true" className="mr-1 text-accent">●</span>Watched
-    </div>
-  )
 
   useEffect(() => {
     if (!isVisible || layout !== 'feature') return
@@ -374,6 +389,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     // hover set detailIntent, making posters appear to update on hover.
     const needsCustomPosterId = !disableArtOverride
       && customPosterNeedsImdbId
+      // Better Posters owns its own queued IMDb bridge above. Running the
+      // generic artwork bridge as well doubled metadata work for every card
+      // entering the Home scroll buffer.
+      && !betterPosters.enabled
       && !imdbId
       && Boolean(tmdbId || displayItem.tvdbId)
 
@@ -453,8 +472,13 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
   const pickWorkingUrl = (...urls: Array<string | undefined>) =>
     urls.find((url) => url && !failedImageUrls.has(url))
+  // Never paint a catalog/default poster only to visibly replace it once the
+  // IMDb bridge returns. A known Better Poster is synchronous; otherwise wait
+  // for the shared resolution and use normal art solely as its fallback.
+  const waitingForBetterPoster = !disableArtOverride && betterPosters.enabled
+    && !customArt.poster && !resolvedCustomArt.poster && !betterPosterUnavailable
   const posterUrl = cardArtworkUrl(
-    pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, initialArtItem.poster),
+    waitingForBetterPoster ? undefined : pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, initialArtItem.poster),
     'poster',
     posterSize,
   )
@@ -527,6 +551,8 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         provider: displayItem.provider,
         sourceAddonId: displayItem.sourceAddonId,
         sourceAddonItemId: displayItem.sourceAddonItemId,
+        sourceConnectionId: displayItem.sourceConnectionId,
+        sourceItemId: displayItem.sourceItemId,
         addonMeta: displayItem.addonMeta,
       },
     })
@@ -635,13 +661,13 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     const cinematicSpecial = cinematicRanked || cinematicFeature
     const cinematicLogo = cinematicFeature ? cleanTmdbLogo || logoUrl : logoUrl
     const cinematicSpecialHeight = cinematicRanked
-      ? posterSize === 'compact' ? '260px' : posterSize === 'large' ? '390px' : posterSize === 'huge' ? '445px' : '330px'
+      ? posterSize === 'compact' ? '240px' : posterSize === 'large' ? '350px' : posterSize === 'huge' ? '400px' : '300px'
       : posterSize === 'compact' ? '325px' : posterSize === 'large' ? '450px' : posterSize === 'huge' ? '525px' : '400px'
     const cinematicStyle = cinematicSpecial
       ? ({ '--cinematic-special-height': cinematicSpecialHeight } as React.CSSProperties)
       : undefined
     const cinematicBaseWidth = cinematicRanked
-      ? 'w-[calc(var(--cinematic-special-height)*1.01)]'
+      ? 'w-[calc(var(--cinematic-special-height)*0.927)]'
       : cinematicFeature
         ? 'w-[calc(var(--cinematic-special-height)*0.8)]'
         : 'w-[clamp(10rem,13vw,13rem)]'
@@ -653,12 +679,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       : 'h-[clamp(15rem,19.5vw,19.5rem)]'
     const cinematicViewportWidth = cinematicRanked
       ? expanded
-        ? 'ml-[calc(var(--cinematic-special-height)*0.34)] w-[min(38vw,38rem)]'
-        : 'ml-[calc(var(--cinematic-special-height)*0.34)] w-[calc(var(--cinematic-special-height)*0.667)]'
+        ? 'ml-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]'
+        : 'ml-[calc(var(--cinematic-special-height)*0.26)] w-[calc(var(--cinematic-special-height)*0.667)]'
       : 'ml-0 w-full'
     const cinematicOuterWidth = cinematicRanked
       ? expanded
-        ? 'w-[calc(var(--cinematic-special-height)*0.34+min(38vw,38rem))]'
+        ? 'w-[calc(var(--cinematic-special-height)*0.26+min(38vw,38rem))]'
         : cinematicBaseWidth
       : expanded ? cinematicExpandedWidth : cinematicBaseWidth
     const cinematicRankValue = rank || (cardIndex ?? 0) + 1
@@ -682,7 +708,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           <span
             aria-hidden="true"
             className="media-rank h-[var(--cinematic-special-height)] opacity-100"
-            style={{ fontSize: 'calc(var(--cinematic-special-height) * 0.58)', width: 'calc(var(--cinematic-special-height) * 0.34)' }}
+            style={{ fontSize: 'calc(var(--cinematic-special-height) * 0.52)', width: 'calc(var(--cinematic-special-height) * 0.26)' }}
           >
             <span className="media-rank__value" data-digits={String(cinematicRankValue).length}>{cinematicRankValue}</span>
           </span>
@@ -719,10 +745,9 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
             {cinematicLogo ? <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
           </div>}
-          {watchedBadge}
           {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
         </div>
-        <div className={`absolute top-full grid transition-[grid-template-rows,opacity] duration-300 ${cinematicRanked ? 'left-[calc(var(--cinematic-special-height)*0.34)] w-[min(38vw,38rem)]' : 'left-0 w-full'} ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+        <div className={`absolute top-full grid transition-[grid-template-rows,opacity] duration-300 ${cinematicRanked ? 'left-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]' : 'left-0 w-full'} ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
           <div className="overflow-hidden">
             <div className="px-2 pt-3">
               <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
@@ -807,7 +832,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               {displayItem.year && <><span className="text-white/60">·</span><span>{displayItem.year}</span></>}
             </div>
           </div>}
-          {!nativeTrailerVisible && watchedBadge}
           {!nativeTrailerVisible && showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
         </div>
       </button>
@@ -871,7 +895,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           )}
 
           {/* In-progress bar (landscape) */}
-          {watchedBadge}
           {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && (
             <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
               <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />
@@ -1086,7 +1109,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         )}
 
         {/* In-progress bar */}
-        {watchedBadge}
         {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && (
           <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
             <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />

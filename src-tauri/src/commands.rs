@@ -25,6 +25,10 @@ use crate::core::providers;
 use crate::core::request;
 use crate::core::request::ProxyResponse;
 use crate::core::request::StreamProbeResponse;
+use crate::core::server::{
+    self, ConnectionTestResult, RefreshResult, SaveServerConnectionRequest, ServerCatalog,
+    ServerCatalogItem, ServerConnection, ServerStream, ServerStreamRequest,
+};
 use crate::core::settings;
 use crate::core::settings::Setting;
 use crate::core::stream_candidates::{
@@ -43,6 +47,94 @@ use std::sync::atomic::AtomicIsize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
+
+#[tauri::command]
+pub fn list_server_connections(db: State<'_, Database>) -> Result<Vec<ServerConnection>, String> {
+    server::list_connections(&db)
+}
+
+#[tauri::command]
+pub fn save_server_connection(
+    request: SaveServerConnectionRequest,
+    db: State<'_, Database>,
+) -> Result<ServerConnection, String> {
+    server::save_connection(&db, request)
+}
+
+#[tauri::command]
+pub fn remove_server_connection(
+    connection_id: String,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    server::remove_connection(&db, &connection_id)
+}
+
+#[tauri::command]
+pub fn set_server_connection_enabled(
+    connection_id: String,
+    enabled: bool,
+    db: State<'_, Database>,
+) -> Result<ServerConnection, String> {
+    server::set_enabled(&db, &connection_id, enabled)
+}
+
+#[tauri::command]
+pub async fn test_server_connection(
+    request: SaveServerConnectionRequest,
+    db: State<'_, Database>,
+) -> Result<ConnectionTestResult, String> {
+    let db = db.inner().clone();
+    Ok(
+        tokio::task::spawn_blocking(move || server::test_connection(Some(&db), request))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+}
+
+#[tauri::command]
+pub async fn refresh_server_catalog(
+    connection_id: String,
+    db: State<'_, Database>,
+) -> Result<RefreshResult, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::refresh_catalog(&db, &connection_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn list_server_catalogs(db: State<'_, Database>) -> Result<Vec<ServerCatalog>, String> {
+    server::list_catalogs(&db)
+}
+
+#[tauri::command]
+pub fn get_server_catalog_items(
+    connection_id: String,
+    catalog_id: String,
+    max_items: Option<usize>,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    server::catalog_items(&db, &connection_id, &catalog_id, max_items)
+}
+
+#[tauri::command]
+pub fn search_server_catalogs(
+    query: String,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    server::search_catalogs(&db, &query)
+}
+
+#[tauri::command]
+pub async fn get_server_streams(
+    request: ServerStreamRequest,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerStream>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::streams(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 pub async fn load_detail_page(
@@ -672,13 +764,7 @@ fn try_reuse_libmpv_player(
                 h,
             );
             #[cfg(target_os = "linux")]
-            crate::linux_render_surface::resize(
-                _app,
-                x.unwrap_or(0),
-                y.unwrap_or(0),
-                w,
-                h,
-            )?;
+            crate::linux_render_surface::resize(_app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
         }
     }
 
@@ -1432,7 +1518,7 @@ fn launch_mpv_with_window(
                 Some("disk") => ("yes", 1_800, "1GiB", "512MiB"),
                 // Auto keeps disk-backed seeking, but limits its working set to
                 // reduce write activity and heat on portable devices.
-                Some("auto") => ("yes", cache_secs, "256MiB", "256MiB"),
+                Some("auto") => ("yes", cache_secs, "256MiB", "128MiB"),
                 _ => ("no", cache_secs, max_bytes, max_back_bytes),
             };
         let video_x = x.unwrap_or(0);
@@ -1597,9 +1683,7 @@ fn launch_mpv_with_window(
             video_width,
             video_height,
         ) {
-            player_debug_log(format!(
-                "[LINUX RENDER] initialization failed: {error}"
-            ));
+            player_debug_log(format!("[LINUX RENDER] initialization failed: {error}"));
             player.shutdown();
             return Err(error);
         }
@@ -2266,6 +2350,18 @@ pub fn get_or_queue_scrub_thumbnail(
 #[tauri::command]
 pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
     crate::thumbnails::prefetch_thumbnail_sprite(path)
+}
+
+#[tauri::command]
+pub fn get_seekr_preview(
+    request: crate::seekr::SeekrPreviewRequest,
+) -> Option<crate::seekr::SeekrPreviewData> {
+    crate::seekr::get_preview(request)
+}
+
+#[tauri::command]
+pub fn clear_seekr_preview(request: crate::seekr::SeekrPreviewRequest) {
+    crate::seekr::clear_preview(request)
 }
 
 #[tauri::command]

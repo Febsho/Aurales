@@ -99,6 +99,17 @@ describe('detail page compatibility loader', () => {
     expect(tvdbGetShowMock).not.toHaveBeenCalled()
   })
 
+  it('does not start a legacy retry when an older native request fails', async () => {
+    let rejectFirst!: (reason: unknown) => void
+    invokeMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValue({ data: show, stale: false, cacheStatus: 'hit' })
+    const first = loadDetailPage('tmdb', '1', { cancelGroup: 'failure-race' })
+    await loadDetailPage('tmdb', '2', { cancelGroup: 'failure-race' })
+    rejectFirst(new Error('network failed'))
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect(tmdbGetShowMock).not.toHaveBeenCalled()
+  })
+
   it('prevents an A to B to C fallback race from returning older navigation data', async () => {
     invokeMock.mockRejectedValue(new Error('native unavailable'))
     const resolvers = new Map<string, (value: typeof show) => void>()
@@ -106,7 +117,9 @@ describe('detail page compatibility loader', () => {
       resolvers.set(providerId, resolve)
     }))
     const first = loadDetailPage('tmdb', '1', { cancelGroup: 'rapid-navigation' })
+    await vi.waitFor(() => expect(resolvers.size).toBe(1))
     const second = loadDetailPage('tmdb', '2', { cancelGroup: 'rapid-navigation' })
+    await vi.waitFor(() => expect(resolvers.size).toBe(2))
     const third = loadDetailPage('tmdb', '3', { cancelGroup: 'rapid-navigation' })
     await vi.waitFor(() => expect(resolvers.size).toBe(3))
     resolvers.get('tmdb-3')?.({ ...show, id: 'tmdb-3' })

@@ -28,6 +28,7 @@ import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { loadMovieDetailPage } from '../services/metadata/detailPageLoader'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
+import { getSessionDetail, rememberSessionDetail } from '../services/cache/detailSessionCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { usePreparedStream } from '../hooks/usePreparedStream'
@@ -85,6 +86,8 @@ interface LocationState {
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  sourceConnectionId?: string
+  sourceItemId?: string
   addonMeta?: Record<string, unknown>
   autoPlay?: boolean
 }
@@ -427,6 +430,7 @@ export default function MovieDetailPage() {
         setMovie(directMovie)
         setLoading(false)
         if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, directMovie)
           void cacheSet(movieCacheKey, directMovie, {
             category: CACHE_CATEGORIES.DETAIL_PAGE,
             ttlSeconds: CACHE_TTLS.DETAIL_PAGE,
@@ -438,7 +442,8 @@ export default function MovieDetailPage() {
       // Mount the real detail structure from navigation/catalog data before
       // SQLite, addon metadata, ID mapping, or TMDB's multi-endpoint request.
       // Those sources refine this shell instead of hiding it behind a loader.
-      const immediateMovie: MovieDetails | null = state.title ? applyMovieArt({
+      const hotMovie = movieCacheKey ? getSessionDetail<MovieDetails>(movieCacheKey) : null
+      const immediateMovie: MovieDetails | null = hotMovie?.data || (state.title ? applyMovieArt({
         id: id || 'unknown',
         title: state.title,
         year: state.year,
@@ -456,13 +461,21 @@ export default function MovieDetailPage() {
         crew: [],
         recommendations: [],
         trailers: [],
-      }) : null
+      }) : null)
       setMovie(immediateMovie)
+      if (hotMovie) {
+        setLoading(false)
+        // Fresh session data is already the most recent completed enrichment.
+        // Stale data remains visible while the normal disk/provider path below
+        // revalidates it without returning the page to a skeleton.
+        if (!hotMovie.stale) return
+      }
 
       if (movieCacheKey) {
         const cached = await cacheGet<MovieDetails>(movieCacheKey)
         if (cancelled) return
         if (cached) {
+          rememberSessionDetail(movieCacheKey, cached.data)
           setMovie(cached.data)
           setLoading(false)
           if (!cached.stale) return
@@ -562,7 +575,10 @@ export default function MovieDetailPage() {
         setMovie(directMovie)
         setLoading(false)
         const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
-        if (movieCacheKey) void cacheSet(movieCacheKey, directMovie, cacheOpts)
+        if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, directMovie)
+          void cacheSet(movieCacheKey, directMovie, cacheOpts)
+        }
         return
       }
 
@@ -655,8 +671,15 @@ export default function MovieDetailPage() {
       setLoading(false)
 
       const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
-      if (movieCacheKey) void cacheSet(movieCacheKey, artApplied, cacheOpts)
-      if (artApplied.id && artApplied.id !== id) void cacheSet(`detail:movie:${artKey}:${artApplied.id}`, artApplied, cacheOpts)
+      if (movieCacheKey) {
+        rememberSessionDetail(movieCacheKey, artApplied)
+        void cacheSet(movieCacheKey, artApplied, cacheOpts)
+      }
+      if (artApplied.id && artApplied.id !== id) {
+        const normalizedCacheKey = `detail:movie:${artKey}:${artApplied.id}`
+        rememberSessionDetail(normalizedCacheKey, artApplied)
+        void cacheSet(normalizedCacheKey, artApplied, cacheOpts)
+      }
 
       if (id && artApplied.id && artApplied.id !== id) {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
@@ -677,8 +700,15 @@ export default function MovieDetailPage() {
           ...(providerArt.logo && { logo: providerArt.logo }),
         })
         setMovie((current) => current?.id === artApplied.id ? enhanced : current)
-        if (movieCacheKey) void cacheSet(movieCacheKey, enhanced, cacheOpts)
-        if (enhanced.id) void cacheSet(`detail:movie:${artKey}:${enhanced.id}`, enhanced, cacheOpts)
+        if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, enhanced)
+          void cacheSet(movieCacheKey, enhanced, cacheOpts)
+        }
+        if (enhanced.id) {
+          const enhancedCacheKey = `detail:movie:${artKey}:${enhanced.id}`
+          rememberSessionDetail(enhancedCacheKey, enhanced)
+          void cacheSet(enhancedCacheKey, enhanced, cacheOpts)
+        }
       }).catch(() => undefined)
     }
     load().catch((error) => {
@@ -998,6 +1028,8 @@ export default function MovieDetailPage() {
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        sourceConnectionId={state.sourceConnectionId}
+        sourceItemId={state.sourceItemId}
         forceManualSelection={forceManualSourceSelection}
         onResolvingChange={setStreamResolving}
       />

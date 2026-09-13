@@ -25,9 +25,14 @@ export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' 
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
-export type PlayerQualityProfile = 'performance' | 'balanced' | 'quality'
 export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
 export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
+export type RowEntryCount = 10 | 15 | 20 | 25
+
+function loadRowEntryCount(): RowEntryCount {
+  const saved = Number(localStorage.getItem('aurales_row_entry_count'))
+  return saved === 10 || saved === 15 || saved === 20 || saved === 25 ? saved : 15
+}
 
 export interface ArtProviderSettings {
   moviePoster: ArtProvider
@@ -226,6 +231,7 @@ interface AppState {
   themeBackground: 'graphite' | 'slate' | 'oled'
   navigationStyle: 'sidebar' | 'topbar'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
+  rowEntryCount: RowEntryCount
   showRatingsOnCards: boolean
   showGenreOnCards: boolean
   posterTrailerPreviews: boolean
@@ -355,6 +361,7 @@ interface AppState {
   setThemeBackground: (bg: 'graphite' | 'slate' | 'oled') => void
   setNavigationStyle: (style: 'sidebar' | 'topbar') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
+  setRowEntryCount: (count: RowEntryCount) => void
   setShowRatingsOnCards: (show: boolean) => void
   setShowGenreOnCards: (show: boolean) => void
   setPosterTrailerPreviews: (show: boolean) => void
@@ -405,9 +412,7 @@ interface AppState {
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
 
-  playerQualityProfile: PlayerQualityProfile
   seekStepSeconds: number
-  setPlayerQualityProfile: (profile: PlayerQualityProfile) => void
   setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
 
@@ -862,6 +867,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   })() as 'graphite' | 'slate' | 'oled',
   navigationStyle: (localStorage.getItem('aurales_navigation_style') || (loadInterfaceTheme() === 'cinematic' ? 'topbar' : 'sidebar')) as 'sidebar' | 'topbar',
   defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
+  rowEntryCount: loadRowEntryCount(),
   showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') === 'true',
   showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') === 'true',
   posterTrailerPreviews: localStorage.getItem('aurales_poster_trailer_previews') !== 'false',
@@ -1018,6 +1024,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setThemeBackground: (bg) => { localStorage.setItem('aurales_theme_background', bg); set({ themeBackground: bg }) },
   setNavigationStyle: (style) => { localStorage.setItem('aurales_navigation_style', style); set({ navigationStyle: style }) },
   setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
+  setRowEntryCount: (count) => {
+    const safeCount: RowEntryCount = count === 10 || count === 20 || count === 25 ? count : 15
+    localStorage.setItem('aurales_row_entry_count', String(safeCount))
+    set({ rowEntryCount: safeCount })
+  },
   setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
   setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
   setPosterTrailerPreviews: (show) => { localStorage.setItem('aurales_poster_trailer_previews', String(show)); set({ posterTrailerPreviews: show }) },
@@ -1206,9 +1217,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
-  playerQualityProfile: (localStorage.getItem('aurales_player_quality_profile') || 'balanced') as PlayerQualityProfile,
   seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
-  setPlayerQualityProfile: (profile) => { localStorage.setItem('aurales_player_quality_profile', profile); set({ playerQualityProfile: profile }) },
   setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
     localStorage.removeItem('aurales_hwdec_mode')
@@ -1217,7 +1226,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.removeItem('aurales_mpv_cache_secs')
     localStorage.removeItem('aurales_mpv_network_timeout')
     localStorage.removeItem('aurales_mpv_custom_args')
-    localStorage.setItem('aurales_player_quality_profile', 'balanced')
+    localStorage.removeItem('aurales_player_quality_profile')
     localStorage.setItem('aurales_playback_preload_mode', 'smart')
     localStorage.setItem('aurales_show_skip_intro_button', 'true')
     localStorage.setItem('aurales_auto_skip_intro', 'false')
@@ -1230,7 +1239,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.removeItem('aurales_preload_playback_sources')
     set({
       videoCacheMode: 'auto',
-      playerQualityProfile: 'balanced',
       playbackPreloadMode: 'smart',
       showSkipIntroButton: true,
       autoSkipIntro: false,

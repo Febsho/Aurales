@@ -79,6 +79,11 @@ export async function loadAnimeSeason(
           category: CACHE_CATEGORIES.TVDB_SEASON,
           ttlSeconds: CACHE_TTLS.TVDB_SEASON,
         }))
+        .catch(() => {
+          // The legacy provider owns stale-while-revalidate for this same
+          // English cache key. Background priority would select its raw cache.
+          return tvdbProvider.getSeason(`tvdb-${id}`, season)
+        })
         .catch(() => undefined)
     }
     return cached.data
@@ -91,6 +96,7 @@ export async function loadAnimeSeason(
     return response.data
   } catch (error) {
     if ((error instanceof DOMException && error.name === 'AbortError') || nativeCancelled(error)) throw staleError()
+    ensureCurrent(group, key, generation)
     const getSeason = tvdbProvider.getSeason as (
       showId: string,
       seasonNumber: number,

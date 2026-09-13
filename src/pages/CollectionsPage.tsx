@@ -64,6 +64,7 @@ import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { homeRowCacheKey, providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { cachedImage } from '../services/imageCache'
+import { SERVER_INTEGRATIONS_ENABLED, listServerCatalogs, serverCatalogListId, type ServerCatalogDescriptor } from '../services/serverIntegrations'
 
 // ── Simkl list options (for add-widget overlay) ────────────────────────────────
 
@@ -888,6 +889,17 @@ function AddWidgetOverlay({
   const [traktPublicLists, setTraktPublicLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
   const [traktPublicSearch, setTraktPublicSearch] = useState('')
   const [traktPublicSearching, setTraktPublicSearching] = useState(false)
+  const [serverCatalogs, setServerCatalogs] = useState<ServerCatalogDescriptor[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => listServerCatalogs().then((catalogs) => {
+      if (!cancelled) setServerCatalogs(catalogs)
+    }).catch(() => { if (!cancelled) setServerCatalogs([]) })
+    void load()
+    window.addEventListener('aurales:server-catalogs-changed', load)
+    return () => { cancelled = true; window.removeEventListener('aurales:server-catalogs-changed', load) }
+  }, [])
 
   useEffect(() => {
     if (traktConnected) getAvailableTraktListSources().then(setTraktLists).catch(() => setTraktLists(TRAKT_LIST_SOURCES))
@@ -1791,6 +1803,31 @@ function AddWidgetOverlay({
     items.push(...providerItems('mdblist', mdblistLists, 'My MDBList Lists'))
     items.push(...providerItems('trakt', [...traktPublicLists, ...globalPublicTrakt], 'Public Trakt Lists', true))
     items.push(...providerItems('mdblist', [...mdblistPublicLists, ...globalPublicMdblist], 'Public MDBList Lists', true))
+    serverCatalogs.filter((catalog) => catalog.catalogId.startsWith('library:')
+      || catalog.catalogId.startsWith('collection:')
+      || ['continue-watching', 'recently-added', 'favorites', 'collections'].includes(catalog.catalogId))
+      .forEach((catalog) => {
+      const source = catalog.provider as 'jellyfin' | 'webdav'
+      if (source !== 'jellyfin' && source !== 'webdav') return
+      const row: ShelfDraft = {
+        title: catalog.title,
+        sourceType: source,
+        providerListId: serverCatalogListId(catalog.connectionId, catalog.catalogId),
+        layout: 'poster',
+        enabled: true,
+      }
+      const key = shelfDraftKey(row)
+      items.push({
+        key,
+        source,
+        group: source === 'jellyfin' ? 'Jellyfin catalogs' : 'WebDAV folders',
+        title: catalog.title,
+        subtitle: `${source === 'jellyfin' ? 'Jellyfin' : 'WebDAV'} • ${catalog.itemCount} ${catalog.itemCount === 1 ? 'item' : 'items'}`,
+        contentType: catalog.contentType === 'movie' || catalog.contentType === 'series' || catalog.contentType === 'anime' ? catalog.contentType : 'unknown',
+        row,
+        added: isAlreadyAdded(key),
+      })
+    })
 
     const deduplicated = items.filter((item, index, all) => all.findIndex((candidate) => candidate.key === item.key) === index)
     const sourceMeta: Record<CatalogPickerSource, { label: string; description: string; connected: boolean; letter: string }> = {
@@ -1803,8 +1840,11 @@ function AddWidgetOverlay({
       pmdb: { label: 'PMDB', description: 'Native PMDB account lists', connected: !!pmdbApiKey, letter: 'P' },
       'pmdb-picks': { label: 'PMDB Picks', description: 'Personalized recommendation catalogs', connected: !!pmdbApiKey, letter: 'P' },
       mdblist: { label: 'MDBList', description: 'Account lists and public collections', connected: !!mdblistApiKey, letter: 'M' },
+      jellyfin: { label: 'Jellyfin', description: 'Libraries from connected Jellyfin servers', connected: true, letter: 'J' },
+      webdav: { label: 'WebDAV', description: 'Media folders from connected WebDAV servers', connected: true, letter: 'W' },
     }
-    const sourceOrder = Object.keys(sourceMeta) as CatalogPickerSource[]
+    const sourceOrder = (Object.keys(sourceMeta) as CatalogPickerSource[])
+      .filter((source) => SERVER_INTEGRATIONS_ENABLED || (source !== 'jellyfin' && source !== 'webdav'))
     const query = search.trim().toLowerCase()
     const browsingItems = deduplicated.filter((item) => {
       if (pickerSource && item.source !== pickerSource) return false
@@ -3502,9 +3542,10 @@ export default function CollectionsPage() {
   const [sourceFilter, setSourceFilter] = useState('All')
   const [heroExpanded, setHeroExpanded] = useState(false)
 
-  const heroRow = homeRows.find((r) => r.layout === 'hero')
+  const serverRowVisible = (row: HomeRowConfig) => SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
+  const heroRow = homeRows.find((r) => r.layout === 'hero' && serverRowVisible(r))
   const allWidgetRows = homeRows
-    .filter((r) => r.layout !== 'hero')
+    .filter((r) => r.layout !== 'hero' && serverRowVisible(r))
     .sort((a, b) => a.order - b.order)
   const smartCollectionRows = getSmartCollections(allWidgetRows)
   const allHomeShelfRows = getHomeShelfRows(allWidgetRows)

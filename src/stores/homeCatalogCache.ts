@@ -10,22 +10,32 @@ interface HomeCatalogCache {
 }
 
 const DEFAULT_TTL = Infinity
+const MAX_SESSION_ROWS = 160
+
+function rememberRows(
+  current: HomeCatalogCache['rows'],
+  entries: Record<string, SearchResult[]>,
+): HomeCatalogCache['rows'] {
+  const next = { ...current }
+  const now = Date.now()
+  for (const [key, items] of Object.entries(entries)) {
+    // Reinsert so recently refreshed shelves remain at the retained end.
+    delete next[key]
+    next[key] = { items, timestamp: now }
+  }
+  const keys = Object.keys(next)
+  for (let index = 0; index < keys.length - MAX_SESSION_ROWS; index += 1) delete next[keys[index]]
+  return next
+}
 
 export const useHomeCatalogCache = create<HomeCatalogCache>((set, get) => ({
   rows: {},
   set: (key, items) =>
     set((state) => ({
-      rows: { ...state.rows, [key]: { items, timestamp: Date.now() } },
+      rows: rememberRows(state.rows, { [key]: items }),
     })),
   setMany: (entries) =>
-    set((state) => {
-      const now = Date.now()
-      const next = { ...state.rows }
-      for (const [key, items] of Object.entries(entries)) {
-        next[key] = { items, timestamp: now }
-      }
-      return { rows: next }
-    }),
+    set((state) => ({ rows: rememberRows(state.rows, entries) })),
   get: (key, ttlMs = DEFAULT_TTL) => {
     const entry = get().rows[key]
     if (!entry) return null

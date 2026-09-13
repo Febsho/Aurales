@@ -61,6 +61,7 @@ import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
 import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
+import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -98,6 +99,7 @@ const BACKUP_KEYS = [
   'orynt_poster_size',
   'aurales_hero_trailer_delay',
   'aurales_home_card_animations',
+  'aurales_row_entry_count',
   'aurales_poster_trailer_previews',
   'aurales_poster_trailer_hover_delay_ms',
   'aurales_poster_trailer_sound',
@@ -677,23 +679,38 @@ function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: s
   )
 }
 
+interface BetterPostersPreview {
+  catalogId: 'trending-shows' | 'trending-movies' | 'trending-anime'
+  label: string
+  id: string
+  title: string
+}
+
+const DEFAULT_BETTER_POSTERS_PREVIEWS: BetterPostersPreview[] = [
+  { catalogId: 'trending-shows', label: 'Trending show', id: 'tt9288030', title: 'Reacher' },
+  { catalogId: 'trending-movies', label: 'Trending movie', id: 'tt28014327', title: 'Mayday' },
+  { catalogId: 'trending-anime', label: 'Trending anime', id: 'tt0434665', title: 'Bleach' },
+]
+
 function ArtworkSettingsSection() {
   const artProviders = useAppStore((s) => s.artProviders)
   const setArtProviders = useAppStore((s) => s.setArtProviders)
   const betterPosters = useAppStore((s) => s.betterPosters)
   const setBetterPosters = useAppStore((s) => s.setBetterPosters)
   const previewRef = useRef<HTMLDivElement>(null)
-  const [previewMovie, setPreviewMovie] = useState({ id: 'tt1104001', title: 'TRON: Legacy' })
+  const [posterPreviews, setPosterPreviews] = useState<BetterPostersPreview[]>(DEFAULT_BETTER_POSTERS_PREVIEWS)
 
   useEffect(() => {
     let cancelled = false
-    fetch('https://btttr.cc/catalog/movie/tmdb-today.json')
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load trending movies')))
-      .then((data: { metas?: Array<{ id?: string; name?: string }> }) => {
-        const movie = data.metas?.find((item) => item.id?.startsWith('tt'))
-        if (!cancelled && movie?.id) setPreviewMovie({ id: movie.id, title: movie.name || 'Trending movie' })
-      })
-      .catch(() => undefined)
+    Promise.allSettled(DEFAULT_BETTER_POSTERS_PREVIEWS.map(async (preview) => {
+      const items = await getSimklDerivedCatalogItems(preview.catalogId)
+      const item = items.find((candidate) => candidate.imdbId?.startsWith('tt'))
+      return item?.imdbId ? { ...preview, id: item.imdbId, title: item.title } : preview
+    })).then((results) => {
+      if (!cancelled) {
+        setPosterPreviews(results.map((result, index) => result.status === 'fulfilled' ? result.value : DEFAULT_BETTER_POSTERS_PREVIEWS[index]))
+      }
+    })
     return () => { cancelled = true }
   }, [])
 
@@ -705,7 +722,7 @@ function ArtworkSettingsSection() {
     setBetterPosters({ ...betterPosters, ...settings })
     window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
   }
-  const previewPosterUrl = getBetterPostersUrl(betterPosters).replace('{imdb_id}', previewMovie.id)
+  const previewPosterPattern = getBetterPostersUrl(betterPosters)
 
   const sections = [
     { title: 'Movies', color: 'text-amber-400/80', prefix: 'movie' },
@@ -743,7 +760,7 @@ function ArtworkSettingsSection() {
 
       <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Better Posters</h3>
       <SettingSection>
-        <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. It takes priority over a custom poster URL while enabled.">
+        <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. Made and hosted by mousa.a on Discord. It takes priority over a custom poster URL while enabled.">
           <SettingToggle checked={betterPosters.enabled} onChange={(enabled) => updateBetterPosters({ enabled })} />
         </SettingRow>
         {betterPosters.enabled && <>
@@ -787,14 +804,21 @@ function ArtworkSettingsSection() {
           </SettingRow>
           <div ref={previewRef} className="px-6 py-6 bg-black/10">
             <p className="text-sm font-medium text-white">Live preview</p>
-            <p className="text-xs text-white/60 mt-0.5">{previewMovie.title} — currently trending. Changes update as you adjust the options above.</p>
-            <div className="mt-4 flex justify-center">
-              <img
-                key={previewPosterUrl}
-                src={previewPosterUrl}
-                alt="Better Posters example for TRON: Legacy"
-                className="w-40 rounded-xl border border-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.38)]"
-              />
+            <p className="text-xs text-white/60 mt-0.5">Current trending picks. Changes update as you adjust the options above.</p>
+            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
+              {posterPreviews.map((preview) => {
+                const posterUrl = previewPosterPattern.replace('{imdb_id}', preview.id)
+                return <figure key={preview.catalogId} className="min-w-0 text-center">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-300/75">{preview.label}</p>
+                  <img
+                    key={posterUrl}
+                    src={posterUrl}
+                    alt={`Better Posters preview for ${preview.title}`}
+                    className="mx-auto mt-2 w-full max-w-40 rounded-xl border border-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.38)]"
+                  />
+                  <figcaption className="mt-2 truncate text-xs font-medium text-white/70" title={preview.title}>{preview.title}</figcaption>
+                </figure>
+              })}
             </div>
           </div>
         </>}
@@ -912,13 +936,18 @@ export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [searchParams] = useSearchParams()
-  type SettingsTab = 'overview' | 'accounts' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  type SettingsTab = 'overview' | 'accounts' | 'servers' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
   const requestedTab = searchParams.get('tab')
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'overview')
+  const showServerSettings = false
 
   useEffect(() => {
     if (requestedTab === 'profiles') setActiveTab('profiles')
   }, [requestedTab])
+
+  useEffect(() => {
+    if (!showServerSettings && activeTab === 'servers') setActiveTab('overview')
+  }, [showServerSettings, activeTab])
 
   // A category can be opened after the overview has been scrolled a long way
   // down. Start each view at its own header instead of inheriting that offset.
@@ -1749,6 +1778,14 @@ export default function SettingsPage() {
           )
         },
         {
+          id: 'servers',
+          label: 'Server',
+          description: 'Connect Jellyfin libraries and WebDAV media folders.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path strokeLinecap="round" d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6" /></svg>
+          )
+        },
+        {
           id: 'addons',
           label: 'Addons',
           description: 'Install and manage third-party addon manifest URLs.',
@@ -1878,9 +1915,13 @@ export default function SettingsPage() {
       ]
     }
   ]
+  const visibleCategories = categories.map((category) => ({
+    ...category,
+    items: category.items.filter((item) => item.id !== 'servers' || showServerSettings),
+  })).filter((category) => category.items.length > 0)
 
   // Find the active category item for header info
-  const activeItem = categories.flatMap(c => c.items).find(i => i.id === activeTab)
+  const activeItem = visibleCategories.flatMap(c => c.items).find(i => i.id === activeTab)
 
   return (
     <div className="settings-page min-h-full">
@@ -1896,7 +1937,7 @@ export default function SettingsPage() {
           </section>
 
           <section className="settings-hub__categories" aria-label="Settings categories">
-            {categories.map((category) => (
+            {visibleCategories.map((category) => (
               <div className="settings-hub__group" key={category.title}>
                 <p className="settings-hub__group-label">{category.title}</p>
                 <div className="settings-hub__cards">
@@ -2133,6 +2174,20 @@ export default function SettingsPage() {
                     options={[
                       { value: 'sidebar', label: 'Sidebar' },
                       { value: 'topbar', label: 'Cinematic top bar' },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow label="Entries per row" description="Choose how many titles each horizontal shelf shows before the Show all shortcut.">
+                  <SettingSelect
+                    label="Entries per row"
+                    value={store.rowEntryCount}
+                    onChange={(value) => store.setRowEntryCount(Number(value) as 10 | 15 | 20 | 25)}
+                    className="w-32"
+                    options={[
+                      { value: 10, label: '10' },
+                      { value: 15, label: '15' },
+                      { value: 20, label: '20' },
+                      { value: 25, label: '25' },
                     ]}
                   />
                 </SettingRow>
@@ -2374,7 +2429,7 @@ export default function SettingsPage() {
                   <SelectMenu
                     value={store.continueWatchingLimit}
                     onChange={(e) => store.setContinueWatchingLimit(Number(e.target.value))}
-                    className="w-36 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                    className="w-44"
                   >
                     <option value={5}>5 items</option>
                     <option value={10}>10 items</option>
@@ -2574,7 +2629,7 @@ export default function SettingsPage() {
             <>
               <SettingSection title="Default Audio & Subtitles" description="Aurales chooses your first matching language, then the fallback if it is unavailable.">
                 <SettingRow label="Preferred audio" description="First choice for spoken audio.">
-                  <SelectMenu value={store.preferredAudio[0] || ''} onChange={(e) => store.setPreferredAudio([e.target.value, ...store.preferredAudio.slice(1).filter((code) => code !== e.target.value)])} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                  <SelectMenu value={store.preferredAudio[0] || ''} onChange={(e) => store.setPreferredAudio([e.target.value, store.preferredAudio[1]].filter((code, index, all): code is string => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
                     {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
                   </SelectMenu>
                 </SettingRow>
@@ -2584,7 +2639,7 @@ export default function SettingsPage() {
                   </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Preferred subtitles" description="First choice for subtitle tracks.">
-                  <SelectMenu value={store.preferredSubtitles[0] || ''} onChange={(e) => store.setPreferredSubtitles([e.target.value, ...store.preferredSubtitles.slice(1).filter((code) => code !== e.target.value)])} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                  <SelectMenu value={store.preferredSubtitles[0] || ''} onChange={(e) => store.setPreferredSubtitles([e.target.value, store.preferredSubtitles[1]].filter((code, index, all): code is string => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
                     {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
                   </SelectMenu>
                 </SettingRow>
@@ -2597,7 +2652,7 @@ export default function SettingsPage() {
                   <SelectMenu value={store.subtitleMode} onChange={(e) => store.setSubtitleMode(e.target.value as 'show' | 'forced' | 'hide')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="show">Show subtitles</option><option value="forced">Only signs & foreign parts</option><option value="hide">Hide subtitles</option></SelectMenu>
                 </SettingRow>
                 <SettingRow label="Prefer SDH subtitles" description="Choose SDH/closed-caption tracks when a matching language is available.">
-                  <input type="checkbox" checked={store.preferSdhSubtitles} onChange={(e) => store.setPreferSdhSubtitles(e.target.checked)} className="h-5 w-5 accent-white" />
+                  <SettingToggle checked={store.preferSdhSubtitles} onChange={store.setPreferSdhSubtitles} />
                 </SettingRow>
                 <SettingRow label="Anime audio" description="Sub prioritizes Japanese audio; Dub prioritizes your preferred audio.">
                   <SelectMenu value={store.animeAudioMode} onChange={(e) => store.setAnimeAudioMode(e.target.value as 'sub' | 'dub')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="sub">Sub (Japanese audio)</option><option value="dub">Dub (preferred audio)</option></SelectMenu>
@@ -2726,18 +2781,21 @@ export default function SettingsPage() {
               </div>
 
               {/* Subtitle Styling */}
-              <SettingSection title="Appearance" description="Preset styles or individual customize settings for player subtitles.">
+              <SettingSection title="Subtitle Design" description="Choose a starting style, then fine-tune how subtitles look in the player.">
                 <div className="px-6 py-5 space-y-6">
                   {/* Preset Styles */}
-                  <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Presets</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl divide-y divide-white/[0.04] overflow-hidden">
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Style presets</span>
+                      <p className="mt-1 text-xs text-white/45">Pick a look to update all design controls at once.</p>
+                    </div>
+                    <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
                       {[
-                        { id: 'standard', title: 'Standard', desc: 'White text with black outline' },
-                        { id: 'boxed', title: 'Boxed', desc: 'White text with dark background' },
-                        { id: 'classic', title: 'Classic', desc: 'Yellow text, cinema style' },
-                        { id: 'minimal', title: 'Minimal', desc: 'Clean, subtle shadow only' },
-                        { id: 'bold', title: 'Bold', desc: 'Large, high contrast' },
+                        { id: 'standard', title: 'Standard', desc: 'Clear outline', sample: 'text-white [text-shadow:0_1px_3px_#000,0_0_2px_#000]' },
+                        { id: 'boxed', title: 'Boxed', desc: 'Dark backdrop', sample: 'bg-black/75 px-1.5 text-white' },
+                        { id: 'classic', title: 'Classic', desc: 'Cinema yellow', sample: 'text-yellow-300 [text-shadow:0_1px_3px_#000]' },
+                        { id: 'minimal', title: 'Minimal', desc: 'Soft shadow', sample: 'text-white [text-shadow:0_2px_5px_#000]' },
+                        { id: 'bold', title: 'Bold', desc: 'High contrast', sample: 'font-black text-white [text-shadow:0_1px_2px_#000,0_0_3px_#000]' },
                       ].map((preset) => {
                         const active = store.subtitlePreset === preset.id
                         return (
@@ -2745,28 +2803,28 @@ export default function SettingsPage() {
                             key={preset.id}
                             type="button"
                             onClick={() => store.setSubtitlePreset(preset.id as any)}
-                            className={`w-full flex items-center justify-between px-5 py-3.5 text-left transition-all hover:bg-white/[0.04] cursor-pointer ${
-                              active ? 'bg-white/[0.02]' : ''
+                            className={`group relative min-h-[112px] overflow-hidden rounded-2xl border p-3.5 text-left transition-all cursor-pointer ${
+                              active ? 'border-accent/55 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(var(--accent-rgb),.08)]' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05]'
                             }`}
                           >
-                            <div>
-                              <p className={`text-sm font-semibold ${active ? 'text-accent' : 'text-white'}`}>{preset.title}</p>
-                              <p className="text-xs text-white/60 mt-0.5">{preset.desc}</p>
+                            <div className="mb-3 grid h-11 place-items-center overflow-hidden rounded-xl border border-white/[0.06] bg-[radial-gradient(circle_at_30%_20%,rgba(var(--accent-rgb),.12),transparent_55%),linear-gradient(145deg,rgba(255,255,255,.06),rgba(255,255,255,.015))]">
+                              <span className={`rounded text-sm ${preset.sample}`}>Subtitle</span>
                             </div>
-                            <svg className={`w-4 h-4 transition-colors ${active ? 'text-accent' : 'text-white/20'}`} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                              <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
+                            <p className={`text-xs font-bold ${active ? 'text-accent' : 'text-white/85'}`}>{preset.title}</p>
+                            <p className="mt-0.5 text-meta text-white/45">{preset.desc}</p>
+                            {active && <span className="absolute right-2.5 top-2.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-black text-black">✓</span>}
                           </button>
                         )
                       })}
                     </div>
-                    <p className="text-meta text-white/50 italic">Apply a preset style or customize individual settings below</p>
                   </div>
 
+                  <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.72fr)]">
+                    <div className="space-y-5">
                   {/* AA Font */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">AA Font</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Typography</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
                       {/* Font Size */}
                       <div className="space-y-2">
                         <div className="flex justify-between items-center text-xs">
@@ -2810,8 +2868,8 @@ export default function SettingsPage() {
 
                   {/* Colors */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Colors</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl divide-y divide-white/[0.04]">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Colors</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] divide-y divide-white/[0.04]">
                       {/* Text Color */}
                       <div className="flex items-center justify-between px-5 py-3">
                         <span className="text-xs font-semibold text-white/70">Text Color</span>
@@ -2877,8 +2935,8 @@ export default function SettingsPage() {
 
                   {/* Outline & Shadow */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Outline & Shadow</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Readability</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
                       {/* Style select */}
                       <div className="flex items-center justify-between pb-1">
                         <span className="text-xs font-semibold text-white/70">Style</span>
@@ -2939,8 +2997,8 @@ export default function SettingsPage() {
 
                   {/* Position */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Position</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Position</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
                       {/* Vertical Position */}
                       <div className="space-y-2">
                         <div className="flex justify-between items-center text-xs">
@@ -2999,8 +3057,8 @@ export default function SettingsPage() {
 
                   {/* Advanced */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Advanced</span>
-                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5 space-y-4">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Advanced</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
                       {/* Text Blur */}
                       <div className="space-y-2">
                         <div className="flex justify-between items-center text-xs">
@@ -3040,12 +3098,22 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
+                    </div>
+                    <div className="space-y-3 xl:sticky xl:top-6">
                   {/* Preview */}
                   <div className="space-y-2">
-                    <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Preview</span>
-                    <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] flex items-center min-h-[120px] relative overflow-hidden">
-                      <div className="absolute inset-0 bg-cover bg-center opacity-30 pointer-events-none" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
-                      <div className="relative z-10 w-full" style={{
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Live preview</span>
+                        <p className="mt-1 text-xs text-white/45">Updates as you make changes.</p>
+                      </div>
+                      <span className="rounded-full border border-accent/20 bg-accent/[0.08] px-2.5 py-1 text-meta font-bold text-accent">PLAYER</span>
+                    </div>
+                    <div className="relative flex min-h-[280px] items-end overflow-hidden rounded-2xl border border-white/[0.08] bg-[#080a0d] p-6 shadow-[0_24px_60px_rgba(0,0,0,.28)]">
+                      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_22%_18%,rgba(var(--accent-rgb),.25),transparent_34%),radial-gradient(circle_at_78%_46%,rgba(72,88,120,.28),transparent_38%),linear-gradient(155deg,#1a2028_0%,#0b0e13_52%,#050607_100%)]" />
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 to-transparent" />
+                      <div className="pointer-events-none absolute left-[12%] top-[22%] h-20 w-32 rounded-full bg-white/[0.035] blur-xl" />
+                      <div className="relative z-10 mb-5 w-full" style={{
                         textAlign: store.subtitleAlignment as any,
                       }}>
                         <span
@@ -3064,24 +3132,26 @@ export default function SettingsPage() {
                                 : 'none'
                           }}
                         >
-                          This is how your subtitles will look
+                          This is how your subtitles will look.
                         </span>
                       </div>
                     </div>
                   </div>
 
                   {/* Reset to Defaults */}
-                  <div className="pt-2">
+                  <div>
                     <button
                       type="button"
                       onClick={() => store.resetSubtitleSettings()}
-                      className="w-full flex items-center justify-center gap-2 px-5 py-3.5 rounded-2xl border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 text-sm font-semibold transition-all cursor-pointer active:scale-[0.99]"
+                      className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl border border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05] text-white/60 hover:text-white text-xs font-semibold transition-all cursor-pointer active:scale-[0.99]"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                         <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                       Reset to Defaults
                     </button>
+                  </div>
+                    </div>
                   </div>
                 </div>
               </SettingSection>
@@ -3145,22 +3215,6 @@ export default function SettingsPage() {
                   </SettingRow>
                 </SettingSection>
               </section>
-
-              <SettingSection title="Picture Quality" description="A simple rendering profile for mpv. Changes apply the next time you start playback.">
-                <div className="grid gap-2.5 px-6 py-4 md:grid-cols-3">
-                  {([
-                    ['performance', 'Smooth playback', 'Best for older laptops, battery power, or streams that stutter.'],
-                    ['balanced', 'Balanced', 'The recommended default for most computers.'],
-                    ['quality', 'Maximum quality', 'Sharper scaling and cleaner gradients for powerful GPUs.'],
-                  ] as const).map(([value, label, description]) => {
-                    const active = store.playerQualityProfile === value
-                    return <button key={value} onClick={() => store.setPlayerQualityProfile(value)} className={`rounded-2xl border p-4 text-left transition-colors ${active ? 'border-accent/45 bg-accent/10 shadow-[0_0_0_1px_rgba(var(--accent-rgb),.08)]' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05]'}`}>
-                      <div className="mb-1.5 flex items-center gap-2 text-sm font-bold text-white"><span className={`h-2 w-2 rounded-full ${active ? 'bg-accent' : 'bg-white/20'}`} />{label}</div>
-                      <p className="text-xs leading-relaxed text-white/60">{description}</p>
-                    </button>
-                  })}
-                </div>
-              </SettingSection>
 
               <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
                 <details className="group">

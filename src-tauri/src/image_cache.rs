@@ -9,12 +9,14 @@
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Cursor;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use image::GenericImageView;
 use tauri::Manager;
 
 struct CacheConfig {
@@ -31,7 +33,13 @@ static CONFIG: Mutex<CacheConfig> = Mutex::new(CacheConfig {
 static WRITES_SINCE_SWEEP: AtomicU32 = AtomicU32::new(0);
 const SWEEP_EVERY_WRITES: u32 = 25;
 const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024;
-const MAX_CONCURRENT_DOWNLOADS: usize = 6;
+const MAX_IMAGE_EDGE: u32 = 768;
+const MAX_BACKDROP_EDGE: u32 = 1920;
+// Decoding a provider's multi-megapixel source can temporarily allocate far
+// more than its compressed size in both Rust and WebKit. Two workers keep
+// scrolling responsive on long shelves; additional requests are safely
+// deduplicated or fall back after the bounded wait.
+const MAX_CONCURRENT_DOWNLOADS: usize = 2;
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 // A request that cannot get a worker slot in this long stops queueing and falls
 // back to the origin. An <img> has no timeout of its own: if this handler never
@@ -150,7 +158,54 @@ fn content_type(ext: &str) -> &'static str {
 fn cache_path(dir: &PathBuf, url: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
-    dir.join(format!("{:016x}.{}", hasher.finish(), file_extension(url)))
+    // Version the on-disk format so old full-resolution entries are not fed
+    // back into the WebView after thumbnail-safe caching is introduced.
+    dir.join(format!(
+        "{:016x}.v3.{}",
+        hasher.finish(),
+        file_extension(url)
+    ))
+}
+
+/// Provider CDNs routinely return 3K+ source art for small shelf cards. The
+/// decoded RGBA surface, not the compressed download, is what freezes WebKit.
+/// Resize once while writing the disk cache; non-images and decode failures
+/// retain their original response as a safe fallback.
+fn origin_url(url: &str) -> &str {
+    let Some(marker) = url.find("aurales-cache=backdrop") else {
+        return url;
+    };
+    url[..marker].trim_end_matches(&['#', '&'][..])
+}
+
+fn requested_max_image_edge(url: &str) -> u32 {
+    if url.contains("aurales-cache=backdrop") {
+        MAX_BACKDROP_EDGE
+    } else {
+        MAX_IMAGE_EDGE
+    }
+}
+
+fn optimize_image_bytes(bytes: Vec<u8>, max_edge: u32) -> Vec<u8> {
+    let Ok(image) = image::load_from_memory(&bytes) else {
+        return bytes;
+    };
+    let (width, height) = image.dimensions();
+    if width.max(height) <= max_edge {
+        return bytes;
+    }
+    let resized = image.resize(max_edge, max_edge, image::imageops::FilterType::Triangle);
+    let mut output = Cursor::new(Vec::new());
+    let result = if image.color().has_alpha() {
+        resized.write_to(&mut output, image::ImageFormat::Png)
+    } else {
+        resized.write_to(&mut output, image::ImageFormat::Jpeg)
+    };
+    if result.is_ok() && !output.get_ref().is_empty() {
+        output.into_inner()
+    } else {
+        bytes
+    }
 }
 
 fn is_expired(path: &PathBuf, keep_secs: u64) -> bool {
@@ -242,7 +297,8 @@ fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
         break SlotGuard { path: path.clone() };
     };
 
-    let result = download(url).and_then(|bytes| {
+    let result = download(origin_url(url)).and_then(|bytes| {
+        let bytes = optimize_image_bytes(bytes, requested_max_image_edge(url));
         let tmp = path.with_extension(format!("{}.part", file_extension(url)));
         fs::write(&tmp, &bytes).map_err(|error| error.to_string())?;
         fs::rename(&tmp, path).map_err(|error| error.to_string())?;
@@ -331,7 +387,7 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
     }
 
     let Ok(dir) = cache_dir(app) else {
-        return respond_redirect(&url);
+        return respond_redirect(origin_url(&url));
     };
     let path = cache_path(&dir, &url);
     let keep_secs = lock_config().keep_secs;
@@ -339,7 +395,7 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
     let bytes = if path.exists() && !is_expired(&path, keep_secs) {
         match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(_) => return respond_redirect(&url),
+            Err(_) => return respond_redirect(origin_url(&url)),
         }
     } else {
         // Expired files must be removed before entering download_cached;
@@ -356,18 +412,24 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
                 bytes
             }
             // Never break artwork over a cache problem — fall back to the source.
-            Err(_) => return respond_redirect(&url),
+            Err(_) => return respond_redirect(origin_url(&url)),
         }
     };
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("img")
-        .to_ascii_lowercase();
+    let content_type = match image::guess_format(&bytes) {
+        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+        Ok(image::ImageFormat::Png) => "image/png",
+        Ok(image::ImageFormat::WebP) => "image/webp",
+        Ok(image::ImageFormat::Gif) => "image/gif",
+        _ => path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(content_type)
+            .unwrap_or("application/octet-stream"),
+    };
     tauri::http::Response::builder()
         .status(200)
-        .header("Content-Type", content_type(&ext))
+        .header("Content-Type", content_type)
         .header("Cache-Control", "public, max-age=604800")
         .header("Access-Control-Allow-Origin", "*")
         .body(bytes)
@@ -431,4 +493,56 @@ pub fn image_cache_clear(app: tauri::AppHandle) -> Result<(), String> {
         let _ = fs::remove_file(entry.path());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backdrop_variant_keeps_a_larger_cached_derivative() {
+        let source = "https://image.tmdb.org/t/p/original/hero.jpg#aurales-cache=backdrop";
+        assert_eq!(
+            origin_url(source),
+            "https://image.tmdb.org/t/p/original/hero.jpg"
+        );
+        assert_eq!(requested_max_image_edge(source), 1920);
+        assert_eq!(
+            requested_max_image_edge("https://example.test/poster.jpg"),
+            768
+        );
+    }
+
+    #[test]
+    fn backdrop_marker_preserves_existing_source_fragments() {
+        let source = "https://example.test/hero.jpg#source-fragment&aurales-cache=backdrop";
+        assert_eq!(
+            origin_url(source),
+            "https://example.test/hero.jpg#source-fragment"
+        );
+    }
+
+    #[test]
+    fn image_optimization_respects_the_requested_variant_size() {
+        let image = image::DynamicImage::new_rgb8(2000, 1000);
+        let mut encoded = Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Jpeg)
+            .expect("encode source image");
+
+        let card = optimize_image_bytes(encoded.get_ref().clone(), MAX_IMAGE_EDGE);
+        let backdrop = optimize_image_bytes(encoded.into_inner(), MAX_BACKDROP_EDGE);
+        assert_eq!(
+            image::load_from_memory(&card)
+                .expect("decode card")
+                .dimensions(),
+            (768, 384)
+        );
+        assert_eq!(
+            image::load_from_memory(&backdrop)
+                .expect("decode backdrop")
+                .dimensions(),
+            (1920, 960)
+        );
+    }
 }

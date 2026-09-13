@@ -231,7 +231,7 @@ export default function DetailHero({
       {backdrop && !backdropError ? (
         <img
           ref={backdropRef}
-          src={cachedImage(backdrop)}
+          src={cachedImage(backdrop, 'backdrop')}
           alt=""
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded ? 'opacity-100' : 'opacity-0'}`}
           style={{ objectPosition: 'center 20%' }}

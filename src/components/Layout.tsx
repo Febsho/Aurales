@@ -1,4 +1,4 @@
-import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { Outlet, useNavigate, useLocation, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import Sidebar from './Sidebar'
 import { useAppStore } from '../stores/appStore'
@@ -7,6 +7,7 @@ import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import TitleBar from './TitleBar'
 import CinematicTopNav from './CinematicTopNav'
 import { isEditableKeyboardTarget, isWatchTogetherShortcut } from '../services/keyboardShortcuts'
+import { getRouteScroll, rememberRouteScroll, routeViewKey } from '../services/sessionViewState'
 
 // Statically importing this pulls NativeMpvPlayer (and its scrobbler/discord
 // dependency tree) into the eager startup bundle. Lazy keeps it off the
@@ -23,6 +24,7 @@ export default function Layout() {
   const setRoomPanelOpen = useWatchTogetherStore((s) => s.setRoomPanelOpen)
   const navigate = useNavigate()
   const location = useLocation()
+  const navigationType = useNavigationType()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [searchBarVisible, setSearchBarVisible] = useState(false)
@@ -110,14 +112,22 @@ export default function Layout() {
   }, [usesTopNav, location.pathname])
 
   useLayoutEffect(() => {
-    // Home must also reset: returning from a scrolled detail page would leave
-    // the shared <main> offset in place and displace the fixed hero.
-    if (location.pathname !== '/' && !location.pathname.startsWith('/movie/') && !location.pathname.startsWith('/series/')) return
-    const resetScroll = () => mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-    resetScroll()
-    const frame = requestAnimationFrame(resetScroll)
-    return () => cancelAnimationFrame(frame)
-  }, [location.pathname, location.key])
+    const scrollRoot = mainRef.current
+    if (!scrollRoot) return
+    const viewKey = routeViewKey(location.pathname, location.search)
+    const target = navigationType === 'POP' ? (getRouteScroll(viewKey) ?? 0) : 0
+    const restore = () => scrollRoot.scrollTo({ top: target, left: 0, behavior: 'auto' })
+    restore()
+    const frame = requestAnimationFrame(restore)
+
+    return () => {
+      cancelAnimationFrame(frame)
+      // The shared scroll root survives route changes. Capture its position
+      // before the next route resets/restores it so Details -> Back can return
+      // to the exact catalog position without keeping the whole page mounted.
+      rememberRouteScroll(viewKey, scrollRoot.scrollTop)
+    }
+  }, [location.key, location.pathname, location.search, navigationType])
 
   const goBack = useCallback(() => {
     const historyIndex = typeof window.history.state?.idx === 'number'

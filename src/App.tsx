@@ -8,8 +8,9 @@ import { markPerformance, measurePerformance } from './services/performanceMetri
 import WhoWatching from './components/WhoWatching'
 import ProfileSwitchTransition from './components/ProfileSwitchTransition'
 import { getProfileSetting } from './services/profiles'
+import HomePage from './pages/HomePage'
+import { disconnectDisabledServerIntegrations } from './services/serverIntegrations'
 
-const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
 const MovieDetailPage = lazy(() => import('./pages/MovieDetailPage'))
 const SeriesDetailPage = lazy(() => import('./pages/SeriesDetailPage'))
@@ -69,6 +70,10 @@ export default function App() {
     return !switched && getProfileSetting('aurales_skip_profile_picker') !== 'true'
   })
   const [updatePromptReady, setUpdatePromptReady] = useState(false)
+
+  useEffect(() => {
+    void disconnectDisabledServerIntegrations()
+  }, [])
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)

@@ -420,6 +420,9 @@ html[data-platform="linux"] .detail-content-shell__brand img {
   filter: none;
 }
 
+/* Keep each populated Home shelf in its own paint boundary. Rows remain
+   mounted and content-visibility stays visible, but poster decode/fade updates
+   must not invalidate the full, increasingly tall Home surface. */
 html[data-platform="linux"] .row-contain {
   contain: layout style paint;
 }
@@ -2686,9 +2689,56 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > b
   border-radius: 1.6rem;
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="ranked"] {
-  width: calc(var(--fixed-cinematic-card-height) * 1.01) !important;
+  width: calc(var(--fixed-cinematic-card-height) * 2 / 3) !important;
   height: var(--fixed-cinematic-card-height) !important;
   border-radius: 1rem;
+}
+
+/* The final action is an actual portrait card, not the empty numeral gutter of
+   a ranked title. Its layered surface makes the shortcut feel intentional
+   while keeping the poster rhythm continuous through the end of the row. */
+.show-all-card {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--color-accent) 28%, transparent), transparent 36%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.025) 43%, rgba(0, 0, 0, 0.3));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 14px 32px rgba(0, 0, 0, 0.18);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.show-all-card::before,
+.show-all-card::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  content: '';
+}
+
+.show-all-card::before {
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.055) 0 1px, transparent 1px 9px);
+  opacity: 0.5;
+}
+
+.show-all-card::after {
+  background: linear-gradient(transparent 42%, rgba(0, 0, 0, 0.38));
+}
+
+.show-all-card:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, rgba(255, 255, 255, 0.2));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 18px 38px rgba(0, 0, 0, 0.3);
+  transform: translateY(-3px);
+}
+
+.show-all-card__icon {
+  color: var(--color-accent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--color-accent) 25%, transparent);
+  transition: transform 180ms ease, background-color 180ms ease;
+}
+
+.show-all-card:hover .show-all-card__icon {
+  background: color-mix(in srgb, var(--color-accent) 25%, rgba(255, 255, 255, 0.12));
+  transform: scale(1.08);
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="landscape"] {
   width: var(--fixed-cinematic-landscape-width) !important;
@@ -3349,11 +3399,19 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   to { opacity: 1; transform: scale(1); }
 }
 
-/* Off-screen row containment — lets browser skip layout/paint for hidden rows */
+/*
+ * Home rows deliberately stay paintable after they have been mounted. In
+ * WebKitGTK, content-visibility:auto can promote an already populated shelf
+ * back into a skipped paint subtree during a fast vertical scroll; it then
+ * briefly returns as a blank/intrinsic-size placeholder.
+ *
+ * Keep lightweight layout/style isolation, but never ask the browser to hide
+ * the shelf's contents. Horizontal rails still use bounded progressive card
+ * rendering, so this does not turn Home into an unbounded DOM.
+ */
 .row-contain {
   contain: layout style;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
+  content-visibility: visible;
 }
 
 /* ── Shared responsive layout primitives ───────────────────────────────────
@@ -3436,6 +3494,26 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
 [data-cinematic-expanded="true"] [data-feature-overlay] {
   display: none;
 }
+
+/* WebKit can expose one row of the accelerated artwork layer at the rounded
+   bottom edge while a card is transformed. Paint that pixel inside the frame
+   so the dark gradient stays continuous during hover and focus motion. */
+.media-row--feature [data-hero-viewport] {
+  border-bottom-color: rgb(0 0 0);
+}
+.media-row--feature [data-hero-viewport]::after,
+.gradient-card-edge::after {
+  content: '';
+  position: absolute;
+  z-index: 50;
+  right: 1px;
+  bottom: 0;
+  left: 1px;
+  height: 1px;
+  background: rgb(0 0 0);
+  pointer-events: none;
+}
+
 [data-home-card-motion="off"] .media-row--feature .cinematic-row-track {
   contain: layout style !important;
 }

@@ -293,7 +293,7 @@ export default function CatalogPage() {
       }
     }
 
-    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
+    if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist' || row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
       let cancelled = false
       getProviderListItems(row)
         .then((results) => {

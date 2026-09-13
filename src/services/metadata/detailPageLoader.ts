@@ -106,6 +106,7 @@ export async function loadDetailPage(
     return response.data
   } catch (error) {
     if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+    ensureCurrentNavigation(cancelGroup, operationKey, generation)
     console.warn('[detail] Native detail load failed, using compatibility path:', error)
   }
 
@@ -142,6 +143,7 @@ export async function loadMovieDetailPage(
     return response.data
   } catch (error) {
     if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+    ensureCurrentNavigation(cancelGroup, operationKey, generation)
     console.warn('[detail] Native movie detail load failed, using compatibility path:', error)
     const fallback = await tmdbProvider.getMovie(`tmdb-${cleanProviderId}`)
     ensureCurrentNavigation(cancelGroup, operationKey, generation)

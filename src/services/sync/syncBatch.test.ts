@@ -31,4 +31,31 @@ describe('coarse sync batch', () => {
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect(invokeMock).not.toHaveBeenCalled()
   })
+
+  it('uses the compatibility transport for an older binary without sync_batch', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ cursor: '5', records: [] }) })) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('Command sync_batch not found'))
+    await expect(runSyncBatch(input)).resolves.toEqual({ cursor: '5', records: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not replay an uncertain native sync failure through fetch', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('network request timed out'))
+    await expect(runSyncBatch(input)).rejects.toThrow('network request timed out')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not mistake a server error body for a missing native command', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('HTTP 500: command sync_batch not found'))
+    await expect(runSyncBatch(input)).rejects.toThrow('HTTP 500')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

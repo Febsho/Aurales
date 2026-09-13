@@ -20,6 +20,8 @@ export interface ContinueWatchingSnapshotItem {
   tmdbId?: number
   malId?: number
   anilistId?: number
+  sourceConnectionId?: string
+  sourceItemId?: string
   updatedAt: string
 }
 

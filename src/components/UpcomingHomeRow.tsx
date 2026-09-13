@@ -6,6 +6,7 @@ import { tmdbProvider } from '../services/tmdb'
 import { buildUpcomingEvents, getUpcomingPreferences, isReleaseInHorizon, releaseTiming, type ReleaseEvent } from '../services/upcoming'
 import { loadUpcomingSeeds } from '../services/upcomingSources'
 import { readUpcomingEventsCache, readUpcomingEventsStartupSnapshot, writeUpcomingEventsCache, writeUpcomingEventsStartupSnapshot } from '../services/upcomingCache'
+import { cachedImage, warmCachedImages } from '../services/imageCache'
 
 /** A landscape shelf deliberately sharing Continue Watching's size, controls, and card treatment. */
 export default function UpcomingHomeRow() {
@@ -55,6 +56,12 @@ export default function UpcomingHomeRow() {
       .then((events) => { void writeUpcomingEventsCache(events); setEvents(events) })
   }), [])
 
+  // Upcoming is a fixed, short Home shelf. Warm its exact landscape artwork
+  // immediately so quick vertical scrolling never exposes empty card frames.
+  useEffect(() => {
+    void warmCachedImages(events.map((event) => event.artwork))
+  }, [events])
+
   const visible = events.filter((event) => !prefs.hidden[event.id] && isReleaseInHorizon(event, prefs.horizonDays)).slice(0, 12)
   const scroll = (direction: number) => scrollRef.current?.scrollBy({ left: direction * Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85)), behavior: 'smooth' })
 
@@ -68,7 +75,7 @@ export default function UpcomingHomeRow() {
         const routeId = event.media.tmdbId ? `tmdb-${String(event.media.tmdbId).replace(/^tmdb[-:]/i, '')}` : event.media.id
         navigate(`/${event.media.type === 'movie' ? 'movie' : 'series'}/${routeId}`, { state: { ...event.media, backdrop: event.media.backdrop || event.artwork, poster: event.media.poster || event.artwork } })
       }} className={`snap-start relative group ${width} flex-shrink-0 cursor-pointer text-left focus:outline-none`}>
-        <div className="relative aspect-video overflow-hidden rounded-xl bg-white/[.05] transition-all duration-300 ease-out group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)]">{event.artwork && <img src={event.artwork} alt="" className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" />}<div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
+        <div className="gradient-card-edge relative aspect-video overflow-hidden rounded-xl bg-white/[.05] transition-all duration-300 ease-out group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)]">{event.artwork && <img src={cachedImage(event.artwork)} alt="" loading="eager" decoding="async" className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" />}<div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
           <div className="absolute inset-x-0 bottom-0 z-10 p-3 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1"><p className="truncate text-sm font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{event.media.title}</p><div className="mt-1 flex items-center gap-1.5 text-xs opacity-80 transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"><span className="rounded bg-white/20 px-1.5 py-0.5 font-bold text-white/85">{event.type === 'season' ? `SEASON ${event.seasonNumber}` : event.type === 'episode' ? `S${event.seasonNumber} E${event.episodeNumber}` : 'MOVIE'}</span><span className="font-semibold text-white/80">{releaseTiming(event.releaseDate)}</span></div></div>
         </div>
       </button>)}

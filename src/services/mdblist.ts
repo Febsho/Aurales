@@ -114,7 +114,7 @@ export interface MdblistPlaybackItem {
   runtime?: number
   updated_at?: string
   paused_at?: string
-  type: 'movie' | 'show' | 'episode'
+  type: 'movie' | 'episode'
   movie?: any
   show?: any
   episode?: any
@@ -438,6 +438,11 @@ function toNumber(value: unknown): number | undefined {
   return Number.isFinite(num) && num > 0 ? num : undefined
 }
 
+function toNonNegativeNumber(value: unknown): number | undefined {
+  const num = Number(value)
+  return Number.isFinite(num) && num >= 0 ? num : undefined
+}
+
 function idsFrom(raw: any): Record<string, unknown> {
   return raw?.ids || raw?.movie?.ids || raw?.show?.ids || raw?.episode?.ids || {}
 }
@@ -488,6 +493,18 @@ function scrobblePayload(
   const ids = itemIds(tmdbId, imdbId, tvdbId)
   if (mediaType === 'movie') return { movie: { ids }, progress }
   return { show: { ids, season, episode }, progress }
+}
+
+export function mdblistPlaybackAction(
+  requested: 'start' | 'pause' | 'stop',
+  progressPercent: number,
+  scrobbleEnabled: boolean,
+  saveResumePosition: boolean,
+): 'start' | 'pause' | 'stop' | 'clear' | null {
+  if (requested === 'start') return scrobbleEnabled ? 'start' : null
+  if (progressPercent >= 80) return scrobbleEnabled ? requested : 'clear'
+  if (requested === 'stop') return saveResumePosition ? 'stop' : 'clear'
+  return saveResumePosition ? 'pause' : 'clear'
 }
 
 export async function checkMdblistConnection(): Promise<{ connected: boolean; user?: MdblistUser; error?: string }> {
@@ -704,17 +721,32 @@ export async function addToMdblistList(listId: string, tmdbId: number, mediaType
 export async function getMdblistPlaybackProgress(): Promise<MdblistPlaybackItem[]> {
   if (!hasMdblistUserApiKey()) return []
   const data = await mdblistFetch<unknown>('GET', '/sync/playback')
-  return pickArray(data).map((item: any) => ({
-    id: String(item.id),
-    progress: Number(item.progress || 0),
-    runtime: toNumber(item.runtime),
-    updated_at: item.updated_at,
-    paused_at: item.paused_at,
-    type: item.type === 'movie' ? 'movie' : item.type === 'show' ? 'show' : 'episode',
-    movie: item.movie,
-    show: item.show,
-    episode: item.episode,
-  }))
+  return normalizeMdblistPlayback(data)
+}
+
+export function normalizeMdblistPlayback(data: unknown): MdblistPlaybackItem[] {
+  return pickArray(data).flatMap((item: any) => {
+    if (!item || typeof item !== 'object') return []
+    const isMovie = item.type === 'movie' || Boolean(item.movie)
+    const episode = item.episode && typeof item.episode === 'object'
+      ? {
+          ...item.episode,
+          season: toNonNegativeNumber(item.episode.season?.number ?? item.episode.season ?? item.season),
+          number: toNumber(item.episode.number ?? item.episode.episode ?? item.episode_number),
+        }
+      : item.episode
+    return [{
+      id: String(item.id ?? `${isMovie ? 'movie' : 'episode'}-${item.updated_at || ''}`),
+      progress: Math.max(0, Math.min(100, Number(item.progress ?? item.progress_at_update ?? 0) || 0)),
+      runtime: toNumber(item.runtime),
+      updated_at: item.updated_at,
+      paused_at: item.paused_at,
+      type: isMovie ? 'movie' : 'episode',
+      movie: item.movie,
+      show: item.show || item.episode?.show,
+      episode,
+    }]
+  })
 }
 
 export interface MdblistUpNextItem {
@@ -730,33 +762,33 @@ export interface MdblistUpNextItem {
 
 export async function getMdblistUpNext(): Promise<MdblistUpNextItem[]> {
   if (!hasMdblistUserApiKey()) return []
-  const watched = await getMdblistWatched()
-  const shows = watched.filter((i) => i.media_type === 'show' && (i.season != null || i.episode != null))
-  const grouped = new Map<string, { item: MdblistWatchedItem; maxSeason: number; maxEpisode: number; watchedAt?: string }>()
-  for (const s of shows) {
-    const key = String(s.tmdb_id || s.imdb_id || s.id)
-    const prev = grouped.get(key)
-    const se = s.season ?? 1
-    const ep = s.episode ?? 0
-    if (!prev || se > prev.maxSeason || (se === prev.maxSeason && ep > prev.maxEpisode)) {
-      grouped.set(key, { item: s, maxSeason: se, maxEpisode: ep, watchedAt: s.watched_at })
-    }
-  }
-  const results: MdblistUpNextItem[] = []
-  for (const [, entry] of grouped) {
-    results.push({
-      showId: String(entry.item.tmdb_id || entry.item.imdb_id || entry.item.id),
-      title: entry.item.title || 'Show',
-      imdbId: entry.item.imdb_id,
-      tmdbId: entry.item.tmdb_id ?? undefined,
-      tvdbId: entry.item.tvdb_id ?? undefined,
-      season: entry.maxSeason,
-      episode: entry.maxEpisode + 1,
-      lastWatchedAt: entry.watchedAt,
-    })
-  }
-  results.sort((a, b) => (b.lastWatchedAt || '').localeCompare(a.lastWatchedAt || ''))
-  return results.slice(0, 20)
+  const data = await mdblistFetch<unknown>('GET', '/upnext?limit=20&hide_unreleased=true&air_date_format=instant')
+  return normalizeMdblistUpNext(data)
+}
+
+export function normalizeMdblistUpNext(data: unknown): MdblistUpNextItem[] {
+  return pickArray(data).flatMap((raw: any) => {
+    const show = raw?.show || raw?.media || raw
+    const nextEpisode = raw?.next_episode || raw?.episode
+    const ids = idsFrom(show)
+    const season = toNonNegativeNumber(nextEpisode?.season?.number ?? nextEpisode?.season ?? nextEpisode?.season_number)
+    const episode = toNumber(nextEpisode?.number ?? nextEpisode?.episode ?? nextEpisode?.episode_number)
+    const tmdbId = toNumber(ids.tmdb ?? show?.tmdb_id)
+    const tvdbId = toNumber(ids.tvdb ?? show?.tvdb_id)
+    const imdbId = String(ids.imdb ?? show?.imdb_id ?? '').trim() || undefined
+    const mdblistId = ids.mdblist ? String(ids.mdblist) : undefined
+    if (season == null || episode == null || (!tmdbId && !tvdbId && !imdbId && !mdblistId)) return []
+    return [{
+      showId: String(tmdbId || tvdbId || imdbId || mdblistId),
+      title: String(show?.title || show?.name || raw?.title || 'Show'),
+      imdbId,
+      tmdbId,
+      tvdbId,
+      season,
+      episode,
+      lastWatchedAt: raw?.last_watched_at || raw?.watched_at || raw?.updated_at,
+    }]
+  })
 }
 
 export async function scrobbleMdblist(
@@ -824,7 +856,7 @@ export async function getMdblistWatched(): Promise<MdblistWatchedItem[]> {
     const qs = new URLSearchParams({ limit: '1000', append_to_response: 'poster' })
     if (cursor) qs.set('cursor', cursor)
     const data = await mdblistFetch<unknown>('GET', `/sync/watched?${qs}`)
-    for (const raw of pickArray(data)) items.push(...normalizeWatchedRows(raw))
+    items.push(...normalizeMdblistWatched(data))
     cursor = nextCursor(data)
     if (!cursor) break
   }
@@ -834,14 +866,13 @@ export async function getMdblistWatched(): Promise<MdblistWatchedItem[]> {
 function normalizeWatched(raw: any): MdblistWatchedItem | null {
   const media = raw.movie || raw.show || raw.episode?.show || raw
   const ids = idsFrom(media)
-  const isEpisode = Boolean(raw.episode)
   const type = raw.movie ? 'movie' : 'show'
   const tmdbId = toNumber(ids.tmdb ?? media.tmdb_id ?? media.id)
   const imdbId = String(ids.imdb ?? media.imdb_id ?? '').trim() || undefined
   const tvdbId = toNumber(ids.tvdb ?? media.tvdb_id)
   if (!tmdbId && !imdbId && !tvdbId) return null
   return {
-    id: String(raw.id || ids.mdblist || `${type}-${tmdbId || imdbId}`),
+    id: String(raw.id || ids.mdblist || `${type}-${tmdbId || imdbId || tvdbId}`),
     media_type: type,
     watched_at: raw.watched_at || raw.last_watched_at,
     title: media.title,
@@ -850,7 +881,7 @@ function normalizeWatched(raw: any): MdblistWatchedItem | null {
     tmdb_id: tmdbId,
     tvdb_id: tvdbId,
     mdblist_id: ids.mdblist ? String(ids.mdblist) : undefined,
-    season: toNumber(raw.season?.number ?? raw.season ?? raw.episode?.season ?? raw.episode?.season_number),
+    season: toNonNegativeNumber(raw.season?.number ?? raw.season ?? raw.episode?.season?.number ?? raw.episode?.season ?? raw.episode?.season_number),
     episode: toNumber(raw.episode?.number ?? raw.episode?.episode ?? raw.episode),
   }
 }
@@ -864,8 +895,8 @@ function normalizeWatchedRows(raw: any): MdblistWatchedItem[] {
       ? [raw.season]
       : Array.isArray(raw?.show?.seasons) ? raw.show.seasons : []
   const episodes = seasons.flatMap((season: any) => {
-    const seasonNumber = toNumber(season?.number ?? season?.season)
-    if (!seasonNumber || !Array.isArray(season?.episodes)) return []
+    const seasonNumber = toNonNegativeNumber(season?.number ?? season?.season)
+    if (seasonNumber == null || !Array.isArray(season?.episodes)) return []
     return season.episodes.flatMap((episode: any) => {
       const episodeNumber = toNumber(episode?.number ?? episode?.episode)
       if (!episodeNumber) return []
@@ -873,6 +904,10 @@ function normalizeWatchedRows(raw: any): MdblistWatchedItem[] {
     })
   })
   return episodes.length ? episodes : [base]
+}
+
+export function normalizeMdblistWatched(data: unknown): MdblistWatchedItem[] {
+  return pickArray(data).flatMap(normalizeWatchedRows)
 }
 
 function dedupeSearchResults(items: SearchResult[]): SearchResult[] {

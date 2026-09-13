@@ -23,6 +23,9 @@ export interface SearchResult {
   addonUrl?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  /** Native media-server identity retained after canonical metadata matching. */
+  sourceConnectionId?: string
+  sourceItemId?: string
   /** Full addon metadata when a catalog already supplied episode structure. */
   addonMeta?: Record<string, unknown>
   metadataFallback?: boolean
@@ -229,6 +232,20 @@ export interface StreamResult {
   infoHash?: string
   fileIdx?: number
   behaviorHints?: Record<string, unknown>
+  /** Native media-server source details. Addons may omit these fields. */
+  directPlay?: boolean
+  directStream?: boolean
+  transcode?: boolean
+  container?: string
+  videoCodec?: string
+  audioCodec?: string
+  resolution?: string
+  bitrate?: number
+  hdr?: string
+  mediaSourceId?: string
+  audioTracks?: Record<string, unknown>[]
+  subtitleTracks?: Record<string, unknown>[]
+  chapters?: Record<string, unknown>[]
 }
 
 export interface SubtitleResult {
@@ -300,7 +317,7 @@ export interface HomeRowConfig {
   enabled: boolean
   order: number
   /** Determines which data source drives this row */
-  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'anilist'
+  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'anilist' | 'jellyfin' | 'webdav'
   /** Provider-specific list key, for example Simkl/Trakt/PMDB/MDBList/AniList status or list id */
   providerListId?: string
   sortBy?: 'default' | 'alphabetical'

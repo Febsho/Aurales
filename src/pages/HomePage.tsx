@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, cloneElement } from 'react'
+import { memo, useState, useEffect, useRef, useCallback, cloneElement } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import ErrorBoundary from '../components/ui/ErrorBoundary'
@@ -37,6 +37,7 @@ import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 import { catalogContentFingerprint, readHeroStartupSnapshot, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
 import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
+import { SERVER_INTEGRATIONS_ENABLED } from '../services/serverIntegrations'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -314,7 +315,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
     const load = async () => {
       try {
         const fetcher = async () => {
-          const results = await getProviderListItems(row)
+          const results = await getProviderListItems(row, false, 40)
           if (row.sortBy === 'alphabetical') results.sort((a, b) => a.title.localeCompare(b.title))
           return results
         }
@@ -629,8 +630,8 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
               ? await getSimklDerivedCatalogItems(listId)
               : (listId === 'history' ? await getSimklWatchedMovies() : await getSimklWatchStatusList(listId)).map(simklItemToSearchResult)
             return canonicalizeCatalogItemsWithTvdb(rawResults)
-          } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
-            return getProviderListItems(row)
+          } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist' || row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+            return getProviderListItems(row, false, 15)
           } else if (row.sourceType === 'discover') {
             if (row.discoverConfig) {
               const rawDiscover = await discoverTmdbWithCache(row.discoverConfig, row.id)
@@ -856,7 +857,7 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
     return <UpcomingHomeRow key={row.id} />;
   } else if (row.sourceType === 'simkl') {
     return <SimklRow key={row.id} row={row} />;
-  } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist') {
+  } else if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist' || row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
     return <ProviderListRow key={row.id} row={row} />;
   } else if (row.sourceType === 'discover') {
     return <DiscoverRow key={row.id} row={row} />;
@@ -867,13 +868,61 @@ function buildRowElement(row: HomeRowConfig): React.ReactNode {
 }
 
 const INITIAL_VISIBLE = 3;
+const ROW_ACTIVATION_GAP_MS = 90
 
-function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
+type PendingRowActivation = { cancelled: boolean; activate: () => void }
+const pendingRowActivations: PendingRowActivation[] = []
+let rowActivationTimer: number | null = null
+
+function drainRowActivationQueue() {
+  rowActivationTimer = null
+  const scheduler = (navigator as Navigator & { scheduling?: { isInputPending?: () => boolean } }).scheduling
+  if (scheduler?.isInputPending?.()) {
+    rowActivationTimer = window.setTimeout(drainRowActivationQueue, 48)
+    return
+  }
+
+  let pending = pendingRowActivations.shift()
+  while (pending?.cancelled) pending = pendingRowActivations.shift()
+  pending?.activate()
+  if (pendingRowActivations.length > 0) {
+    rowActivationTimer = window.setTimeout(drainRowActivationQueue, ROW_ACTIVATION_GAP_MS)
+  }
+}
+
+function scheduleRowActivation(activate: () => void): () => void {
+  const pending: PendingRowActivation = { cancelled: false, activate }
+  pendingRowActivations.push(pending)
+  if (rowActivationTimer === null) {
+    rowActivationTimer = window.setTimeout(drainRowActivationQueue, 0)
+  }
+  return () => { pending.cancelled = true }
+}
+
+const LazyRow = memo(function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
   // Keep a generous ahead-of-scroll buffer for shelves that are added after
   // the startup preloader yields, including very long custom Home layouts.
-  const activated = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '1600px' })
+  const approaching = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '1600px' })
+  const [activated, setActivated] = useState(eager ?? false)
 
+  useEffect(() => {
+    if (activated) return
+    if (eager) {
+      setActivated(true)
+      return
+    }
+    if (!approaching) return
+    // A fast jump to the bottom can put several deferred shelves inside the
+    // preload margin together. Mount one per short idle slice so their cards,
+    // provider loaders and image decoders cannot monopolize the UI thread.
+    return scheduleRowActivation(() => setActivated(true))
+  }, [activated, approaching, eager])
+
+  // Activation is intentionally one-way. Once a shelf is mounted, retain its
+  // component, metadata and decoded image state for the rest of the session.
+  // A proximity observer here would turn revisited shelves back into skeletons
+  // and cancel their in-flight poster work during a fast vertical scroll.
   if (!activated) {
     return (
       <div ref={sentinelRef} className={`row-contain ${motionClass}`} data-fixed-hero-row>
@@ -901,15 +950,17 @@ function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: H
       </ErrorBoundary>
     </div>
   )
-}
+})
 
 function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex = 0, previousIndex = null, direction = 1 }: { rows: HomeRowConfig[]; isEditing: boolean; onRemove: (id: string) => void; fixed?: boolean; activeIndex?: number; previousIndex?: number | null; direction?: 1 | -1 }) {
   const [preloadRemainingRows, setPreloadRemainingRows] = useState(false)
 
   useEffect(() => {
-    // The first shelves paint immediately. Once that work has settled, mount
-    // the remaining shelves so their durable catalog data and artwork cache
-    // are ready before ordinary vertical scrolling reaches them.
+    // Give the first paint an idle turn, then prepare exactly one shelf ahead.
+    // Mounting every configured shelf here caused all of their poster batches
+    // to decode at once on large Home layouts, freezing the WebView. The
+    // generous LazyRow visibility margin activates subsequent shelves well
+    // before they can be scrolled into view.
     const timer = window.setTimeout(() => setPreloadRemainingRows(true), 850)
     return () => window.clearTimeout(timer)
   }, [])
@@ -922,7 +973,7 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
           row={row}
           isEditing={isEditing}
           onRemove={onRemove}
-          eager={idx < INITIAL_VISIBLE || preloadRemainingRows}
+          eager={idx < INITIAL_VISIBLE || (preloadRemainingRows && idx === INITIAL_VISIBLE)}
           motionClass={!fixed ? 'fixed-hero-row-active' : idx === activeIndex ? `fixed-hero-row-active ${previousIndex != null ? `fixed-hero-row-enter-${direction > 0 ? 'up' : 'down'}` : ''}` : idx === previousIndex ? `fixed-hero-row-active fixed-hero-row-exit-${direction > 0 ? 'up' : 'down'}` : ''}
         />
       ))}
@@ -958,6 +1009,18 @@ export default function HomePage() {
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+
+  useEffect(() => {
+    if (SERVER_INTEGRATIONS_ENABLED || !homeRows.some((row) => row.enabled && (row.sourceType === 'jellyfin' || row.sourceType === 'webdav'))) return
+    // Preserve the configured shelf records, but persist them as disabled so
+    // they cannot return through profile hydration or sync while the feature
+    // is parked.
+    useAppStore.getState().setHomeRows(homeRows.map((row) => (
+      row.sourceType === 'jellyfin' || row.sourceType === 'webdav'
+        ? { ...row, enabled: false }
+        : row
+    )))
+  }, [homeRows])
 
   useEffect(() => {
     if (!homeRows.some((row) => row.enabled && row.layout === 'continue')) markContinueWatchingSettled()
@@ -1138,8 +1201,9 @@ export default function HomePage() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const enabledRows = homeRows.filter((row) => row.enabled);
-  const heroRow = homeRows.find((row) => row.layout === 'hero' && row.enabled);
+  const serverRowEnabled = (row: HomeRowConfig) => SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
+  const enabledRows = homeRows.filter((row) => row.enabled && serverRowEnabled(row));
+  const heroRow = homeRows.find((row) => row.layout === 'hero' && row.enabled && serverRowEnabled(row));
 
   // Only allow reordering visible content shelves
   const activeRows = enabledRows

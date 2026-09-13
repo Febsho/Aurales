@@ -1,6 +1,6 @@
 [package]
 name = "aurales-app"
-version = "0.3.9"
+version = "0.4.0"
 description = "Aurales - A modern streaming catalog app"
 authors = ["Aurales contributors"]
 license = "MIT"
@@ -30,9 +30,18 @@ tokio = { version = "1", features = ["full"] }
 ureq = { version = "2.10", features = ["json"] }
 rfd = "0.15"
 libloading = "0.8"
-keyring = "3.6"
+# The default Linux keyring backend writes through Secret Service and fails on
+# desktops without a running gnome-keyring/KWallet daemon.  The kernel keyutils
+# store remains OS-managed and works in those sessions without persisting any
+# credential in Aurales' database or browser storage.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 regex = "1"
 url = "2"
+quick-xml = "0.37"
+base64 = "0.22"
+# Provider artwork often arrives at 3K/4K even when rendered as a 144px card.
+# Keep cache responses display-safe so decoded WebKit surfaces stay bounded.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

@@ -41,6 +41,8 @@ pub struct ProviderDetails {
     pub tmdb_id: Option<NumericId>,
     pub tvdb_id: Option<NumericId>,
     pub provider: Option<String>,
+    pub anilist_id: Option<NumericId>,
+    pub mal_id: Option<NumericId>,
     #[serde(default)]
     pub seasons: Vec<ProviderSeason>,
 }
@@ -189,8 +191,16 @@ pub fn normalize_provider_metadata(request: NormalizeProviderMetadataRequest) ->
         .imdb_id
         .filter(|value| !value.is_empty())
         .or(input.imdb_id);
-    let anilist_id = input.anilist_id.as_ref().and_then(number_id);
-    let mal_id = input.mal_id.as_ref().and_then(number_id);
+    let (anilist_id, mal_id) = match request.kind {
+        MediaKind::Movie => (
+            input.anilist_id.as_ref().and_then(number_id),
+            input.mal_id.as_ref().and_then(number_id),
+        ),
+        MediaKind::Show | MediaKind::Anime => (
+            detail_id_or_input(&details.anilist_id, &input.anilist_id),
+            detail_id_or_input(&details.mal_id, &input.mal_id),
+        ),
+    };
     let source_metadata_provider = if details.provider.as_deref() == Some("tvdb") {
         "tvdb"
     } else {
@@ -567,6 +577,26 @@ mod tests {
         let item = normalize_provider_metadata(request);
         assert_eq!(item.id, "app_tvdb_42");
         assert_eq!(item.source_metadata_provider, "tmdb");
+    }
+
+    #[test]
+    fn show_anime_ids_preserve_provider_precedence_and_truthy_fallback() {
+        for kind in ["show", "anime"] {
+            for (provider_id, expected) in [
+                (serde_json::json!(42), Some(42)),
+                (serde_json::json!(0), Some(7)),
+                (serde_json::json!(null), Some(7)),
+            ] {
+                let request = serde_json::from_value(serde_json::json!({
+                    "kind": kind, "updatedAt": "now",
+                    "details": { "id": "show", "title": "Example", "anilistId": provider_id, "malId": provider_id },
+                    "input": { "addonId": "addon", "anilistId": 7, "malId": 7 }
+                })).unwrap();
+                let item = normalize_provider_metadata(request);
+                assert_eq!(item.anilist_id, expected);
+                assert_eq!(item.mal_id, expected);
+            }
+        }
     }
 
     #[test]

@@ -13,6 +13,7 @@ const StreamSelector = lazy(() => import('./StreamSelector'))
 import type { HomeRowConfig, SearchResult } from '../types'
 import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
+import { cachedImage, warmCachedImages } from '../services/imageCache'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import {
   getContinueWatchingAccountScope,
@@ -27,6 +28,7 @@ import {
 import { markContinueWatchingSettled, waitForHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
 import { continueWatchingKey, continueWatchingVisibility, suppressContinueWatching } from '../services/continueWatchingPolicy'
+import { getServerCatalogItems, listServerCatalogs, type ServerCatalogItem } from '../services/serverIntegrations'
 
 type SourceType = ContinueWatchingSource
 
@@ -72,6 +74,39 @@ function normalizeResumeMediaId(mediaId: string, season?: number, episode?: numb
 const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
 const cwRevalidatedThisSession = new Set<string>()
 
+function jellyfinTicksToSeconds(value: unknown): number {
+  const ticks = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(ticks) && ticks > 0 ? Math.floor(ticks / 10_000_000) : 0
+}
+
+function serverContinueWatchingItem(item: ServerCatalogItem): ContinueWatchingItem | null {
+  const raw = item.raw as { UserData?: { PlaybackPositionTicks?: unknown; Played?: unknown; LastPlayedDate?: unknown }; RunTimeTicks?: unknown }
+  const progressSeconds = jellyfinTicksToSeconds(raw.UserData?.PlaybackPositionTicks)
+  const durationSeconds = jellyfinTicksToSeconds(raw.RunTimeTicks)
+  if (!progressSeconds || raw.UserData?.Played === true) return null
+  return {
+    id: `server:${item.sourceConnectionId}:${item.sourceItemId}`,
+    mediaId: item.id,
+    mediaType: item.type,
+    title: item.title,
+    subtitle: item.season != null && item.episode != null ? `S${item.season} E${item.episode}` : undefined,
+    poster: item.poster,
+    backdrop: item.backdrop,
+    season: item.season,
+    episode: item.episode,
+    progressSeconds,
+    durationSeconds,
+    progressPct: durationSeconds > 0 ? (progressSeconds / durationSeconds) * 100 : 0,
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId != null ? Number(item.tmdbId) || undefined : undefined,
+    malId: item.malId != null ? Number(item.malId) || undefined : undefined,
+    anilistId: item.anilistId != null ? Number(item.anilistId) || undefined : undefined,
+    sourceConnectionId: item.sourceConnectionId,
+    sourceItemId: item.sourceItemId,
+    updatedAt: typeof raw.UserData?.LastPlayedDate === 'string' ? raw.UserData.LastPlayedDate : new Date(0).toISOString(),
+  }
+}
+
 export default function ContinueWatchingRow({ row, headerLeftControls, headerRightControls }: ContinueWatchingRowProps) {
   const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
@@ -94,6 +129,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     tmdbId?: number
     malId?: number
     anilistId?: number
+    sourceConnectionId?: string
+    sourceItemId?: string
   } | null>(null)
   const [cwMenu, setCwMenu] = useState<{ x: number; y: number; item: ContinueWatchingItem } | null>(null)
   const cwMenuRef = useRef<HTMLDivElement>(null)
@@ -116,6 +153,13 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   // Watching row fits the same way the poster rows do.
   const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // This row is small, already visible on Home, and is revisited frequently.
+  // Do not let native lazy loading leave an empty 16:9 frame during a fast
+  // vertical scroll; use the same disk/session cache as every other shelf.
+  useEffect(() => {
+    void warmCachedImages(items.flatMap((item) => [item.backdrop, item.poster]))
+  }, [items])
 
   useEffect(() => {
     const clear = (event: Event) => {
@@ -205,7 +249,14 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updatedAt || new Date(0).toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = localItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          const serverCatalogs = await listServerCatalogs()
+          const serverResults = await Promise.allSettled(serverCatalogs
+            .filter((catalog) => catalog.kind === 'continue-watching')
+            .map((catalog) => getServerCatalogItems(catalog.connectionId, catalog.catalogId, 100)))
+          const serverItems = serverResults.flatMap((result) => result.status === 'fulfilled'
+            ? result.value.map(serverContinueWatchingItem).filter((item): item is ContinueWatchingItem => item !== null)
+            : [])
+          list = [...localItems, ...serverItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         } else if (source === 'simkl') {
           const simklRaw = await refreshSimklPlaybackCache()
           const simklItems: ContinueWatchingItem[] = simklRaw
@@ -319,7 +370,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           ])
 
           const playbackItems: ContinueWatchingItem[] = playbackRaw
-            .filter((i) => i.progress > 0 && i.progress < 85)
+            .filter((i) => i.progress > 0 && i.progress < 80)
             .map((i) => {
               const media = i.movie || i.show || {}
               const ids = media.ids || {}
@@ -551,6 +602,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     tmdbId: item.tmdbId,
     malId: item.malId,
     anilistId: item.anilistId,
+    sourceConnectionId: item.sourceConnectionId,
+    sourceItemId: item.sourceItemId,
   })
 
   const announceHeroFocus = (item: ContinueWatchingItem) => {
@@ -699,10 +752,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 {/* 16:9 backdrop */}
                 {artwork ? (
                   <img 
-                    src={artwork}
+                    src={cachedImage(artwork)}
                     alt={item.title} 
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
-                    loading="lazy" 
+                    loading="eager"
                     draggable={false} 
                   />
                 ) : (
@@ -761,10 +814,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 {/* 16:9 backdrop */}
                 {(item.backdrop || item.poster) ? (
                   <img 
-                    src={item.backdrop || item.poster} 
+                    src={cachedImage(item.backdrop || item.poster)}
                     alt={item.title} 
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
-                    loading="lazy" 
+                    loading="eager"
                     draggable={false} 
                   />
                 ) : (
@@ -822,6 +875,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             tmdbId={streamSelectorData.tmdbId}
             malId={streamSelectorData.malId}
             anilistId={streamSelectorData.anilistId}
+            sourceConnectionId={streamSelectorData.sourceConnectionId}
+            sourceItemId={streamSelectorData.sourceItemId}
           />
         </Suspense>
       )}
@@ -871,11 +926,13 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               tmdbId: item.tmdbId,
               malId: item.malId,
               anilistId: item.anilistId,
+              sourceConnectionId: item.sourceConnectionId,
+              sourceItemId: item.sourceItemId,
             })
             setCwMenu(null)
           }}
           onRestart={(item) => {
-            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId })
+            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId, sourceConnectionId: item.sourceConnectionId, sourceItemId: item.sourceItemId })
             setCwMenu(null)
           }}
           onMarkWatched={(item) => {

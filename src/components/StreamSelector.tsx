@@ -28,6 +28,8 @@ import { annotateTorBoxStreams, isTorBoxCachedStream, isTorBoxConnected, resolve
 import { loadPlaybackMemory, playbackMemoryKey, seriesPlaybackMemoryKey, recordPlaybackPreference } from '../services/streams/playbackMemory'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { getServerStreams } from '../services/serverIntegrations'
+import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -65,6 +67,8 @@ interface StreamSelectorProps {
   anilistId?: number
   sourceAddonId?: string
   sourceAddonItemId?: string
+  sourceConnectionId?: string
+  sourceItemId?: string
   forceManualSelection?: boolean
   onResolvingChange?: (resolving: boolean) => void
 }
@@ -134,7 +138,7 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
   },
 ]
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, forceManualSelection = false, onResolvingChange }: StreamSelectorProps) {
+export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange }: StreamSelectorProps) {
   const nativePlayerAvailable = useNativePlayerSupported()
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
@@ -249,28 +253,61 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       if (!seenUrls.has(a.url)) allAddons.push(a)
     }
 
-    if (allAddons.length === 0) {
-      setLoading(false)
-      return
+    let cancelled = false
+    let addonResults: AddonStream[] = []
+    let serverResults: AddonStream[] = []
+    let addonComplete = allAddons.length === 0
+    let serverComplete = false
+    const publish = () => {
+      if (cancelled) return
+      setStreams([...serverResults, ...addonResults])
+      if (addonComplete && serverComplete) setLoading(false)
     }
 
-    streamPreloadManager.request({
+    // Server failures are intentionally isolated from addons. The backend
+    // returns direct-play/direct-stream candidates in the same shape as addon
+    // streams, so selection, scoring, mpv, tracks, subtitles and chapters keep
+    // using the established playback path.
+    getServerStreams({
       mediaType,
       mediaId: cleanMediaId,
       tmdbId,
-      seasonEpisode,
-      sourceAddonId,
-      sourceAddonItemId,
-    }, {
-      priority: StreamPreloadPriority.PLAYBACK,
-      onUpdate: (results, status) => {
-        setStreams(results)
-        if (results.length > 0 || status.complete) setLoading(false)
-      },
+      tvdbId,
+      malId,
+      anilistId,
+      season: seasonEpisode?.season,
+      episode: seasonEpisode?.episode,
+      sourceConnectionId,
+      sourceItemId,
     }).then((results) => {
-      setStreams(results)
-      setLoading(false)
-    }).catch(() => setLoading(false))
+      serverResults = results
+    }).catch(() => {}).finally(() => {
+      serverComplete = true
+      publish()
+    })
+
+    if (allAddons.length > 0) {
+      streamPreloadManager.request({
+        mediaType,
+        mediaId: cleanMediaId,
+        tmdbId,
+        seasonEpisode,
+        sourceAddonId,
+        sourceAddonItemId,
+      }, {
+        priority: StreamPreloadPriority.PLAYBACK,
+        onUpdate: (results, status) => {
+          addonResults = results
+          if (status.complete) addonComplete = true
+          publish()
+        },
+      }).then((results) => {
+        addonResults = results
+      }).catch(() => {}).finally(() => {
+        addonComplete = true
+        publish()
+      })
+    }
 
     const subtitleAddons = getSubtitleAddons(mediaType)
     const subtitleSeenUrls = new Set(seenUrls)
@@ -305,7 +342,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       )
       setSubtitles(unique)
     })
-  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, playback, refreshRevision])
+    return () => { cancelled = true }
+  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, playback, refreshRevision, tmdbId, tvdbId, malId, anilistId])
 
   useEffect(() => {
     const unchecked = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
@@ -348,6 +386,15 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     const values = [
       stream.description,
       stream.title,
+      [
+        stream.directPlay ? 'Direct Play' : stream.directStream ? 'Direct Stream' : stream.transcode ? 'Transcode' : undefined,
+        stream.resolution,
+        stream.videoCodec?.toUpperCase(),
+        stream.audioCodec?.toUpperCase(),
+        stream.container?.toUpperCase(),
+        stream.hdr,
+        stream.bitrate ? `${(stream.bitrate / 1_000_000).toFixed(1)} Mbps` : undefined,
+      ].filter(Boolean).join(' · '),
     ]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       .map((value) => value.trim())
@@ -373,6 +420,11 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       stream.title,
       stream.description,
       stream.filename,
+      stream.resolution,
+      stream.videoCodec,
+      stream.audioCodec,
+      stream.container,
+      stream.hdr,
       behaviorHints.filename,
     ]
       .filter((value): value is string => typeof value === 'string')
@@ -572,6 +624,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
 
 
   const handlePlay = async (stream: AddonStream, index: number, urlOverride?: string, recoveryStartTime?: number) => {
+    if (!smartActiveRef.current && recoveryStartTime == null) markPerformance('player-play-request')
+    markPerformance('stream-url-resolution-start')
     const originalUrl = getPlayableUrl(stream)
     setPlayingIndex(index)
     setPlayError('')
@@ -591,6 +645,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       setPlayError('This stream is not a direct playable video URL. Connect TorBox for cached torrent streams or pick a direct source.')
       return
     }
+    markPerformance('stream-url-ready')
+    measurePerformance('stream-url-resolution', 'stream-url-resolution-start', 'stream-url-ready')
 
     const wtState = useWatchTogetherStore.getState()
     if (wtState.currentRoom) {
@@ -645,6 +701,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   })
 
   const startSmartPlay = async () => {
+    markPerformance('player-play-request')
+    markPerformance('stream-ranking-start')
     const generation = ++rankingGenerationRef.current
     let ranked: AddonStream[]
     try {
@@ -653,6 +711,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       if (error instanceof DOMException && error.name === 'AbortError') return
       throw error
     }
+    markPerformance('stream-ranking-ready')
+    measurePerformance('stream-ranking', 'stream-ranking-start', 'stream-ranking-ready')
     if (generation !== rankingGenerationRef.current || manualSelectionRequestedRef.current || hadPlaybackRef.current) return
     // A validated prepared stream beats pure heuristics: move it to the front
     // and play it via its probed (post-redirect) URL.

@@ -67,6 +67,7 @@ export async function loadAddonCatalogNative(
     if (!Array.isArray(response.metas)) throw new Error('Malformed native addon catalog response')
     return response.metas
   } catch (error) {
+    ensureCurrent(cancelGroup, operationKey, generation)
     const message = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
     if ((error instanceof DOMException && error.name === 'AbortError') || /request was (superseded|cancelled)/i.test(message)) {
       throw staleError()
@@ -84,7 +85,7 @@ export async function loadAddonMetaNative(
   if (!nativeAddonCatalogAvailable()) throw new Error('Native addon metadata loading is unavailable')
   const base = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
   const operationKey = JSON.stringify([base, mediaType, id])
-  const cancelGroup = options.cancelGroup || `detail:addon:${mediaType}`
+  const cancelGroup = options.cancelGroup || `detail:addon:${operationKey}`
   const generation = begin(cancelGroup, operationKey)
 
   try {
@@ -105,6 +106,7 @@ export async function loadAddonMetaNative(
     }
     return response.meta
   } catch (error) {
+    ensureCurrent(cancelGroup, operationKey, generation)
     const message = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
     if ((error instanceof DOMException && error.name === 'AbortError') || /request was (superseded|cancelled)/i.test(message)) {
       throw staleError()

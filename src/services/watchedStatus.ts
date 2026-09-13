@@ -773,19 +773,28 @@ async function isPmdbWatched(rawItem: WatchedLookupItem): Promise<boolean> {
 async function isMdblistWatched(item: WatchedLookupItem): Promise<boolean> {
   try {
     const data = await getMdblistCache()
-    return data.items.some((entry) => {
+    const matches = data.items.filter((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'show') return false
-      const matches =
+      return (
         sameString(item.imdbId, entry.imdb_id) ||
         sameNumber(item.tmdbId, entry.tmdb_id) ||
         sameNumber(item.tvdbId, entry.tvdb_id)
-      if (!matches) return false
-      if (item.type === 'movie') return true
-      if (item.season == null) return false
-      if (item.episode == null) return true
-      return Number(entry.season) === Number(item.season) && Number(entry.episode) === Number(item.episode)
+      )
     })
+    if (item.type === 'movie') return matches.length > 0
+    if (item.season == null) return false
+    const seasonMatches = matches.filter((entry) => Number(entry.season) === Number(item.season))
+    if (item.episode != null) {
+      return seasonMatches.some((entry) => Number(entry.episode) === Number(item.episode))
+    }
+    if (item.seasonEpisodeCount != null) {
+      const watchedEpisodes = new Set(seasonMatches
+        .map((entry) => Number(entry.episode))
+        .filter((episode) => Number.isFinite(episode) && episode > 0))
+      return watchedEpisodes.size >= item.seasonEpisodeCount
+    }
+    return seasonMatches.length > 0
   } catch (_) {
     return false
   }

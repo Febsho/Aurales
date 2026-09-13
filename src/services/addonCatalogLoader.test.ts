@@ -66,4 +66,25 @@ describe('native addon catalog loader', () => {
       }),
     })
   })
+  it('does not cancel concurrent metadata loads for independent titles', async () => {
+    const resolvers: Array<(value: unknown) => void> = []
+    invokeMock.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)))
+    const a = loadAddonMetaNative('https://addon.example', 'series', 'a')
+    const b = loadAddonMetaNative('https://addon.example', 'series', 'b')
+    resolvers[1]({ meta: { id: 'b' }, stale: false })
+    resolvers[0]({ meta: { id: 'a' }, stale: false })
+    await expect(a).resolves.toEqual({ id: 'a' })
+    await expect(b).resolves.toEqual({ id: 'b' })
+  })
+
+  it('treats a superseded native failure as cancellation instead of starting legacy fallback', async () => {
+    let rejectOld!: (error: Error) => void
+    invokeMock.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+    const old = loadAddonCatalogNative('https://addon.example', 'series', 'a', undefined, { cancelGroup: 'failure-test' })
+    invokeMock.mockResolvedValueOnce({ metas: [{ id: 'b' }], stale: false })
+    await loadAddonCatalogNative('https://addon.example', 'series', 'b', undefined, { cancelGroup: 'failure-test' })
+    rejectOld(new Error('network failure'))
+    await expect(old).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
 })

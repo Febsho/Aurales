@@ -10,12 +10,14 @@ import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { RecommendationFeedbackKind } from '../services/discovery/types'
+import { hasMdblistOAuth, markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
 
 const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
   local: { label: 'Local', color: '#a3a3a3' },
   trakt: { label: 'Trakt', color: '#ef4444' },
   simkl: { label: 'Simkl', color: '#0ea5e9' },
   pmdb: { label: 'PMDB', color: '#a855f7' },
+  mdblist: { label: 'MDBList', color: '#10b981' },
   anilist: { label: 'AniList', color: '#3b82f6' },
 }
 
@@ -33,6 +35,8 @@ export default function ContextMenu() {
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const pmdbConnected = !!pmdbApiKey
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const mdblistConnected = !!mdblistApiKey || hasMdblistOAuth()
   const watchProgress = useAppStore((s) => s.watchProgress)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
@@ -178,6 +182,9 @@ export default function ContextMenu() {
     if (pmdbConnected) {
       states.push({ provider: 'pmdb', connected: true, watched: false, loading: true })
     }
+    if (mdblistConnected) {
+      states.push({ provider: 'mdblist', connected: true, watched: false, loading: true })
+    }
     if (anilistConnected && isAnimeItem(item)) {
       states.push({ provider: 'anilist', connected: true, watched: false, loading: true })
     }
@@ -204,12 +211,17 @@ export default function ContextMenu() {
         applyResult('pmdb', watched)
       })
     }
+    if (mdblistConnected) {
+      checkMdblistWatched(item, target).then((watched) => {
+        applyResult('mdblist', watched)
+      })
+    }
     if (anilistConnected && isAnimeItem(item)) {
       checkAniListWatched(item, target).then((watched) => {
         applyResult('anilist', watched)
       })
     }
-  }, [target, traktConnected, simklConnected, pmdbConnected, anilistConnected, watchProgress])
+  }, [target, traktConnected, simklConnected, pmdbConnected, mdblistConnected, anilistConnected, watchProgress])
 
   useEffect(() => {
     if (!open || !target || !enrichedItem) {
@@ -237,6 +249,8 @@ export default function ContextMenu() {
         await toggleSimklWatched(enrichedTarget, newWatched)
       } else if (provider === 'pmdb') {
         await togglePmdbWatched(enrichedTarget, newWatched)
+      } else if (provider === 'mdblist') {
+        await toggleMdblistWatched(enrichedTarget, newWatched)
       } else if (provider === 'anilist') {
         await toggleAniListWatched(enrichedTarget, newWatched)
       }
@@ -268,6 +282,8 @@ export default function ContextMenu() {
           await toggleSimklWatched(enrichedTarget, watched)
         } else if (s.provider === 'pmdb') {
           await togglePmdbWatched(enrichedTarget, watched)
+        } else if (s.provider === 'mdblist') {
+          await toggleMdblistWatched(enrichedTarget, watched)
         } else if (s.provider === 'anilist') {
           await toggleAniListWatched(enrichedTarget, watched)
         }
@@ -807,6 +823,23 @@ async function checkPmdbWatched(
   } catch (_) { return false }
 }
 
+async function checkMdblistWatched(
+  item: SearchResult,
+  target: ReturnType<typeof useContextMenu.getState>['target'],
+): Promise<boolean> {
+  try {
+    const lookup = { ...searchResultToLookup(item) }
+    if (target?.kind === 'episode') {
+      lookup.season = target.seasonNumber
+      lookup.episode = target.episode.episodeNumber
+    } else if (target?.kind === 'season') {
+      lookup.season = target.seasonNumber
+      lookup.seasonEpisodeCount = target.episodeCount
+    }
+    return await isWatchedFromProviderFresh(lookup, 'mdblist')
+  } catch (_) { return false }
+}
+
 async function checkAniListWatched(
   item: SearchResult,
   target: ReturnType<typeof useContextMenu.getState>['target'],
@@ -1065,6 +1098,30 @@ async function togglePmdbWatched(
       const showItems = watchedItems.filter((entry) => entry.tmdb_id === tmdbId && entry.media_type === 'tv' && entry.season != null && entry.episode != null)
       await Promise.all(showItems.map((entry) => removePMDBWatched(tmdbId, 'tv', entry.season, entry.episode)))
     }
+  }
+}
+
+async function toggleMdblistWatched(
+  target: NonNullable<ReturnType<typeof useContextMenu.getState>['target']>,
+  watched: boolean,
+) {
+  const item = target.item
+  const tmdbId = numericId(item.tmdbId)
+  const tvdbId = numericId(item.tvdbId)
+  const imdbId = item.imdbId || (/^tt\d+$/i.test(item.id) ? item.id : undefined)
+  if (!tmdbId && !tvdbId && !imdbId) throw new Error('No supported ID for MDBList')
+
+  const write = watched ? markMdblistWatched : removeMdblistWatched
+  if (item.type === 'movie') {
+    await write(tmdbId, 'movie', undefined, undefined, imdbId, tvdbId)
+  } else if (target.kind === 'episode') {
+    await write(tmdbId, 'series', target.seasonNumber, target.episode.episodeNumber, imdbId, tvdbId)
+  } else if (target.kind === 'season') {
+    await Promise.all(Array.from({ length: target.episodeCount }, (_, index) =>
+      write(tmdbId, 'series', target.seasonNumber, index + 1, imdbId, tvdbId)
+    ))
+  } else {
+    await write(tmdbId, 'series', undefined, undefined, imdbId, tvdbId)
   }
 }
 

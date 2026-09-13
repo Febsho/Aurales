@@ -17,6 +17,7 @@ pub mod platform;
 pub mod player;
 pub mod providers;
 pub mod request;
+pub mod server;
 pub mod settings;
 pub mod stream_candidates;
 pub mod streams;
