@@ -1,244 +1,714 @@
 <p align="center">
-  <img src="./public/app-logo.png?raw=true&v=3" alt="Aurales" width="120" />
+  <img src="./public/app-logo.png?raw=true&v=3" alt="Aurales" width="128" />
 </p>
 
 <h1 align="center">Aurales</h1>
 
 <p align="center">
-  A modern, high-performance desktop streaming catalog app with multi-provider watch tracking sync, mood-based discovery, Stremio addon support, and native mpv playback.
+  <strong>A modern desktop media hub for discovery, streaming, watch tracking and native playback.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-white?style=flat-square" alt="Version 0.4.0" />
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square" alt="Windows and Linux" />
-  <img src="https://img.shields.io/badge/built_with-Tauri_2-orange?style=flat-square" alt="Tauri 2" />
-  <img src="https://img.shields.io/badge/frontend-React_19-61dafb?style=flat-square" alt="React" />
-  <img src="https://img.shields.io/badge/player-mpv-purple?style=flat-square" alt="mpv" />
-  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
+  Browse movies, series and anime, connect your services, install Stremio addons and play everything through a powerful native mpv player.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Febsho/Aurales/releases/latest">
+    <img src="https://img.shields.io/badge/Download-v0.4.0-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-supported-0078D4?style=flat-square&logo=windows" alt="Windows" />
+  <img src="https://img.shields.io/badge/Linux-supported-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux" />
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19" />
+  <img src="https://img.shields.io/badge/Rust-Core-000000?style=flat-square&logo=rust" alt="Rust" />
+  <img src="https://img.shields.io/badge/Player-mpv-691F74?style=flat-square" alt="mpv" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License" />
+</p>
+
+<br>
+
+<p align="center">
+  <img src="./public/screenshots/home.png" alt="Aurales Home" width="95%" />
+</p>
+
+<p align="center">
+  <em>Your movies, shows, anime, watch history, recommendations and playback in one place.</em>
 </p>
 
 ---
 
-Aurales is an elegant, offline-first desktop media hub that brings your catalogs, watch history, recommendations, and playback into one focused desktop experience.
+## What is Aurales?
 
-## Features at a glance
+Aurales is a desktop media application built around a simple idea:
 
-Aurales is built for people who want a polished place to decide what to watch and keep their viewing history consistent:
+**finding something to watch, playing it and keeping track of it should happen in one app.**
 
-| Find something | Watch it | Keep it organized |
-| :--- | :--- | :--- |
-| Browse Home, Trending, Upcoming, and Discover. Search movies, series, anime, and addon catalogs. | Choose a stream, resume playback, use subtitles, and play videos with embedded or native **mpv**. | Use profiles, local watchlists, custom shelves, provider lists, and optional sync across devices. |
+It combines metadata, discovery, watch tracking, Stremio-compatible addons, connected services and native media playback into a fast desktop experience for Windows and Linux.
 
-### See it in action
+Aurales is designed to feel like a dedicated streaming application rather than a browser wrapped around several services.
+
+---
+
+## Everything in one place
+
+<table>
+<tr>
+<td width="33%" align="center">
+
+### Discover
+
+Movies, series and anime from multiple metadata providers, recommendation engines, catalogs and connected services.
+
+</td>
+<td width="33%" align="center">
+
+### Watch
+
+Choose a stream and play through native **mpv** with hardware acceleration, subtitles and advanced playback controls.
+
+</td>
+<td width="33%" align="center">
+
+### Sync
+
+Keep progress, history, watchlists and watched states connected across your tracking services.
+
+</td>
+</tr>
+</table>
+
+---
+
+# Discover what to watch
 
 <p align="center">
-  <img src="./public/screenshots/home.png" alt="Aurales home screen with spotlight hero and continue watching" width="49%" />
-  <img src="./public/screenshots/trending.png" alt="Aurales trending screen with ranked movies and series" width="49%" />
+  <img src="./public/screenshots/trending.png" alt="Aurales Trending" width="95%" />
 </p>
+
+Aurales combines several ways of discovering content instead of forcing everything into one recommendation source.
+
+Browse:
+
+* Home
+* Trending
+* Upcoming releases
+* Movies
+* Series
+* Anime
+* Provider catalogs
+* Stremio addon catalogs
+* Personal lists
+* Smart collections
+
+Discover can filter titles using characteristics such as:
+
+* Genre
+* Mood
+* Rating
+* Release year
+* Runtime
+* Streaming service
+* Media type
+* Personal taste
+
+Search can use metadata from sources including:
+
+**TMDB · TheTVDB · Trakt · MDBList · TVmaze · Cinemeta · MAL / Jikan**
+
+Installed addon catalogs can also participate in search.
+
+### Optional AI Search
+
+Connect OpenRouter and search using natural language.
+
+For example:
+
+```text
+dark sci-fi movies from the last 10 years
+```
+
+or:
+
+```text
+something similar to Severance but more mysterious
+```
+
+---
+
+# A cinematic Home experience
 
 <p align="center">
-  <img src="./public/screenshots/title-details.png" alt="Aurales title details screen with ratings, cast, and resume playback" width="49%" />
-  <img src="./public/screenshots/episodes.png" alt="Aurales season and episode browser with watched states" width="49%" />
+  <img src="./public/screenshots/home-trending.png" alt="Aurales Home and Trending" width="95%" />
 </p>
+
+Home is built from configurable shelves rather than a fixed catalog.
+
+Shelves can include:
+
+* Continue Watching
+* Trending
+* Upcoming releases
+* Local watchlists
+* Provider lists
+* Stremio addon catalogs
+* Smart collections
+* Custom content sources
+
+Shelves can be reordered and displayed using different layouts including:
+
+* Poster
+* Landscape
+* Compact
+* Continue Watching
+
+Aurales keeps already-loaded Home content available during the session so normal navigation does not constantly destroy and reload the interface.
+
+---
+
+# Rich title pages
 
 <p align="center">
-  <img src="./public/screenshots/settings.png" alt="Aurales settings with profiles, sync, accounts, addons, and preferences" width="49%" />
-  <img src="./public/screenshots/home-trending.png" alt="Aurales alternate home view with navigation and trending series" width="49%" />
+  <img src="./public/screenshots/title-details.png" alt="Aurales Title Details" width="95%" />
 </p>
+
+Title pages bring together the information needed before pressing Play.
+
+Depending on available metadata, Aurales can show:
+
+* Synopsis
+* Ratings
+* Runtime
+* Genres
+* Release information
+* Cast
+* Seasons
+* Episodes
+* Watch state
+* Playback progress
+* Connected-service status
+* Available streams
+* Related metadata
+
+Recently resolved details are cached during the session for faster repeat visits.
+
+Artwork also uses persistent caching and optional **Better Posters** resolution to improve repeat loading and visual quality.
+
+---
+
+# Series & Anime
 
 <p align="center">
-  <img src="./public/screenshots/playback.png" alt="Aurales native media player with timeline and playback controls" width="82%" />
+  <img src="./public/screenshots/episodes.png" alt="Aurales Episodes" width="95%" />
 </p>
 
-### Why Aurales
+Series and anime receive dedicated season and episode handling.
 
-- **One place to browse** — Bring metadata, lists, recommendations, and playback together in one desktop app.
-- **Flexible discovery** — Browse by mood, genre, type, rating, streaming service, or personal taste.
-- **A full desktop player** — Resume videos, choose streams, skip intros and credits, and customize subtitles.
-- **Separate profiles** — Keep each person’s history, lists, recommendations, and playback settings separate.
+Aurales supports:
 
-## Features
+* Season browsing
+* Episode progress
+* Watched indicators
+* Resume state
+* Specials
+* OVAs
+* Unaired episodes
+* Provider-specific anime structures
 
-### 🔍 Discovery & Search
-- **Home, Trending, and Upcoming** — See spotlight titles, continue watching, popular picks, and upcoming releases.
-- **Discover** — Browse Movies, Series, and Anime by mood, genre, rating, and recommendation mode.
-- **Search sources** — Choose from TMDB, TheTVDB, Trakt, MDBList, TVmaze, Cinemeta, or MAL/Jikan. Installed addon catalogs can appear in search too.
-- **Optional AI search** — Connect OpenRouter to search with natural-language requests.
+Anime can be matched across services including:
 
-### 🎬 Streaming & Playback
-- **Stremio addons** — Install addon URLs to add streams, catalogs, metadata, and subtitles.
-- **Stream picker** — Compare available streams and see details such as quality, codec, audio, and file size when provided.
-- **mpv playback** — Use the embedded player or a native mpv window with hardware acceleration.
-- **Resume and skip** — Resume from saved positions and skip intros, recaps, and credits when IntroDB data is available.
-- **Playback tools** — Use timeline previews, stream health checks, subtitle tracks, and configurable player controls.
+**AniList · MyAnimeList · TMDB · TheTVDB · SIMKL · Trakt**
 
-### 🔄 Watch Tracking & Sync
-- **Connected services** — Link Trakt, Simkl, AniList, MDBList, or PMDB.
-- **Progress and scrobbling** — Save watched status, resume positions, and playback activity to the services you enable.
-- **Lists and ratings** — Browse connected watchlists, account lists, public lists, and ratings where the provider supports them.
-- **Provider controls** — Choose which services are used for watched checkmarks, resume data, and scrobbling.
-- **Aurales Sync** — Optionally sync profiles, settings, and connected services across devices.
+Aurales normalizes these different metadata structures so the same anime does not have to behave like a completely different title depending on the provider.
 
-### 📂 Library & Home layout
-- **Custom shelves** — Add addon catalogs, provider lists, local watchlists, upcoming releases, and smart collections to Home.
-- **Drag and drop** — Reorder shelves and choose poster, landscape, compact, or continue-watching layouts.
-- **Collections** — Build dynamic TMDB collections with filters such as genre, rating, and streaming service.
-- **Profiles** — Keep library choices and viewing preferences separate for each profile.
+---
 
-### 💬 Watch Together
-- **Shared rooms** — Create or join a room with an invite link.
-- **Synchronized playback** — Play, pause, and seek together while each person uses their own stream.
-- **Room chat** — Send messages and show chat bubbles during playback.
+# Native mpv playback
 
-### 🌟 Anime
-- **Dedicated Anime tab** — Keep anime separate from regular Movies and Series browsing.
-- **Episode tracking** — Track episodes and progress with AniList, Simkl, Trakt, or local storage.
-- **Cross-provider matching** — Match anime across MAL, AniList, TMDB, TheTVDB, and other metadata sources.
-- **Season support** — Handle regular seasons, specials, OVAs, and unaired episodes.
+<p align="center">
+  <img src="./public/screenshots/playback.png" alt="Aurales Player" width="95%" />
+</p>
 
-### 🛠️ Subtitles & AI translation
-- **Multiple subtitle sources** — Use embedded tracks, addon subtitles, or external SRT files.
-- **Subtitle styling** — Change size, color, background, outline, position, and other display options.
-- **Optional live translation** — Use an OpenRouter model to translate the active subtitle track while you watch.
+Aurales uses **mpv / libmpv** for native media playback rather than relying on browser video playback.
 
-## Download & Install
+The player supports:
 
-Download version **0.4.0** from the [GitHub Releases](https://github.com/Febsho/Aurales/releases) page.
+* Hardware accelerated decoding
+* High-quality video playback
+* Multiple audio tracks
+* Multiple subtitle tracks
+* External subtitles
+* Embedded subtitles
+* Resume playback
+* Playback progress
+* Stream fallback
+* Stream health tracking
+* Timeline previews
+* Intro skipping
+* Recap skipping
+* Credit skipping
+* Configurable subtitle styling
 
-### Version 0.4.0 highlights
+Aurales can use an embedded player or native mpv playback depending on platform and configuration.
 
-- Speeds up catalog, detail-page, image-cache, and Home-shelf loading while
-  retaining visible artwork and metadata during navigation.
-- Improves native stream ranking, source recovery, subtitle and audio-track
-  selection, playback controls, and maximum-quality mpv playback.
-- Refines anime metadata and seasons, Better Posters, watch tracking, Sync,
-  and the Settings experience; server integrations remain disabled by default.
+### Fast track switching
 
-### Windows
+Audio and subtitle preferences can automatically prioritize your preferred languages, while track switching is designed to happen without restarting normal playback.
 
-Download and run the NSIS setup file ending in `-setup.exe` (recommended). The `.msi` installer remains available for managed or enterprise installations.
+### Playback recovery
 
-### Linux
+Aurales includes recovery mechanisms for problematic streams and playback states, including stream fallback and player recovery when video output fails.
 
-Aurales publishes two Linux downloads for x86-64 systems:
+---
 
-- **Flatpak bundle** — recommended for the most consistent installation across distributions.
-- **AppImage** — portable and does not need a traditional installation.
+# Stremio addon support
 
-#### Flatpak (all distributions)
+Aurales supports Stremio-compatible addons.
 
-Install Flatpak first if it is not already available:
+Install addon manifest URLs to provide:
 
-**Ubuntu / Debian**
+* Streams
+* Catalogs
+* Metadata
+* Subtitles
 
-```bash
-sudo apt update
-sudo apt install flatpak curl
+Multiple providers can contribute streams for the same title.
+
+Aurales can then rank available sources and present them through its stream selector.
+
+Where available, stream information can include:
+
+* Resolution
+* Codec
+* HDR
+* Audio
+* Source
+* File size
+* Provider
+
+You always retain the ability to manually choose a source.
+
+---
+
+# Watch tracking
+
+Connect the services you already use:
+
+| Service          | Watch state | History / Scrobbling | Lists | Progress |
+| ---------------- | :---------: | :------------------: | :---: | :------: |
+| **Trakt**        |      ✓      |           ✓          |   ✓   |     ✓    |
+| **SIMKL**        |      ✓      |           ✓          |   ✓   |     ✓    |
+| **AniList**      |      ✓      |           ✓          |   ✓   |     ✓    |
+| **MDBList**      |      ✓      |           ✓          |   ✓   |     ✓    |
+| **PublicMetaDB** |      ✓      |           ✓          |   ✓   |     ✓    |
+
+Availability depends on the capabilities exposed by each provider.
+
+Aurales can use connected services for:
+
+* Continue Watching
+* Watched checkmarks
+* Episode progress
+* Movie progress
+* Playback scrobbling
+* Watchlists
+* Ratings
+* Provider lists
+
+You can control which connected service acts as the primary source for watch information.
+
+---
+
+# Profiles
+
+Aurales supports separate local profiles.
+
+Each profile can keep its own:
+
+* Watch history
+* Watchlists
+* Continue Watching
+* Recommendations
+* Home shelves
+* Connected services
+* Playback preferences
+* Subtitle preferences
+* Language preferences
+* Interface settings
+
+This allows multiple people to use the same installation without mixing their viewing data.
+
+---
+
+# Aurales Sync
+
+Aurales can optionally synchronize supported profile data between devices.
+
+This can include:
+
+* Profiles
+* Settings
+* Connected-service configuration
+* Viewing state
+* Application preferences
+
+Local use does not require Aurales Sync.
+
+---
+
+# Watch Together
+
+Aurales includes synchronized remote viewing.
+
+Create a room or join using an invite link.
+
+Each participant can use their own stream while Aurales synchronizes:
+
+* Play
+* Pause
+* Seeking
+* Playback position
+
+Rooms also support chat during playback.
+
+---
+
+# Subtitles
+
+Aurales supports subtitles from:
+
+* Embedded tracks
+* Stremio addons
+* External subtitle files
+
+Subtitle appearance can be customized with options such as:
+
+* Size
+* Position
+* Font weight
+* Italic
+* Outline
+* Shadow
+* Background
+* Color
+
+### Optional AI translation
+
+An OpenRouter model can optionally translate the active subtitle track during playback.
+
+---
+
+# Settings without configuration files
+
+<p align="center">
+  <img src="./public/screenshots/settings.png" alt="Aurales Settings" width="95%" />
+</p>
+
+Most functionality can be configured directly from the application.
+
+Settings include areas for:
+
+* Profiles
+* Connected accounts
+* Sync
+* Stremio addons
+* Servers
+* Playback
+* Subtitles
+* Languages
+* Appearance
+* Metadata
+* Images
+* Cache
+* Keyboard shortcuts
+* Updates
+
+---
+
+# Performance
+
+Aurales combines a React interface with increasingly coarse native Rust operations for expensive work.
+
+The goal is not to move UI code into Rust unnecessarily.
+
+Instead, Rust handles work that benefits from being outside the presentation layer, including areas such as:
+
+```text
+Providers
+Metadata
+Anime mapping
+Caching
+Streams
+Stream ranking
+Synchronization
+SQLite
+Image handling
+mpv integration
 ```
 
-**Fedora**
+while React remains responsible for:
 
-```bash
-sudo dnf install flatpak curl
+```text
+UI
+Navigation
+Presentation
+Interaction
+View state
 ```
 
-**Arch Linux / EndeavourOS / Manjaro**
+This keeps the interface flexible while reducing expensive cross-process and provider work.
 
-```bash
-sudo pacman -S flatpak curl
+More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHITECTURE.md).
+
+---
+
+# Download
+
+The latest release is:
+
+## Aurales v0.4.0
+
+**[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
+
+Available for:
+
+| Platform | Package          |
+| -------- | ---------------- |
+| Windows  | `.exe` installer |
+| Windows  | `.msi`           |
+| Linux    | `.AppImage`      |
+| Linux    | `.flatpak`       |
+
+---
+
+## Windows
+
+The recommended Windows package is the NSIS installer:
+
+```text
+Aurales_0.4.0_x64-setup.exe
 ```
 
-**openSUSE**
+The MSI package is also available for managed installations.
 
-```bash
-sudo zypper install flatpak curl
+---
+
+## Linux
+
+### Flatpak
+
+Download:
+
+```text
+Aurales_0.4.0_amd64.flatpak
 ```
 
-Download and install Aurales directly from GitHub:
+Install:
 
 ```bash
-curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.4.0/Aurales_0.4.0_amd64.flatpak \
-  -o Aurales_0.4.0_amd64.flatpak
-flatpak install --user -y ./Aurales_0.4.0_amd64.flatpak
+flatpak install --user ./Aurales_0.4.0_amd64.flatpak
+```
+
+Run:
+
+```bash
 flatpak run com.aurales.app
 ```
 
-To update, run the download and `flatpak install --user` commands again with the new version number.
+### AppImage
 
-#### AppImage
+Download:
 
-The AppImage includes **mpv, libmpv, FFmpeg, and yt-dlp**. No system media
-packages are required. If it reports that FUSE is missing, install `libfuse2`
-on Debian and older Ubuntu releases, `libfuse2t64` on current Ubuntu releases,
-`fuse-libs` on Fedora, or `fuse2` on Arch-based distributions.
-
-Download Aurales directly from GitHub, install it for your user, and launch it:
-
-```bash
-mkdir -p ~/.local/bin
-curl -fL \
-  https://github.com/Febsho/Aurales/releases/download/v0.4.0/Aurales_0.4.0_amd64.AppImage \
-  -o ~/.local/bin/aurales
-chmod +x ~/.local/bin/aurales
-~/.local/bin/aurales
+```text
+Aurales_0.4.0_amd64.AppImage
 ```
 
-To update the AppImage, run the `curl` command again with the new version number.
+Make it executable:
 
-AppImage and Flatpak provide broad Linux coverage without publishing a separate package for every distribution. Native `.deb`, `.rpm`, Snap, and AUR packages can be added later if there is demand for package-manager integration.
+```bash
+chmod +x Aurales_0.4.0_amd64.AppImage
+```
 
----
+Run:
 
-## Tech Stack
+```bash
+./Aurales_0.4.0_amd64.AppImage
+```
 
-| Layer | Technology |
-| :--- | :--- |
-| **Desktop Framework** | [Tauri 2](https://v2.tauri.app/) (Rust + TypeScript) |
-| **Frontend UI** | React 19, Tailwind CSS 4, Zustand 5, React Router 7 |
-| **Build System** | Vite 8, TypeScript |
-| **Media Player** | Native mpv + libmpv FFI (bundled in Windows, AppImage, and Flatpak releases) |
-| **Database & Cache** | SQLite (via rusqlite, static/bundled build) |
+The AppImage bundles the required media components including:
 
----
+* mpv
+* libmpv
+* FFmpeg
+* yt-dlp
 
-## Application Paths & Troubleshooting
-
-- **App Database & Settings Cache**:
-  - Windows: `%APPDATA%/com.aurales.app/`
-  - Linux: `~/.local/share/com.aurales.app/`
-- **Player Debug Logs**:
-  - Located in `player_debug.log` at the root of the app directory during development. Helpful if you encounter subtitle rendering or video decoding issues.
-- **Build Logs**:
-  - `tauri-build.stdout.log` and `tauri-build.stderr.log` contain outputs from compiler stages.
+so separate media packages are normally unnecessary.
 
 ---
 
-## Building from Source
+# v0.4.0
 
-Requirements:
+Version 0.4.0 focuses heavily on making Aurales feel instant and persistent.
 
-- Node.js LTS and npm
-- Rust stable
-- Tauri 2 system dependencies for your platform
-- Linux: WebKitGTK 4.1 development packages, mpv/libmpv, FFmpeg, and the standard GTK build toolchain
+### Instant UI
+
+* Faster artwork resolution
+* Better Posters request deduplication
+* Persistent Home shelves
+* Persistent browsing state
+* Retained scroll positions
+* Session detail caching
+* Reduced unnecessary content reloads
+
+### Player improvements
+
+* Improved stream ranking
+* Better source recovery
+* Improved language-based audio selection
+* Improved subtitle selection
+* Better playback metadata
+* More reliable connected-server streams
+
+### Anime
+
+* Improved metadata handling
+* Better season structures
+* More consistent provider normalization
+* Expanded anime mapping and caching
+
+### Reliability
+
+* Better cache behavior
+* Better server integration handling
+* Improved MDBList watched and playback state normalization
+* Expanded automated test coverage
+
+See the full release notes on the **[v0.4.0 release page](https://github.com/Febsho/Aurales/releases/tag/v0.4.0)**.
+
+---
+
+# Technology
+
+| Layer       | Technology            |
+| ----------- | --------------------- |
+| Desktop     | **Tauri 2**           |
+| Native Core | **Rust**              |
+| UI          | **React 19**          |
+| Language    | **TypeScript**        |
+| Styling     | **Tailwind CSS 4**    |
+| State       | **Zustand 5**         |
+| Routing     | **React Router 7**    |
+| Build       | **Vite 8**            |
+| Database    | **SQLite / rusqlite** |
+| Player      | **mpv / libmpv**      |
+
+---
+
+# Building from source
+
+### Requirements
+
+* Node.js
+* npm
+* Rust stable
+* Tauri 2 platform dependencies
+
+On Linux you will additionally need the normal WebKitGTK / GTK development dependencies required by Tauri.
+
+Clone:
+
+```bash
+git clone https://github.com/Febsho/Aurales.git
+cd Aurales
+```
+
+Install dependencies:
 
 ```bash
 npm ci
+```
+
+Run the frontend:
+
+```bash
+npm run dev
+```
+
+Build:
+
+```bash
 npm run build
 npm run tauri build
 ```
 
-Linux release bundles can be built with:
+Run tests:
 
 ```bash
-npm run tauri build -- --config src-tauri/tauri.linux.conf.json
+npm test
 ```
 
-Tagged releases are created by pushing a tag such as `v0.4.0`. The release workflow keeps the existing Windows NSIS/MSI outputs and publishes only AppImage and Flatpak for Linux. The Debian package produced in CI is an internal Flatpak assembly input and is not uploaded.
+Run linting:
+
+```bash
+npm run lint
+```
 
 ---
 
-## License
+# Application data
 
-This project is licensed under the [MIT License](./LICENSE) - see the file for details.
+### Windows
+
+```text
+%APPDATA%/com.aurales.app/
+```
+
+### Linux
+
+```text
+~/.local/share/com.aurales.app/
+```
+
+---
+
+# Roadmap
+
+Aurales is actively evolving around four main areas:
+
+**Instant UI**
+Persistent shelves, faster details, smoother browsing and a faster artwork pipeline.
+
+**Player**
+Faster startup, stronger recovery, better stream selection and near-instant track switching.
+
+**Anime**
+Better season structures, faster metadata resolution and seamless season navigation.
+
+**Rust Core**
+Continue moving expensive provider, cache, ranking and synchronization operations behind coarse native commands while keeping presentation logic in React.
+
+---
+
+# License
+
+Aurales is released under the [MIT License](./LICENSE).
+
+---
+
+<p align="center">
+  <img src="./public/app-logo.png?raw=true&v=3" alt="Aurales" width="72" />
+</p>
+
+<p align="center">
+  <strong>Find it. Watch it. Keep it synced.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Febsho/Aurales/releases/latest">Download</a>
+  ·
+  <a href="https://github.com/Febsho/Aurales/releases">Releases</a>
+  ·
+  <a href="https://github.com/Febsho/Aurales/issues">Issues</a>
+</p>
