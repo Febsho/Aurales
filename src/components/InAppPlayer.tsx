@@ -240,7 +240,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       playbackItem.episode,
       playbackItem.imdbId,
       playbackItem.tvdbId
-    ).catch(() => {})
+    ).then(() => {
+      if (scrobbleMdblistEnabled && !mdblistSaveResumePosition && progressPct < 80 && action !== 'start') {
+        return scrobbleMdblist('clear', playbackItem.tmdbId,
+          playbackItem.contentType === 'movie' ? 'movie' : 'series', progressPct,
+          playbackItem.season, playbackItem.episode, playbackItem.imdbId, playbackItem.tvdbId)
+      }
+    }).catch(() => {})
   }
 
   const saveAniListScrobble = (progress: number) => {

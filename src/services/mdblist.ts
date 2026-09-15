@@ -481,7 +481,7 @@ function itemIds(tmdbId?: number, imdbId?: string, tvdbId?: number): Record<stri
   return ids
 }
 
-function scrobblePayload(
+export function scrobblePayload(
   tmdbId: number | undefined,
   mediaType: 'movie' | 'series',
   progress: number,
@@ -492,7 +492,7 @@ function scrobblePayload(
 ): Record<string, unknown> {
   const ids = itemIds(tmdbId, imdbId, tvdbId)
   if (mediaType === 'movie') return { movie: { ids }, progress }
-  return { show: { ids, season, episode }, progress }
+  return { show: { ids, season: { number: season, episode: { number: episode } } }, progress }
 }
 
 export function mdblistPlaybackAction(
@@ -502,7 +502,10 @@ export function mdblistPlaybackAction(
   saveResumePosition: boolean,
 ): 'start' | 'pause' | 'stop' | 'clear' | null {
   if (requested === 'start') return scrobbleEnabled ? 'start' : null
-  if (progressPercent >= 80) return scrobbleEnabled ? requested : 'clear'
+  // An active start must always be paired with the real pause/stop event.
+  // Clearing resume progress instead leaves the remote session running.
+  if (scrobbleEnabled) return requested
+  if (progressPercent >= 80) return 'clear'
   if (requested === 'stop') return saveResumePosition ? 'stop' : 'clear'
   return saveResumePosition ? 'pause' : 'clear'
 }

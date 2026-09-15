@@ -1810,9 +1810,13 @@ function FullNativeMpvPlayer({
       scrobbleMdblistEnabled,
       mdblistSaveResumePosition,
     )
-    return action
-      ? scrobbleMdblist(action, tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
-      : Promise.resolve()
+    if (!action) return Promise.resolve()
+    return (async () => {
+      await scrobbleMdblist(action, tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId)
+      if (scrobbleMdblistEnabled && !mdblistSaveResumePosition && progressPct < 80) {
+        await scrobbleMdblist('clear', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId)
+      }
+    })().catch(() => {})
   }, [mdblistApiKey, mdblistSaveResumePosition, scrobbleMdblistEnabled])
 
   // ─ Controls visibility ────────────────────────────────────────────────────
@@ -3251,9 +3255,11 @@ function FullNativeMpvPlayer({
             lastPmdbPlaybackSaveRef.current = pos
             savePMDBProgressHelper(pos, dur, false)
           }
-          if (item && mdblistApiKey && mdblistSaveResumePosition && (tmdbIdRef.current || item.imdbId || item.tvdbId) && pos - lastMdblistPlaybackSaveRef.current >= 60) {
+          if (isPlaying && item && scrobbleMdblistEnabled && mdblistApiKey &&
+            (tmdbIdRef.current || item.imdbId || item.tvdbId) && pos - lastMdblistPlaybackSaveRef.current >= 60) {
             lastMdblistPlaybackSaveRef.current = pos
-            saveMdblistProgressHelper(pos, dur, false)
+            scrobbleMdblist('start', tmdbIdRef.current, item.contentType === 'movie' ? 'movie' : 'series',
+              Math.round((pos / dur) * 10000) / 100, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
           }
 
           // Detect near-end for Up Next, honoring the Next Episode Prompt
@@ -3580,6 +3586,7 @@ function FullNativeMpvPlayer({
     lastSavedTimeRef.current = 0
     lastSimklPlaybackSaveRef.current = 0
     lastPmdbPlaybackSaveRef.current = 0
+    lastMdblistPlaybackSaveRef.current = 0
     lastAniListPlaybackSaveRef.current = 0
     autoRestartCountRef.current = 0
     lastRestartTimeRef.current = 0
@@ -3834,6 +3841,10 @@ function FullNativeMpvPlayer({
         } else {
           if (scrobbleSimkl) {
             onSimklPlaybackStart(item, progress).catch(() => {})
+          }
+          if (scrobbleMdblistEnabled && mdblistApiKey) {
+            scrobbleMdblist('start', tmdbIdRef.current, item.contentType === 'movie' ? 'movie' : 'series',
+              Math.round(progress * 10000) / 100, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100

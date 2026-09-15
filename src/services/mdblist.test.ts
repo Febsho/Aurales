@@ -11,6 +11,7 @@ vi.hoisted(() => {
 
 import {
   mdblistPlaybackAction,
+  scrobblePayload,
   normalizeMdblistPlayback,
   normalizeMdblistUpNext,
   normalizeMdblistWatched,
@@ -74,8 +75,17 @@ describe('MDBList API normalization', () => {
   it('matches MDBList watched and resume semantics at 80 percent', () => {
     expect(mdblistPlaybackAction('start', 0, false, true)).toBeNull()
     expect(mdblistPlaybackAction('stop', 79.99, true, true)).toBe('stop')
-    expect(mdblistPlaybackAction('stop', 79.99, true, false)).toBe('clear')
+    expect(mdblistPlaybackAction('stop', 79.99, true, false)).toBe('stop')
     expect(mdblistPlaybackAction('stop', 80, true, false)).toBe('stop')
     expect(mdblistPlaybackAction('pause', 80, false, true)).toBe('clear')
+    expect(mdblistPlaybackAction('pause', 20, true, false)).toBe('pause')
+    expect(mdblistPlaybackAction('stop', 20, true, false)).toBe('stop')
+  })
+
+  it('uses MDBList episode scrobble nesting', () => {
+    expect(scrobblePayload(123, 'series', 35, 2, 4)).toEqual({
+      show: { ids: { tmdb: 123 }, season: { number: 2, episode: { number: 4 } } },
+      progress: 35,
+    })
   })
 })
