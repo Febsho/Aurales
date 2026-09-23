@@ -1,7 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
-import { useDetailArtworkReady } from '../hooks/useDetailArtworkReady'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -15,6 +14,7 @@ import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import DetailHero from '../components/media/DetailHero'
 import DetailContentShell from '../components/media/DetailContentShell'
+import DetailStickyHeader from '../components/media/DetailStickyHeader'
 import DetailLoadingState from '../components/media/DetailLoadingState'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
@@ -36,6 +36,7 @@ import { useStreamFeatures } from '../hooks/useStreamFeatures'
 import { setDiscordBrowsingActivity } from '../services/discord'
 import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
 import { useContextMenu } from '../hooks/useContextMenu'
+import { moviePrimaryLabel } from '../services/detailPresentation'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -55,17 +56,6 @@ function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | nul
   const cleanA = clean(idA)
   const cleanB = clean(idB)
   return cleanA !== '' && cleanA === cleanB
-}
-
-function formatRemainingTime(seconds: number): string {
-  if (seconds <= 0) return ''
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')} left`
-  }
-  return `${m}:${s.toString().padStart(2, '0')} left`
 }
 
 interface LocationState {
@@ -207,10 +197,9 @@ export default function MovieDetailPage() {
   const [movie, setMovie] = useState<MovieDetails | null>(null)
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_TRENDING)
-  const [loading, setLoading] = useState(true)
+  const [, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
-  const [initialArtworkReady, setInitialArtworkReady] = useState(false)
   const [streamOpen, setStreamOpen] = useState(false)
   const [forceManualSourceSelection, setForceManualSourceSelection] = useState(false)
   const [streamResolving, setStreamResolving] = useState(false)
@@ -411,7 +400,6 @@ export default function MovieDetailPage() {
     let cancelled = false
     async function load() {
       setLoadError(null)
-      setInitialArtworkReady(false)
       setMalRating(null)
       setLoading(true)
       const appManagedMetadata = useAppStore.getState().appManagedMetadata
@@ -830,19 +818,9 @@ export default function MovieDetailPage() {
     provider: state.provider,
   }, 'movie', Boolean(state.anilistId || state.malId || (id && /^(mal|anilist)[-:]/i.test(id))))
 
-  const artwork = useDetailArtworkReady([
-    movie?.backdrop, movie?.logo,
-    ...(movie?.cast.slice(0, 4).map(person => person.profilePath) || []),
-    ...(movie?.recommendations.slice(0, 4).map(item => item.poster) || []),
-  ], loadAttempt)
-
-  useEffect(() => {
-    if (!loading && movie && artwork.ready) setInitialArtworkReady(true)
-  }, [loading, movie?.id, artwork.ready])
-
-  if (loading || !movie || loadError || !initialArtworkReady) {
+  if (!movie) {
     return <DetailLoadingState
-      error={loadError || (artwork.failed ? 'Could not load artwork. Please try again.' : undefined)}
+      error={loadError || undefined}
       onRetry={() => setLoadAttempt(value => value + 1)}
       logo={initialRouteArt.logo}
       title={state.title}
@@ -853,9 +831,16 @@ export default function MovieDetailPage() {
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''
   const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
+  const activeMovieResume = liveResumePoint || (hasProgress ? {
+    progressSeconds: progressItem.progressSeconds,
+    durationSeconds: progressItem.durationSeconds,
+  } : null)
+  const primaryActionLabel = moviePrimaryLabel(movieWatched, activeMovieResume)
+  const openPrimaryStream = () => { setForceManualSourceSelection(false); setStreamOpen(true) }
   return (
-    <div className="min-h-screen bg-black pb-12">
+    <div className="detail-page detail-page--movie min-h-screen bg-black pb-12">
       <DetailHero
+        stateKey={`movie:${movie.id}`}
         title={movie.title}
         originalTitle={movie.originalTitle}
         year={movie.year}
@@ -871,7 +856,6 @@ export default function MovieDetailPage() {
         logo={movie.logo}
         imdbId={movie.imdbId}
         type="movie"
-        cast={movie.cast}
         crew={movie.crew}
         streamFeatures={streamFeatures}
         ratingsStrip={
@@ -896,7 +880,7 @@ export default function MovieDetailPage() {
                   <path d="M8 5v14l11-7z" />
                 </svg>
               }
-              onClick={() => { setForceManualSourceSelection(false); setStreamOpen(true) }}
+              onClick={openPrimaryStream}
               onContextMenu={(event) => {
                 event.preventDefault()
                 showCtxMenu(event.clientX, event.clientY, {
@@ -913,13 +897,7 @@ export default function MovieDetailPage() {
                 })
               }}
             >
-              {(() => {
-                if (movieWatched) return 'Rewatch'
-                const activeResume = liveResumePoint || (hasProgress ? { progressSeconds: progressItem.progressSeconds, durationSeconds: progressItem.durationSeconds } : null)
-                return activeResume
-                  ? `Resume (${formatRemainingTime(activeResume.durationSeconds - activeResume.progressSeconds)})`
-                  : 'Play'
-              })()}
+              {primaryActionLabel}
             </Button>
             <div className="detail-hero-actions__secondary">
             <WatchlistButton
@@ -1015,6 +993,13 @@ export default function MovieDetailPage() {
         }
       />
 
+      <DetailStickyHeader
+        title={movie.title}
+        actionLabel={primaryActionLabel}
+        onAction={openPrimaryStream}
+        actionLoading={streamResolving}
+      />
+
       <StreamSelector
         open={streamOpen}
         onClose={() => { setStreamOpen(false); setForceManualSourceSelection(false) }}
@@ -1040,7 +1025,7 @@ export default function MovieDetailPage() {
         imdbId={movie.imdbId}
         backdrop={movie.backdrop}
       >
-        {movie.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={movie.trailers} />}
+        {movie.trailers.length > 0 && <div data-detail-trailers><TrailerRow title="Videos & Trailers" videos={movie.trailers} /></div>}
         {movie.cast.length > 0 && <CastRow cast={movie.cast} crew={movie.crew} />}
 
         {movie.recommendations.length > 0 && (

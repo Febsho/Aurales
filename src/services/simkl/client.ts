@@ -2,10 +2,10 @@
  * Central Simkl API client.
  *
  * Handles auth, error types, rate-limit back-off, retries, and mock mode.
- * All calls are authenticated with Bearer token + simkl-api-key header.
+ * AUTH V2 calls use a Bearer token and required app query parameters.
  */
 
-import { getStoredSimklToken, getSimklClientId, isSimklMockMode } from './auth'
+import { getStoredSimklToken, getSimklClientId, isSimklMockMode, refreshSimklToken } from './auth'
 import type { SimklApiItem, SimklMapping } from './types'
 import { logEvent } from '../diagnostics'
 
@@ -36,6 +36,7 @@ export type SimklErrorCode =
   | 'missing_mapping'
   | 'duplicate_item'
   | 'api_error'
+  | 'premium_only'
 
 // ─── Request wrapper ──────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ export async function simklRequest<T = unknown>(
     return handleMockRequest<T>(path, options)
   }
 
-  const token = getStoredSimklToken()
+  let token = getStoredSimklToken()
   if (!token?.accessToken) {
     throw new SimklError('Not connected to Simkl', 'not_connected')
   }
@@ -96,7 +97,7 @@ export async function simklRequest<T = unknown>(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token.accessToken}`,
-          'simkl-api-key': clientId,
+          'User-Agent': 'Aurales/0.4.1',
           ...fetchOptions.headers,
         },
       })
@@ -112,7 +113,14 @@ export async function simklRequest<T = unknown>(
 
     // Success
     if (res.status === 200 || res.status === 201) {
-      try { return (await res.json()) as T } catch (_) { return null as T }
+      try {
+        const data = await res.json() as { error?: string }
+        if (data?.error === 'premium_only') throw new SimklError('Simkl Custom Lists require a PRO or VIP account.', 'premium_only', res.status)
+        return data as T
+      } catch (error) {
+        if (error instanceof SimklError) throw error
+        return null as T
+      }
     }
     if (res.status === 204) return null as T
 
@@ -129,6 +137,10 @@ export async function simklRequest<T = unknown>(
     }
 
     // Non-retryable
+    if (res.status === 401 && attempt === 0) {
+      const refreshed = await refreshSimklToken()
+      if (refreshed) { token = refreshed; continue }
+    }
     if (res.status === 401 || res.status === 403) {
       throw new SimklError('Simkl token invalid or expired', 'invalid_token', res.status)
     }

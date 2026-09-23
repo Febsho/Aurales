@@ -295,6 +295,8 @@ pub fn run() {
             commands::fetch_simkl_user,
             commands::start_simkl_callback_server,
             commands::exchange_simkl_token,
+            commands::exchange_simkl_v2_token,
+            commands::refresh_simkl_v2_token,
             commands::open_simkl_auth,
             commands::start_anilist_callback_server,
             commands::exchange_anilist_token,

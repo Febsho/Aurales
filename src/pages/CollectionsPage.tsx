@@ -17,6 +17,7 @@ import type { InstalledAddon } from '../services/addons'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import {
   getSimklWatchStatusList,
+  getSimklCustomLists,
   getSimklDerivedCatalogItems,
   isSimklDerivedCatalogId,
 } from '../services/simkl/lists'
@@ -880,6 +881,7 @@ function AddWidgetOverlay({
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const [traktLists, setTraktLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(TRAKT_LIST_SOURCES)
+  const [simklCustomLists, setSimklCustomLists] = useState<{ id: string; label: string; type: 'poster' | 'landscape'; group: string; section?: string }[]>([])
   const [pmdbLists, setPmdbLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(PMDB_LIST_SOURCES)
   const [pmdbPicks, setPmdbPicks] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
   const [mdblistLists, setMdblistLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>(MDBLIST_LIST_SOURCES)
@@ -890,6 +892,19 @@ function AddWidgetOverlay({
   const [traktPublicSearch, setTraktPublicSearch] = useState('')
   const [traktPublicSearching, setTraktPublicSearching] = useState(false)
   const [serverCatalogs, setServerCatalogs] = useState<ServerCatalogDescriptor[]>([])
+
+  useEffect(() => {
+    if (!simklConnected) { setSimklCustomLists([]); return }
+    getSimklCustomLists().then((lists) => setSimklCustomLists(lists.map((list) => ({
+      id: `custom:${list.id}`,
+      label: list.name,
+      type: list.mediaType === 'show' ? 'landscape' : 'poster',
+      group: 'custom',
+      section: list.itemCount ? `${list.itemCount} titles` : 'Custom List',
+    })))).catch(() => setSimklCustomLists([]))
+  }, [simklConnected])
+
+  const simklCatalogs = useMemo(() => [...SIMKL_LIBRARY_CATALOGS, ...simklCustomLists], [simklCustomLists])
 
   useEffect(() => {
     let cancelled = false
@@ -1045,14 +1060,14 @@ function AddWidgetOverlay({
   }, [addonCatalogs, search])
 
   const filteredSimklLists = useMemo(() => {
-    if (!search) return SIMKL_LIBRARY_CATALOGS
+    if (!search) return simklCatalogs
     const q = search.toLowerCase()
-    return SIMKL_LIBRARY_CATALOGS.filter((l) =>
+    return simklCatalogs.filter((l) =>
       l.label.toLowerCase().includes(q) ||
       l.group.toLowerCase().includes(q) ||
       l.section?.toLowerCase().includes(q)
     )
-  }, [search])
+  }, [search, simklCatalogs])
 
   const filteredAniListLists = useMemo(() => {
     if (!search) return ANILIST_WIDGET_LISTS
@@ -1687,7 +1702,7 @@ function AddWidgetOverlay({
     smart: { bg: 'bg-amber-500/15', text: 'text-amber-300', border: 'border-l-amber-400', dot: 'bg-amber-400' },
   }
 
-  const addSimklCatalog = (list: typeof SIMKL_LIBRARY_CATALOGS[number]) => {
+  const addSimklCatalog = (list: typeof filteredSimklLists[number]) => {
     queueShelf({
       title: list.label,
       sourceType: 'simkl',
@@ -1698,7 +1713,7 @@ function AddWidgetOverlay({
     })
   }
 
-  const renderSimklCatalogButton = (list: typeof SIMKL_LIBRARY_CATALOGS[number]) => {
+  const renderSimklCatalogButton = (list: typeof filteredSimklLists[number]) => {
     const added = isAlreadyAdded(`simkl:${list.id}`)
     const selected = isPickerSelected(`simkl:${list.id}`)
     return (
@@ -1791,7 +1806,7 @@ function AddWidgetOverlay({
       items.push({ key: shelfDraftKey(row), source: 'addons', group: catalog.addonName, title: catalog.catalogName, subtitle: `${catalog.addonName} • ${catalog.catalogType}`, contentType: inferCatalogContentType(catalog.catalogId, catalog.catalogName, catalog.catalogType), row, added: isAlreadyAdded(`${catalog.addonId}::${catalog.catalogType}::${catalog.catalogId}`) })
     })
 
-    SIMKL_LIBRARY_CATALOGS.forEach((list) => {
+    simklCatalogs.forEach((list) => {
       const row: ShelfDraft = { title: list.label, sourceType: 'simkl', providerListId: list.id, layout: 'poster', enabled: true, showRank: false }
       items.push({ key: shelfDraftKey(row), source: 'simkl', group: list.section || list.group, title: list.label, subtitle: `Simkl • ${list.group}`, contentType: inferCatalogContentType(list.id, `${list.label} ${list.section || ''}`), row, added: isAlreadyAdded(`simkl:${list.id}`) })
     })

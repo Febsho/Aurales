@@ -3,10 +3,10 @@
  */
 
 import { simklRequest, MOCK_WATCHLIST } from './client'
-import { getSimklClientId, isSimklMockMode } from './auth'
+import { getSimklClientId, getStoredSimklAccount, isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
-import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklWatchStatus } from './types'
+import type { SimklWatchlistItem, SimklApiItem, SimklCustomList, SimklMediaType, SimklWatchStatus } from './types'
 import type { SearchResult } from '../../types'
 
 const LS_WATCHLIST_CACHE = 'simkl_watchlist_cache'
@@ -63,10 +63,43 @@ export async function getSimklAnimeWatchlist(): Promise<SimklWatchlistItem[]> {
   )
 }
 
-export async function getSimklCustomLists(): Promise<{ id: string; name: string; items: SimklWatchlistItem[] }[]> {
-  // Simkl doesn't have a custom-lists endpoint in the public API (v1).
-  // TODO: implement when Simkl exposes this endpoint.
-  return []
+export async function getSimklCustomLists(): Promise<SimklCustomList[]> {
+  const userId = getStoredSimklAccount()?.id
+  if (!userId) return []
+  const cacheKey = `simkl_custom_lists:${userId}`
+  return cachedFetch(cacheKey, async () => {
+    const lists = await fetchSimklListPages(`/lists/user/${encodeURIComponent(userId)}`, 'lists')
+    return lists.map((list) => ({
+      id: String(list.id), name: String(list.name || `List ${list.id}`),
+      mediaType: list.media_type === 'movies' ? 'movie' : list.media_type === 'anime' ? 'anime' : 'show',
+      itemCount: Number(list.counts?.items || 0), privacy: list.privacy,
+    }))
+  }, { category: 'SIMKL_LISTS', ttlSeconds: 300 })
+}
+
+export async function getSimklCustomListItems(id: string): Promise<SimklWatchlistItem[]> {
+  if (!/^\d+$/.test(id)) throw new Error('Invalid Simkl Custom List ID.')
+  return cachedFetch(`simkl_custom_list:${id}`, async () => {
+    const first = await simklRequest<{ items?: any[]; media_type?: string; pagination?: { total_pages?: number } }>(`/lists/${id}?limit=500&extended=full`)
+    const items = [...(first.items || [])]
+    const pages = Math.min(Number(first.pagination?.total_pages || 1), 20)
+    for (let page = 2; page <= pages; page++) {
+      const next = await simklRequest<{ items?: any[] }>(`/lists/${id}?limit=500&page=${page}&extended=full`)
+      items.push(...(next.items || []))
+    }
+    return toWatchlistItems({ [first.media_type === 'movies' ? 'movies' : first.media_type === 'anime' ? 'anime' : 'shows']: items })
+  }, { category: 'SIMKL_LISTS', ttlSeconds: 300 })
+}
+
+async function fetchSimklListPages(path: string, field: 'lists'): Promise<any[]> {
+  const first = await simklRequest<{ lists?: any[]; pagination?: { total_pages?: number } }>(`${path}?limit=500`)
+  const items = [...(first[field] || [])]
+  const pages = Math.min(Number(first.pagination?.total_pages || 1), 20)
+  for (let page = 2; page <= pages; page++) {
+    const next = await simklRequest<{ lists?: any[] }>(`${path}?limit=500&page=${page}`)
+    items.push(...(next[field] || []))
+  }
+  return items
 }
 
 // ─── Per-type lists ────────────────────────────────────────────────────────────
@@ -122,6 +155,7 @@ export async function getSimklDropped(): Promise<SimklWatchlistItem[]> {
 }
 
 export async function getSimklWatchStatusList(listId: string): Promise<SimklWatchlistItem[]> {
+  if (listId.startsWith('custom:')) return getSimklCustomListItems(listId.slice('custom:'.length))
   switch (listId) {
     case 'watching':          return getSimklWatching()
     case 'plantowatch':

@@ -118,6 +118,13 @@ export async function isWatchedFromProviderFresh(
   source: Exclude<WatchedSource, 'local'>,
 ): Promise<boolean> {
   if (source !== 'anilist') {
+    // SIMKL v2 requires activity-gated deltas. Refresh that connection before
+    // rebuilding its watched snapshot instead of issuing a separate full
+    // history pull from a context-menu check.
+    if (source === 'simkl') {
+      const { syncSimkl } = await import('./simkl/sync')
+      await syncSimkl()
+    }
     const { forceRefreshProviderWatched } = await import('./watchedCacheSync')
     await forceRefreshProviderWatched(source)
   }

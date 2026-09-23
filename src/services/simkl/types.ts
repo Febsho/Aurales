@@ -12,6 +12,9 @@ export interface SimklToken {
   accessToken: string
   tokenType: string
   scope: string
+  refreshToken?: string
+  /** Unix time in milliseconds; V2 access tokens are short-lived. */
+  expiresAt?: number
 }
 
 export interface SimklPinAuth {
@@ -25,6 +28,14 @@ export interface SimklAccount {
   id: string
   username: string
   avatar?: string
+}
+
+export interface SimklCustomList {
+  id: string
+  name: string
+  mediaType?: SimklMediaType
+  itemCount?: number
+  privacy?: 'public' | 'unlisted' | 'private'
 }
 
 export interface SimklConnectionStatus {

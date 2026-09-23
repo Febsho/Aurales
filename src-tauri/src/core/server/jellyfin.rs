@@ -5,7 +5,7 @@ use super::{
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 
-const CLIENT_HEADER: &str = "MediaBrowser Client=\"Aurales\", Device=\"Desktop\", DeviceId=\"aurales-desktop\", Version=\"0.4.0\"";
+const CLIENT_HEADER: &str = "MediaBrowser Client=\"Aurales\", Device=\"Desktop\", DeviceId=\"aurales-desktop\", Version=\"0.4.1\"";
 
 pub fn test(
     request: &SaveServerConnectionRequest,

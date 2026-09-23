@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { SearchResult } from '../types'
 import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders, resolveBetterPoster } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbCleanPoster, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { isWatchedFromProviders, searchResultToLookup } from '../services/watchedStatus'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { cachedImage, retryImageFromSource, warmCachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
@@ -56,6 +57,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(false)
+  const [seriesCompleted, setSeriesCompleted] = useState(false)
 
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
@@ -115,6 +117,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const betterPosters = useAppStore((s) => s.betterPosters)
   const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
+  const showPosterWatchStatus = useAppStore((s) => s.showPosterWatchStatus)
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
@@ -175,12 +178,22 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     }
     return false
   })
+  const watchProgress = useAppStore((s) => s.watchProgress)
 
-  const progressPct = useAppStore((s) => {
+  const localProgressPct = useAppStore((s) => {
     const p = (item.id && s.watchProgress.get(String(item.id)))
       || (item.imdbId && s.watchProgress.get(item.imdbId))
     if (p && !p.completed && p.durationSeconds > 0) {
       return (p.progressSeconds / p.durationSeconds) * 100
+    }
+    return null
+  })
+  const continueWatchingProgressPct = useAppStore((s) => {
+    const progress = s.continueWatchingProgress
+    for (const key of [item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
+      if (!key) continue
+      const pct = progress.get(String(key))
+      if (pct != null) return pct
     }
     return null
   })
@@ -330,9 +343,34 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     }
   }, [posterSize])
 
-  const isCompleted = primaryProgressProvider === 'local' ? localCompleted : providerWatched
-  // Show in-progress playback on cards when local progress is selected.
-  const showBetterPostersWatchState = primaryProgressProvider === 'local'
+  const baseIsCompleted = primaryProgressProvider === 'local' ? localCompleted : providerWatched
+  const isSeriesCard = displayItem.type === 'series' && displayItem.season == null
+  const isCompleted = isSeriesCard ? seriesCompleted : baseIsCompleted
+  const progressPct = primaryProgressProvider === 'local' ? localProgressPct : continueWatchingProgressPct
+  const showPosterProgress = showPosterWatchStatus && !isCompleted && progressPct != null && progressPct > 2
+  const posterWatchBadge = showPosterWatchStatus && isCompleted ? (
+    <span className="absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-white/30 bg-white/15 text-white/85 shadow-sm backdrop-blur-md" aria-label="Watched" title="Watched">
+      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m5 12 4 4L19 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </span>
+  ) : null
+
+  useEffect(() => {
+    if (!isSeriesCard || !showPosterWatchStatus || !baseIsCompleted) {
+      setSeriesCompleted(false)
+      return
+    }
+    let cancelled = false
+    // The lightweight poster cache only says a provider has history for this
+    // title. Verify the full series before showing a completion badge.
+    void isWatchedFromProviders(searchResultToLookup(displayItem), [primaryProgressProvider], watchProgress)
+      .then((completed) => { if (!cancelled) setSeriesCompleted(completed) })
+      .catch(() => { if (!cancelled) setSeriesCompleted(false) })
+    return () => { cancelled = true }
+  }, [
+    isSeriesCard, showPosterWatchStatus, baseIsCompleted, primaryProgressProvider, watchProgress,
+    displayItem.id, displayItem.imdbId, displayItem.tmdbId, displayItem.tvdbId, displayItem.malId,
+    displayItem.anilistId, displayItem.simklId, displayItem.traktId, displayItem.isAnime,
+  ])
 
   useEffect(() => {
     if (!isVisible || layout !== 'feature') return
@@ -713,7 +751,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             <span className="media-rank__value" data-digits={String(cinematicRankValue).length}>{cinematicRankValue}</span>
           </span>
         )}
-        <div data-hero-viewport className={`relative ${cinematicViewportHeight} ${cinematicViewportWidth} overflow-hidden rounded-2xl border transition-[width,margin,border-color,box-shadow,transform] duration-[var(--duration-card)] ease-expo ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'border-white/75 shadow-[0_18px_55px_rgba(0,0,0,.7)]' : 'border-white/10'}`}>
+        <div data-hero-viewport className={`relative ${cinematicViewportHeight} ${cinematicViewportWidth} overflow-hidden rounded-2xl border border-white/10 transition-[width,margin,box-shadow,transform] duration-[var(--duration-card)] ease-expo ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'shadow-[0_18px_55px_rgba(0,0,0,.7)]' : ''}`}>
           {cinematicPoster && <img src={cachedImage(cinematicPoster)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, cinematicPoster)} />}
           {expanded && focusMedia && <img src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, focusMedia)} />}
           {cinematicTrailer && (useNativeTrailerPlayer ? (
@@ -730,6 +768,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           ))}
           {!cinematicPoster && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
           <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
+          {posterWatchBadge}
           {cinematicFeature && (
             <div data-feature-overlay className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-3 pt-16">
               {cinematicLogo ? (
@@ -745,7 +784,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
             {cinematicLogo ? <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
           </div>}
-          {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
+          {showPosterProgress && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
         </div>
         <div className={`absolute top-full grid transition-[grid-template-rows,opacity] duration-300 ${cinematicRanked ? 'left-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]' : 'left-0 w-full'} ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
           <div className="overflow-hidden">
@@ -799,7 +838,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         data-mouse-follow={mouseFollowEnabled || undefined}
         className={`group relative flex-shrink-0 cursor-pointer text-left focus-ring ${widthClass}`}
       >
-        <div data-hero-viewport className={`relative aspect-[4/5] overflow-hidden rounded-[1.6rem] border border-white/10 shadow-[0_16px_45px_rgba(0,0,0,.28)] transition-[border-color,box-shadow,transform] duration-300 group-hover:border-white/25 group-hover:shadow-[0_24px_60px_rgba(0,0,0,.45)] ${featureTrailer ? '' : 'group-hover:-translate-y-1.5'} ${nativeTrailerVisible ? 'native-trailer-hole bg-transparent' : 'bg-surface-elevated'}`}>
+        <div data-hero-viewport className={`relative aspect-[4/5] overflow-hidden rounded-[1.6rem] border border-white/10 shadow-[0_16px_45px_rgba(0,0,0,.28)] transition-[box-shadow,transform] duration-300 group-hover:shadow-[0_24px_60px_rgba(0,0,0,.45)] ${featureTrailer ? '' : 'group-hover:-translate-y-1.5'} ${nativeTrailerVisible ? 'native-trailer-hole bg-transparent' : 'bg-surface-elevated'}`}>
           {!nativeTrailerVisible && (featureArt ? <img src={cachedImage(featureArt)} alt={displayItem.title} className={`h-full w-full object-cover transition-[transform,opacity] duration-500 group-hover:scale-[1.04] ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, featureArt)} /> : <div className={`grid h-full place-items-center bg-gradient-to-br from-surface-elevated to-surface text-5xl font-black text-white/20 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`}>{displayItem.title?.charAt(0) || '?'}</div>)}
           {featureTrailer && (featureUsesNativeTrailer ? (
             <HeroMpvTrailer
@@ -824,6 +863,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             />
           ))}
           {(!nativeTrailerVisible || staticFeaturePresentation) && <div className={`absolute inset-0 z-10 bg-gradient-to-t from-black via-black/25 to-transparent transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`} />}
+          {posterWatchBadge}
           {(!nativeTrailerVisible || staticFeaturePresentation) && <div data-feature-overlay className={`absolute inset-x-0 bottom-0 z-30 p-5 transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`}>
             {cleanTmdbLogo ? <img src={cachedImage(cleanTmdbLogo)} alt={displayItem.title} className="mb-3 max-h-16 max-w-[72%] object-contain object-left drop-shadow-xl" /> : <h3 className="mb-2 line-clamp-2 text-xl font-black leading-tight text-white drop-shadow-xl">{displayItem.title}</h3>}
             <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white/75">
@@ -832,7 +872,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               {displayItem.year && <><span className="text-white/60">·</span><span>{displayItem.year}</span></>}
             </div>
           </div>}
-          {!nativeTrailerVisible && showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct, 100)}%` }} /></div>}
+          {!nativeTrailerVisible && showPosterProgress && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
         </div>
       </button>
     )
@@ -856,7 +896,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         data-mouse-follow={mouseFollowEnabled || undefined}
         className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[var(--duration-card)] ease-expo ${cinematicWidth}`}
       >
-        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[var(--duration-slow)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
+        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-[box-shadow,transform] duration-[var(--duration-slow)] ease-expo group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
           {landscapeBackdrop ? (
             <img
               src={cachedImage(landscapeBackdrop)}
@@ -893,11 +933,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               <span>{ratingStr}</span>
             </div>
           )}
+          {posterWatchBadge}
 
           {/* In-progress bar (landscape) */}
-          {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && (
+          {showPosterProgress && (
             <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-              <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />
+              <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct!, 100)}%` }} />
             </div>
           )}
 
@@ -1041,7 +1082,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           </span>
         </span>
       )}
-      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,border-color,box-shadow,transform] duration-[var(--duration-card)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
+      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,box-shadow,transform] duration-[var(--duration-card)] ease-expo group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
         {inlineTrailerPreview ? (
           <div className="relative h-full w-full">
             {posterUrl && <img src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={() => markImageFailed(posterUrl)} />}
@@ -1107,11 +1148,12 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         {import.meta.env.DEV && displayItem.metadataFallback && (
           <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-tag font-bold z-20">metadata fallback</div>
         )}
+        {posterWatchBadge}
 
         {/* In-progress bar */}
-        {showBetterPostersWatchState && !isCompleted && progressPct != null && progressPct > 2 && (
+        {showPosterProgress && (
           <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-            <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />
+            <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct!, 100)}%` }} />
           </div>
         )}
       </div>

@@ -44,8 +44,8 @@ export default function CastRow({ cast, crew }: CastRowProps) {
 
   return (
     <>
-      <div className="mb-12">
-        <div className="flex items-center justify-between px-8 mb-5">
+      <div className="cast-row mb-12">
+        <div className="cast-row__header flex items-center justify-between px-8 mb-5">
           <h2 className="text-2xl font-bold text-white">Cast</h2>
           {hasFullCredits && (
             <button
@@ -59,7 +59,7 @@ export default function CastRow({ cast, crew }: CastRowProps) {
         <div className="shelf-fade">
         <div
           ref={scrollRef}
-          className="flex gap-6 overflow-x-auto px-8 pb-3"
+          className="cast-row__track flex gap-6 overflow-x-auto px-8 pb-3"
           style={{ scrollbarWidth: 'none' }}
         >
           {directors.slice(0, 2).map((d) => (

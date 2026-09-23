@@ -4,14 +4,16 @@ import type { CastMember, CrewMember } from '../../types'
 import { cachedImage, retryImageFromSource, watchStalledImage } from '../../services/imageCache'
 import type { StreamFeature } from '../../services/streams/streamFeatures'
 import { editorialAccolade, fetchTitleAccolade, isGenericAwardAccolade } from '../../services/accolades'
+import { getDetailView, rememberDetailView } from '../../services/sessionViewState'
+import { promoteDecodedArtwork } from '../../services/detailPresentation'
 
-function ExpandableOverview({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false)
+function ExpandableOverview({ text, stateKey }: { text: string; stateKey?: string }) {
+  const [expanded, setExpanded] = useState(() => stateKey ? Boolean(getDetailView(stateKey)?.expandedOverview) : false)
   const [clamped, setClamped] = useState(false)
   const textRef = useRef<HTMLParagraphElement>(null)
 
   useEffect(() => {
-    setExpanded(false)
+    setExpanded(stateKey ? Boolean(getDetailView(stateKey)?.expandedOverview) : false)
     const el = textRef.current
     if (!el) return
     const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1)
@@ -19,18 +21,31 @@ function ExpandableOverview({ text }: { text: string }) {
     const observer = new ResizeObserver(measure)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [text])
+  }, [text, stateKey])
+
+  const toggleExpanded = () => {
+    setExpanded((value) => {
+      const next = !value
+      if (stateKey) rememberDetailView(stateKey, { expandedOverview: next })
+      return next
+    })
+  }
 
   const interactive = clamped || expanded
   return (
-    <p
-      ref={textRef}
-      onClick={interactive ? () => setExpanded((value) => !value) : undefined}
-      title={!expanded && clamped ? 'Show full description' : undefined}
-      className={`text-lg text-white/60 leading-relaxed max-w-2xl mb-5 transition-colors ${expanded ? '' : 'line-clamp-3'} ${interactive ? 'cursor-pointer hover:text-white/75' : ''}`}
-    >
-      {text}
-    </p>
+    <div className="detail-hero-overview mb-5 max-w-2xl">
+      <p
+        ref={textRef}
+        className={`text-lg text-white/60 leading-relaxed transition-colors ${expanded ? '' : 'line-clamp-3'}`}
+      >
+        {text}
+      </p>
+      {interactive && (
+        <button type="button" onClick={toggleExpanded} className="detail-hero-overview__more focus-ring">
+          {expanded ? 'Less' : 'More'}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -72,6 +87,7 @@ function FeatureBadge({ feature }: { feature: StreamFeature }) {
 }
 
 interface DetailHeroProps {
+  stateKey?: string
   title: string
   originalTitle?: string
   year?: number
@@ -115,6 +131,7 @@ function safeDisplayText(value: unknown): string | null {
 }
 
 export default function DetailHero({
+  stateKey,
   title,
   year,
   releaseDate,
@@ -139,23 +156,54 @@ export default function DetailHero({
   crew,
   streamFeatures,
 }: DetailHeroProps) {
-  // Scope image state to its URL. Resetting booleans in an effect races a fast
-  // cached image: onLoad can run first, then the effect sets loaded=false and
-  // the same URL never emits another load event, leaving the Hero black.
+  // Keep the last decoded backdrop mounted until its replacement has decoded.
+  // Provider/Better Artwork refreshes therefore crossfade instead of producing
+  // a normal-image -> blank -> enhanced-image sequence.
+  const [currentBackdrop, setCurrentBackdrop] = useState(backdrop)
+  const [previousBackdrop, setPreviousBackdrop] = useState<string | undefined>()
   const [loadedBackdropUrl, setLoadedBackdropUrl] = useState<string | null>(null)
   const [failedBackdropUrl, setFailedBackdropUrl] = useState<string | null>(null)
   const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
   const [accolade, setAccolade] = useState<string | null | undefined>(undefined)
   const backdropRef = useRef<HTMLImageElement>(null)
   const logoRef = useRef<HTMLImageElement>(null)
-  const backdropLoaded = Boolean(backdrop && loadedBackdropUrl === backdrop)
-  const backdropError = Boolean(backdrop && failedBackdropUrl === backdrop)
+  const backdropLoaded = Boolean(currentBackdrop && loadedBackdropUrl === currentBackdrop)
+  const backdropError = Boolean(currentBackdrop && failedBackdropUrl === currentBackdrop)
   const logoError = Boolean(logo && failedLogoUrl === logo)
 
   // The hero is the one place a stalled artwork request is unmissable: both
   // images are full-bleed and there is nothing else to look at behind them.
-  useEffect(() => watchStalledImage(backdropRef.current, backdrop), [backdrop])
+  useEffect(() => watchStalledImage(backdropRef.current, currentBackdrop), [currentBackdrop])
   useEffect(() => watchStalledImage(logoRef.current, logo), [logo])
+
+  useEffect(() => {
+    if (!backdrop || backdrop === currentBackdrop) return
+    let cancelled = false
+    const candidate = new Image()
+    candidate.src = cachedImage(backdrop, 'backdrop')
+    const accept = async () => {
+      try { await candidate.decode?.() } catch { /* onload still proves the source is usable */ }
+      if (cancelled) return
+      const promoted = promoteDecodedArtwork(currentBackdrop, backdrop, true)
+      setPreviousBackdrop(promoted.previous)
+      setCurrentBackdrop(promoted.current)
+      setLoadedBackdropUrl(backdrop)
+      setFailedBackdropUrl((failed) => failed === backdrop ? null : failed)
+    }
+    candidate.onload = () => { void accept() }
+    candidate.onerror = () => undefined
+    return () => {
+      cancelled = true
+      candidate.onload = null
+      candidate.onerror = null
+    }
+  }, [backdrop, currentBackdrop])
+
+  useEffect(() => {
+    if (!previousBackdrop) return
+    const timer = setTimeout(() => setPreviousBackdrop(undefined), 800)
+    return () => clearTimeout(timer)
+  }, [previousBackdrop])
 
   useEffect(() => {
     setAccolade(undefined)
@@ -228,20 +276,30 @@ export default function DetailHero({
   return (
     <div className="detail-hero-panel relative w-full overflow-hidden" style={{ height: '100%' }}>
       {/* Backdrop image */}
-      {backdrop && !backdropError ? (
+      {previousBackdrop && (
+        <img
+          src={cachedImage(previousBackdrop, 'backdrop')}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover opacity-100"
+          style={{ objectPosition: 'center 20%' }}
+          draggable={false}
+        />
+      )}
+      {currentBackdrop && !backdropError ? (
         <img
           ref={backdropRef}
-          src={cachedImage(backdrop, 'backdrop')}
+          key={currentBackdrop}
+          src={cachedImage(currentBackdrop, 'backdrop')}
           alt=""
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded ? 'opacity-100' : 'opacity-0'}`}
+          className={`detail-hero-backdrop absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${backdropLoaded || !previousBackdrop ? 'opacity-100' : 'opacity-0'}`}
           style={{ objectPosition: 'center 20%' }}
           draggable={false}
           onLoad={() => {
-            setLoadedBackdropUrl(backdrop)
-            setFailedBackdropUrl((failed) => failed === backdrop ? null : failed)
+            setLoadedBackdropUrl(currentBackdrop)
+            setFailedBackdropUrl((failed) => failed === currentBackdrop ? null : failed)
           }}
           onError={(event) => {
-            if (!retryImageFromSource(event.currentTarget, backdrop)) setFailedBackdropUrl(backdrop)
+            if (!retryImageFromSource(event.currentTarget, currentBackdrop)) setFailedBackdropUrl(currentBackdrop)
           }}
         />
       ) : poster ? (
@@ -254,10 +312,6 @@ export default function DetailHero({
         />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
-      )}
-
-      {backdrop && !backdropLoaded && !backdropError && (
-        <div className="absolute inset-0 bg-surface animate-pulse" />
       )}
 
       {/* Cinematic gradients */}
@@ -318,7 +372,7 @@ export default function DetailHero({
         {ratingsStrip}
 
         {/* Overview: clamped to 3 lines; click to expand when it overflows */}
-        {overview && <ExpandableOverview text={overview} />}
+        {overview && <ExpandableOverview text={overview} stateKey={stateKey} />}
 
         {/* Actor avatars */}
         {topCast.length > 0 && (

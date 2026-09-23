@@ -166,6 +166,14 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     scrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' })
   }
 
+  const handleRowWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.shiftKey) return
+    const amount = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+    if (Math.abs(amount) < 1) return
+    event.preventDefault()
+    event.currentTarget.scrollBy({ left: amount, behavior: 'smooth' })
+  }
+
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!cinematic || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return
     const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > button'))
@@ -338,6 +346,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
         onScroll={handleRowScroll}
+        onWheel={handleRowWheel}
         className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >

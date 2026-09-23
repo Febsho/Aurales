@@ -35,6 +35,7 @@ interface SelectMenuProps {
   disabled?: boolean
   'aria-label'?: string
   id?: string
+  'data-detail-focus'?: string
 }
 
 interface ParsedOption {
@@ -80,6 +81,7 @@ export default function SelectMenu({
   disabled,
   'aria-label': ariaLabel,
   id,
+  'data-detail-focus': detailFocus,
 }: SelectMenuProps) {
   const options = useMemo(() => parseOptions(children), [children])
   const [open, setOpen] = useState(false)
@@ -218,6 +220,7 @@ export default function SelectMenu({
         aria-expanded={open}
         aria-label={ariaLabel}
         aria-disabled={disabled || undefined}
+        data-detail-focus={detailFocus}
         disabled={disabled}
         onClick={() => !disabled && setOpen((v) => !v)}
         onKeyDown={handleKeyDown}

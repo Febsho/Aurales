@@ -8,8 +8,6 @@ import type { SearchResult } from '../types'
 import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders, isWatchedFromProviderFresh } from '../services/watchedStatus'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
-import { saveRecommendationFeedback } from '../services/discovery/feedbackStore'
-import type { RecommendationFeedbackKind } from '../services/discovery/types'
 import { hasMdblistOAuth, markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
 
 const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
@@ -326,29 +324,12 @@ export default function ContextMenu() {
     close()
   }, [target, enrichedItem, navigate, close])
 
-  const handleCopyId = useCallback(() => {
-    if (!target) return
-    const item = enrichedItem || target.item
-    const ids = [item.imdbId, item.tmdbId ? `tmdb:${item.tmdbId}` : null, item.tvdbId ? `tvdb:${item.tvdbId}` : null, item.id].filter(Boolean).join(', ')
-    navigator.clipboard.writeText(ids)
-    toast('info', 'IDs copied')
-    close()
-  }, [target, enrichedItem, toast, close])
-
   const handleSelectSource = useCallback(() => {
     if (!target || target.kind === 'season' || !target.onSelectSource) return
     const selectSource = target.onSelectSource
     close()
     selectSource()
   }, [target, close])
-
-  const handleRecommendationFeedback = useCallback((kind: RecommendationFeedbackKind) => {
-    if (!target) return
-    const item = enrichedItem || target.item
-    saveRecommendationFeedback(item, kind)
-    toast('success', kind === 'more-like-this' ? 'Recommendations adjusted' : 'Feedback saved')
-    close()
-  }, [target, enrichedItem, toast, close])
 
   if (!open || !target) return null
 
@@ -482,26 +463,16 @@ export default function ContextMenu() {
               </button>
             </div>
           )}
-          <div className="px-1.5 py-1.5">
-            {target.kind === 'media' && (
+          {target.kind === 'media' && (
+            <div className="px-1.5 py-1.5">
               <button onClick={handleGoToDetail} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
                 <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <span className="text-sm text-white/90">Go to details</span>
               </button>
-            )}
-            <button onClick={handleCopyId} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.12] transition-colors cursor-pointer">
-              <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <span className="text-sm text-white/90">Copy IDs</span>
-            </button>
-          </div>
-          {target.kind === 'media' && <div className="border-t border-white/[0.12] px-1.5 py-1.5">
-            <p className="px-2.5 py-1 text-meta font-semibold uppercase tracking-wider text-white/55">Recommendations</p>
-            {([['more-like-this','Show me more like this'],['less-like-this','Show me less like this'],['already-seen',"I've already seen this"],['not-interested','Not interested'],['hide','Hide this title']] as const).map(([kind,label]) => <button key={kind} onClick={() => handleRecommendationFeedback(kind)} className="w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-white/90 transition-colors hover:bg-white/[0.12]">{label}</button>)}
-          </div>}
+            </div>
+          )}
         </div>
       </div>
     </div>

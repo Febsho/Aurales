@@ -1,10 +1,7 @@
 /**
  * Simkl authentication.
  *
- * This follows the working SyncMeta PIN flow:
- * 1. GET /oauth/pin?client_id=...
- * 2. Open Simkl's verification URL with the user code.
- * 3. Poll GET /oauth/pin/{user_code}?client_id=... until approved.
+ * AUTH V2 browser login with PKCE and a localhost callback.
  */
 
 import { invoke } from '@tauri-apps/api/core'
@@ -20,11 +17,12 @@ const LS_TOKEN = 'simkl_token'
 const LS_ACCOUNT = 'simkl_account'
 const LS_LAST_SYNC = 'simkl_last_sync'
 
-const DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
-const BUILTIN_SIMKL_CLIENT_ID = '41909722c07fbb1a25cdca36ac9223cf0bca362b5081b18669c71189eb8027dc'
+const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:42814/auth/simkl/callback'
+const V2_CLIENT_ID_KEY = 'simkl_v2_client_id'
+let pendingCallback: Promise<string> | null = null
 
 export function getSimklClientId(): string {
-  return localStorage.getItem('simkl_client_id') || import.meta.env.VITE_SIMKL_CLIENT_ID || BUILTIN_SIMKL_CLIENT_ID
+  return localStorage.getItem(V2_CLIENT_ID_KEY) || import.meta.env.VITE_SIMKL_V2_CLIENT_ID || ''
 }
 
 export async function getSimklConfig(): Promise<SimklConfig> {
@@ -42,28 +40,27 @@ export function isSimklMockMode(): boolean {
 export async function initiateSimklLogin(): Promise<SimklPinAuth> {
   const config = await getSimklConfig()
   if (!config.clientId) {
-    return { userCode: '', verificationUrl: '', interval: 5, expiresIn: 900 }
+    throw new Error('SIMKL AUTH V2 is not configured. Set VITE_SIMKL_V2_CLIENT_ID to a desktop/browser AUTH V2 client ID.')
   }
-
-  const pinJson = await invoke<string>('request_simkl_pin', { clientId: config.clientId })
-  const pin = parsePinResponse(pinJson)
-  if (!pin.userCode) throw new Error('Simkl PIN response did not include a user code.')
-
-  await invoke('open_simkl_auth', {
-    url: buildVerificationUrl(pin.verificationUrl, pin.userCode),
-  })
-  return pin
+  const verifier = randomUrlSafe(48)
+  const state = randomUrlSafe(24)
+  const challenge = await sha256UrlSafe(verifier)
+  sessionStorage.setItem('simkl_oauth_v2', JSON.stringify({ verifier, state, redirectUri: config.redirectUri }))
+  // The callback server must own the port before the browser is sent away.
+  pendingCallback = invoke<string>('start_simkl_callback_server')
+  await new Promise((resolve) => setTimeout(resolve, 75))
+  const params = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'media:read media:write', state, code_challenge: challenge, code_challenge_method: 'S256' })
+  await invoke('open_simkl_auth', { url: `https://simkl.com/oauth2/authorize?${params}` })
+  return { userCode: '', verificationUrl: '', interval: 5, expiresIn: 600 }
 }
 
 export async function completeSimklLogin(code: string): Promise<SimklAccount> {
   const config = await getSimklConfig()
-  if (!config.clientId) return mockLogin()
-
-  const tokenJson = await invoke<string>('check_simkl_pin', {
-    userCode: code.trim(),
-    clientId: config.clientId,
-  })
+  const pending = readPendingOauth()
+  if (!code.trim()) throw new Error('Simkl did not return an authorization code.')
+  const tokenJson = await invoke<string>('exchange_simkl_v2_token', { code: code.trim(), clientId: config.clientId, redirectUri: pending.redirectUri, codeVerifier: pending.verifier })
   const token = parseTokenResponse(tokenJson)
+  sessionStorage.removeItem('simkl_oauth_v2')
   return finaliseSimklLogin(token)
 }
 
@@ -80,13 +77,9 @@ export async function handleSimklCallback(code: string): Promise<void> {
 
 /** @deprecated Aurales now uses the Simkl PIN flow, not authorization-code exchange. */
 export async function exchangeSimklCodeForToken(code: string): Promise<SimklToken> {
-  if (isSimklMockMode()) return mockToken()
-  const config = await getSimklConfig()
-  const tokenJson = await invoke<string>('check_simkl_pin', {
-    userCode: code.trim(),
-    clientId: config.clientId,
-  })
-  return parseTokenResponse(tokenJson)
+  const account = await completeSimklLogin(code)
+  if (!account.id) throw new Error('Simkl account details were missing.')
+  return getStoredSimklToken()!
 }
 
 export async function finaliseSimklLogin(token: SimklToken): Promise<SimklAccount> {
@@ -120,16 +113,49 @@ function parseTokenResponse(json: string): SimklToken {
     accessToken,
     tokenType: String(data.token_type || data.tokenType || 'Bearer'),
     scope: String(data.scope || ''),
+    refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
+    expiresAt: typeof data.expires_in === 'number' ? Date.now() + data.expires_in * 1000 : undefined,
   }
 }
 
-function buildVerificationUrl(verificationUrl: string, userCode: string): string {
-  const url = verificationUrl || 'https://simkl.com/pin/'
-  if (!userCode) return url
-  if (url.includes('{user_code}')) return url.replace('{user_code}', encodeURIComponent(userCode))
-  if (url.includes('{code}')) return url.replace('{code}', encodeURIComponent(userCode))
-  const separator = url.endsWith('/') || url.endsWith('=') ? '' : '/'
-  return `${url}${separator}${encodeURIComponent(userCode)}`
+function randomUrlSafe(bytes: number): string {
+  const data = crypto.getRandomValues(new Uint8Array(bytes))
+  return btoa(String.fromCharCode(...data)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function sha256UrlSafe(value: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function readPendingOauth(): { verifier: string; state: string; redirectUri: string } {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem('simkl_oauth_v2') || '')
+    if (parsed?.verifier && parsed?.state && parsed?.redirectUri) return parsed
+  } catch (_) { /* handled below */ }
+  throw new Error('Simkl sign-in session expired. Start the connection again.')
+}
+
+export async function waitForSimklOauthCallback(): Promise<SimklAccount> {
+  const pending = readPendingOauth()
+  if (!pendingCallback) throw new Error('Simkl sign-in session expired. Start the connection again.')
+  const callback = JSON.parse(await pendingCallback) as { code?: string; state?: string; iss?: string; error?: string }
+  pendingCallback = null
+  if (callback.state !== pending.state || callback.iss !== 'https://simkl.com') throw new Error('Rejected an unexpected Simkl authorization response.')
+  if (callback.error) throw new Error(callback.error === 'access_denied' ? 'Simkl sign-in was cancelled.' : `Simkl authorization failed: ${callback.error}`)
+  return completeSimklLogin(callback.code || '')
+}
+
+export async function refreshSimklToken(): Promise<SimklToken | null> {
+  const token = getStoredSimklToken()
+  const clientId = getSimklClientId()
+  if (!token?.refreshToken || !clientId) return null
+  try {
+    const json = await invoke<string>('refresh_simkl_v2_token', { refreshToken: token.refreshToken, clientId })
+    const refreshed = parseTokenResponse(json)
+    saveSimklToken(refreshed)
+    return refreshed
+  } catch (_) { return null }
 }
 
 export function getStoredSimklToken(): SimklToken | null {

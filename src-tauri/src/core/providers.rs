@@ -52,8 +52,9 @@ pub async fn begin_anilist_callback(
     Ok((listener, AnilistCallbackGuard))
 }
 
-/// Runs the existing one-shot Simkl localhost callback listener outside the
-/// Tauri adapter. The port, timeout, HTML response, and error text are stable.
+/// Wait for the AUTH V2 browser redirect and return only the validated callback
+/// fields. State and issuer are checked by the renderer alongside its PKCE
+/// verifier; no user token is ever placed in the redirect.
 pub async fn wait_for_simkl_callback() -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -74,7 +75,7 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         .await
         .map_err(|error| format!("Failed to bind Simkl callback port 42814: {error}"))?;
     let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), listener.accept())
+        tokio::time::timeout(std::time::Duration::from_secs(600), listener.accept())
             .await
             .map_err(|_| "Timed out waiting for Simkl OAuth callback.".to_string())?
             .map_err(|error| format!("Failed to accept Simkl OAuth callback: {error}"))?;
@@ -84,8 +85,10 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         .await
         .map_err(|error| format!("Failed to read Simkl callback request: {error}"))?;
     let request = String::from_utf8_lossy(&buffer[..count]);
-    let code = parse_oauth_code(&request)
-        .ok_or_else(|| "Simkl OAuth callback did not contain a 'code' parameter".to_string())?;
+    let code = parse_oauth_code(&request);
+    let state = parse_oauth_param(&request, "state");
+    let issuer = parse_oauth_param(&request, "iss");
+    let error = parse_oauth_param(&request, "error");
     let html = concat!(
         "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
         "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
@@ -98,7 +101,7 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         html.len(), html,
     );
     let _ = stream.write_all(response.as_bytes()).await;
-    Ok(code)
+    Ok(serde_json::json!({ "code": code, "state": state, "iss": issuer, "error": error }).to_string())
 }
 
 /// Extracts a percent-decoded OAuth authorization code from an HTTP callback.
@@ -258,7 +261,7 @@ pub fn fetch_simkl_user(access_token: String, client_id: String) -> Result<Strin
         .query("app-name", "Aurales")
         .query("app-version", env!("CARGO_PKG_VERSION"))
         .set("Authorization", &format!("Bearer {access_token}"))
-        .set("simkl-api-key", &client_id)
+        .set("User-Agent", "Aurales/0.4.1")
         .set("Accept", "application/json")
         .call()
         .map_err(|error| read_ureq_error("Simkl user fetch", error))?;
@@ -342,6 +345,39 @@ pub fn exchange_simkl_token(
     response
         .into_string()
         .map_err(|error| format!("Failed to read Simkl token response body: {error}"))
+}
+
+pub fn exchange_simkl_v2_token(
+    code: String,
+    client_id: String,
+    redirect_uri: String,
+    code_verifier: String,
+) -> Result<String, String> {
+    let response = ureq::post("https://api.simkl.com/oauth2/token")
+        .set("Accept", "application/json")
+        .set("User-Agent", "Aurales/0.4.1")
+        .send_form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id.trim()),
+            ("code", code.trim()),
+            ("redirect_uri", redirect_uri.trim()),
+            ("code_verifier", code_verifier.trim()),
+        ])
+        .map_err(|error| read_ureq_error("Simkl AUTH V2 token exchange", error))?;
+    response.into_string().map_err(|error| format!("Failed to read Simkl AUTH V2 token response body: {error}"))
+}
+
+pub fn refresh_simkl_v2_token(refresh_token: String, client_id: String) -> Result<String, String> {
+    let response = ureq::post("https://api.simkl.com/oauth2/token")
+        .set("Accept", "application/json")
+        .set("User-Agent", "Aurales/0.4.1")
+        .send_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", client_id.trim()),
+            ("refresh_token", refresh_token.trim()),
+        ])
+        .map_err(|error| read_ureq_error("Simkl AUTH V2 refresh", error))?;
+    response.into_string().map_err(|error| format!("Failed to read Simkl AUTH V2 refresh response body: {error}"))
 }
 
 fn parse_anilist_access_token(body: String) -> Result<String, String> {

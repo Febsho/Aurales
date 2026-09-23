@@ -3,7 +3,7 @@ import type { HomeRowConfig, WatchProgress, SearchResult, TraktAccount } from '.
 import type { InstalledAddon } from '../services/addons'
 import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
-import { clearContinueWatchingSnapshotsForSource, rotateProviderCredentialScope } from '../services/cache/homeStartupSnapshot'
+import { clearContinueWatchingSnapshotsForSource, getContinueWatchingAccountScope, readContinueWatchingStartupSnapshot, rotateProviderCredentialScope } from '../services/cache/homeStartupSnapshot'
 import { buildDefaultHomeRows } from '../data/defaultHomeRows'
 import { v4 as uuid } from 'uuid'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
@@ -28,6 +28,28 @@ export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
 export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
 export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
 export type RowEntryCount = 10 | 15 | 20 | 25
+
+type ContinueWatchingProgressItem = { id: string; mediaId: string; imdbId?: string; tmdbId?: number; progressPct: number }
+
+function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): Map<string, number> {
+  const progress = new Map<string, number>()
+  for (const item of items) {
+    const pct = Math.min(100, Math.max(0, item.progressPct))
+    // Preserve the most advanced resume when provider responses contain
+    // duplicate identifiers for a title and its current episode.
+    for (const key of [item.id, item.mediaId, item.imdbId, item.tmdbId != null ? String(item.tmdbId) : undefined, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
+      if (!key) continue
+      progress.set(key, Math.max(progress.get(key) || 0, pct))
+    }
+  }
+  return progress
+}
+
+function loadContinueWatchingProgress(): Map<string, number> {
+  const source = (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider
+  const limit = Number(localStorage.getItem('aurales_cw_limit') || '10')
+  return buildContinueWatchingProgress(readContinueWatchingStartupSnapshot(source, getContinueWatchingAccountScope(source), limit) || [])
+}
 
 function loadRowEntryCount(): RowEntryCount {
   const saved = Number(localStorage.getItem('aurales_row_entry_count'))
@@ -160,6 +182,9 @@ interface AppState {
   /** One authoritative account for resumes, watched badges, and episode state. */
   primaryProgressProvider: ProgressProvider
   continueWatchingLimit: number
+  /** Cached resume percentages from the selected Continue Watching service. */
+  continueWatchingProgress: Map<string, number>
+  showPosterWatchStatus: boolean
   watchedCheckmarkSources: ProgressProvider[]
   pmdbApiKey: string
   pmdbSaveResumePosition: boolean
@@ -180,6 +205,8 @@ interface AppState {
   setContinueWatchingSource: (src: ProgressProvider) => void
   setPrimaryProgressProvider: (src: ProgressProvider) => void
   setContinueWatchingLimit: (limit: number) => void
+  setContinueWatchingProgress: (items: ContinueWatchingProgressItem[]) => void
+  setShowPosterWatchStatus: (enabled: boolean) => void
   setResumePriorityOrder: (order: ProgressProvider[]) => void
   setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
   setPmdBApiKey: (key: string) => void
@@ -810,6 +837,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   primaryProgressProvider: (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
   watchedCheckmarkSources: [(localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider],
+  continueWatchingProgress: loadContinueWatchingProgress(),
+  showPosterWatchStatus: localStorage.getItem('aurales_show_poster_watch_status') !== 'false',
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
@@ -946,9 +975,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_primary_progress_service', src)
     // Keep the old key in sync for existing Continue Watching snapshots.
     localStorage.setItem('aurales_cw_source', src)
-    set({ primaryProgressProvider: src, continueWatchingSource: src, watchedCheckmarkSources: [src], resumePriorityOrder: [src] })
+    set({ primaryProgressProvider: src, continueWatchingSource: src, continueWatchingProgress: new Map(), watchedCheckmarkSources: [src], resumePriorityOrder: [src] })
   },
   setContinueWatchingLimit: (limit) => { localStorage.setItem('aurales_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
+  setContinueWatchingProgress: (items) => set({ continueWatchingProgress: buildContinueWatchingProgress(items) }),
+  setShowPosterWatchStatus: (enabled) => { localStorage.setItem('aurales_show_poster_watch_status', String(enabled)); set({ showPosterWatchStatus: enabled }) },
   setWatchedCheckmarkSources: (sources) => {
     localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })

@@ -101,11 +101,16 @@ function runDueProviders(recovery = false): void {
   const now = Date.now()
   for (const provider of PROVIDERS) {
     if (!providerConnected(provider)) continue
+    // SIMKL's sync guide forbids unconditional background polling. Its v2
+    // connection is refreshed by the explicit sync button and active app
+    // lifecycle events below, where the activity endpoint cheaply gates work.
+    if (provider === 'simkl' && !recovery) continue
     const frequency = FREQ_MS[providerFrequency(provider)]
     if (!frequency) continue
     const last = lastRunAt.get(provider) ?? now
     if (!lastRunAt.has(provider)) lastRunAt.set(provider, now)
-    if (now - last < frequency) continue
+    const minimumInterval = provider === 'simkl' ? Math.max(frequency, 15 * 60_000) : frequency
+    if (now - last < minimumInterval) continue
     if (recovery && now - (lastRecoveryAt.get(provider) || 0) < 30_000) continue
     if (recovery) lastRecoveryAt.set(provider, now)
     // Stamp before dispatch so repeated focus/online events coalesce while the

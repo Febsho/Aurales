@@ -32,6 +32,7 @@ import {
 import {
   initiateSimklLogin,
   completeSimklLogin,
+  waitForSimklOauthCallback,
   disconnectSimkl,
   getSimklConnectionStatus,
 } from '../services/simkl/auth'
@@ -1666,39 +1667,17 @@ export default function SettingsPage() {
     setSimklError('')
     setSimklLoading(true)
     try {
-      const pin = await initiateSimklLogin()
-      if (!pin.userCode) {
-        const account = await completeSimklLogin('')
-        store.setSimklConnected(true)
-        store.setSimklAccount(account)
-        setSimklLoading(false)
-        return
-      }
-
-      setSimklCode(pin.userCode)
-      setSimklVerificationUrl(pin.verificationUrl)
+      await initiateSimklLogin()
       setSimklAuthStarted(true)
       setSimklError('Waiting for Simkl approval...')
-
-      simklPollRef.current = setInterval(async () => {
-        try {
-          await finishSimklPinAuth(pin.userCode)
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e)
-          if (!/waiting|pending|not return an access token/i.test(message)) {
-            setSimklError(`Connection failed: ${message}`)
-          }
-        }
-      }, Math.max(3, pin.interval || 5) * 1000)
-
-      simklTimeoutRef.current = setTimeout(() => {
-        if (simklPollRef.current) clearInterval(simklPollRef.current)
-        simklPollRef.current = null
-        setSimklLoading(false)
-        setSimklError('Simkl authorization timed out. Try again.')
-      }, (pin.expiresIn || 900) * 1000)
+      const account = await waitForSimklOauthCallback()
+      store.setSimklConnected(true)
+      store.setSimklAccount(account)
+      setSimklAuthStarted(false)
+      setSimklError('')
     } catch (e) {
       setSimklError(`Could not start Simkl auth: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
       setSimklLoading(false)
     }
   }
@@ -2011,7 +1990,7 @@ export default function SettingsPage() {
                   state: simklLoading ? 'syncing' : (simklStatus.connected || store.simklConnected) ? 'connected' : simklError && !simklError.startsWith('Waiting') ? 'needs-attention' : 'not-connected',
                   account: simklStatus.account?.username ?? store.simklAccount?.username, detail: simklLastSync ? `Last synced ${new Date(simklLastSync).toLocaleString()}` : undefined, message: simklError || undefined,
                   primaryLabel: 'Connect Simkl', onPrimary: handleSimklConnect, showAdvancedLink: true, isAccount: true, onSync: handleSimklSync, onDisconnect: handleSimklDisconnect,
-                  setup: simklAuthStarted ? <div className="space-y-3"><p className="text-sm text-white/60">Aurales opened Simkl in your browser. Confirm the code to finish connecting.</p>{simklVerificationUrl && <a href={simklVerificationUrl} target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Open Simkl verification</a>}<div className="flex gap-2"><input value={simklCode} onChange={(e) => setSimklCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()} className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" aria-label="Simkl authorization code" /><button type="button" onClick={handleSimklCodeSubmit} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Check now</button></div></div> : undefined,
+                  setup: simklAuthStarted ? <div className="space-y-3"><p className="text-sm text-white/60">Aurales opened Simkl in your browser. Approve access there; this window will finish automatically.</p></div> : undefined,
                 },
                 {
                   id: 'anilist', name: 'AniList', iconService: 'anilist', group: 'history', description: 'Anime progress · Lists · History',
@@ -2436,6 +2415,9 @@ export default function SettingsPage() {
                     <option value={20}>20 items</option>
                     <option value={50}>50 items</option>
                   </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Watch status on posters" description="Show Continue Watching progress and watched checkmarks on poster cards.">
+                  <SettingToggle checked={store.showPosterWatchStatus} onChange={(enabled) => store.setShowPosterWatchStatus(enabled)} />
                 </SettingRow>
 
               </SettingSection>

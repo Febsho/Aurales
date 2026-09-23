@@ -139,6 +139,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const navigate = useNavigate()
   const watchProgress = useAppStore((s) => s.watchProgress)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
+  const setContinueWatchingProgress = useAppStore((s) => s.setContinueWatchingProgress)
   const setPrimaryProgressProvider = useAppStore((s) => s.setPrimaryProgressProvider)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
@@ -160,6 +161,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   useEffect(() => {
     void warmCachedImages(items.flatMap((item) => [item.backdrop, item.poster]))
   }, [items])
+
+  // Make the selected service's resume data available to poster cards outside
+  // Home too. This is fed from the same cached-first list shown in this row.
+  useEffect(() => {
+    setContinueWatchingProgress(items)
+  }, [items, setContinueWatchingProgress])
 
   useEffect(() => {
     const clear = (event: Event) => {
@@ -525,6 +532,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           const previous = cwItemsCache.get(cwKey) || cached || []
           const identityChanged = stableListFingerprint(visible) !== stableListFingerprint(previous)
           cwItemsCache.set(cwKey, visible)
+          setContinueWatchingProgress(visible)
           if (source === 'local' || identityChanged) setItems(visible)
           streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
             mediaType: item.mediaType,
@@ -550,7 +558,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision])
+  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress])
 
   const displayTitle = row.title
   const sourceConnections: Record<ProgressProvider, boolean> = {

@@ -3,6 +3,7 @@ import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { getWatchedMovies, getWatchedShows, type TraktWatchedItem } from './trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from './simkl/history'
+import { getSyncedSimklItems } from './simkl/sync'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched } from './pmdb'
 import { getMdblistWatched } from './mdblist'
@@ -89,6 +90,10 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
   simkl: {
     key: 'watched:simkl:v2',
     fetch: async () => {
+      // `syncSimkl` has already activity-gated and merged the v2 delta.
+      // Reuse that snapshot instead of immediately doing two full pulls.
+      const synced = getSyncedSimklItems()
+      if (synced.length) return { items: synced }
       const [movies, episodes] = await Promise.all([getSimklWatchedMovies(true), getSimklWatchedEpisodes(true)])
       return { items: [...movies, ...episodes] as SimklWatchlistItem[] }
     },

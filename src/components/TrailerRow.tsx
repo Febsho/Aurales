@@ -22,12 +22,12 @@ export default function TrailerRow({ title, videos }: TrailerRowProps) {
   }
 
   return (
-    <div className="mb-12 pt-2">
-      <h2 className="text-2xl font-bold px-8 mb-5">{title}</h2>
+    <div className="trailer-row mb-12 pt-2">
+      <h2 className="trailer-row__header text-2xl font-bold px-8 mb-5">{title}</h2>
       <div className="shelf-fade">
       <div
         ref={scrollRef}
-        className="flex gap-6 overflow-x-auto px-8 pb-3"
+        className="trailer-row__track flex gap-6 overflow-x-auto px-8 pb-3"
         style={{ scrollbarWidth: 'none' }}
       >
         {videos.map((video) => {

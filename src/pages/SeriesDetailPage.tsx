@@ -2,7 +2,6 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
 import { matchingEpisode } from '../services/metadata/episodeIdentity'
-import { useDetailArtworkReady } from '../hooks/useDetailArtworkReady'
 import { cachedImage, retryImageFromSource } from '../services/imageCache'
 import type { ShowDetails, SeasonDetails } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
@@ -21,7 +20,9 @@ import DetailHero from '../components/media/DetailHero'
 import { cacheGetMany, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
 import DetailContentShell from '../components/media/DetailContentShell'
+import DetailStickyHeader from '../components/media/DetailStickyHeader'
 import DetailLoadingState from '../components/media/DetailLoadingState'
+import SelectMenu from '../components/ui/SelectMenu'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
@@ -49,6 +50,8 @@ import { loadDetailPage } from '../services/metadata/detailPageLoader'
 import { animeSeasonCacheKey, getOrLoadAnimeSeason } from '../services/metadata/animeSeasonCache'
 import { loadAnimeSeason } from '../services/metadata/animeSeasonLoader'
 import { detailProviderRequestCount, markPerformance, measurePerformance, recordDetailProviderRequest, resetDetailProviderRequestCount } from '../services/performanceMetrics'
+import { getDetailView, rememberDetailView } from '../services/sessionViewState'
+import { seriesPrimaryLabel } from '../services/detailPresentation'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -68,17 +71,6 @@ function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | nul
   const cleanA = clean(idA)
   const cleanB = clean(idB)
   return cleanA !== '' && cleanA === cleanB
-}
-
-function formatRemainingTime(seconds: number): string {
-  if (seconds <= 0) return ''
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')} left`
-  }
-  return `${m}:${s.toString().padStart(2, '0')} left`
 }
 
 function mergeEnglishAnimeEpisodes(
@@ -532,17 +524,19 @@ export default function SeriesDetailPage() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
   const state = (location.state || {}) as LocationState
+  const detailViewKey = `series:${id || state.imdbId || state.tmdbId || state.tvdbId || state.title || 'unknown'}`
   const [show, setShow] = useState<ShowDetails | null>(null)
   const showRef = useRef<ShowDetails | null>(null)
   showRef.current = show
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_POPULAR_SHOWS)
   const [addonMeta, setAddonMeta] = useState<Record<string, unknown> | null>(null)
-  const [selectedSeason, setSelectedSeason] = useState<number | null>(null)
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(() => getDetailView(detailViewKey)?.selectedSeason ?? null)
   const selectedSeasonRef = useRef<number | null>(null)
   selectedSeasonRef.current = selectedSeason
   const [seasonCache, setSeasonCache] = useState<Record<number, SeasonDetails>>({})
   const seasonData = selectedSeason !== null ? (seasonCache[selectedSeason] || null) : null
+  const [presentedSeasonData, setPresentedSeasonData] = useState<SeasonDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailResolved, setDetailResolved] = useState(false)
   const [seasonError, setSeasonError] = useState<number | null>(null)
@@ -595,7 +589,12 @@ export default function SeriesDetailPage() {
   useEffect(() => {
     const container = episodeScrollRef.current
     if (!container) return
-    const onScroll = () => syncEpisodeScrollState()
+    const restoredLeft = getDetailView(detailViewKey)?.episodeScrollLeft ?? 0
+    container.scrollTo({ left: restoredLeft, behavior: 'auto' })
+    const onScroll = () => {
+      syncEpisodeScrollState()
+      rememberDetailView(detailViewKey, { episodeScrollLeft: container.scrollLeft })
+    }
     const resize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onScroll) : null
     onScroll()
     container.addEventListener('scroll', onScroll, { passive: true })
@@ -604,7 +603,26 @@ export default function SeriesDetailPage() {
       container.removeEventListener('scroll', onScroll)
       resize?.disconnect()
     }
+  }, [seasonData, detailViewKey])
+
+  useEffect(() => {
+    if (seasonData) setPresentedSeasonData(seasonData)
   }, [seasonData])
+
+  useEffect(() => {
+    const preferred = getDetailView(detailViewKey)?.selectedSeason
+    if (preferred == null || !show?.seasons.some((season) => season.seasonNumber === preferred)) return
+    if (selectedSeason !== preferred && !manuallySelectedSeasonRef.current) setSelectedSeason(preferred)
+  }, [detailViewKey, show?.id, show?.seasons, selectedSeason])
+
+  useEffect(() => {
+    const target = getDetailView(detailViewKey)?.focusedTarget
+    if (!target || !seasonData || document.activeElement !== document.body) return
+    const frame = requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-detail-focus="${CSS.escape(target)}"]`)?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [detailViewKey, seasonData])
 
   useEffect(() => {
     const episode = seasonData?.episodes[0]
@@ -2872,15 +2890,13 @@ export default function SeriesDetailPage() {
   }, 'series', routeIsAnime)
 
   // Below-the-fold images must not hold a ready detail page behind its loader.
-  const artwork = useDetailArtworkReady([show?.backdrop, show?.logo, show?.poster], seasonAttempt)
-
   // Early provider shells are useful for fetching episodes concurrently, but
   // must not dismiss the loader while final structure is still being resolved.
   // A resolved provider shell has its own episode skeleton. Do not hide it
   // behind image decode, cast, recommendation, or season work.
-  if (!show || !detailResolved || loading || metadataStatus === 'resolving') {
+  if (!show) {
     return <DetailLoadingState
-      error={seasonError === selectedSeason && selectedSeason !== null ? 'Could not load episodes for this season.' : artwork.failed ? 'Could not load artwork. Please try again.' : undefined}
+      error={seasonError === selectedSeason && selectedSeason !== null ? 'Could not load episodes for this season.' : undefined}
       onRetry={() => setSeasonAttempt(value => value + 1)}
       logo={initialRouteArt.logo}
       title={state.title}
@@ -2906,6 +2922,7 @@ export default function SeriesDetailPage() {
       seasonSwitchStartedRef.current = { season: seasonNumber, cached }
     }
     setSelectedSeason(seasonNumber)
+    rememberDetailView(detailViewKey, { selectedSeason: seasonNumber, episodeScrollLeft: 0 })
     episodeScrollRef.current?.scrollTo({ left: 0, behavior: 'auto' })
     window.requestAnimationFrame(() => {
       centerSeasonTab(seasonNumber, 'smooth')
@@ -2943,7 +2960,7 @@ export default function SeriesDetailPage() {
 
   const handleSeasonWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!event.shiftKey) return
-    const amount = Math.abs(event.deltaY) >= 1 ? event.deltaY : event.deltaX
+    const amount = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
     if (Math.abs(amount) < 1) return
     event.preventDefault()
     event.currentTarget.scrollBy({ left: amount, behavior: 'smooth' })
@@ -2951,7 +2968,7 @@ export default function SeriesDetailPage() {
 
   const handleEpisodeWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!event.shiftKey) return
-    const amount = Math.abs(event.deltaY) >= 1 ? event.deltaY : event.deltaX
+    const amount = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
     if (Math.abs(amount) < 1) return
     event.preventDefault()
     event.currentTarget.scrollBy({ left: amount, behavior: 'smooth' })
@@ -2968,25 +2985,18 @@ export default function SeriesDetailPage() {
     provider: 'local'
   } : null)
 
-  // Stream metadata can report the duration of a combined/incorrect file. For
-  // anime, the mapped episode is the reliable source for the Resume label.
-  const resumedEpisode = activeResume
-    ? (seasonCache[activeResume.season]?.episodes || tvdbMappedEpisodesRef.current[activeResume.season] || [])
-      .find((episode) => episode.episodeNumber === activeResume.episode)
-    : undefined
-  const resumeDurationSeconds = isAnime && resumedEpisode?.runtime && resumedEpisode.runtime > 0
-    ? resumedEpisode.runtime * 60
-    : activeResume?.durationSeconds
-  const resumeRemainingSeconds = activeResume && resumeDurationSeconds != null
-    ? Math.max(0, resumeDurationSeconds - activeResume.progressSeconds)
-    : 0
-
+  const allEpisodes = Object.values(seasonCache).flatMap((season) => season.episodes)
+  const orderedLoadedEpisodes = [...allEpisodes].sort((left, right) =>
+    left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber
+  )
+  const nextUnwatched = orderedLoadedEpisodes.find((episode) => !watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
   const defaultEpisode = activeResume
     ? { season: activeResume.season, episode: activeResume.episode }
-    : seasonData?.episodes[0]
-      ? { season: seasonData.episodes[0].seasonNumber, episode: seasonData.episodes[0].episodeNumber }
-      : null
-  const allEpisodes = Object.values(seasonCache).flatMap((season) => season.episodes)
+    : nextUnwatched
+      ? { season: nextUnwatched.seasonNumber, episode: nextUnwatched.episodeNumber }
+      : seasonData?.episodes[0]
+        ? { season: seasonData.episodes[0].seasonNumber, episode: seasonData.episodes[0].episodeNumber }
+        : null
   const allEpisodesWatched = allEpisodes.length > 0
     && show.seasons.every((season) => seasonCache[season.seasonNumber] !== undefined)
     && allEpisodes.every((episode) => watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
@@ -2995,10 +3005,21 @@ export default function SeriesDetailPage() {
     .filter((date): date is string => Boolean(date))
     .sort()
     .at(-1)
+  const primaryActionLabel = seriesPrimaryLabel({
+    allWatched: allEpisodesWatched,
+    resume: activeResume,
+    next: nextUnwatched,
+    hasHistory: watchedEpisodes.size > 0,
+  })
+  const openPrimaryEpisode = defaultEpisode
+    ? () => handlePlayEpisode(defaultEpisode.season, defaultEpisode.episode)
+    : undefined
+  const visibleSeasonData = seasonData || presentedSeasonData
 
   return (
-    <div className="min-h-screen bg-black pb-12">
+    <div className={`detail-page ${isAnime ? 'detail-page--anime' : 'detail-page--series'} min-h-screen bg-black pb-12`}>
       <DetailHero
+        stateKey={detailViewKey}
         title={show.title}
         year={show.year}
         overview={show.overview}
@@ -3016,7 +3037,6 @@ export default function SeriesDetailPage() {
         seriesType={show.seriesType}
         numberOfSeasons={show.numberOfSeasons}
         latestSeasonAirDate={latestSeasonAirDate}
-        cast={show.cast}
         crew={show.crew}
         streamFeatures={streamFeatures}
         ratingsStrip={
@@ -3070,11 +3090,7 @@ export default function SeriesDetailPage() {
                   })
                 }}
               >
-                {allEpisodesWatched
-                  ? 'Rewatch'
-                  : activeResume
-                    ? `Resume S${activeResume.season} E${activeResume.episode} (${formatRemainingTime(resumeRemainingSeconds)})`
-                    : 'Play'}
+                {primaryActionLabel}
               </Button>
             )}
             <div className="detail-hero-actions__secondary">
@@ -3179,6 +3195,13 @@ export default function SeriesDetailPage() {
         }
       />
 
+      <DetailStickyHeader
+        title={show.title}
+        actionLabel={defaultEpisode ? primaryActionLabel : undefined}
+        onAction={openPrimaryEpisode}
+        actionLoading={streamResolving}
+      />
+
       <DetailContentShell
         title={show.title}
         logo={show.logo}
@@ -3186,8 +3209,11 @@ export default function SeriesDetailPage() {
         backdrop={show.backdrop}
       >
       <div className="detail-episodes-section px-8 relative z-10">
-        <div className={`relative mb-7 ${showSeasonArrows ? 'px-12' : ''}`}>
-          {showSeasonArrows && (
+        <div className="detail-episodes-heading">
+          <h2>Episodes</h2>
+        </div>
+        <div className={`detail-season-picker relative mb-7 ${show.seasons.length <= 8 && showSeasonArrows ? 'px-12' : ''}`}>
+          {show.seasons.length <= 8 && showSeasonArrows && (
             <button
               type="button"
               onClick={() => scrollSeasons('left')}
@@ -3197,7 +3223,22 @@ export default function SeriesDetailPage() {
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
-          <div className="shelf-fade">
+          {show.seasons.length > 8 ? (
+            <div className="detail-season-select" onFocusCapture={() => rememberDetailView(detailViewKey, { focusedTarget: 'season-selector' })}>
+              <span>Season</span>
+              <SelectMenu
+                value={selectedSeason ?? ''}
+                onChange={(event) => selectSeason(Number(event.target.value))}
+                aria-label="Season"
+                className="detail-season-menu"
+                data-detail-focus="season-selector"
+              >
+                {show.seasons.map((season) => (
+                  <option key={season.seasonNumber} value={season.seasonNumber}>{season.name}</option>
+                ))}
+              </SelectMenu>
+            </div>
+          ) : <div className="shelf-fade">
           <div
             ref={seasonScrollRef}
             onWheel={handleSeasonWheel}
@@ -3207,6 +3248,8 @@ export default function SeriesDetailPage() {
               <button
                 key={season.seasonNumber}
                 data-season={season.seasonNumber}
+                data-detail-focus={`season:${season.seasonNumber}`}
+                onFocus={() => rememberDetailView(detailViewKey, { focusedTarget: `season:${season.seasonNumber}` })}
                 onClick={() => selectSeason(season.seasonNumber)}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -3225,8 +3268,8 @@ export default function SeriesDetailPage() {
               </button>
             ))}
           </div>
-          </div>
-          {showSeasonArrows && (
+          </div>}
+          {show.seasons.length <= 8 && showSeasonArrows && (
             <button
               type="button"
               onClick={() => scrollSeasons('right')}
@@ -3238,7 +3281,7 @@ export default function SeriesDetailPage() {
           )}
         </div>
 
-        {seasonData && (
+        {visibleSeasonData && (
           <div className="episode-rail relative">
           <button
             type="button"
@@ -3257,9 +3300,9 @@ export default function SeriesDetailPage() {
           >
             {(() => {
               const nextUnwatchedEpisode = keepNextEpisodeVisible
-                ? seasonData.episodes.find((ep) => !watchedEpisodes.has(`${ep.seasonNumber}:${ep.episodeNumber}`))
+                ? visibleSeasonData.episodes.find((ep) => !watchedEpisodes.has(`${ep.seasonNumber}:${ep.episodeNumber}`))
                 : null;
-              return seasonData.episodes.map((ep) => {
+              return visibleSeasonData.episodes.map((ep) => {
                 const isWatched = watchedEpisodes.has(`${ep.seasonNumber}:${ep.episodeNumber}`);
                 const episodeProgress = getEpisodeProgress(ep.seasonNumber, ep.episodeNumber)
                 const progressPercent = episodeProgress && episodeProgress.durationSeconds > 0
@@ -3275,6 +3318,8 @@ export default function SeriesDetailPage() {
                     key={ep.id}
                     role="button"
                     tabIndex={0}
+                    data-detail-focus={`episode:${ep.seasonNumber}:${ep.episodeNumber}`}
+                    onFocus={() => rememberDetailView(detailViewKey, { focusedTarget: `episode:${ep.seasonNumber}:${ep.episodeNumber}` })}
                     onClick={() => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handlePlayEpisode(ep.seasonNumber, ep.episodeNumber) } }}
                     onContextMenu={(e) => {
@@ -3292,7 +3337,7 @@ export default function SeriesDetailPage() {
                         onSelectSource: () => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber, true),
                       })
                     }}
-                    className="episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer"
+                    className={`episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer focus-ring ${isNextEpisode ? 'is-next' : ''}`}
                   >
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated shadow-xl mb-3 ring-1 ring-white/10 group-hover:ring-accent/50 transition-all">
                       {streamResolving && streamEpisode?.season === ep.seasonNumber && streamEpisode?.episode === ep.episodeNumber && (
@@ -3316,7 +3361,7 @@ export default function SeriesDetailPage() {
                         </div>
                       )}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-transparent to-transparent opacity-80" />
-                      <div className="absolute top-3 left-3 w-9 h-9 rounded-full bg-white/90 text-black flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="episode-card-play absolute top-3 left-3 w-9 h-9 rounded-full bg-white/90 text-black flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity">
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                           <path d="M8 5v14l11-7z" />
                         </svg>
@@ -3325,25 +3370,20 @@ export default function SeriesDetailPage() {
                         <div className="absolute bottom-3 right-3 text-xs font-semibold text-white/90">{ep.runtime}m</div>
                       )}
                       {isWatched && (
-                        <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-accent flex items-center justify-center shadow-lg z-10">
-                          <svg className="w-4 h-4 text-black" fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
+                        <div className="episode-watched-indicator absolute top-3 right-3 flex items-center justify-center z-10">
+                          <svg fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
                             <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
                           </svg>
                         </div>
                       )}
                       {!isWatched && episodeProgress && progressPercent > 0 && (
-                        <>
-                          <div className="absolute bottom-0 inset-x-0 h-1.5 bg-black/55 z-10">
-                            <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
-                          </div>
-                          <div className="absolute top-3 right-3 rounded-full bg-black/75 border border-white/10 px-2.5 py-1 text-label font-bold text-white z-10">
-                            Resume {Math.round(progressPercent)}%
-                          </div>
-                        </>
+                        <div className="absolute bottom-0 inset-x-0 h-1.5 bg-black/55 z-10">
+                          <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
+                        </div>
                       )}
                     </div>
                     <div className="flex-1 flex flex-col">
-                      <p className="text-sm text-white/60">Episode {ep.episodeNumber}</p>
+                      <p className="episode-showcase-card__number text-sm text-white/60">E{ep.episodeNumber}</p>
                       <h3 className={`text-lg font-bold text-white truncate group-hover:text-accent transition-colors ${
                         blurTitle ? 'blur-sm group-hover:blur-none select-none group-hover:select-text' : ''
                       }`}>
@@ -3469,7 +3509,7 @@ export default function SeriesDetailPage() {
           </button>
           </div>
         )}
-        {!seasonData && show && (
+        {!visibleSeasonData && show && (
           <div className="flex gap-6 overflow-x-hidden pb-8">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="episode-showcase-card flex-shrink-0 flex flex-col gap-3 animate-pulse">
@@ -3504,11 +3544,11 @@ export default function SeriesDetailPage() {
         onResolvingChange={setStreamResolving}
       />
 
-      {show.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={show.trailers} />}
+      {show.trailers.length > 0 && <div data-detail-trailers><TrailerRow title="Videos & Trailers" videos={show.trailers} /></div>}
       {show.cast.length > 0 && <CastRow cast={show.cast} crew={show.crew} />}
 
       {show.recommendations.length > 0 ? (
-        <MediaRow title="More Like This" items={show.recommendations} layout="poster" disableArtOverride={false} />
+        <MediaRow title={isAnime ? 'Related Anime' : 'More Like This'} items={show.recommendations} layout="poster" disableArtOverride={false} />
       ) : (
         <MediaRow title="You May Also Like" items={fallbackRecommendations.filter((s) => s.id !== show.id)} layout="poster" disableArtOverride={false} />
       )}

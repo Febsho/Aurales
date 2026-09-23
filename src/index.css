@@ -2911,11 +2911,6 @@ html[data-interface-theme="default"] .fixed-hero-home .fixed-default-hero-conten
   .fixed-hero-home .row-contain { scroll-snap-stop: normal; }
 }
 
-.cinematic-row-track > button:focus-visible > div:first-child,
-.cinematic-row-track > button:hover > div:first-child {
-  border-color: rgba(255,255,255,.55);
-  box-shadow: 0 18px 50px rgba(0,0,0,.65), 0 0 0 3px rgba(255,255,255,.16);
-}
 @keyframes cinematic-panel-in {
   from { opacity: .65; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
@@ -3474,7 +3469,9 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   transform: perspective(850px) translate3d(var(--mouse-card-shift-x, 0px), calc(var(--mouse-card-shift-y, 0px) + var(--mouse-card-hover-lift)), 0) scale(var(--mouse-card-hover-scale)) rotateX(var(--mouse-card-tilt-x, 0deg)) rotateY(var(--mouse-card-tilt-y, 0deg)) !important;
   transform-origin: center;
   backface-visibility: hidden;
-  transition: transform 180ms cubic-bezier(.22, 1, .36, 1), border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard) !important;
+  /* Pointer coordinates already arrive on animation frames. Interpolating
+     each new transform makes the card trail the cursor and oscillate. */
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard) !important;
   will-change: transform;
 }
 [data-home-card-motion="off"] .media-row button[data-mouse-follow]:hover > [data-hero-viewport],
@@ -3483,8 +3480,7 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   --mouse-card-hover-scale: 1.018;
 }
 [data-home-card-motion="off"] .media-row button[data-mouse-follow]:not(:hover) > [data-hero-viewport] {
-  transition-duration: 300ms !important;
-  transition-timing-function: cubic-bezier(.16, 1, .3, 1) !important;
+  transition-duration: var(--duration-fast) !important;
 }
 
 /* Dynamic Banner Feature overlays stay mounted at all times. During a real
@@ -3944,6 +3940,538 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   .search-overview {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+/* ── Cinematic Detail Page v2 ──────────────────────────────────────────────
+   The hero is deliberately shorter than a viewport so episode access is
+   visible immediately. Loaded content remains mounted; scrolling only moves
+   and fades compositor-friendly layers. */
+.detail-page {
+  --detail-inline: clamp(1rem, 3vw, 3rem);
+  --detail-hero-overlap: clamp(3rem, 4.8vh, 4rem);
+  background: #050506;
+}
+
+.detail-page .detail-hero-panel {
+  height: clamp(34rem, 68svh, 55rem) !important;
+  min-height: 0;
+  scroll-snap-align: none;
+  /* The lowered hero controls intentionally cross the content-shell overlap. */
+  z-index: 3;
+  overflow: visible !important;
+  contain: layout;
+}
+
+.detail-hero-backdrop {
+  will-change: opacity;
+}
+
+.detail-page .detail-hero-panel__content {
+  max-width: min(56rem, calc(100vw - (2 * var(--detail-inline))));
+  padding-inline: var(--detail-inline);
+  padding-bottom: clamp(1.5rem, 4vh, 3rem);
+  /* Move the full editorial stack—not only its controls—toward the fade. */
+  transform: translateY(clamp(4rem, 7vh, 5rem));
+}
+
+.detail-page .detail-hero-panel::after {
+  display: none;
+}
+
+/* Reuse the hero's existing backdrop layer so the neutral fade is painted
+   behind metadata and controls. Colour remains in the artwork above, then
+   dies out before the playback actions without tinting their pixels. */
+.detail-page .detail-hero-panel > .bg-gradient-to-t {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 62%,
+    rgba(5, 5, 6, .12) 73%,
+    rgba(5, 5, 6, .45) 84%,
+    rgba(5, 5, 6, .80) 93%,
+    #050506 100%
+  ) !important;
+}
+
+.detail-hero-overview {
+  position: relative;
+}
+
+.detail-hero-overview__more {
+  margin-top: .25rem;
+  border-radius: .3rem;
+  color: rgba(255, 255, 255, .78);
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.detail-hero-overview__more:hover,
+.detail-hero-overview__more:focus-visible {
+  color: white;
+}
+
+.detail-sticky-anchor {
+  position: sticky;
+  top: 0;
+  /* Detail navigation must stay beneath the app navigation, including the
+     floating sidebar's active-page control. */
+  z-index: 29;
+  height: 0;
+  pointer-events: none;
+}
+
+.detail-sticky-header {
+  position: absolute;
+  inset: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .85rem;
+  min-height: 3.8rem;
+  padding: .55rem var(--detail-inline);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(6, 6, 8, .94);
+  box-shadow: 0 .75rem 2rem rgba(0, 0, 0, .24);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-.7rem);
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 220ms var(--ease-out-expo), visibility 0s linear 220ms;
+}
+
+/* The active Home pill is still present while a detail route is open. Start
+   the detail controls after that compact sidebar instead of painting beneath
+   it. The header remains below the sidebar's layer if the menu expands. */
+html[data-nav="sidebar-overlay"] .detail-sticky-header {
+  inset-inline-start: calc(1rem + 7.6rem);
+}
+
+.detail-sticky-header.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.detail-sticky-header strong {
+  overflow: hidden;
+  color: rgba(255, 255, 255, .92);
+  font-size: clamp(.95rem, 1.5vw, 1.2rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-sticky-header__back,
+.detail-sticky-header__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  min-height: 2.65rem;
+  border-radius: .75rem;
+}
+
+.detail-sticky-header__back {
+  width: 2.65rem;
+  color: rgba(255, 255, 255, .82);
+  background: rgba(255, 255, 255, .07);
+}
+
+.detail-sticky-header__back svg,
+.detail-sticky-header__action svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.detail-sticky-header__action {
+  max-width: min(17rem, 40vw);
+  padding-inline: 1rem;
+  color: #08080a;
+  background: rgba(255, 255, 255, .94);
+  font-size: .875rem;
+  font-weight: 750;
+}
+
+.detail-page .detail-content-shell {
+  position: relative;
+  z-index: 2;
+  min-height: 0;
+  margin-top: calc(-1 * var(--detail-hero-overlap));
+  padding: 1rem 0 3rem;
+  overflow: visible;
+  scroll-snap-align: none;
+}
+
+.detail-page .detail-content-shell__ambient {
+  display: none;
+}
+
+.detail-page .detail-content-shell__fade {
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(5, 5, 6, .35) 1.5rem,
+    #050506 calc(var(--detail-hero-overlap) + 1.5rem),
+    #050506 100%
+  );
+}
+
+.detail-page .detail-episodes-section,
+.detail-page .detail-about-section {
+  width: min(calc(100% - (2 * var(--detail-inline))), var(--layout-content-max));
+}
+
+.detail-page .detail-episodes-section {
+  /* Keep the season picker visually separate from the hero controls. */
+  padding-top: clamp(4rem, 7vh, 6rem);
+}
+
+/* Series naturally reserve this gap for the Episodes heading and season
+   picker. Movies begin with Cast, so give that first rail the same hero-safe
+   starting point instead of letting portraits overlap the action buttons. */
+.detail-page--movie :is(.cast-row, [data-detail-trailers]):first-child {
+  padding-top: clamp(4rem, 7vh, 6rem);
+}
+
+.detail-page .media-row > :first-child,
+.detail-page .media-row > :last-child,
+.detail-page .cast-row__header,
+.detail-page .cast-row__track,
+.detail-page .trailer-row__header,
+.detail-page .trailer-row__track {
+  padding-inline: var(--detail-inline) !important;
+}
+
+/* Detail shelves are full-bleed rails like trailers and cast, rather than the
+   centred catalog frame used on browse pages. */
+.detail-page .media-row > div {
+  width: 100%;
+  margin-inline: 0 !important;
+}
+
+.detail-about-section {
+  width: min(calc(100% - (2 * var(--space-page-inline))), var(--layout-content-max));
+  margin: 0 auto 2.75rem;
+  padding: clamp(1.2rem, 2vw, 1.75rem);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, .025);
+}
+
+.detail-about-section h2 {
+  margin-bottom: .75rem;
+  color: white;
+  font-size: 1.35rem;
+  font-weight: 750;
+}
+
+.detail-about-section > p {
+  max-width: 78ch;
+  color: rgba(255, 255, 255, .68);
+  line-height: 1.65;
+}
+
+.detail-about-section__crew {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem 1.5rem;
+  margin-top: 1.15rem;
+}
+
+.detail-about-section__crew span {
+  display: grid;
+  color: rgba(255, 255, 255, .75);
+  font-size: .875rem;
+}
+
+.detail-about-section__crew b {
+  color: rgba(255, 255, 255, .4);
+  font-size: .7rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.detail-season-select {
+  display: inline-flex;
+  align-items: center;
+  gap: .75rem;
+  color: rgba(255, 255, 255, .55);
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.detail-season-menu {
+  min-width: 12rem;
+}
+
+.detail-season-menu .select-menu__trigger {
+  min-height: 2.8rem;
+  border-color: rgba(255, 255, 255, .14);
+  border-radius: .75rem;
+  background: linear-gradient(105deg, rgba(255,255,255,.11), rgba(255,255,255,.055));
+  box-shadow: inset 0 1px rgba(255,255,255,.1), 0 8px 22px rgba(0,0,0,.16);
+  font-size: .95rem;
+}
+
+.detail-season-menu .select-menu__list {
+  border-radius: .9rem;
+}
+
+.detail-episodes-heading {
+  margin-bottom: 1rem;
+}
+
+.detail-episodes-heading h2 {
+  color: rgba(255, 255, 255, .94);
+  font-size: clamp(1.35rem, 2vw, 1.7rem);
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+
+.detail-page .detail-season-picker {
+  margin-bottom: 2rem !important;
+}
+
+.detail-page .season-scroll {
+  gap: .25rem !important;
+  padding-bottom: .45rem !important;
+  border-bottom-color: rgba(255, 255, 255, .08);
+  scrollbar-width: none;
+}
+
+.detail-page .season-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.detail-page .season-scroll > button {
+  padding: .55rem .9rem !important;
+  border-radius: .7rem !important;
+  font-size: .9rem !important;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease !important;
+}
+
+.detail-page .detail-episode-track {
+  padding-top: .75rem;
+}
+
+.detail-page .episode-showcase-card {
+  /* Four complete cards fill each desktop page; navigation advances by four. */
+  width: calc((100% - (3 * 1.75rem)) / 4);
+  border-radius: 1rem;
+  transition: transform 180ms var(--ease-out-expo);
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.detail-page .episode-scroll {
+  scrollbar-width: none;
+}
+
+.detail-page .episode-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.detail-page .episode-showcase-card.is-next {
+  box-shadow: 0 0 0 1px rgb(var(--ambient-rgb, 255 255 255) / .34), 0 1rem 2.5rem rgba(0, 0, 0, .28);
+}
+
+.detail-page .episode-showcase-card:focus-visible {
+  z-index: 4;
+  transform: scale(1.03);
+}
+
+.detail-page .episode-showcase-card:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, .9);
+  outline-offset: 5px;
+}
+
+.detail-page .episode-showcase-card img {
+  transition: transform 240ms ease, filter 180ms ease;
+}
+
+.detail-page .episode-showcase-card:hover img,
+.detail-page .episode-showcase-card:focus-visible img {
+  filter: brightness(1.08);
+}
+
+.detail-page .episode-showcase-card:hover h3,
+.detail-page .episode-showcase-card:focus-visible h3 {
+  color: white;
+}
+
+@media (max-width: 768px) {
+  .detail-page .episode-showcase-card {
+    width: min(84vw, 24rem);
+  }
+}
+
+.episode-watched-indicator {
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, .76);
+  background: rgba(5, 5, 7, .56);
+  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .24);
+}
+
+.episode-watched-indicator svg {
+  width: .72rem;
+  height: .72rem;
+}
+
+.detail-page .ratings-hero {
+  gap: .45rem .75rem;
+}
+
+.detail-page .ratings-hero__lead,
+.detail-page .ratings-hero__item {
+  gap: .3rem;
+  font-size: 1rem;
+}
+
+.detail-page .ratings-hero__icon,
+.detail-page .ratings-hero__glyph {
+  width: 1rem;
+  height: 1rem;
+}
+
+.detail-page .detail-hero-actions__secondary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  max-width: 100%;
+  gap: .4rem;
+}
+
+/* The full hero stack owns its vertical placement; keep actions aligned to it. */
+.detail-page .detail-hero-actions {
+  position: relative;
+  top: 0;
+}
+
+.detail-page .detail-hero-actions__watchlist {
+  display: block !important;
+  width: 100%;
+}
+
+.detail-page .detail-hero-actions__watchlist > button,
+.detail-page .detail-hero-actions__mark > button,
+.detail-page .detail-hero-actions__room,
+.detail-page .detail-hero-actions__trailer {
+  width: auto;
+  min-width: 2.75rem;
+  min-height: 2.65rem !important;
+  padding-inline: .8rem !important;
+  border: 1px solid rgba(255, 255, 255, .1) !important;
+  border-radius: .72rem !important;
+  color: rgba(255, 255, 255, .84) !important;
+  background: rgba(255, 255, 255, .06) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.detail-page .detail-hero-actions__watchlist > button {
+  width: 100% !important;
+}
+
+.detail-page .detail-hero-actions__mark,
+.detail-page .detail-hero-actions__mark > button {
+  width: 100%;
+}
+
+.detail-page .detail-hero-actions__room {
+  grid-column: auto;
+}
+
+.detail-page .detail-hero-actions__trailer {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+.detail-page .detail-hero-actions__trailer svg {
+  width: .9rem;
+  height: .9rem;
+}
+
+.detail-page .detail-hero-actions__watchlist > button:hover,
+.detail-page .detail-hero-actions__mark > button:hover,
+.detail-page .detail-hero-actions__room:hover,
+.detail-page .detail-hero-actions__trailer:hover {
+  border-color: rgba(255, 255, 255, .2) !important;
+  background: rgba(255, 255, 255, .11) !important;
+}
+
+@media (max-width: 900px) {
+  .detail-page .detail-hero-panel {
+    height: clamp(25rem, 66svh, 34rem) !important;
+  }
+
+  .detail-page .detail-hero-panel__content {
+    max-width: min(42rem, calc(100vw - 2rem));
+  }
+
+  .detail-page .detail-hero-actions {
+    width: min(100%, 25rem);
+  }
+
+  .detail-page .episode-rail {
+    padding-inline: 0;
+  }
+
+  .detail-page .episode-rail__arrow {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) and (max-height: 650px) {
+  .detail-page .detail-hero-panel {
+    height: 68svh !important;
+    min-height: 25rem;
+  }
+
+  .detail-page .detail-hero-panel__content {
+    padding-bottom: 1rem;
+    transform: translateY(.75rem);
+  }
+
+  .detail-page .detail-hero-panel__brand {
+    min-height: 2.5rem;
+    margin-bottom: .5rem;
+  }
+
+  .detail-page .detail-hero-panel__logo {
+    max-height: 5rem;
+  }
+
+  .detail-page .detail-hero-actions__secondary {
+    display: none;
+  }
+
+  .detail-page .detail-hero-actions {
+    top: 0;
+  }
+
+  .detail-page .detail-hero-actions__play {
+    min-height: 3.1rem;
+  }
+}
+
+@media (min-aspect-ratio: 21 / 9) and (min-width: 1800px) {
+  .detail-page .detail-hero-panel {
+    height: min(70svh, 54rem) !important;
+  }
+
+  .detail-page .detail-hero-panel__content {
+    max-width: 54rem;
+    padding-left: max(var(--detail-inline), calc((100vw - 120rem) / 2));
   }
 }
 
