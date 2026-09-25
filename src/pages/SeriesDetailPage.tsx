@@ -31,6 +31,7 @@ import { getSimklPlaybackProgress } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
 import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
+import { getAniListContinueWatching } from '../services/anilist'
 import { isWatchedFromProviders, batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
@@ -639,6 +640,7 @@ export default function SeriesDetailPage() {
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const traktConnected = useAppStore((s) => s.traktConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
   const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
 
   const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
@@ -686,7 +688,7 @@ export default function SeriesDetailPage() {
 
     async function fetchPoints() {
       const candidates: {
-        provider: 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist'
+        provider: 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
         season: number
         episode: number
         progressSeconds: number
@@ -695,7 +697,7 @@ export default function SeriesDetailPage() {
       }[] = []
 
       // 1. Local
-      if (primaryProgressProvider === 'local' && resumeProgress) {
+      if ((primaryProgressProvider === 'local' || primaryProgressProvider === 'all') && resumeProgress) {
         candidates.push({
           provider: 'local',
           season: resumeProgress.season!,
@@ -708,7 +710,7 @@ export default function SeriesDetailPage() {
 
       const fetchPromises: Promise<void>[] = []
 
-      if (primaryProgressProvider === 'simkl' && simklConnected) {
+      if ((primaryProgressProvider === 'simkl' || primaryProgressProvider === 'all') && simklConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getSimklPlaybackProgress()
@@ -744,7 +746,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'trakt' && traktConnected) {
+      if ((primaryProgressProvider === 'trakt' || primaryProgressProvider === 'all') && traktConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getTraktPlaybackProgress()
@@ -777,7 +779,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'pmdb' && pmdbApiKey) {
+      if ((primaryProgressProvider === 'pmdb' || primaryProgressProvider === 'all') && pmdbApiKey) {
         fetchPromises.push((async () => {
           try {
             const raw = await getPMDBPlaybackProgress()
@@ -805,7 +807,7 @@ export default function SeriesDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'mdblist' && (mdblistApiKey || hasMdblistOAuth())) {
+      if ((primaryProgressProvider === 'mdblist' || primaryProgressProvider === 'all') && (mdblistApiKey || hasMdblistOAuth())) {
         fetchPromises.push((async () => {
           try {
             const raw = await getMdblistPlaybackProgress()
@@ -840,13 +842,37 @@ export default function SeriesDetailPage() {
         })())
       }
 
+      if ((primaryProgressProvider === 'anilist' || primaryProgressProvider === 'all') && anilistConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const items = await getAniListContinueWatching()
+            const match = items.find((item) =>
+              fuzzyIdsMatch(item.anilistId, show!.anilistId) ||
+              fuzzyIdsMatch(item.malId, show!.malId) ||
+              fuzzyIdsMatch(item.tmdbId, show!.tmdbId) ||
+              fuzzyIdsMatch(item.mediaId, show!.id) ||
+              fuzzyIdsMatch(item.mediaId, show!.tvdbId))
+            if (match && active && match.season != null && match.episode != null) {
+              candidates.push({
+                provider: 'anilist', season: match.season, episode: match.episode,
+                progressSeconds: 0, durationSeconds: match.durationSeconds, updatedAt: match.updatedAt,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
       if (fetchPromises.length > 0) {
         await Promise.allSettled(fetchPromises)
       }
 
       if (!active) return
 
-      setLiveResumePoint(candidates.find((candidate) => candidate.provider === primaryProgressProvider) || null)
+      const selected = primaryProgressProvider === 'all'
+        ? candidates.filter((candidate) => candidate.progressSeconds >= 0 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
+          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+        : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
+      setLiveResumePoint(selected || null)
     }
 
     fetchPoints()
@@ -854,7 +880,7 @@ export default function SeriesDetailPage() {
     return () => {
       active = false
     }
-  }, [show, resumeProgress, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
+  }, [show, resumeProgress, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected, anilistConnected])
 
   useEffect(() => {
     manuallySelectedSeasonRef.current = false

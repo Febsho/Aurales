@@ -3015,14 +3015,24 @@ pub async fn exchange_simkl_token(
 }
 
 #[tauri::command]
-pub async fn exchange_simkl_v2_token(code: String, client_id: String, redirect_uri: String, code_verifier: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || providers::exchange_simkl_v2_token(code, client_id, redirect_uri, code_verifier))
-        .await
-        .map_err(|e| format!("Simkl AUTH V2 token exchange task panicked: {e}"))?
+pub async fn exchange_simkl_v2_token(
+    code: String,
+    client_id: String,
+    redirect_uri: String,
+    code_verifier: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_simkl_v2_token(code, client_id, redirect_uri, code_verifier)
+    })
+    .await
+    .map_err(|e| format!("Simkl AUTH V2 token exchange task panicked: {e}"))?
 }
 
 #[tauri::command]
-pub async fn refresh_simkl_v2_token(refresh_token: String, client_id: String) -> Result<String, String> {
+pub async fn refresh_simkl_v2_token(
+    refresh_token: String,
+    client_id: String,
+) -> Result<String, String> {
     tokio::task::spawn_blocking(move || providers::refresh_simkl_v2_token(refresh_token, client_id))
         .await
         .map_err(|e| format!("Simkl AUTH V2 refresh task panicked: {e}"))?

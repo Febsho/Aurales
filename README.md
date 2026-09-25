@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/Febsho/Aurales/releases/latest">
-    <img src="https://img.shields.io/badge/Download-v0.4.1-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+    <img src="https://img.shields.io/badge/Download-v0.4.2-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
   </a>
 </p>
 
@@ -468,7 +468,7 @@ More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHI
 
 The latest release is:
 
-## Aurales v0.4.1
+## Aurales v0.4.2
 
 **[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
 
@@ -488,7 +488,7 @@ Available for:
 The recommended Windows package is the NSIS installer:
 
 ```text
-Aurales_0.4.1_x64-setup.exe
+Aurales_0.4.2_x64-setup.exe
 ```
 
 The MSI package is also available for managed installations.
@@ -502,13 +502,13 @@ The MSI package is also available for managed installations.
 Download:
 
 ```text
-Aurales_0.4.1_amd64.flatpak
+Aurales_0.4.2_amd64.flatpak
 ```
 
 Install:
 
 ```bash
-flatpak install --user ./Aurales_0.4.1_amd64.flatpak
+flatpak install --user ./Aurales_0.4.2_amd64.flatpak
 ```
 
 Run:
@@ -522,19 +522,19 @@ flatpak run com.aurales.app
 Download:
 
 ```text
-Aurales_0.4.1_amd64.AppImage
+Aurales_0.4.2_amd64.AppImage
 ```
 
 Make it executable:
 
 ```bash
-chmod +x Aurales_0.4.1_amd64.AppImage
+chmod +x Aurales_0.4.2_amd64.AppImage
 ```
 
 Run:
 
 ```bash
-./Aurales_0.4.1_amd64.AppImage
+./Aurales_0.4.2_amd64.AppImage
 ```
 
 The AppImage bundles the required media components including:
@@ -545,6 +545,19 @@ The AppImage bundles the required media components including:
 * yt-dlp
 
 so separate media packages are normally unnecessary.
+
+---
+
+# v0.4.2
+
+Version 0.4.2 improves playback discovery, watch progress, and SIMKL account connectivity.
+
+* Rank streams by playback compatibility and quality, with compact filters and clearer source details.
+* Combine connected services in Continue Watching while preserving provider-specific watch actions and locally cached progress.
+* Show watch progress and completion state consistently on poster cards and detail pages.
+* Add SIMKL AUTH V2 token exchange and refresh support for the updated authentication flow.
+
+See the full release notes on the **[v0.4.2 release page](https://github.com/Febsho/Aurales/releases/tag/v0.4.2)**.
 
 ---
 

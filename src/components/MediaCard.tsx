@@ -1,19 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { SearchResult } from '../types'
+import type { SearchResult, WatchProgress } from '../types'
 import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders, resolveBetterPoster } from '../services/artwork'
 import { getTmdbCardMetadata, getTmdbCleanPoster, getTmdbLandscapeBackdrop } from '../services/tmdb'
 import { isWatchedFromProviders, searchResultToLookup } from '../services/watchedStatus'
 import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { cachedImage, retryImageFromSource, warmCachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
-import { useWatchedCacheStore } from '../stores/watchedCacheStore'
 import { useContextMenu } from '../hooks/useContextMenu'
 import TrailerPreview from './TrailerPreview'
 import HeroMpvTrailer from './HeroMpvTrailer'
 import { cardArtworkUrl } from '../services/mediaPresentation'
 import { nativeTrailerPlayerSupported } from '../services/player'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
+import { ensurePosterProgress, getPosterProgressSnapshot, subscribePosterProgress } from '../services/posterProgress'
 
 const TMDB_GENRES: Record<number, string> = {
   28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',
@@ -21,6 +21,52 @@ const TMDB_GENRES: Record<number, string> = {
   9648:'Mystery',10749:'Romance',878:'Sci-Fi',10770:'TV Movie',53:'Thriller',
   10752:'War',37:'Western',10759:'Action & Adventure',10762:'Kids',10763:'News',
   10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics',
+}
+
+const localProgressIndexes = new WeakMap<Map<string, WatchProgress>, Map<string, number>>()
+
+function getLocalProgressIndex(entries: Map<string, WatchProgress>): Map<string, number> {
+  const cached = localProgressIndexes.get(entries)
+  if (cached) return cached
+  const index = new Map<string, number>()
+  for (const [key, progress] of entries) {
+    if (progress.completed || progress.durationSeconds <= 0) continue
+    const type = progress.mediaType === 'movie' ? 'movie' : 'series'
+    const pct = (progress.progressSeconds / progress.durationSeconds) * 100
+    const suffix = progress.season != null && progress.episode != null ? `:${progress.season}:${progress.episode}` : ''
+    const identifiers = [key, progress.id, progress.mediaId, progress.imdbId, progress.tmdbId,
+      progress.tmdbId != null ? `tmdb-${progress.tmdbId}` : undefined]
+    for (const identifier of identifiers) {
+      if (identifier == null) continue
+      const value = String(identifier)
+      for (const alias of suffix && value.endsWith(suffix) ? [value, value.slice(0, -suffix.length)] : [value]) {
+        const indexedKey = `${type}:${alias}`
+        index.set(indexedKey, Math.max(index.get(indexedKey) ?? 0, pct))
+      }
+    }
+    if (progress.title) {
+      const title = progress.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      if (title) {
+        const titleKey = `title:${type}:${title}`
+        index.set(titleKey, Math.max(index.get(titleKey) ?? 0, pct))
+      }
+    }
+  }
+  localProgressIndexes.set(entries, index)
+  return index
+}
+
+function progressIdAliases(ids: Array<string | number | null | undefined>): string[] {
+  const aliases = new Set<string>()
+  for (const id of ids) {
+    if (id == null) continue
+    const value = String(id).trim()
+    if (!value) continue
+    aliases.add(value)
+    const normalized = value.replace(/^(?:imdb:|tmdb:|tmdb-|tvdb:|mal:|mal-|anilist:|anilist-|simkl:|trakt:)/i, '')
+    if (normalized) aliases.add(normalized)
+  }
+  return [...aliases]
 }
 
 interface MediaCardProps {
@@ -58,6 +104,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(false)
   const [seriesCompleted, setSeriesCompleted] = useState(false)
+  const [posterProviderWatched, setPosterProviderWatched] = useState(false)
 
   const navigate = useNavigate()
   const displayItem = disableArtOverride ? item : applySearchResultArt(item)
@@ -93,15 +140,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   // This becomes true on deliberate focus/hover, so a shelf of already
   // artwork-rich catalog items does not fan out into dozens of requests.
   const [detailIntent, setDetailIntent] = useState(false)
-  const providerWatched = useWatchedCacheStore((s) => {
-    const keys = s.watchedKeys
-    if (item.imdbId && keys.has(`imdb:${item.imdbId}`)) return true
-    if (item.tmdbId && keys.has(`tmdb:${item.tmdbId}`)) return true
-    if (item.tvdbId && keys.has(`tvdb:${String(item.tvdbId).replace('tvdb-', '')}`)) return true
-    if (item.malId && keys.has(`mal:${item.malId}`)) return true
-    if (item.anilistId && keys.has(`anilist:${item.anilistId}`)) return true
-    return false
-  })
   const posterSize = useAppStore((s) => s.posterSize)
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const compactSpecialLayouts = useAppStore((s) => s.interfaceTheme) === 'default'
@@ -116,14 +154,28 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
   const betterPosters = useAppStore((s) => s.betterPosters)
-  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const showPosterWatchStatus = useAppStore((s) => s.showPosterWatchStatus)
+  const posterWatchedSourceFlags = useAppStore((s) => [s.traktConnected, s.simklConnected, Boolean(s.pmdbApiKey), Boolean(s.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens')), s.anilistConnected].map(Number).join(''))
+  const posterWatchedSources = useMemo(() => [
+    'local',
+    ...(posterWatchedSourceFlags[0] === '1' ? ['trakt'] : []),
+    ...(posterWatchedSourceFlags[1] === '1' ? ['simkl'] : []),
+    ...(posterWatchedSourceFlags[2] === '1' ? ['pmdb'] : []),
+    ...(posterWatchedSourceFlags[3] === '1' ? ['mdblist'] : []),
+    ...(posterWatchedSourceFlags[4] === '1' ? ['anilist'] : []),
+  ] as import('../services/watchedStatus').WatchedSource[], [posterWatchedSourceFlags])
+  const posterProgressConnections = useAppStore((s) => [s.simklConnected, s.traktConnected, Boolean(s.pmdbApiKey), Boolean(s.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens')), s.anilistConnected].map(Number).join(''))
+  const allServiceProgress = useSyncExternalStore(subscribePosterProgress, getPosterProgressSnapshot, getPosterProgressSnapshot)
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
   const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
   const customPosterNeedsImdbId = betterPosters.enabled || customArtUrls.posterUrl.includes('{imdb_id}')
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+
+  useEffect(() => {
+    if (isVisible) ensurePosterProgress()
+  }, [isVisible, posterProgressConnections])
 
   useEffect(() => {
     if (!isPosterApproaching || disableArtOverride || !betterPosters.enabled || customArt.poster) return
@@ -168,31 +220,29 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     card.style.removeProperty('--mouse-card-shift-y')
   }
 
-  const localCompleted = useAppStore((s) => {
-    const ci = s.completedIds
-    if (item.id && ci.has(String(item.id))) return true
-    if (item.imdbId && ci.has(String(item.imdbId))) return true
-    if (item.type === 'series' && item.season != null && item.episode != null) {
-      if (item.id && ci.has(`${item.id}:${item.season}:${item.episode}`)) return true
-      if (item.imdbId && ci.has(`${item.imdbId}:${item.season}:${item.episode}`)) return true
-    }
-    return false
-  })
   const watchProgress = useAppStore((s) => s.watchProgress)
 
   const localProgressPct = useAppStore((s) => {
-    const p = (item.id && s.watchProgress.get(String(item.id)))
-      || (item.imdbId && s.watchProgress.get(item.imdbId))
-    if (p && !p.completed && p.durationSeconds > 0) {
-      return (p.progressSeconds / p.durationSeconds) * 100
+    const index = getLocalProgressIndex(s.watchProgress)
+    const type = item.type === 'movie' ? 'movie' : 'series'
+    let pct: number | null = null
+    for (const key of [item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
+      if (key == null) continue
+      const match = index.get(`${type}:${key}`)
+      if (match != null) pct = Math.max(pct ?? 0, match)
     }
-    return null
+    const title = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+    const titlePct = index.get(`title:${type}:${title}`)
+    if (titlePct != null) pct = Math.max(pct ?? 0, titlePct)
+    return pct
   })
   const continueWatchingProgressPct = useAppStore((s) => {
     const progress = s.continueWatchingProgress
-    for (const key of [item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
-      if (!key) continue
-      const pct = progress.get(String(key))
+    const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+    const titleProgress = progress.get(`title:${item.type}:${normalizedTitle}`) ?? progress.get(`title:${normalizedTitle}`)
+    if (titleProgress != null) return titleProgress
+    for (const key of progressIdAliases([item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined])) {
+      const pct = progress.get(`${item.type}:${key}`) ?? progress.get(key)
       if (pct != null) return pct
     }
     return null
@@ -343,31 +393,48 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     }
   }, [posterSize])
 
-  const baseIsCompleted = primaryProgressProvider === 'local' ? localCompleted : providerWatched
   const isSeriesCard = displayItem.type === 'series' && displayItem.season == null
-  const isCompleted = isSeriesCard ? seriesCompleted : baseIsCompleted
-  const progressPct = primaryProgressProvider === 'local' ? localProgressPct : continueWatchingProgressPct
-  const showPosterProgress = showPosterWatchStatus && !isCompleted && progressPct != null && progressPct > 2
-  const posterWatchBadge = showPosterWatchStatus && isCompleted ? (
+  const isCompleted = isSeriesCard ? seriesCompleted : posterProviderWatched
+  const allServiceProgressPct = progressIdAliases([item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+    item.anilistId != null ? `anilist-${item.anilistId}` : undefined,
+    item.malId != null ? `mal-${item.malId}` : undefined])
+    .reduce<number | null>((pct, id) => {
+      if (id == null) return pct
+      const match = allServiceProgress.get(`${item.type}:${id}`)
+      return match == null ? pct : Math.max(pct ?? 0, match)
+    }, null)
+  const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const allServiceTitleProgressPct = allServiceProgress.get(`title:${item.type}:${normalizedTitle}`)
+    ?? allServiceProgress.get(`title:${normalizedTitle}`)
+    ?? null
+  const progressPct = [localProgressPct, continueWatchingProgressPct, allServiceProgressPct, allServiceTitleProgressPct]
+    .reduce<number | null>((pct, value) => value == null ? pct : Math.max(pct ?? 0, value), null)
+  // Resume progress is independent of the watched-checkmark preference. A
+  // disabled checkmark overlay must not hide Continue Watching on Home rows.
+  const showPosterProgress = progressPct != null && progressPct > 2
+  const posterWatchBadge = showPosterWatchStatus && isCompleted && !showPosterProgress ? (
     <span className="absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-white/30 bg-white/15 text-white/85 shadow-sm backdrop-blur-md" aria-label="Watched" title="Watched">
       <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m5 12 4 4L19 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
     </span>
   ) : null
 
   useEffect(() => {
-    if (!isSeriesCard || !showPosterWatchStatus || !baseIsCompleted) {
+    if (!showPosterWatchStatus || !isVisible) {
       setSeriesCompleted(false)
+      setPosterProviderWatched(false)
       return
     }
     let cancelled = false
-    // The lightweight poster cache only says a provider has history for this
-    // title. Verify the full series before showing a completion badge.
-    void isWatchedFromProviders(searchResultToLookup(displayItem), [primaryProgressProvider], watchProgress)
-      .then((completed) => { if (!cancelled) setSeriesCompleted(completed) })
-      .catch(() => { if (!cancelled) setSeriesCompleted(false) })
+    void isWatchedFromProviders(searchResultToLookup(displayItem), posterWatchedSources, watchProgress)
+      .then((completed) => {
+        if (cancelled) return
+        setPosterProviderWatched(completed)
+        setSeriesCompleted(isSeriesCard && completed)
+      })
+      .catch(() => { if (!cancelled) { setPosterProviderWatched(false); setSeriesCompleted(false) } })
     return () => { cancelled = true }
   }, [
-    isSeriesCard, showPosterWatchStatus, baseIsCompleted, primaryProgressProvider, watchProgress,
+    isSeriesCard, isVisible, showPosterWatchStatus, posterWatchedSources, watchProgress,
     displayItem.id, displayItem.imdbId, displayItem.tmdbId, displayItem.tvdbId, displayItem.malId,
     displayItem.anilistId, displayItem.simklId, displayItem.traktId, displayItem.isAnime,
   ])
@@ -784,7 +851,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
           {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
             {cinematicLogo ? <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
           </div>}
-          {showPosterProgress && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
+          {showPosterProgress && <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
         </div>
         <div className={`absolute top-full grid transition-[grid-template-rows,opacity] duration-300 ${cinematicRanked ? 'left-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]' : 'left-0 w-full'} ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
           <div className="overflow-hidden">
@@ -872,7 +939,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               {displayItem.year && <><span className="text-white/60">·</span><span>{displayItem.year}</span></>}
             </div>
           </div>}
-          {!nativeTrailerVisible && showPosterProgress && <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-black/40"><div className="h-full bg-accent" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
+          {!nativeTrailerVisible && showPosterProgress && <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
         </div>
       </button>
     )
@@ -937,9 +1004,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
           {/* In-progress bar (landscape) */}
           {showPosterProgress && (
-            <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-              <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct!, 100)}%` }} />
-            </div>
+            <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>
           )}
 
           {/* Media Info Overlay */}
@@ -1152,9 +1217,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
 
         {/* In-progress bar */}
         {showPosterProgress && (
-          <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-            <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct!, 100)}%` }} />
-          </div>
+          <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>
         )}
       </div>
       {!fixedHome && <>

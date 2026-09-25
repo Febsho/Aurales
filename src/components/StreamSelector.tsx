@@ -15,7 +15,7 @@ import { getBestKnownTime as wtBestKnownTime, play as wtPlay, useManualLocalSour
 import { getPlayableStreamUrl } from '../services/streams/playableUrl'
 import { getPlayerSnapshot, stopEmbeddedPlayer } from '../services/player'
 import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
-import { type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
+import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { rankStreamCandidates } from '../services/streams/nativeScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
 import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
@@ -185,6 +185,11 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const [showStreamName, setShowStreamName] = useState(() => localStorage.getItem('orynt_stream_show_name') !== 'false')
   const [showStreamDesc, setShowStreamDesc] = useState(() => localStorage.getItem('orynt_stream_show_desc') !== 'false')
   const [showStreamTags, setShowStreamTags] = useState(() => localStorage.getItem('orynt_stream_show_tags') !== 'false')
+  const [showDisplaySettings, setShowDisplaySettings] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
+  const [selectedFilters, setSelectedFilters] = useState<string[]>([])
+  const [expandedStream, setExpandedStream] = useState<string | null>(null)
+  const selectorPanelRef = useRef<HTMLElement | null>(null)
 
   const toggleStreamName = () => setShowStreamName((visible) => {
     localStorage.setItem('orynt_stream_show_name', String(!visible))
@@ -532,9 +537,43 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     ? filteredStreams
     : filteredStreams.filter((stream) => stream.addonId === activeProvider), [filteredStreams, activeProvider])
 
-  const visibleStreams = useMemo(() => activeProvider === 'all'
-    ? filteredStreams
-    : filteredStreams.filter((stream) => stream.addonId === activeProvider), [filteredStreams, activeProvider])
+  const visibleStreams = useMemo(() => providerStreams.filter((stream) => STREAM_FILTER_GROUPS.every((group) => {
+    const selected = group.options.filter((option) => selectedFilters.includes(option.id))
+    return selected.length === 0 || selected.some((option) => option.token.test(getFilterText(stream)))
+  // getFilterText only reads the stream; the list and filter selection own this memo.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  })), [providerStreams, selectedFilters])
+
+  const scoredStreams = useMemo(() => {
+    const ranked = rankStreams(visibleStreams, buildSmartContext({
+    title, season: seasonEpisode?.season, episode: seasonEpisode?.episode,
+    subtitles, mode: smartMode,
+    })).filter((candidate) => candidate.score > -500)
+    // Best preserves the addon's own ordering; the other modes apply Aurales' sort.
+    return smartMode === 'best'
+      ? ranked.sort((a, b) => visibleStreams.indexOf(a.stream) - visibleStreams.indexOf(b.stream))
+      : ranked
+  }, [visibleStreams, title, seasonEpisode?.season, seasonEpisode?.episode, subtitles, smartMode])
+
+  useEffect(() => {
+    if (!open || loading || !scoredStreams.length) return
+    const frame = requestAnimationFrame(() => {
+      if (document.activeElement === document.body) selectorPanelRef.current?.querySelector<HTMLButtonElement>('[data-stream-choice]')?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open, loading, scoredStreams.length])
+
+  useEffect(() => {
+    if (!open || playback) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key === 'Escape' || event.key.toLowerCase() === 'b') && !selectorPanelRef.current?.contains(document.activeElement)) {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, playback, onClose])
 
   useEffect(() => {
     if (selectedProvider !== 'auto' && selectedProvider !== 'all' && !providerOptions.some(([id]) => id === selectedProvider)) {
@@ -543,8 +582,29 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }, [providerOptions, selectedProvider])
 
   useEffect(() => {
-    if (open) setSelectedProvider('auto')
+    if (open) { setSelectedProvider('auto'); setSelectedFilters([]); setExpandedStream(null) }
   }, [open, mediaId, seasonEpisode?.season, seasonEpisode?.episode])
+
+  useEffect(() => {
+    if (!open || playback || !navigator.getGamepads) return
+    let frame = 0
+    let previous = -1
+    const poll = () => {
+      const pad = Array.from(navigator.getGamepads()).find(Boolean)
+      const pressed = pad?.buttons.findIndex((button, index) => [0, 1, 12, 13].includes(index) && button.pressed) ?? -1
+      if (pressed !== -1 && previous === -1) {
+        const choices = Array.from(selectorPanelRef.current?.querySelectorAll<HTMLButtonElement>('[data-stream-choice]') ?? [])
+        const current = choices.indexOf(document.activeElement as HTMLButtonElement)
+        if (pressed === 12 || pressed === 13) choices[pressed === 13 ? Math.min(current + 1, choices.length - 1) : Math.max(current - 1, 0)]?.focus()
+        if (pressed === 0) (document.activeElement instanceof HTMLButtonElement && selectorPanelRef.current?.contains(document.activeElement) ? document.activeElement : choices[0])?.click()
+        if (pressed === 1) onClose()
+      }
+      previous = pressed
+      frame = requestAnimationFrame(poll)
+    }
+    frame = requestAnimationFrame(poll)
+    return () => cancelAnimationFrame(frame)
+  }, [open, playback, onClose])
 
   // Memoize merged subtitles â€” must be before any early return (rules of hooks).
   // Keeps the array reference stable so NativeMpvPlayer's loadAddonSubtitles
@@ -706,7 +766,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     const generation = ++rankingGenerationRef.current
     let ranked: AddonStream[]
     try {
-      ranked = await rankSelectorStreams(providerStreams)
+      ranked = await rankSelectorStreams(visibleStreams)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
       throw error
@@ -837,9 +897,26 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     onClose()
   }
 
-  const displayTitle = seasonEpisode
-    ? `${title} S${seasonEpisode.season}E${seasonEpisode.episode}`
-    : title
+  const selectStream = (stream: AddonStream) => {
+    manualSelectionRequestedRef.current = true
+    smartActiveRef.current = false
+    recordReliabilityEvent(stream, 'preferred')
+    handlePlay(stream, streams.indexOf(stream))
+  }
+
+  const streamSummary = (stream: AddonStream) => {
+    const raw = streamText(stream)
+    const resolution = stream.resolution || raw.match(/\b(2160p|1080p|720p|480p|4k)\b/i)?.[1] || 'Unknown quality'
+    const release = raw.match(/\b(remux|blu[- .]?ray|web[- .]?dl|web[- .]?rip|hdtv|bdrip|dvdrip)\b/i)?.[1]?.replace(/[ .]/g, '-') || stream.container?.toUpperCase() || 'Stream'
+    const audio = [raw.match(/\b(atmos|truehd|dts[- ]?hd|dd\+|eac3|ac3|aac)\b/i)?.[1] || stream.audioCodec, raw.match(/\b(7\.1|5\.1|2\.0)\b/)?.[1]].filter(Boolean).join(' · ')
+    const size = raw.match(/\b\d+(?:\.\d+)?\s*(?:TB|GB|GiB|MB|MiB)\b/i)?.[0]
+    const bitrate = stream.bitrate ? `${(stream.bitrate / 1_000_000).toFixed(2)} Mbps` : raw.match(/\b\d+(?:\.\d+)?\s*Mbps\b/i)?.[0]
+    const language = raw.match(/\b(EN|ENG|English|DE|GER|German|FR|French|JA|JPN|Japanese|ES|Spanish)\b/i)?.[1]?.toUpperCase()
+    const source = stream.directPlay ? 'Direct Play' : stream.directStream ? 'Direct Stream' : stream.transcode ? 'Transcode' : isTorBoxCachedStream(stream) ? 'Debrid' : stream.infoHash ? 'Torrent' : ''
+    const visual = [(/\b(dv|dolby vision)\b/i.test(raw) ? 'DV' : null), (/\bhdr10\+?\b/i.test(raw) ? 'HDR10' : stream.hdr || null)].filter((value): value is string => Boolean(value))
+    const description = [stream.description, stream.title].find((value) => typeof value === 'string' && value.trim() && value.trim() !== stream.name?.trim()) || ''
+    return { resolution: resolution.toUpperCase(), release: release.toUpperCase(), audio, size, bitrate, language, source, visual, description }
+  }
 
   if (playback) {
     if (nativePlayerAvailable === undefined) return null
@@ -914,191 +991,94 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[10000] overflow-hidden bg-[#070809] text-white" onClick={closeSelector}>
-      {(artwork?.backdrop || artwork?.poster) && (
-        <img
-          src={cachedImage(artwork.backdrop || artwork.poster)}
-          alt=""
-          className="absolute inset-0 h-full w-full scale-110 object-cover opacity-55 blur-lg"
-        />
-      )}
-      <div className="absolute inset-0 bg-black/45" />
-      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,0.9)_0%,rgba(0,0,0,0.55)_45%,rgba(0,0,0,0.72)_100%),linear-gradient(0deg,rgba(0,0,0,0.78)_0%,transparent_45%,rgba(0,0,0,0.35)_100%)]" />
-
-      <div
-        className="relative mx-auto flex h-full w-full max-w-[1320px] px-5 pb-5 pt-10 sm:px-7 sm:pb-7 lg:px-10"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="mb-3 flex items-center justify-between gap-5 overflow-hidden rounded-3xl border border-white/[0.08] bg-black/45 px-4 py-3 shadow-2xl backdrop-blur-2xl sm:px-5">
-            <div className="flex min-w-0 items-center gap-4">
-              {artwork?.poster ? (
-                <img src={cachedImage(artwork.poster)} alt="" className="hidden h-[72px] w-12 flex-shrink-0 rounded-xl object-cover shadow-xl ring-1 ring-white/10 sm:block" />
-              ) : (
-                <div className="hidden h-[72px] w-12 flex-shrink-0 rounded-xl bg-white/[0.05] sm:block" />
-              )}
-              <div className="min-w-0">
-              <p className="mb-1 text-meta font-bold uppercase tracking-[0.26em] text-accent">Select source</p>
-              <h2 className="truncate text-2xl font-black tracking-tight text-white sm:text-3xl">{displayTitle}</h2>
-                <p className="mt-1 text-xs text-white/60">{filteredStreams.length ? `${visibleStreams.length} of ${filteredStreams.length} playable sources${activeProvider !== 'all' ? ` · ${providerOptions.find(([id]) => id === activeProvider)?.[1] || 'Addon'}` : ''}` : loading ? 'Searching your addons...' : 'No playable sources found'}</p>
-              </div>
-            </div>
-            <div className="flex flex-shrink-0 items-center">
-              <button onClick={closeSelector} aria-label="Close source selector" className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.06] text-white/65 transition-colors hover:bg-white/[0.12] hover:text-white">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center overflow-hidden bg-[#07090c] p-3 text-white sm:p-6" onClick={closeSelector}>
+      {(artwork?.backdrop || artwork?.poster) && <img src={cachedImage(artwork.backdrop || artwork.poster)} alt="" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl" />}
+      <div className="absolute inset-0 bg-[#07090c]/65" />
+      <section ref={selectorPanelRef} aria-label="Select source" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+        if (event.key === 'Escape' || event.key.toLowerCase() === 'b') { event.preventDefault(); closeSelector(); return }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        const choices = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-stream-choice]'))
+        if (!choices.length) return
+        const current = choices.indexOf(document.activeElement as HTMLButtonElement)
+        const next = event.key === 'ArrowDown' ? Math.min(current + 1, choices.length - 1) : Math.max(current - 1, 0)
+        choices[next]?.focus()
+        event.preventDefault()
+      }} className="relative flex max-h-[min(860px,94vh)] w-full max-w-[1160px] flex-col overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171b20]/85 shadow-[0_35px_100px_rgba(0,0,0,0.65)] backdrop-blur-3xl">
+        <header className="flex items-center gap-4 px-5 pb-5 pt-5 sm:px-7 sm:pt-6">
+          {artwork?.poster ? <img src={cachedImage(artwork.poster)} alt="" className="h-[72px] w-12 shrink-0 rounded-lg object-cover shadow-lg" /> : <div className="h-[72px] w-12 shrink-0 rounded-lg bg-white/[0.07]" />}
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-white/45">Select source</p>
+            <h2 className="mt-0.5 truncate text-[27px] font-semibold leading-tight tracking-tight">{title}</h2>
+            <p className="mt-1 text-[13px] text-white/50">{seasonEpisode ? `S${seasonEpisode.season} E${seasonEpisode.episode} · ` : ''}{filteredStreams.length} playable {filteredStreams.length === 1 ? 'source' : 'sources'}</p>
           </div>
+          <button onClick={closeSelector} aria-label="Close source selector" className="focus-ring flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.07] text-white/65 transition hover:bg-white/[0.14] hover:text-white">×</button>
+        </header>
 
-          <div className="mb-3 rounded-2xl border border-white/[0.07] bg-[#111315]/90 p-2 shadow-xl">
-            <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }} aria-label="Source addons">
-              <button onClick={() => setSelectedProvider('all')} className={`flex-shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === 'all' ? 'bg-white text-black shadow-sm' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>All sources <span className="text-white/55">({filteredStreams.length})</span></button>
-              {providerOptions.map(([id, name]) => (
-                <button key={id} onClick={() => setSelectedProvider(id)} className={`flex flex-shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition-colors ${activeProvider === id ? 'bg-white text-black shadow-sm' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${sourceDiagnostics[id]?.failureReason ? 'bg-amber-400' : activeProvider === id ? 'bg-accent' : 'bg-emerald-400/80'}`} aria-hidden="true" />
-                  {name} <span className={activeProvider === id ? 'text-black/55' : 'text-white/35'}>({filteredStreams.filter((stream) => stream.addonId === id).length})</span>
-                </button>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5 border-t border-white/[0.07] pt-2">
-              <button onClick={startSmartPlay} disabled={loading || providerStreams.length === 0} className="focus-ring rounded-xl bg-accent px-4 py-2 text-xs font-black text-black transition-transform active:scale-95 disabled:opacity-40">Smart Play</button>
-              <button onClick={retryFailedSources} disabled={loading || !Object.values(sourceDiagnostics).some((diagnostic) => diagnostic.failureReason)} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Retry failed</button>
-              <button onClick={() => { setSmartStatus('Refreshing sources…'); void cacheClearCategory(CACHE_CATEGORIES.STREAM_PRELOAD).finally(() => setRefreshRevision((value) => value + 1)) }} disabled={loading} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/60 hover:bg-white/[.06] hover:text-white disabled:opacity-40">Refresh</button>
-              <span className="mx-1 hidden h-5 w-px bg-white/[0.08] sm:block" />
-              <div className="flex items-center rounded-xl bg-white/[0.04] p-0.5">
-                {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Smallest']] as const).map(([mode, label]) => (
-                  <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${smartMode === mode ? 'bg-white/[0.12] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white/70'}`}>{label}</button>
-                ))}
-              </div>
-              <div className="ml-auto flex items-center gap-1">
-                {([
-                  ['Title', showStreamName, toggleStreamName],
-                  ['Description', showStreamDesc, toggleStreamDesc],
-                  ['Tags', showStreamTags, toggleStreamTags],
-                ] as const).map(([label, visible, toggle]) => (
-                  <button key={label} type="button" onClick={toggle} aria-pressed={visible} className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-label font-semibold transition-colors ${visible ? 'bg-white/[0.09] text-white/80' : 'text-white/50 hover:bg-white/[0.04] hover:text-white/60'}`}>
-                    <span className={`h-1.5 w-1.5 rounded-full ${visible ? 'bg-accent' : 'bg-white/20'}`} />{label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {smartStatus && <span className="w-full px-2 pb-1 text-xs text-white/50">{smartStatus}</span>}
-            {Object.values(sourceDiagnostics).filter((diagnostic): diagnostic is SourceDiagnostic & { failureReason: NonNullable<SourceDiagnostic['failureReason']> } => Boolean(diagnostic.failureReason)).map((diagnostic) => (
-              <span key={diagnostic.sourceFingerprint} className="w-full px-2 pb-1 text-xs text-amber-200/70">{diagnostic.addonId}: {diagnostic.failureReason.replaceAll('_', ' ').toLowerCase()} {diagnostic.retryable ? '· retryable' : '· skipped for this session'}</span>
-            ))}
+        <div className="mx-5 flex flex-wrap items-center gap-2 border-b border-white/[0.09] pb-4 sm:mx-7">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" aria-label="Source providers">
+            <button onClick={() => setSelectedProvider('all')} aria-pressed={activeProvider === 'all'} className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${activeProvider === 'all' ? 'bg-white/[0.16] text-white' : 'text-white/55 hover:bg-white/[0.07]'}`}>All {filteredStreams.length}</button>
+            {providerOptions.map(([id, name]) => <button key={id} onClick={() => setSelectedProvider(id)} aria-pressed={activeProvider === id} className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${activeProvider === id ? 'bg-white/[0.16] text-white' : 'text-white/55 hover:bg-white/[0.07]'}`}>{name} {filteredStreams.filter((stream) => stream.addonId === id).length}</button>)}
           </div>
-
-          <div className="flex-1 space-y-2 overflow-y-auto pr-1" style={{ scrollbarWidth: 'none' }}>
-          {autoPlayFirstStream && !manualSelectionRequestedRef.current && !playback && (
-            <p className="px-2 pt-1 text-xs text-white/50">Smart Play is preparing a source. You can choose one manually below.</p>
-          )}
-          {loading && (
-            <div className="col-span-full flex flex-col items-center justify-center gap-3 py-12">
-              <div className="w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-muted">Fetching streams from addons...</p>
-            </div>
-          )}
-
-          {!loading && filteredStreams.length === 0 && (
-            <div className="col-span-full py-12 text-center">
-              <p className="text-sm text-muted mb-1">No playable sources found</p>
-              <p className="text-xs text-muted">
-                {addons.length === 0
-                  ? 'Install stream addons in Settings first'
-                  : 'None of your addons returned streams for this title'}
-              </p>
-            </div>
-          )}
-
-          {playError && (
-            <div className="col-span-full rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
-              {playError}
-            </div>
-          )}
-
-          {!loading && visibleStreams.map((stream, i) => {
-            const playable = Boolean(getPlayableUrl(stream) || isTorBoxCachedStream(stream))
-            const description = getStreamDescription(stream)
-            const filterBadges = matchedFilterLabels(stream)
-            return (
-            <button
-              key={`${stream.addonId}-${i}`}
-              onMouseEnter={() => warmManualStream(stream)}
-              onFocus={() => warmManualStream(stream)}
-              onClick={() => {
-                // A user choice must win over a background Smart Play probe.
-                // Without this, the picker was hidden while automatic playback
-                // was enabled, leaving no way to select a stream by hand.
-                manualSelectionRequestedRef.current = true
-                smartActiveRef.current = false
-                recordReliabilityEvent(stream, 'preferred')
-                handlePlay(stream, streams.indexOf(stream))
-              }}
-              aria-label={`Play ${getStreamHeading(stream, i)}`}
-              className="group flex min-h-[82px] w-full items-start gap-4 rounded-2xl border border-white/[0.07] bg-[#151719]/90 px-4 py-3.5 text-left shadow-[0_10px_30px_rgba(0,0,0,0.22)] transition-all hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-[#1d2023] focus-visible:border-accent/50 focus-visible:outline-none"
-            >
-              <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border transition-colors ${
-                playable ? 'border-white/[0.08] bg-white/[0.07] group-hover:border-accent/30 group-hover:bg-accent group-hover:text-black' : 'border-white/[0.04] bg-white/[0.03]'
-              }`}>
-                <svg className={`h-4 w-4 ${playable ? 'text-current' : 'text-muted'}`} fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="mb-1 text-tag font-bold uppercase tracking-[0.16em] text-accent/75">{stream.addonName}</div>
-                {showStreamName && (
-                  <div className="truncate text-lg font-extrabold tracking-tight text-white">
-                    {getStreamHeading(stream, i)}
-                  </div>
-                )}
-                {showStreamDesc && description && (
-                  <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-white/60">
-                    {description}
-                  </p>
-                )}
-                {showStreamTags && (
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-white/60">
-                    {filterBadges.map((badge) => (
-                      <span key={`filter-${badge}`} className="rounded-md border border-white/[0.12] bg-white/[0.06] px-2 py-0.5 text-meta font-bold text-white/80">
-                        {badge}
-                      </span>
-                    ))}
-                    {getStreamBadges(stream).map((badge) => (
-                      <span key={badge} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-meta text-white/50">{badge}</span>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {playingIndex === streams.indexOf(stream) ? (
-                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
-              ) : (
-                <svg className={`w-4 h-4 transition-colors flex-shrink-0 ${
-                  playable ? 'text-muted group-hover:text-accent' : 'text-muted/40'
-                }`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path d="M9 18l6-6-6-6" />
-                </svg>
-              )}
-            </button>
-          )})}
+          <div className="flex items-center gap-1 rounded-full bg-white/[0.055] p-1" aria-label="Sort sources">
+            {([['best', 'Best'], ['fastest', 'Fastest'], ['highest-quality', 'Quality'], ['smallest-file', 'Size']] as const).map(([mode, label]) => <button key={mode} onClick={() => { setSmartMode(mode); localStorage.setItem('aurales_smart_play_mode', mode) }} aria-pressed={smartMode === mode} className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${smartMode === mode ? 'bg-white/[0.16] text-white' : 'text-white/50 hover:text-white'}`}>{label}</button>)}
+          </div>
+          <div className="relative">
+            <button onClick={() => { setShowFilters((value) => !value); setShowDisplaySettings(false) }} aria-expanded={showFilters} className={`focus-ring rounded-full px-3 py-1.5 text-xs font-medium ${selectedFilters.length ? 'bg-white/[0.16] text-white' : 'text-white/60 hover:bg-white/[0.08]'}`}>Filters{selectedFilters.length ? ` ${selectedFilters.length}` : ''}</button>
+            {showFilters && <div className="absolute right-0 top-10 z-10 max-h-80 w-56 overflow-y-auto rounded-xl border border-white/[0.12] bg-[#252a30] p-3 shadow-2xl">
+              {STREAM_FILTER_GROUPS.map((group) => <div key={group.id} className="mb-2"><p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-white/35">{group.title}</p>{group.options.map((option) => <button key={option.id} onClick={() => setSelectedFilters((current) => current.includes(option.id) ? current.filter((id) => id !== option.id) : [...current, option.id])} aria-pressed={selectedFilters.includes(option.id)} className="flex w-full justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white/75 hover:bg-white/[0.08]">{option.label}<span>{selectedFilters.includes(option.id) ? '✓' : ''}</span></button>)}</div>)}
+              {selectedFilters.length > 0 && <button onClick={() => setSelectedFilters([])} className="w-full border-t border-white/10 px-2 pt-2 text-left text-xs text-white/50">Clear filters</button>}
+            </div>}
+          </div>
+          <div className="relative">
+            <button onClick={() => { setShowDisplaySettings((value) => !value); setShowFilters(false) }} aria-label="Source options" aria-expanded={showDisplaySettings} className="focus-ring flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/[0.08] hover:text-white">⚙</button>
+            {showDisplaySettings && <div className="absolute right-0 top-10 z-10 w-48 space-y-1 rounded-xl border border-white/[0.12] bg-[#252a30] p-2 shadow-2xl">
+              {([['Title', showStreamName, toggleStreamName], ['Description', showStreamDesc, toggleStreamDesc], ['Tags', showStreamTags, toggleStreamTags]] as const).map(([label, enabled, toggle]) => <button key={label} onClick={toggle} aria-pressed={enabled} className="flex w-full justify-between rounded-lg px-3 py-2 text-left text-xs hover:bg-white/[0.08]">{label}<span>{enabled ? '✓' : ''}</span></button>)}
+              <div className="border-t border-white/10 pt-1"><button onClick={retryFailedSources} disabled={loading || !Object.values(sourceDiagnostics).some((diagnostic) => diagnostic.failureReason)} className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-white/[0.08] disabled:opacity-40">Retry failed sources</button><button onClick={() => { setSmartStatus('Refreshing sources…'); void cacheClearCategory(CACHE_CATEGORIES.STREAM_PRELOAD).finally(() => setRefreshRevision((value) => value + 1)) }} disabled={loading} className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-white/[0.08] disabled:opacity-40">Refresh sources</button></div>
+            </div>}
           </div>
         </div>
 
-        {artwork?.poster && (
-          <div className="hidden">
-            <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.035] p-3 shadow-2xl backdrop-blur-2xl">
-              <img src={cachedImage(artwork.poster)} alt="" className="aspect-[2/3] w-full rounded-2xl object-cover shadow-2xl" />
-              <div className="px-1 pb-1 pt-4">
-                <p className="text-meta font-bold uppercase tracking-[0.2em] text-white/50">{seasonEpisode ? `Season ${seasonEpisode.season} Â· Episode ${seasonEpisode.episode}` : 'Movie'}</p>
-                <h3 className="mt-1.5 text-xl font-black leading-tight text-white">{title}</h3>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 pt-4 sm:px-7" style={{ scrollbarWidth: 'thin' }}>
+          {Object.values(sourceDiagnostics).filter((diagnostic) => diagnostic.failureReason).map((diagnostic) => <p key={diagnostic.sourceFingerprint} className="mb-2 text-xs text-amber-200/70">{diagnostic.addonId}: {diagnostic.failureReason?.replaceAll('_', ' ').toLowerCase()}</p>)}
+          {loading && <p className="py-10 text-center text-sm text-white/50">Fetching sources…</p>}
+          {!loading && filteredStreams.length === 0 && <p className="py-10 text-center text-sm text-white/50">No playable sources found</p>}
+          {!loading && filteredStreams.length > 0 && scoredStreams.length === 0 && <p className="py-10 text-center text-sm text-white/50">No sources match these filters.</p>}
+          {playError && <p role="alert" className="mb-3 rounded-xl bg-red-500/10 p-3 text-xs text-red-300">{playError}</p>}
+          <div className="space-y-2">
+            {!loading && scoredStreams.map(({ stream: candidate, score }, index) => {
+              const stream = candidate as AddonStream
+              const summary = streamSummary(stream)
+              const key = `${stream.addonId}:${sourceIdentity(stream) || index}`
+              const expanded = expandedStream === key
+              const percentage = Math.max(1, Math.min(100, Math.round(100 - (scoredStreams[0].score - score) / 4)))
+              return <div key={key} className={`rounded-2xl border transition-colors ${index === 0 ? 'border-white/[0.14] bg-white/[0.085]' : 'border-white/[0.07] bg-white/[0.045]'} focus-within:border-white/[0.25] hover:bg-white/[0.09]`}>
+                <div className="flex min-h-[88px] items-center gap-3 px-3 py-3 sm:gap-5 sm:px-5">
+                  <button data-stream-choice onMouseEnter={() => warmManualStream(stream)} onFocus={() => warmManualStream(stream)} onClick={() => selectStream(stream)} aria-label={`Play ${getStreamHeading(stream, index)}`} className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left sm:gap-5">
+                    <span className={`w-[58px] shrink-0 text-center text-[17px] font-semibold tabular-nums sm:w-[68px] ${index === 0 ? 'text-white' : 'text-white/80'}`}>{index === 0 && <span className="mr-1 text-[#e6d5a9]" aria-label="Highest ranked">★</span>}{percentage}%</span>
+                    <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[16px] font-semibold tracking-tight"><span>{summary.resolution}</span><span className="text-white/75">{summary.release}</span>{showStreamTags && summary.visual.map((item) => <span key={item} className="rounded-md border border-white/[0.12] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-white/70">{item}</span>)}</span>
+                      <span className="mt-1.5 flex flex-wrap gap-x-3 text-[13px] text-white/55"><span>{summary.audio || 'Audio unspecified'}</span>{(summary.size || summary.bitrate) && <span>{[summary.size, summary.bitrate].filter(Boolean).join(' · ')}</span>}</span>
+                      <span className="mt-1 block truncate text-[12px] text-white/40">{[summary.language, summary.source].filter(Boolean).join(' · ')}</span>
+                      {showStreamDesc && summary.description && <span className="mt-1 block whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/55">{summary.description}</span>}
+                    </span>
+                  </button>
+                  {playingIndex === streams.indexOf(stream) ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent" /> : <button onClick={() => setExpandedStream(expanded ? null : key)} aria-label={expanded ? 'Hide source details' : 'Show source details'} aria-expanded={expanded} className="focus-ring flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xl text-white/45 hover:bg-white/[0.08] hover:text-white">{expanded ? '⌄' : '›'}</button>}
+                </div>
+                {expanded && <div className="grid gap-x-6 gap-y-2 border-t border-white/[0.07] px-5 py-4 text-xs text-white/55 sm:grid-cols-2">
+                  {showStreamName && <p><span className="text-white/35">Title · </span>{getStreamHeading(stream, index)}</p>}
+                  {stream.videoCodec && <p><span className="text-white/35">Video codec · </span>{stream.videoCodec}</p>}
+                  {stream.audioCodec && <p><span className="text-white/35">Audio codec · </span>{stream.audioCodec}</p>}
+                  {stream.filename && <p className="break-all"><span className="text-white/35">Filename · </span>{stream.filename}</p>}
+                  {Boolean(stream.behaviorHints?.filename) && <p className="break-all"><span className="text-white/35">Release · </span>{String(stream.behaviorHints?.filename)}</p>}
+                  <p><span className="text-white/35">Source addon · </span>{stream.addonName}</p>
+                  <p><span className="text-white/35">Status · </span>{isTorBoxCachedStream(stream) ? 'Cached' : summary.source}</p>
+                  {showStreamTags && <p><span className="text-white/35">Attributes · </span>{[...matchedFilterLabels(stream), ...getStreamBadges(stream)].join(' · ') || 'None reported'}</p>}
+                  {showStreamDesc && getStreamDescription(stream) && <p className="break-words sm:col-span-2"><span className="text-white/35">Provider response · </span>{getStreamDescription(stream)}</p>}
+                </div>}
               </div>
-            </div>
+            })}
           </div>
-        )}
-      </div>
-
-    </div>,
-    document.body
+        </div>
+      </section>
+    </div>, document.body
   )
 }

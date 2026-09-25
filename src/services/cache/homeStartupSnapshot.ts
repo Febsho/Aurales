@@ -1,7 +1,7 @@
 import type { HomeRowConfig, SearchResult } from '../../types'
 import { heroRowCacheKey } from './homeRowCacheKeys'
 
-export type ContinueWatchingSource = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
+export type ContinueWatchingSource = 'all' | 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
 
 export interface ContinueWatchingSnapshotItem {
   id: string
@@ -22,6 +22,7 @@ export interface ContinueWatchingSnapshotItem {
   anilistId?: number
   sourceConnectionId?: string
   sourceItemId?: string
+  progressSource?: Exclude<ContinueWatchingSource, 'all'>
   updatedAt: string
 }
 
@@ -207,6 +208,12 @@ function parsedAccount<T>(key: string): T | null {
 }
 
 export function getContinueWatchingAccountScope(source: ContinueWatchingSource): string | null {
+  if (source === 'all') {
+    const accounts = (['trakt', 'simkl', 'anilist', 'pmdb', 'mdblist'] as const)
+      .map((provider) => getContinueWatchingAccountScope(provider))
+      .filter((scope): scope is string => Boolean(scope))
+    return `all:device:${accounts.join('|')}`
+  }
   if (source === 'local') return 'device'
   if (source === 'trakt') {
     if (!localStorage.getItem('trakt_tokens')) return null

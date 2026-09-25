@@ -275,7 +275,7 @@ export default function MovieDetailPage() {
       }[] = []
 
       // 1. Local
-      if (primaryProgressProvider === 'local' && progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
+      if ((primaryProgressProvider === 'local' || primaryProgressProvider === 'all') && progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
         candidates.push({
           provider: 'local',
           progressSeconds: progressItem.progressSeconds,
@@ -286,7 +286,7 @@ export default function MovieDetailPage() {
 
       const fetchPromises: Promise<void>[] = []
 
-      if (primaryProgressProvider === 'simkl' && simklConnected) {
+      if ((primaryProgressProvider === 'simkl' || primaryProgressProvider === 'all') && simklConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getSimklPlaybackProgress()
@@ -311,7 +311,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'trakt' && traktConnected) {
+      if ((primaryProgressProvider === 'trakt' || primaryProgressProvider === 'all') && traktConnected) {
         fetchPromises.push((async () => {
           try {
             const raw = await getTraktPlaybackProgress()
@@ -335,7 +335,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'pmdb' && pmdbApiKey) {
+      if ((primaryProgressProvider === 'pmdb' || primaryProgressProvider === 'all') && pmdbApiKey) {
         fetchPromises.push((async () => {
           try {
             const raw = await getPMDBPlaybackProgress()
@@ -355,7 +355,7 @@ export default function MovieDetailPage() {
         })())
       }
 
-      if (primaryProgressProvider === 'mdblist' && (mdblistApiKey || hasMdblistOAuth())) {
+      if ((primaryProgressProvider === 'mdblist' || primaryProgressProvider === 'all') && (mdblistApiKey || hasMdblistOAuth())) {
         fetchPromises.push((async () => {
           try {
             const raw = await getMdblistPlaybackProgress()
@@ -385,7 +385,11 @@ export default function MovieDetailPage() {
 
       if (!active) return
 
-      setLiveResumePoint(candidates.find((candidate) => candidate.provider === primaryProgressProvider) || null)
+      const selected = primaryProgressProvider === 'all'
+        ? candidates.filter((candidate) => candidate.progressSeconds > 5 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
+          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+        : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
+      setLiveResumePoint(selected || null)
     }
 
     fetchPoints()

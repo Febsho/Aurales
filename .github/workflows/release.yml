@@ -145,6 +145,7 @@ jobs:
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_TVDB_API_KEY: ${{ secrets.VITE_TVDB_API_KEY }}
           VITE_SIMKL_CLIENT_ID: ${{ secrets.VITE_SIMKL_CLIENT_ID }}
+          VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
           VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
           VITE_TRAKT_CLIENT_SECRET: ${{ secrets.VITE_TRAKT_CLIENT_SECRET }}
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
@@ -177,6 +178,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
           VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
           ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
           SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}

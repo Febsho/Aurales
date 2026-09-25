@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { useAppStore, type ProgressProvider } from '../stores/appStore'
+import { connectedProgressSources, useAppStore, type ProgressProvider, type ProgressSelection } from '../stores/appStore'
 import { refreshSimklPlaybackCache } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
@@ -32,7 +32,8 @@ import { getServerCatalogItems, listServerCatalogs, type ServerCatalogItem } fro
 
 type SourceType = ContinueWatchingSource
 
-const PROGRESS_SOURCE_OPTIONS: { id: ProgressProvider; label: string }[] = [
+const PROGRESS_SOURCE_OPTIONS: { id: ProgressSelection; label: string }[] = [
+  { id: 'all', label: 'Every service' },
   { id: 'local', label: 'Local' },
   { id: 'trakt', label: 'Trakt' },
   { id: 'simkl', label: 'Simkl' },
@@ -119,6 +120,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey) && !startupSnapshot)
   const [error, setError] = useState<string | null>(null)
   const [remoteRefreshRevision, setRemoteRefreshRevision] = useState(0)
+  useEffect(() => {
+    const refresh = () => setRemoteRefreshRevision((revision) => revision + 1)
+    window.addEventListener('aurales:mdblist-auth-changed', refresh)
+    return () => window.removeEventListener('aurales:mdblist-auth-changed', refresh)
+  }, [])
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
     mediaType: 'movie' | 'series'
@@ -215,7 +221,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     if (cached) { setItems(cached); setLoading(false) } else { setLoading(true) }
     setError(null)
 
-    if (source !== 'local' && cached && cwRevalidatedThisSession.has(cwKey)) {
+    if (source !== 'local' && source !== 'all' && cached && cwRevalidatedThisSession.has(cwKey)) {
       markContinueWatchingSettled()
       return () => { cancelled = true }
     }
@@ -233,7 +239,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           execute,
         })
 
-        if (source === 'local') {
+        const loadSource = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
+          let sourceList: ContinueWatchingItem[] = []
+          const providerCached = activeSource === source ? cached : readContinueWatchingStartupSnapshot(activeSource, getContinueWatchingAccountScope(activeSource), continueWatchingLimit)
+        if (activeSource === 'local') {
           const localItems = Array.from(watchProgress.values())
             .filter((i) => !i.completed && i.progressSeconds > 5)
             .map((i) => {
@@ -256,15 +265,15 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updatedAt || new Date(0).toISOString(),
               } satisfies ContinueWatchingItem
             })
-          const serverCatalogs = await listServerCatalogs()
+          const serverCatalogs = await listServerCatalogs().catch(() => [])
           const serverResults = await Promise.allSettled(serverCatalogs
             .filter((catalog) => catalog.kind === 'continue-watching')
             .map((catalog) => getServerCatalogItems(catalog.connectionId, catalog.catalogId, 100)))
           const serverItems = serverResults.flatMap((result) => result.status === 'fulfilled'
             ? result.value.map(serverContinueWatchingItem).filter((item): item is ContinueWatchingItem => item !== null)
             : [])
-          list = [...localItems, ...serverItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        } else if (source === 'simkl') {
+          sourceList = [...localItems, ...serverItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        } else if (activeSource === 'simkl') {
           const simklRaw = await refreshSimklPlaybackCache()
           const simklItems: ContinueWatchingItem[] = simklRaw
             .filter((i) => i.progress != null && i.progress > 0 && i.progress < 85)
@@ -304,8 +313,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } satisfies ContinueWatchingItem
             })
             .filter(Boolean) as ContinueWatchingItem[]
-          list = simklItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        } else if (source === 'trakt') {
+          sourceList = simklItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        } else if (activeSource === 'trakt') {
           const traktRaw = await getTraktPlaybackProgress() as any[]
           const traktItems: ContinueWatchingItem[] = traktRaw
             .filter((i) => i.progress != null && i.progress > 0 && i.progress < 85)
@@ -337,10 +346,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.paused_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = traktItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-          list = mergeContinueWatchingPresentation(list, cached || [])
+          sourceList = traktItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
-        } else if (source === 'pmdb') {
+        } else if (activeSource === 'pmdb') {
           const pmdbRaw = await getPMDBPlaybackProgress()
           const pmdbItems: ContinueWatchingItem[] = pmdbRaw
             .filter((i) => i.position_ms > 0 && (!i.runtime_ms || (i.position_ms / i.runtime_ms) < 0.85))
@@ -367,10 +376,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updated_at || i.updated || i.paused_at || i.created_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = pmdbItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-          list = mergeContinueWatchingPresentation(list, cached || [])
+          sourceList = pmdbItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
-        } else if (source === 'mdblist') {
+        } else if (activeSource === 'mdblist') {
           const [playbackRaw, upNextRaw] = await Promise.all([
             getMdblistPlaybackProgress(),
             getMdblistUpNext(),
@@ -426,11 +435,32 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             ...playbackItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
             ...upNextItems.filter((i) => !seenIds.has(i.mediaId)),
           ]
-          const presentedMerged = mergeContinueWatchingPresentation(merged, cached || [])
+          const presentedMerged = mergeContinueWatchingPresentation(merged, providerCached || [])
 
-          list = presentedMerged
-        } else if (source === 'anilist') {
-          list = await getAniListContinueWatching()
+          sourceList = presentedMerged
+        } else if (activeSource === 'anilist') {
+          sourceList = await getAniListContinueWatching()
+        }
+          return sourceList.map((item) => ({ ...item, progressSource: activeSource }))
+        }
+
+        if (source === 'all') {
+          const results = await Promise.allSettled(connectedProgressSources(useAppStore.getState()).map(loadSource))
+          const seen = new Set<string>()
+          list = results.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .filter((item) => {
+              const episode = `:${item.season ?? ''}:${item.episode ?? ''}`
+              const prefix = `${item.mediaType}:`
+              const aliases = [item.imdbId && `imdb:${item.imdbId}`, item.tmdbId && `tmdb:${item.tmdbId}`,
+                item.anilistId && `anilist:${item.anilistId}`, item.malId && `mal:${item.malId}`, `media:${item.mediaId}`]
+                .filter(Boolean).map((alias) => `${prefix}${alias}${episode}`)
+              if (aliases.some((alias) => seen.has(alias))) return false
+              aliases.forEach((alias) => seen.add(alias))
+              return true
+            })
+        } else {
+          list = await loadSource(source)
         }
 
         list = mergeContinueWatchingPresentation(list, cached || [])
@@ -527,13 +557,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             id: i.id, mediaId: i.mediaId, mediaType: i.mediaType, season: i.season, episode: i.episode,
             progressSeconds: i.progressSeconds, durationSeconds: i.durationSeconds, completed: false, updatedAt: i.updatedAt,
           }).visible).slice(0, continueWatchingLimit)
-          const visible = source !== 'local' && candidate.length === 0 && cached?.length ? cached : candidate
-          if (accountScope && visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
+          const visible = source !== 'local' && source !== 'all' && candidate.length === 0 && cached?.length ? cached : candidate
+          if (accountScope) {
+            if (visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
+            else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+          }
           const previous = cwItemsCache.get(cwKey) || cached || []
           const identityChanged = stableListFingerprint(visible) !== stableListFingerprint(previous)
           cwItemsCache.set(cwKey, visible)
           setContinueWatchingProgress(visible)
-          if (source === 'local' || identityChanged) setItems(visible)
+          if (source === 'local' || source === 'all' || identityChanged) setItems(visible)
           streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
             mediaType: item.mediaType,
             mediaId: item.imdbId || item.mediaId,
@@ -558,10 +591,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, accountScope, cwKey, source === 'local' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress])
+  }, [source, accountScope, cwKey, source === 'local' || source === 'all' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress, traktConnected, simklConnected, anilistConnected, pmdbConnected, mdblistConnected])
 
   const displayTitle = row.title
-  const sourceConnections: Record<ProgressProvider, boolean> = {
+  const sourceConnections: Record<ProgressSelection, boolean> = {
+    all: true,
     local: true,
     trakt: traktConnected,
     simkl: simklConnected,
@@ -797,8 +831,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 {/* Progress bar. Scaled rather than resized on hover: animating
                     height re-lays out the bar every frame, whereas a transform
                     stays on the compositor. */}
-                <div className="cw-progress absolute bottom-0 inset-x-0 bg-white/10">
-                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
+                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -860,8 +894,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 {/* Progress bar. Scaled rather than resized on hover: animating
                     height re-lays out the bar every frame, whereas a transform
                     stays on the compositor. */}
-                <div className="cw-progress absolute bottom-0 inset-x-0 bg-white/10">
-                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
+                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -895,7 +929,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           x={cwMenu.x}
           y={cwMenu.y}
           item={cwMenu.item}
-          source={source}
+          source={cwMenu.item.progressSource || source}
           onClose={() => setCwMenu(null)}
           onRemove={(removedItem) => {
             // A removal is a visibility preference, never a destructive
@@ -944,7 +978,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             setCwMenu(null)
           }}
           onMarkWatched={(item) => {
-            if (source === 'local') {
+            if ((item.progressSource || source) === 'local') {
               const key = item.season != null && item.episode != null ? `${item.mediaId}:${item.season}:${item.episode}` : item.mediaId
               setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId })
             }
@@ -968,9 +1002,9 @@ function ContinueWatchingSourceMenu({
 }: {
   x: number
   y: number
-  selected: ProgressProvider
-  connections: Record<ProgressProvider, boolean>
-  onSelect: (source: ProgressProvider) => void
+  selected: ProgressSelection
+  connections: Record<ProgressSelection, boolean>
+  onSelect: (source: ProgressSelection) => void
   onClose: () => void
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -1007,7 +1041,7 @@ function ContinueWatchingSourceMenu({
         <div className="relative">
           <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
             <p className="text-sm font-semibold text-white">Continue Watching source</p>
-            <p className="text-label text-white/50 mt-0.5">Use one connection for all watch data</p>
+            <p className="text-label text-white/50 mt-0.5">Choose every connected service or one source</p>
           </div>
           <div className="px-1.5 py-1.5">
             {PROGRESS_SOURCE_OPTIONS.map((option) => {

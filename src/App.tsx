@@ -2,7 +2,7 @@ import { useEffect, lazy, Suspense, useState } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import ErrorBoundary from './components/ui/ErrorBoundary'
-import { useAppStore } from './stores/appStore'
+import { connectedProgressSources, useAppStore } from './stores/appStore'
 import { prefetchLikelyRoutes } from './services/routePrefetch'
 import { markPerformance, measurePerformance } from './services/performanceMetrics'
 import WhoWatching from './components/WhoWatching'
@@ -102,6 +102,7 @@ export default function App() {
   const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const setWatchedCheckmarkSources = useAppStore((s) => s.setWatchedCheckmarkSources)
+  const progressConnections = useAppStore((s) => [s.traktConnected, s.simklConnected, s.anilistConnected, Boolean(s.pmdbApiKey), Boolean(s.mdblistApiKey)].map(Number).join(''))
 
   useEffect(() => {
     markPerformance('app-shell-visible')
@@ -185,9 +186,18 @@ export default function App() {
   }, [chooseProfile])
 
   useEffect(() => {
-    if (watchedCheckmarkSources.length === 1 && watchedCheckmarkSources[0] === primaryProgressProvider) return
-    setWatchedCheckmarkSources([primaryProgressProvider])
-  }, [primaryProgressProvider, setWatchedCheckmarkSources, watchedCheckmarkSources])
+    const syncSources = () => {
+      const desired = primaryProgressProvider === 'all'
+        ? connectedProgressSources(useAppStore.getState())
+        : [primaryProgressProvider]
+      const current = useAppStore.getState().watchedCheckmarkSources
+      if (desired.length === current.length && desired.every((source, index) => source === current[index])) return
+      setWatchedCheckmarkSources(desired)
+    }
+    syncSources()
+    window.addEventListener('aurales:mdblist-auth-changed', syncSources)
+    return () => window.removeEventListener('aurales:mdblist-auth-changed', syncSources)
+  }, [primaryProgressProvider, progressConnections, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
     if (chooseProfile) return

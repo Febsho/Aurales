@@ -22,6 +22,29 @@ function invalidateCatalogData(): void {
 }
 
 export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+export type ProgressSelection = ProgressProvider | 'all'
+
+const PROGRESS_PROVIDERS: ProgressProvider[] = ['local', 'trakt', 'simkl', 'anilist', 'pmdb', 'mdblist']
+
+function loadProgressSelection(): ProgressSelection {
+  // This setting replaces the former single-provider default. Existing
+  // installs start with every service once, then keep their new choice.
+  const saved = localStorage.getItem('aurales_watch_data_source')
+  return saved === 'all' || PROGRESS_PROVIDERS.includes(saved as ProgressProvider) ? saved as ProgressSelection : 'all'
+}
+
+export function connectedProgressSources(state: {
+  traktConnected: boolean; simklConnected: boolean; anilistConnected: boolean; pmdbApiKey: string; mdblistApiKey: string
+}): ProgressProvider[] {
+  return [
+    'local',
+    ...(state.traktConnected ? ['trakt' as const] : []),
+    ...(state.simklConnected ? ['simkl' as const] : []),
+    ...(state.anilistConnected ? ['anilist' as const] : []),
+    ...(state.pmdbApiKey ? ['pmdb' as const] : []),
+    ...(state.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens') ? ['mdblist' as const] : []),
+  ]
+}
 
 export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
 export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
@@ -29,7 +52,7 @@ export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
 export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
 export type RowEntryCount = 10 | 15 | 20 | 25
 
-type ContinueWatchingProgressItem = { id: string; mediaId: string; imdbId?: string; tmdbId?: number; progressPct: number }
+type ContinueWatchingProgressItem = { id: string; mediaId: string; mediaType?: 'movie' | 'series'; title?: string; imdbId?: string; tmdbId?: number; malId?: number; anilistId?: number; progressPct: number }
 
 function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): Map<string, number> {
   const progress = new Map<string, number>()
@@ -37,16 +60,28 @@ function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): M
     const pct = Math.min(100, Math.max(0, item.progressPct))
     // Preserve the most advanced resume when provider responses contain
     // duplicate identifiers for a title and its current episode.
-    for (const key of [item.id, item.mediaId, item.imdbId, item.tmdbId != null ? String(item.tmdbId) : undefined, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
+    const ids = [item.id, item.mediaId, item.imdbId, item.tmdbId != null ? String(item.tmdbId) : undefined,
+      item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+      item.malId != null ? String(item.malId) : undefined, item.malId != null ? `mal-${item.malId}` : undefined,
+      item.anilistId != null ? String(item.anilistId) : undefined, item.anilistId != null ? `anilist-${item.anilistId}` : undefined]
+    for (const key of ids) {
       if (!key) continue
       progress.set(key, Math.max(progress.get(key) || 0, pct))
+      if (item.mediaType) progress.set(`${item.mediaType}:${key}`, Math.max(progress.get(`${item.mediaType}:${key}`) || 0, pct))
+    }
+    if (item.mediaType && item.title) {
+      const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      if (!normalizedTitle) continue
+      for (const titleKey of [`title:${item.mediaType}:${normalizedTitle}`, `title:${normalizedTitle}`]) {
+        progress.set(titleKey, Math.max(progress.get(titleKey) || 0, pct))
+      }
     }
   }
   return progress
 }
 
 function loadContinueWatchingProgress(): Map<string, number> {
-  const source = (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider
+  const source = loadProgressSelection()
   const limit = Number(localStorage.getItem('aurales_cw_limit') || '10')
   return buildContinueWatchingProgress(readContinueWatchingStartupSnapshot(source, getContinueWatchingAccountScope(source), limit) || [])
 }
@@ -178,11 +213,11 @@ interface AppState {
   setPreferSdhSubtitles: (enabled: boolean) => void
   setAnimeAudioMode: (mode: 'sub' | 'dub') => void
 
-  continueWatchingSource: ProgressProvider
-  /** One authoritative account for resumes, watched badges, and episode state. */
-  primaryProgressProvider: ProgressProvider
+  continueWatchingSource: ProgressSelection
+  /** Connected services together, or one selected source for watch data. */
+  primaryProgressProvider: ProgressSelection
   continueWatchingLimit: number
-  /** Cached resume percentages from the selected Continue Watching service. */
+  /** Cached resume percentages from the selected Continue Watching sources. */
   continueWatchingProgress: Map<string, number>
   showPosterWatchStatus: boolean
   watchedCheckmarkSources: ProgressProvider[]
@@ -202,8 +237,8 @@ interface AppState {
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
   resumePriorityOrder: ProgressProvider[]
 
-  setContinueWatchingSource: (src: ProgressProvider) => void
-  setPrimaryProgressProvider: (src: ProgressProvider) => void
+  setContinueWatchingSource: (src: ProgressSelection) => void
+  setPrimaryProgressProvider: (src: ProgressSelection) => void
   setContinueWatchingLimit: (limit: number) => void
   setContinueWatchingProgress: (items: ContinueWatchingProgressItem[]) => void
   setShowPosterWatchStatus: (enabled: boolean) => void
@@ -833,10 +868,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAnimeAudioMode: (mode) => { localStorage.setItem(profileStorageKey('aurales_anime_audio_mode'), mode); set({ animeAudioMode: mode }) },
 
   // Migrate the former Continue Watching-only choice into the unified source.
-  continueWatchingSource: (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
-  primaryProgressProvider: (localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider,
+  continueWatchingSource: loadProgressSelection(),
+  primaryProgressProvider: loadProgressSelection(),
   continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
-  watchedCheckmarkSources: [(localStorage.getItem('aurales_primary_progress_service') || localStorage.getItem('aurales_cw_source') || 'local') as ProgressProvider],
+  watchedCheckmarkSources: loadProgressSelection() === 'all' ? connectedProgressSources({
+    traktConnected: Boolean(localStorage.getItem('trakt_tokens')),
+    simklConnected: Boolean(localStorage.getItem('simkl_token')),
+    anilistConnected: Boolean(localStorage.getItem('anilist_token')),
+    pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
+    mdblistApiKey: localStorage.getItem('mdblist_api_key') || '',
+  }) : [loadProgressSelection() as ProgressProvider],
   continueWatchingProgress: loadContinueWatchingProgress(),
   showPosterWatchStatus: localStorage.getItem('aurales_show_poster_watch_status') !== 'false',
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
@@ -873,7 +914,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('aurales_resume_priority')
       const saved = raw ? JSON.parse(raw) as ProgressProvider[] : []
-      const all: ProgressProvider[] = ['simkl', 'trakt', 'pmdb', 'mdblist', 'local']
+      const all: ProgressProvider[] = ['simkl', 'trakt', 'pmdb', 'mdblist', 'anilist', 'local']
       const order = [...new Set([...saved, ...all])].filter((provider): provider is ProgressProvider => all.includes(provider as ProgressProvider))
       // Existing installs used Local first. Treat it as a fallback until the
       // user deliberately moves it above a service in the priority list.
@@ -882,7 +923,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return order
     } catch (_) { /* ignore */ }
-    return ['simkl', 'trakt', 'pmdb', 'mdblist', 'local'] as ProgressProvider[]
+    return ['simkl', 'trakt', 'pmdb', 'mdblist', 'anilist', 'local'] as ProgressProvider[]
   })(),
 
   // New settings options initial values
@@ -972,10 +1013,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setContinueWatchingSource: (src) => { get().setPrimaryProgressProvider(src) },
   setPrimaryProgressProvider: (src) => {
+    localStorage.setItem('aurales_watch_data_source', src)
     localStorage.setItem('aurales_primary_progress_service', src)
     // Keep the old key in sync for existing Continue Watching snapshots.
     localStorage.setItem('aurales_cw_source', src)
-    set({ primaryProgressProvider: src, continueWatchingSource: src, continueWatchingProgress: new Map(), watchedCheckmarkSources: [src], resumePriorityOrder: [src] })
+    set((state) => ({
+      primaryProgressProvider: src,
+      continueWatchingSource: src,
+      continueWatchingProgress: new Map(),
+      watchedCheckmarkSources: src === 'all' ? connectedProgressSources(state) : [src],
+      resumePriorityOrder: state.resumePriorityOrder,
+    }))
   },
   setContinueWatchingLimit: (limit) => { localStorage.setItem('aurales_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
   setContinueWatchingProgress: (items) => set({ continueWatchingProgress: buildContinueWatchingProgress(items) }),

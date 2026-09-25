@@ -79,7 +79,8 @@ export async function getSimklCustomLists(): Promise<SimklCustomList[]> {
 
 export async function getSimklCustomListItems(id: string): Promise<SimklWatchlistItem[]> {
   if (!/^\d+$/.test(id)) throw new Error('Invalid Simkl Custom List ID.')
-  return cachedFetch(`simkl_custom_list:${id}`, async () => {
+  const accountId = getStoredSimklAccount()?.id || 'anonymous'
+  return cachedFetch(`simkl_custom_list:${accountId}:${id}`, async () => {
     const first = await simklRequest<{ items?: any[]; media_type?: string; pagination?: { total_pages?: number } }>(`/lists/${id}?limit=500&extended=full`)
     const items = [...(first.items || [])]
     const pages = Math.min(Number(first.pagination?.total_pages || 1), 20)

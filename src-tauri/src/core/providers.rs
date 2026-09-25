@@ -101,7 +101,10 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         html.len(), html,
     );
     let _ = stream.write_all(response.as_bytes()).await;
-    Ok(serde_json::json!({ "code": code, "state": state, "iss": issuer, "error": error }).to_string())
+    Ok(
+        serde_json::json!({ "code": code, "state": state, "iss": issuer, "error": error })
+            .to_string(),
+    )
 }
 
 /// Extracts a percent-decoded OAuth authorization code from an HTTP callback.
@@ -261,7 +264,7 @@ pub fn fetch_simkl_user(access_token: String, client_id: String) -> Result<Strin
         .query("app-name", "Aurales")
         .query("app-version", env!("CARGO_PKG_VERSION"))
         .set("Authorization", &format!("Bearer {access_token}"))
-        .set("User-Agent", "Aurales/0.4.1")
+        .set("User-Agent", "Aurales/0.4.2")
         .set("Accept", "application/json")
         .call()
         .map_err(|error| read_ureq_error("Simkl user fetch", error))?;
@@ -355,7 +358,7 @@ pub fn exchange_simkl_v2_token(
 ) -> Result<String, String> {
     let response = ureq::post("https://api.simkl.com/oauth2/token")
         .set("Accept", "application/json")
-        .set("User-Agent", "Aurales/0.4.1")
+        .set("User-Agent", "Aurales/0.4.2")
         .send_form(&[
             ("grant_type", "authorization_code"),
             ("client_id", client_id.trim()),
@@ -364,20 +367,24 @@ pub fn exchange_simkl_v2_token(
             ("code_verifier", code_verifier.trim()),
         ])
         .map_err(|error| read_ureq_error("Simkl AUTH V2 token exchange", error))?;
-    response.into_string().map_err(|error| format!("Failed to read Simkl AUTH V2 token response body: {error}"))
+    response
+        .into_string()
+        .map_err(|error| format!("Failed to read Simkl AUTH V2 token response body: {error}"))
 }
 
 pub fn refresh_simkl_v2_token(refresh_token: String, client_id: String) -> Result<String, String> {
     let response = ureq::post("https://api.simkl.com/oauth2/token")
         .set("Accept", "application/json")
-        .set("User-Agent", "Aurales/0.4.1")
+        .set("User-Agent", "Aurales/0.4.2")
         .send_form(&[
             ("grant_type", "refresh_token"),
             ("client_id", client_id.trim()),
             ("refresh_token", refresh_token.trim()),
         ])
         .map_err(|error| read_ureq_error("Simkl AUTH V2 refresh", error))?;
-    response.into_string().map_err(|error| format!("Failed to read Simkl AUTH V2 refresh response body: {error}"))
+    response
+        .into_string()
+        .map_err(|error| format!("Failed to read Simkl AUTH V2 refresh response body: {error}"))
 }
 
 fn parse_anilist_access_token(body: String) -> Result<String, String> {

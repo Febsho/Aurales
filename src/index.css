@@ -3243,16 +3243,34 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   to { transform: scale(1.015); }
 }
 
-/* Progress is the card's most scannable signal, so it gets a real hover
-   response -- but via transform, which never triggers layout. */
-.cw-progress {
-  height: 3px;
+/* A neutral, inset progress pill stays legible across every interface and
+   accent theme. Its colour is intentionally independent of --color-accent. */
+.cw-progress-indicator,
+.poster-progress-indicator {
+  position: absolute;
+  /* Feature card artwork metadata sits at z-30; keep progress above it so
+     static cards (focus animations off) still show the watch position. */
+  z-index: 40;
+  inset-inline: 0.65rem;
+  bottom: 0.55rem;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
   transform-origin: bottom;
   transition: transform var(--duration-fast) var(--ease-standard);
 }
 
-.cw-card:hover .cw-progress,
-.cw-card:focus-within .cw-progress {
+.cw-progress-indicator__value,
+.poster-progress-indicator__value {
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.cw-card:hover .cw-progress-indicator,
+.cw-card:focus-within .cw-progress-indicator {
   transform: scaleY(1.5);
 }
 
@@ -3273,11 +3291,12 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   }
   .cw-card,
   .cw-card__frame,
-  .cw-progress {
+  .cw-progress-indicator,
+  .poster-progress-indicator {
     transition: none;
   }
-  .cw-card:hover .cw-progress,
-  .cw-card:focus-within .cw-progress {
+  .cw-card:hover .cw-progress-indicator,
+  .cw-card:focus-within .cw-progress-indicator {
     transform: none;
   }
 }

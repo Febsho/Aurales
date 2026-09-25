@@ -1958,13 +1958,14 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
-              <SettingSection title="Primary progress service" description="One account is authoritative for Continue Watching, watched checkmarks, episode state, and Better Posters watch status.">
-                <SettingRow label="Use for all watch data" description="Choose a connected service, or Local to keep watch data only on this device.">
+              <SettingSection title="Watch data sources" description="Continue Watching, resume positions, and watched status can use every connected service or one selected source.">
+                <SettingRow label="Use for watch data" description="Every service combines connected accounts and local progress. Choose one source to limit watch data to it.">
                   <SelectMenu
                     value={store.primaryProgressProvider}
-                    onChange={(event) => store.setPrimaryProgressProvider(event.target.value as import('../stores/appStore').ProgressProvider)}
+                    onChange={(event) => store.setPrimaryProgressProvider(event.target.value as import('../stores/appStore').ProgressSelection)}
                     className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
+                    <option value="all">Every service</option>
                     <option value="local">Local</option>
                     <option value="trakt" disabled={!store.traktConnected}>Trakt{store.traktConnected ? '' : ' — not connected'}</option>
                     <option value="simkl" disabled={!store.simklConnected}>Simkl{store.simklConnected ? '' : ' — not connected'}</option>

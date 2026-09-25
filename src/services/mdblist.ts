@@ -217,12 +217,14 @@ function storeMdblistTokens(data: any, replaceAccount = false): MdblistOAuthToke
   if (!tokens.accessToken) throw new Error('MDBList did not return an access token')
   if (replaceAccount || !localStorage.getItem(MDBLIST_TOKEN_KEY)) rotateProviderCredentialScope('mdblist', true)
   localStorage.setItem(MDBLIST_TOKEN_KEY, JSON.stringify(tokens))
+  window.dispatchEvent(new Event('aurales:mdblist-auth-changed'))
   return tokens
 }
 
 export function clearMdblistOAuth(): void {
   localStorage.removeItem(MDBLIST_TOKEN_KEY)
   rotateProviderCredentialScope('mdblist', Boolean(userApiKey()))
+  window.dispatchEvent(new Event('aurales:mdblist-auth-changed'))
 }
 
 async function postMdblistOAuthForm(path: string, params: Record<string, string>): Promise<any> {
