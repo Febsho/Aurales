@@ -6,7 +6,7 @@
  * 3. Never commit simkl.local.ts.
  *
  * For production builds, set VITE_SIMKL_V2_CLIENT_ID.
- * Register http://127.0.0.1/auth/simkl/callback; PKCE means no secret is needed.
+ * Register http://127.0.0.1/auth/simkl/callback (without a port); PKCE means no secret is needed.
  */
 export const SIMKL_CONFIG = {
   clientId: "PASTE_SIMKL_CLIENT_ID_HERE",

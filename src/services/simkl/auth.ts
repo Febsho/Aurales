@@ -17,6 +17,8 @@ const LS_TOKEN = 'simkl_token'
 const LS_ACCOUNT = 'simkl_account'
 const LS_LAST_SYNC = 'simkl_last_sync'
 
+// Simkl matches loopback redirects without the port at authorization time;
+// keep the active port here because callback handling and token exchange use it.
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:42814/auth/simkl/callback'
 const V2_CLIENT_ID_KEY = 'simkl_v2_client_id'
 let pendingCallback: Promise<string> | null = null
