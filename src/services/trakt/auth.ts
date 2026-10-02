@@ -51,14 +51,6 @@ function getClientSecret(): string {
   return localStorage.getItem('trakt_client_secret') || import.meta.env.VITE_TRAKT_CLIENT_SECRET || ''
 }
 
-export function hasTraktClientCredentials(): boolean {
-  return !!getClientId()
-}
-
-export function hasBundledTraktClientCredentials(): boolean {
-  return !!(BUILTIN_TRAKT_CLIENT_ID && (import.meta.env.VITE_TRAKT_CLIENT_SECRET || ''))
-}
-
 export function getStoredTokens(): TraktTokens | null {
   const raw = localStorage.getItem('trakt_tokens')
   if (!raw) return null

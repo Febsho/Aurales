@@ -22,6 +22,9 @@ const LS_LAST_SYNC = 'simkl_last_sync'
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:42814/auth/simkl/callback'
 const V2_CLIENT_ID_KEY = 'simkl_v2_client_id'
 let pendingCallback: Promise<string> | null = null
+let pendingAccount: Promise<SimklAccount> | null = null
+let startingLogin: Promise<SimklPinAuth> | null = null
+const OAUTH_PENDING: SimklPinAuth = { userCode: '', verificationUrl: '', interval: 5, expiresIn: 600 }
 
 export function getSimklClientId(): string {
   return localStorage.getItem(V2_CLIENT_ID_KEY) || import.meta.env.VITE_SIMKL_V2_CLIENT_ID || ''
@@ -39,21 +42,30 @@ export function isSimklMockMode(): boolean {
   return false
 }
 
-export async function initiateSimklLogin(): Promise<SimklPinAuth> {
-  const config = await getSimklConfig()
-  if (!config.clientId) {
-    throw new Error('SIMKL AUTH V2 is not configured. Set VITE_SIMKL_V2_CLIENT_ID to a desktop/browser AUTH V2 client ID.')
-  }
-  const verifier = randomUrlSafe(48)
-  const state = randomUrlSafe(24)
-  const challenge = await sha256UrlSafe(verifier)
-  sessionStorage.setItem('simkl_oauth_v2', JSON.stringify({ verifier, state, redirectUri: config.redirectUri }))
-  // The callback server must own the port before the browser is sent away.
-  pendingCallback = invoke<string>('start_simkl_callback_server')
-  await new Promise((resolve) => setTimeout(resolve, 75))
-  const params = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'media:read media:write', state, code_challenge: challenge, code_challenge_method: 'S256' })
-  await invoke('open_simkl_auth', { url: `https://simkl.com/oauth2/authorize?${params}` })
-  return { userCode: '', verificationUrl: '', interval: 5, expiresIn: 600 }
+export function initiateSimklLogin(): Promise<SimklPinAuth> {
+  // A second click must reuse the active callback and PKCE state. Replacing
+  // either would make the first browser approval fail after it reaches us.
+  if (pendingCallback) return Promise.resolve(OAUTH_PENDING)
+  if (startingLogin) return startingLogin
+  startingLogin = (async () => {
+    const config = await getSimklConfig()
+    if (!config.clientId) {
+      throw new Error('SIMKL AUTH V2 is not configured. Set VITE_SIMKL_V2_CLIENT_ID to a desktop/browser AUTH V2 client ID.')
+    }
+    const verifier = randomUrlSafe(48)
+    const state = randomUrlSafe(24)
+    const challenge = await sha256UrlSafe(verifier)
+    sessionStorage.setItem('simkl_oauth_v2', JSON.stringify({ verifier, state, redirectUri: config.redirectUri }))
+    // The callback server must own the port before the browser is sent away.
+    pendingCallback = invoke<string>('start_simkl_callback_server')
+    void pendingCallback.catch(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    const params = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'media:read media:write', state, code_challenge: challenge, code_challenge_method: 'S256' })
+    await invoke('open_simkl_auth', { url: `https://simkl.com/oauth2/authorize?${params}` })
+    return OAUTH_PENDING
+  })()
+  void startingLogin.finally(() => { startingLogin = null }).catch(() => {})
+  return startingLogin
 }
 
 export async function completeSimklLogin(code: string): Promise<SimklAccount> {
@@ -139,13 +151,23 @@ function readPendingOauth(): { verifier: string; state: string; redirectUri: str
 }
 
 export async function waitForSimklOauthCallback(): Promise<SimklAccount> {
+  if (pendingAccount) return pendingAccount
   const pending = readPendingOauth()
   if (!pendingCallback) throw new Error('Simkl sign-in session expired. Start the connection again.')
-  const callback = JSON.parse(await pendingCallback) as { code?: string; state?: string; iss?: string; error?: string }
-  pendingCallback = null
-  if (callback.state !== pending.state || callback.iss !== 'https://simkl.com') throw new Error('Rejected an unexpected Simkl authorization response.')
-  if (callback.error) throw new Error(callback.error === 'access_denied' ? 'Simkl sign-in was cancelled.' : `Simkl authorization failed: ${callback.error}`)
-  return completeSimklLogin(callback.code || '')
+  const callbackPromise = pendingCallback
+  pendingAccount = (async () => {
+    const callback = JSON.parse(await callbackPromise) as { code?: string; state?: string; iss?: string; error?: string }
+    if (callback.state !== pending.state || callback.iss !== 'https://simkl.com') throw new Error('Rejected an unexpected Simkl authorization response.')
+    if (callback.error) throw new Error(callback.error === 'access_denied' ? 'Simkl sign-in was cancelled.' : `Simkl authorization failed: ${callback.error}`)
+    return completeSimklLogin(callback.code || '')
+  })()
+  try {
+    return await pendingAccount
+  } finally {
+    pendingCallback = null
+    pendingAccount = null
+    sessionStorage.removeItem('simkl_oauth_v2')
+  }
 }
 
 export async function refreshSimklToken(): Promise<SimklToken | null> {

@@ -140,15 +140,11 @@ interface AppState {
   // Settings
   tmdbApiKey: string
   tvdbApiKey: string
-  traktClientId: string
-  traktClientSecret: string
   traktConnected: boolean
   traktAccount: TraktAccount | null
   mdblistApiKey: string
   setTmdbApiKey: (key: string) => void
   setTvdbApiKey: (key: string) => void
-  setTraktClientId: (key: string) => void
-  setTraktClientSecret: (key: string) => void
   setTraktConnected: (connected: boolean) => void
   setTraktAccount: (account: TraktAccount | null) => void
   setMdblistApiKey: (key: string) => void
@@ -661,8 +657,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   tmdbApiKey: localStorage.getItem('tmdb_api_key') || '',
   tvdbApiKey: localStorage.getItem('tvdb_api_key') || '',
-  traktClientId: localStorage.getItem('trakt_client_id') || '',
-  traktClientSecret: localStorage.getItem('trakt_client_secret') || '',
   traktConnected: !!localStorage.getItem('trakt_tokens'),
   mdblistApiKey: localStorage.getItem('mdblist_api_key') || '',
   traktAccount: (() => {
@@ -673,8 +667,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   })(),
   setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); invalidateCatalogData(); set({ tmdbApiKey: key }) },
   setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); invalidateCatalogData(); set({ tvdbApiKey: key }) },
-  setTraktClientId: (key) => { localStorage.setItem('trakt_client_id', key); set({ traktClientId: key }) },
-  setTraktClientSecret: (key) => { localStorage.setItem('trakt_client_secret', key); set({ traktClientSecret: key }) },
   setTraktConnected: (connected) => {
     invalidateCatalogData()
     if (!connected) clearContinueWatchingSnapshotsForSource('trakt')

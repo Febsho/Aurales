@@ -413,7 +413,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   // disabled checkmark overlay must not hide Continue Watching on Home rows.
   const showPosterProgress = progressPct != null && progressPct > 2
   const posterWatchBadge = showPosterWatchStatus && isCompleted && !showPosterProgress ? (
-    <span className="absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-white/30 bg-white/15 text-white/85 shadow-sm backdrop-blur-md" aria-label="Watched" title="Watched">
+    <span className="poster-watched-indicator absolute right-2 top-2 z-30 flex h-7 w-7 items-center justify-center rounded-full" aria-label="Watched" title="Watched">
       <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m5 12 4 4L19 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
     </span>
   ) : null

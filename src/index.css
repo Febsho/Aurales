@@ -4329,18 +4329,30 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 }
 
 .episode-watched-indicator {
-  width: 1.35rem;
-  height: 1.35rem;
-  border: 1px solid rgba(255, 255, 255, .2);
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid rgba(255, 255, 255, .72);
   border-radius: 999px;
-  color: rgba(255, 255, 255, .76);
-  background: rgba(5, 5, 7, .56);
-  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .24);
+  color: #fff;
+  background: rgba(8, 12, 18, .94);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, .72);
 }
 
 .episode-watched-indicator svg {
-  width: .72rem;
-  height: .72rem;
+  width: .9rem;
+  height: .9rem;
+}
+
+.poster-watched-indicator {
+  border: 1px solid rgba(255, 255, 255, .82);
+  color: #fff;
+  background: rgba(8, 12, 18, .94);
+  box-shadow: 0 1px 9px rgba(0, 0, 0, .78);
+}
+
+.poster-watched-indicator svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .detail-page .ratings-hero {

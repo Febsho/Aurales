@@ -27,7 +27,6 @@ import {
   pollForToken,
   clearTokens,
   isAuthenticated,
-  hasTraktClientCredentials,
 } from '../services/trakt/auth'
 import {
   initiateSimklLogin,
@@ -1002,6 +1001,9 @@ export default function SettingsPage() {
   const simklStatus = getSimklConnectionStatus()
   const [simklLoading, setSimklLoading] = useState(false)
   const [simklError, setSimklError] = useState('')
+  const simklNotice = (simklStatus.connected || store.simklConnected) && !/^(Sync completed|Synced|Sync failed)/.test(simklError)
+    ? ''
+    : simklError
   const [simklLastSync, setSimklLastSync] = useState(getLastSimklSyncTime)
   const [simklAuthStarted, setSimklAuthStarted] = useState(false)
   const [simklCode, setSimklCode] = useState('')
@@ -1328,10 +1330,6 @@ export default function SettingsPage() {
   ) => `Synced ${addons.imported} new addons, ${addons.updated} updated · ${activity.watchedImported} watched · ${activity.continueImported} continue watching`
 
   const handleTraktConnect = async () => {
-    if (!hasTraktClientCredentials()) {
-      setTraktError('Trakt requires app credentials for device authorization. Add your Trakt Client ID and Client Secret below.')
-      return
-    }
     if (pollRef.current) clearInterval(pollRef.current)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
     setTraktCode(null)
@@ -1676,7 +1674,8 @@ export default function SettingsPage() {
       setSimklAuthStarted(false)
       setSimklError('')
     } catch (e) {
-      setSimklError(`Could not start Simkl auth: ${e instanceof Error ? e.message : String(e)}`)
+      setSimklAuthStarted(false)
+      setSimklError(`Simkl connection failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setSimklLoading(false)
     }
@@ -1979,17 +1978,17 @@ export default function SettingsPage() {
                 {
                   id: 'trakt', name: 'Trakt', iconService: 'trakt', group: 'history', wide: true,
                   description: 'Watch history · Ratings · Lists',
-                  state: isConnected ? 'connected' : traktPolling ? 'syncing' : traktError || !hasTraktClientCredentials() ? 'needs-attention' : 'not-connected',
+                  state: isConnected ? 'connected' : traktPolling ? 'syncing' : traktError ? 'needs-attention' : 'not-connected',
                   account: store.traktAccount?.name ?? store.traktAccount?.username,
-                  message: !isConnected && !hasTraktClientCredentials() ? 'Custom application credentials are required.' : (traktError || undefined),
-                  primaryLabel: hasTraktClientCredentials() ? 'Connect Trakt' : 'Set up Trakt', onPrimary: handleTraktConnect, primaryOpensManage: !hasTraktClientCredentials(), showAdvancedLink: true, isAccount: true,
+                  message: traktError || undefined,
+                  primaryLabel: 'Connect Trakt', onPrimary: handleTraktConnect, isAccount: true,
                   onDisconnect: handleTraktDisconnect,
-                  setup: <div className="space-y-3"><p className="text-sm leading-relaxed text-white/60">Aurales uses your own Trakt application credentials for device authorization.</p><label className="block text-xs font-semibold text-white/60">Client ID<input type="text" value={store.traktClientId} onChange={(e) => store.setTraktClientId(e.target.value)} placeholder="Paste your Trakt app Client ID" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label><label className="block text-xs font-semibold text-white/60">Client Secret<input type="password" value={store.traktClientSecret} onChange={(e) => store.setTraktClientSecret(e.target.value)} placeholder="Paste your Trakt app Client Secret" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label>{traktCode && <div className="rounded-xl border border-white/[.08] bg-white/[.04] p-3 text-sm text-white/70">Open <a className="text-accent underline" href={traktCode.verificationUrl} target="_blank" rel="noreferrer">{traktCode.verificationUrl}</a> and enter <strong className="ml-1 font-mono text-white">{traktCode.userCode}</strong>.</div>}</div>,
+                  setup: traktCode ? <div className="rounded-xl border border-white/[.08] bg-white/[.04] p-3 text-sm text-white/70">Open <a className="text-accent underline" href={traktCode.verificationUrl} target="_blank" rel="noreferrer">{traktCode.verificationUrl}</a> and enter <strong className="ml-1 font-mono text-white">{traktCode.userCode}</strong>.</div> : undefined,
                 },
                 {
                   id: 'simkl', name: 'Simkl', iconService: 'simkl', group: 'history', description: 'Watchlist · Watching · History',
-                  state: simklLoading ? 'syncing' : (simklStatus.connected || store.simklConnected) ? 'connected' : simklError && !simklError.startsWith('Waiting') ? 'needs-attention' : 'not-connected',
-                  account: simklStatus.account?.username ?? store.simklAccount?.username, detail: simklLastSync ? `Last synced ${new Date(simklLastSync).toLocaleString()}` : undefined, message: simklError || undefined,
+                  state: simklLoading ? 'syncing' : (simklStatus.connected || store.simklConnected) ? 'connected' : simklNotice && !simklNotice.startsWith('Waiting') ? 'needs-attention' : 'not-connected',
+                  account: simklStatus.account?.username ?? store.simklAccount?.username, detail: simklLastSync ? `Last synced ${new Date(simklLastSync).toLocaleString()}` : undefined, message: simklNotice || undefined,
                   primaryLabel: 'Connect Simkl', onPrimary: handleSimklConnect, showAdvancedLink: true, isAccount: true, onSync: handleSimklSync, onDisconnect: handleSimklDisconnect,
                   setup: simklAuthStarted ? <div className="space-y-3"><p className="text-sm text-white/60">Aurales opened Simkl in your browser. Approve access there; this window will finish automatically.</p></div> : undefined,
                 },
@@ -2589,9 +2588,9 @@ export default function SettingsPage() {
                 </SettingSection>
               ))}
 
-              {simklError && (
-                <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
-                  {simklError}
+              {simklNotice && (
+                <p className={`text-xs px-1 ${simklNotice.startsWith('Sync completed') || simklNotice.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
+                  {simklNotice}
                 </p>
               )}
               {anilistMessage && (
