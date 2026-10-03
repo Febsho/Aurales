@@ -98,7 +98,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
-  const shelfViewKey = `${routeViewKey(location.pathname, location.search)}:${showAllPath || title}:${layout}`
+  // Titles are not unique: a page can show several sections called "Trending".
+  // Include their leading media identities so each rail gets its own restored
+  // position and progressive-render count.
+  const shelfContentKey = items.slice(0, 3).map(mediaIdentity).join('|')
+  const shelfViewKey = `${routeViewKey(location.pathname, location.search)}:${showAllPath || title}:${layout}:${shelfContentKey}`
   // Layout is authoritative. Older shelf records may still carry showRank=true;
   // that must never turn a user-selected Poster shelf back into Ranked. Feature
   // cards retain their chosen presentation on Fixed Home as well—the fixed-home
@@ -203,6 +207,21 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
     () => layout === 'list' ? rowItems : rowItems.slice(0, renderedCount),
     [layout, rowItems, renderedCount],
   )
+  useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const fillViewport = () => {
+      if (element.clientWidth > 0 && element.scrollWidth <= element.clientWidth + 1) {
+        setRenderedCount((count) => count < rowItems.length
+          ? Math.min(rowItems.length, count + CARD_RENDER_BATCH)
+          : count)
+      }
+    }
+    fillViewport()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fillViewport)
+    observer?.observe(element)
+    return () => observer?.disconnect()
+  }, [renderedCount, rowItems.length, shelfViewKey])
   useEffect(() => {
     setRenderedCount((count) => Math.max(count, getShelfView(shelfViewKey)?.renderedCount || INITIAL_RENDERED_CARDS))
   }, [rowItems, shelfViewKey])

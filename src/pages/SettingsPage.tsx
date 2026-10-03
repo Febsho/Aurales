@@ -1713,7 +1713,7 @@ export default function SettingsPage() {
     setSimklError('')
     try {
       const result = await syncSimkl()
-      setSimklLastSync(result.syncedAt)
+      if (result.success) setSimklLastSync(result.syncedAt)
       if (result.errors.length > 0) {
         setSimklError(`Sync completed with errors: ${result.errors.slice(0, 2).join('; ')}`)
       } else {

@@ -92,7 +92,7 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
     fetch: async () => {
       // `syncSimkl` has already activity-gated and merged the v2 delta.
       // Reuse that snapshot instead of immediately doing two full pulls.
-      const synced = getSyncedSimklItems()
+      const synced = await getSyncedSimklItems()
       if (synced.length) return { items: synced }
       const [movies, episodes] = await Promise.all([getSimklWatchedMovies(true), getSimklWatchedEpisodes(true)])
       return { items: [...movies, ...episodes] as SimklWatchlistItem[] }

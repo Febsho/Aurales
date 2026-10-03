@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.6" date="2026-10-03">
+      <description>
+        <p>
+          Restores horizontal Home row scrolling and moves the SIMKL sync
+          snapshot to SQLite to avoid WebView storage quota failures.
+        </p>
+      </description>
+    </release>
     <release version="0.4.5" date="2026-10-03">
       <description>
         <p>

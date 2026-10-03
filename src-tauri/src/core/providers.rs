@@ -264,7 +264,7 @@ pub fn fetch_simkl_user(access_token: String, client_id: String) -> Result<Strin
         .query("app-name", "Aurales")
         .query("app-version", env!("CARGO_PKG_VERSION"))
         .set("Authorization", &format!("Bearer {access_token}"))
-        .set("User-Agent", "Aurales/0.4.5")
+        .set("User-Agent", "Aurales/0.4.6")
         .set("Accept", "application/json")
         .call()
         .map_err(|error| read_ureq_error("Simkl user fetch", error))?;
@@ -358,7 +358,7 @@ pub fn exchange_simkl_v2_token(
 ) -> Result<String, String> {
     let response = ureq::post("https://api.simkl.com/oauth2/token")
         .set("Accept", "application/json")
-        .set("User-Agent", "Aurales/0.4.5")
+        .set("User-Agent", "Aurales/0.4.6")
         .send_form(&[
             ("grant_type", "authorization_code"),
             ("client_id", client_id.trim()),
@@ -375,7 +375,7 @@ pub fn exchange_simkl_v2_token(
 pub fn refresh_simkl_v2_token(refresh_token: String, client_id: String) -> Result<String, String> {
     let response = ureq::post("https://api.simkl.com/oauth2/token")
         .set("Accept", "application/json")
-        .set("User-Agent", "Aurales/0.4.5")
+        .set("User-Agent", "Aurales/0.4.6")
         .send_form(&[
             ("grant_type", "refresh_token"),
             ("client_id", client_id.trim()),
