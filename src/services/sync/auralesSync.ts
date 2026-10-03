@@ -54,7 +54,7 @@ function queueInitialSnapshot(): void {
       enqueueSyncRecord('watchlist', identity, { operation: 'add', item }, profile.id)
     }
     for (const feedback of readProfileArray<Record<string, unknown>>('aurales_discovery_feedback_v1', profile.id)) {
-      if (typeof feedback.mediaKey === 'string') enqueueSyncRecord('discovery-feedback', feedback.mediaKey, feedback, profile.id)
+      if (typeof feedback.mediaKey === 'string') enqueueSyncRecord('discovery-feedback', feedback.kind === 'hide-genre' ? `${feedback.mediaKey}:genre:${feedback.genreId}` : feedback.mediaKey, feedback, profile.id)
     }
     for (const [key, memory] of Object.entries(readProfileObject<unknown>('aurales_stream_playback_memory_v1', profile.id))) enqueueSyncRecord('playback-memory', key, memory, profile.id)
     enqueueSyncRecord('profile-preferences', 'language-playback', {
@@ -80,7 +80,7 @@ export function applyRemoteRecords(records: SyncRecord[]): void {
     if (record.type === 'watchlist') {
       const items = readProfileArray<Record<string, unknown>>('aurales_local_watchlist_v1', record.profileId); const payload = record.payload as { operation?: string; item?: Record<string, unknown> }; const identity = record.recordId.replace(`${record.profileId}:watchlist:`, ''); const next = payload?.operation === 'remove' ? items.filter((item) => `${item.type}:tmdb:${item.tmdbId}` !== identity && `${item.type}:imdb:${item.imdbId}` !== identity) : payload?.item ? [payload.item, ...items.filter((item) => item.id !== payload.item?.id)] : items; writeProfileValue('aurales_local_watchlist_v1', record.profileId, next); activeChanged ||= record.profileId === getActiveProfileId()
     }
-    if (record.type === 'discovery-feedback' && record.payload && typeof record.payload === 'object') { const items = readProfileArray<Record<string, unknown>>('aurales_discovery_feedback_v1', record.profileId); const payload = record.payload as Record<string, unknown>; writeProfileValue('aurales_discovery_feedback_v1', record.profileId, [payload, ...items.filter((item) => item.mediaKey !== payload.mediaKey)]); activeChanged ||= record.profileId === getActiveProfileId() }
+    if (record.type === 'discovery-feedback' && record.payload && typeof record.payload === 'object') { const items = readProfileArray<Record<string, unknown>>('aurales_discovery_feedback_v1', record.profileId); const payload = record.payload as Record<string, unknown>; const next = payload.kind === 'show-genre' ? items.filter((item) => item.kind !== 'hide-genre' || item.genreId !== payload.genreId) : [payload, ...items.filter((item) => payload.kind === 'hide-genre' ? !(item.mediaKey === payload.mediaKey && item.kind === 'hide-genre' && item.genreId === payload.genreId) : !(item.mediaKey === payload.mediaKey && item.kind !== 'hide-genre'))]; writeProfileValue('aurales_discovery_feedback_v1', record.profileId, next); activeChanged ||= record.profileId === getActiveProfileId() }
     if (record.type === 'playback-memory' && record.payload && typeof record.payload === 'object') {
       const current = readProfileObject<unknown>('aurales_stream_playback_memory_v1', record.profileId)
       current[record.recordId.replace(`${record.profileId}:playback-memory:`, '')] = record.payload

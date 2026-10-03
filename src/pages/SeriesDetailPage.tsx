@@ -3568,6 +3568,11 @@ export default function SeriesDetailPage() {
         sourceItemId={state.sourceItemId}
         forceManualSelection={forceManualSourceSelection}
         onResolvingChange={setStreamResolving}
+        onNextEpisode={(season, episode) => handlePlayEpisode(season, episode)}
+        nextEpisodeHint={streamEpisode ? (() => {
+          const next = orderedLoadedEpisodes.find((candidate) => candidate.seasonNumber > streamEpisode.season || (candidate.seasonNumber === streamEpisode.season && candidate.episodeNumber > streamEpisode.episode))
+          return next ? { season: next.seasonNumber, episode: next.episodeNumber } : undefined
+        })() : undefined}
       />
 
       {show.trailers.length > 0 && <div data-detail-trailers><TrailerRow title="Videos & Trailers" videos={show.trailers} /></div>}

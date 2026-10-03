@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clearSessionViewState,
+  flushSessionViewState,
   getDetailView,
+  getHomeShelfId,
   getRouteScroll,
   getShelfView,
   rememberRouteScroll,
   rememberDetailView,
+  rememberHomeShelfId,
   rememberShelfView,
   routeViewKey,
 } from './sessionViewState'
@@ -52,5 +55,24 @@ describe('session view state', () => {
       episodeScrollLeft: 920,
       renderedEpisodeCount: 16,
     })
+  })
+
+  it('persists positions separately for each profile across switches', () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    })
+    values.set('aurales_active_profile_v1', 'alice')
+    rememberRouteScroll('/', 420)
+    rememberHomeShelfId('continue')
+    flushSessionViewState()
+    values.set('aurales_active_profile_v1', 'bob')
+    expect(getRouteScroll('/')).toBeUndefined()
+    rememberRouteScroll('/', 30)
+    values.set('aurales_active_profile_v1', 'alice')
+    expect(getRouteScroll('/')).toBe(420)
+    expect(getHomeShelfId()).toBe('continue')
+    vi.unstubAllGlobals()
   })
 })

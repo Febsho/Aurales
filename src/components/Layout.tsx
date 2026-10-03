@@ -7,7 +7,7 @@ import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import TitleBar from './TitleBar'
 import CinematicTopNav from './CinematicTopNav'
 import { isEditableKeyboardTarget, isWatchTogetherShortcut } from '../services/keyboardShortcuts'
-import { getRouteScroll, rememberRouteScroll, routeViewKey } from '../services/sessionViewState'
+import { flushSessionViewState, getRouteScroll, rememberRouteScroll, routeViewKey } from '../services/sessionViewState'
 
 // Statically importing this pulls NativeMpvPlayer (and its scrobbler/discord
 // dependency tree) into the eager startup bundle. Lazy keeps it off the
@@ -119,15 +119,42 @@ export default function Layout() {
     const restore = () => scrollRoot.scrollTo({ top: target, left: 0, behavior: 'auto' })
     restore()
     const frame = requestAnimationFrame(restore)
+    // On a cold restart, cached shelves can arrive after the first layout.
+    // Keep restoring until the saved offset exists, unless the user scrolls.
+    let userMoved = false
+    const stopRestore = () => { userMoved = true }
+    const inputEvents = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+    if (target > 0) inputEvents.forEach((event) => scrollRoot.addEventListener(event, stopRestore, { passive: true }))
+    const startedAt = Date.now()
+    const retry = target > 0 ? window.setInterval(() => {
+      if (userMoved || scrollRoot.scrollTop >= target - 2 || Date.now() - startedAt > 3000) {
+        if (retry !== null) window.clearInterval(retry)
+        return
+      }
+      restore()
+    }, 75) : null
 
     return () => {
       cancelAnimationFrame(frame)
+      if (retry) window.clearInterval(retry)
+      if (target > 0) inputEvents.forEach((event) => scrollRoot.removeEventListener(event, stopRestore))
       // The shared scroll root survives route changes. Capture its position
       // before the next route resets/restores it so Details -> Back can return
       // to the exact catalog position without keeping the whole page mounted.
       rememberRouteScroll(viewKey, scrollRoot.scrollTop)
     }
   }, [location.key, location.pathname, location.search, navigationType])
+
+  useEffect(() => {
+    const saveCurrentRoute = () => {
+      if (mainRef.current) {
+        rememberRouteScroll(routeViewKey(location.pathname, location.search), mainRef.current.scrollTop)
+        flushSessionViewState()
+      }
+    }
+    window.addEventListener('pagehide', saveCurrentRoute)
+    return () => window.removeEventListener('pagehide', saveCurrentRoute)
+  }, [location.pathname, location.search])
 
   const goBack = useCallback(() => {
     const historyIndex = typeof window.history.state?.idx === 'number'

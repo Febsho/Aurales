@@ -452,6 +452,8 @@ function CacheManagementSection() {
 
   const handleClearAll = async () => {
     const cleared = await cacheClearAll()
+    const { clearHomeShelfStartupSnapshots } = await import('../services/cache/homeShelfStartupSnapshot')
+    clearHomeShelfStartupSnapshots()
     setCacheMessage(`Cleared ${cleared} total entries`)
     cacheStats().then(setStats)
     setTimeout(() => setCacheMessage(''), 3000)

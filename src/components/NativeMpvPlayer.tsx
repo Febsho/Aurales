@@ -9,6 +9,7 @@ import { logEvent } from '../services/diagnostics'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { getTmdbApiKey } from '../services/apiKeys'
+import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
 import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, startThumbnailGeneration, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -102,15 +103,6 @@ interface TrackOption {
   lang?: string
   priority: number
   forced?: boolean
-}
-
-interface NextEpInfo {
-  season: number
-  episode: number
-  title: string
-  overview?: string
-  runtime?: number
-  stillPath?: string
 }
 
 interface SubtitleSource {
@@ -323,44 +315,6 @@ function formatTime(s: number): string {
   return h > 0
     ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
     : `${m}:${String(sec).padStart(2, '0')}`
-}
-
-async function fetchNextEpisodeFromTmdb(
-  tmdbId: number,
-  season: number,
-  episode: number
-): Promise<NextEpInfo | null> {
-  const apiKey = getTmdbApiKey()
-
-  const tryFetch = async (s: number, e: number): Promise<NextEpInfo | null> => {
-    try {
-      const res = await fetch(
-        `https://api.themoviedb.org/3/tv/${tmdbId}/season/${s}/episode/${e}?api_key=${apiKey}`
-      )
-      if (!res.ok) return null
-      const data = await res.json()
-      if (!data.name) return null
-      return {
-        season: s,
-        episode: e,
-        title: data.name,
-        overview: data.overview || undefined,
-        runtime: data.runtime || undefined,
-        stillPath: data.still_path
-          ? `https://image.tmdb.org/t/p/original${data.still_path}`
-          : undefined,
-      }
-    } catch (_) {
-      return null
-    }
-  }
-
-  // `episode` is already the next episode number — fetch it directly.
-  // (Callers pass `currentEpisode + 1`; don't increment again.)
-  const next = await tryFetch(season, episode)
-  if (next) return next
-  // If it's the last episode of the season, try S+1 E1
-  return tryFetch(season + 1, 1)
 }
 
 // Metadata for the currently-playing item, shown in the paused info overlay.
@@ -3307,13 +3261,13 @@ function FullNativeMpvPlayer({
             promptSetting !== 'off' &&
             !useWatchTogetherStore.getState().currentRoom &&
             nextEpInfoRef.current &&
-            currentItemRef.current?.imdbId
+            (currentItemRef.current?.imdbId || currentItemRef.current?.localId)
           ) {
             nextPrepareTriggeredRef.current = true
             const nextEp = nextEpInfoRef.current
             preparedStreamRegistry.prepare({
               mediaType: 'series',
-              mediaId: currentItemRef.current.imdbId,
+              mediaId: currentItemRef.current.imdbId || currentItemRef.current.localId,
               imdbId: currentItemRef.current.imdbId,
               tmdbId: tmdbIdRef.current ?? undefined,
               seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
@@ -3400,7 +3354,8 @@ function FullNativeMpvPlayer({
       if (tmdbId) {
         const info = await fetchNextEpisodeFromTmdb(tmdbId, nextSeason, nextEpisode)
         if (cancelled) return
-        if (info) { setNextEpInfo(info); return }
+        setNextEpInfo(info)
+        return
       }
 
       // Fallback: build a minimal stub so UpNext overlay can still appear
@@ -3420,11 +3375,11 @@ function FullNativeMpvPlayer({
   }, [playbackItem])
 
   // ─ Up Next countdown ─────────────────────────────────────────────────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleAutoplay = useCallback(async () => {
     const nextEp = nextEpInfoRef.current
     const item = currentItemRef.current
-    if (!nextEp || !item?.imdbId) { setShowUpNext(false); return }
+    if (!nextEp || !item?.localId || isAutoSearching) { setShowUpNext(false); return }
+    const mediaId = item.imdbId || item.localId
     const sessionId = activeSessionRef.current?.id
     const ownsSession = () => Boolean(
       sessionId
@@ -3437,7 +3392,7 @@ function FullNativeMpvPlayer({
     setIsAutoSearching(true)
     const nextRequest: StreamPreloadRequest = {
       mediaType: 'series',
-      mediaId: item.imdbId,
+      mediaId,
       imdbId: item.imdbId,
       tmdbId: tmdbIdRef.current ?? undefined,
       seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
@@ -3462,7 +3417,7 @@ function FullNativeMpvPlayer({
         if (!ownsSession()) return
         const results = await annotateTorBoxStreams(rawResults).catch(() => rawResults)
         const top = (await rankStreamCandidates(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }), {
-          cancelGroup: `streams:up-next:${item.imdbId}`,
+          cancelGroup: `streams:up-next:${mediaId}`,
           priority: 'playback',
         }))
           .find((candidate) => candidate.score > -500)
@@ -3481,12 +3436,12 @@ function FullNativeMpvPlayer({
     // 3) Native batch, with the legacy per-addon loop only when that native
     //    operation is unavailable.
     if (!foundUrl) {
-      const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
+      const streamId = `${mediaId}:${nextEp.season}:${nextEp.episode}`
       const addons = getStreamAddons('series')
       let fallbackAddons = addons
       try {
         const native = await loadStreamCandidatesNative('series', streamId, addons, {
-          cancelGroup: `streams:up-next-fallback:${item.imdbId}`,
+          cancelGroup: `streams:up-next-fallback:${mediaId}`,
           priority: 'playback',
         })
         // Native loading preserves raw Stremio candidates. Apply the same
@@ -3653,12 +3608,10 @@ function FullNativeMpvPlayer({
       nextEpInfoRef.current = null
       const tmdbId = tmdbIdRef.current
       if (tmdbId) {
-        fetchNextEpisodeFromTmdb(tmdbId, nextEp.season, nextEp.episode).then((info) => {
-          if (info) { setNextEpInfo(info); return }
-          // Fallback stub
-          setNextEpInfo({ season: nextEp.season, episode: nextEp.episode + 1, title: `Episode ${nextEp.episode + 1}` })
+        fetchNextEpisodeFromTmdb(tmdbId, nextEp.season, nextEp.episode + 1).then((info) => {
+          setNextEpInfo(info)
         }).catch(() => {
-          setNextEpInfo({ season: nextEp.season, episode: nextEp.episode + 1, title: `Episode ${nextEp.episode + 1}` })
+          setNextEpInfo(null)
         })
         const nextImdbId = newItem.imdbId ?? ''
         Promise.allSettled([
@@ -3701,7 +3654,7 @@ function FullNativeMpvPlayer({
       setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
+  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
 
   useEffect(() => {
     if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
@@ -4188,6 +4141,19 @@ function FullNativeMpvPlayer({
             </div>
 
             <div className="player-controls__secondary flex flex-shrink-0 items-center gap-2">
+              {nextEpInfo && currentItemRef.current?.contentType === 'series' && !isInWatchTogether && (
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); void handleAutoplay() }}
+                  disabled={isAutoSearching}
+                  aria-label={`Skip to next episode, season ${nextEpInfo.season} episode ${nextEpInfo.episode}`}
+                  title={`Next episode · S${nextEpInfo.season} E${nextEpInfo.episode}`}
+                  className="flex h-9 items-center gap-2 rounded-full bg-white/12 px-3 text-xs font-semibold text-white transition-colors hover:bg-white/20 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
+                  <span>{isAutoSearching ? 'Finding episode…' : 'Next episode'}</span>
+                </button>
+              )}
               {activeSkip && (
                 (skipType === 'credits' && showSkipCreditsButton)
                 || ((skipType === 'intro' || skipType === 'recap') && showSkipIntroButton)

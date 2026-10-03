@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { buildTasteProfile, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -18,10 +18,29 @@ describe('discovery recommendation engine', () => {
     expect(profile.genreWeights[878]).toBeGreaterThan(profile.genreWeights[35])
   })
   it('rewatches are very strong positive signals',()=>{const profile=buildTasteProfile({progress:[],recent:[],rewatches:[sciFi]});expect(profile.genreWeights[878]).toBeGreaterThan(5)})
+  it('learns people and runtime only from optional resolved title metadata',()=>{
+    const profile=buildTasteProfile({progress:[],recent:[sciFi],tasteMetadata:[{item:sciFi,runtimeMinutes:51,cast:['Adam Scott'],directors:['Ben Stiller']}]})
+    expect(profile.personWeights['Adam Scott']).toBeGreaterThan(0)
+    expect(profile.preferredRuntimeMinutes).toBe(51)
+    const personMatch={...candidate(9),cast:['Adam Scott'],runtimeMinutes:50}
+    expect(rankCandidates([personMatch],profile,activity(),[],'for-you')[0].reasons.map((reason)=>reason.code)).toContain('person-affinity')
+  })
   it('filters hidden or disliked titles', () => {
     const item = candidate(2)
     const feedback: RecommendationFeedback[] = [{ mediaKey:mediaKey(item.item),kind:'hide',item:item.item,createdAt:Date.now() }]
     expect(rankCandidates([item],buildTasteProfile(activity()),activity(),feedback,'for-you')).toHaveLength(0)
+  })
+  it('filters every candidate in a specifically hidden genre', () => {
+    const item = candidate(2)
+    const feedback: RecommendationFeedback[] = [{ mediaKey:mediaKey(item.item),kind:'hide-genre',genreId:878,item:item.item,createdAt:Date.now() }]
+    expect(rankCandidates([item],buildTasteProfile(activity()),activity(),feedback,'for-you')).toHaveLength(0)
+  })
+  it('applies feedback to a cached snapshot without rebuilding provider results',()=>{
+    const profile=buildTasteProfile(activity())
+    const first=candidate(2), second=candidate(3,{genreIds:[35]})
+    const snapshot=rankCandidates([first,second],profile,activity(),[],'for-you')
+    const feedback:RecommendationFeedback[]=[{mediaKey:mediaKey(first.item),kind:'hide',item:first.item,createdAt:Date.now()}]
+    expect(applyRecommendationFeedback(snapshot,feedback).map((entry)=>entry.item.tmdbId)).not.toContain(2)
   })
   it('weights recent activity more than older recent activity', () => {
     const other = {...sciFi,id:'older',tmdbId:3,genreIds:[35]}

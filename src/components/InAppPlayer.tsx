@@ -15,7 +15,8 @@ import {
 } from '../services/trakt/scrobble'
 import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
-import { savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
+import { lookupTmdbId, savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
+import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
@@ -46,6 +47,8 @@ interface InAppPlayerProps {
   onPlaybackError?: (message: string, positionSeconds?: number) => void
   onPlaybackStarted?: () => void
   onReportBad?: () => void
+  onNextEpisode?: (season: number, episode: number) => void
+  nextEpisodeHint?: { season: number; episode: number }
 }
 
 interface AudioTrackInfo {
@@ -158,7 +161,7 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
   return blocks.join('\n\n')
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted }: InAppPlayerProps) {
+export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
   useEffect(() => {
     setRequestPlaybackActive(true)
     return () => setRequestPlaybackActive(false)
@@ -176,6 +179,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [controlsVisible, setControlsVisible] = useState(true)
+  const [nextEpisode, setNextEpisode] = useState<NextEpInfo | null>(null)
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
@@ -199,6 +203,23 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
   const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
+  const canSkipEpisode = Boolean(onNextEpisode)
+
+  useEffect(() => {
+    if (!canSkipEpisode || playbackItem?.contentType !== 'series' || playbackItem.season == null || playbackItem.episode == null) return
+    let cancelled = false
+    setNextEpisode(nextEpisodeHint ? { ...nextEpisodeHint, title: `Episode ${nextEpisodeHint.episode}` } : null)
+    void (async () => {
+      let tmdbId = playbackItem.tmdbId
+      if (!tmdbId && playbackItem.imdbId) {
+        try { tmdbId = (await lookupTmdbId('imdb', playbackItem.imdbId))?.tmdbId } catch (_) { /* No verified next episode. */ }
+      }
+      if (!tmdbId || cancelled) return
+      const next = await fetchNextEpisodeFromTmdb(tmdbId, playbackItem.season!, playbackItem.episode! + 1)
+      if (!cancelled) setNextEpisode(next || (nextEpisodeHint ? { ...nextEpisodeHint, title: `Episode ${nextEpisodeHint.episode}` } : null))
+    })()
+    return () => { cancelled = true }
+  }, [canSkipEpisode, playbackItem?.tmdbId, playbackItem?.imdbId, playbackItem?.contentType, playbackItem?.season, playbackItem?.episode, nextEpisodeHint?.season, nextEpisodeHint?.episode])
 
   // This player is portaled next to #root. Hide the application shell while it
   // is active so top navigation, search affordances, and window-level controls
@@ -949,6 +970,18 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
                 <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
               </svg>
             </button>
+            {nextEpisode && onNextEpisode && !isInWatchTogether && (
+              <button
+                type="button"
+                onClick={() => { handleClose(); onNextEpisode(nextEpisode.season, nextEpisode.episode) }}
+                aria-label={`Skip to next episode, season ${nextEpisode.season} episode ${nextEpisode.episode}`}
+                title={`Next episode · S${nextEpisode.season} E${nextEpisode.episode}`}
+                className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-sm font-semibold hover:bg-white/20"
+              >
+                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
+                Next episode
+              </button>
+            )}
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
           </div>
 

@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.5" date="2026-10-03">
+      <description>
+        <p>
+          Improves personalized recommendations, restores home shelves and scroll
+          positions more reliably, and adds next-episode controls to playback.
+        </p>
+      </description>
+    </release>
     <release version="0.4.4" date="2026-10-02">
       <description>
         <p>

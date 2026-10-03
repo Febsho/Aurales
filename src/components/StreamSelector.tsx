@@ -71,6 +71,8 @@ interface StreamSelectorProps {
   sourceItemId?: string
   forceManualSelection?: boolean
   onResolvingChange?: (resolving: boolean) => void
+  onNextEpisode?: (season: number, episode: number) => void
+  nextEpisodeHint?: { season: number; episode: number }
 }
 
 type FilterGroupId = 'quality' | 'resolution' | 'visual' | 'audio' | 'source'
@@ -138,7 +140,7 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
   },
 ]
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange }: StreamSelectorProps) {
+export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange, onNextEpisode, nextEpisodeHint }: StreamSelectorProps) {
   const nativePlayerAvailable = useNativePlayerSupported()
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
@@ -984,6 +986,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           onPlaybackError={handlePlaybackError}
           onPlaybackStarted={handlePlaybackStarted}
           onReportBad={reportBad}
+          onNextEpisode={onNextEpisode}
+          nextEpisodeHint={nextEpisodeHint}
         />
       </Suspense>,
       document.body

@@ -29,6 +29,7 @@ interface MediaRowProps {
   headerRightControls?: React.ReactNode
   /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
   cinematicExpand?: boolean
+  onTasteAction?: (item: SearchResult) => void
 }
 
 function FixedShelfDetails({ item }: { item: SearchResult }) {
@@ -88,7 +89,7 @@ function FixedShelfDetails({ item }: { item: SearchResult }) {
   )
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true, onTasteAction }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
@@ -354,6 +355,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           const focused = focusedCardIndex === idx || (fixedHome && focusedCardIndex == null && idx === 0)
           return (
             <React.Fragment key={mediaIdentity(item)}>
+              <div className="relative flex-none">
               <MediaCard
                 item={item}
                 layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
@@ -370,6 +372,8 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
                 cinematicExpand={cinematicExpand && homeCardAnimations && !fixedHome}
                 fixedHome={fixedHome}
               />
+              {onTasteAction && <button type="button" aria-label={`Taste options for ${item.title}`} onClick={() => onTasteAction(item)} className="focus-ring absolute right-2 top-2 z-20 rounded-full border border-white/20 bg-black/75 px-2.5 py-1 text-xs font-semibold text-white shadow-lg hover:bg-black">Taste ···</button>}
+              </div>
               {fixedHome && homeCardAnimations && focused && <FixedShelfDetails item={item} />}
             </React.Fragment>
           )

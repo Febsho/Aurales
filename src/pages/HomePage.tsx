@@ -34,10 +34,12 @@ import { useHomeCatalogCache } from '../stores/homeCatalogCache'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
-import { catalogContentFingerprint, readHeroStartupSnapshot, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
+import { catalogContentFingerprint, getContinueWatchingAccountScope, readContinueWatchingStartupSnapshot, readHeroStartupSnapshot, writeHeroStartupSnapshot } from '../services/cache/homeStartupSnapshot'
+import { readHomeShelfStartupSnapshot, writeHomeShelfStartupSnapshots } from '../services/cache/homeShelfStartupSnapshot'
 import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 import { SERVER_INTEGRATIONS_ENABLED } from '../services/serverIntegrations'
+import { getHomeShelfId, rememberHomeShelfId } from '../services/sessionViewState'
 
 // Drag & Drop imports for Edit Mode
 import {
@@ -198,7 +200,7 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = simklRowCacheKey(row)
   const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey)
+  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
@@ -305,7 +307,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = providerRowCacheKey(row)
   const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey)
+  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
@@ -371,7 +373,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = addonRowCacheKey(row)
   const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey)
+  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
@@ -495,7 +497,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = discoverRowCacheKey(row)
   const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey)
+  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
@@ -1027,10 +1029,19 @@ export default function HomePage() {
   }, [homeRows])
 
   const [focusedHeroItem, setFocusedHeroItem] = useState<SearchResult | null>(null)
-  const [activeShelfIndex, setActiveShelfIndex] = useState(0)
+  const [activeShelfIndex, setActiveShelfIndex] = useState(() => {
+    const savedId = getHomeShelfId()
+    if (!savedId) return 0
+    return Math.max(0, homeRows.filter((row) => row.enabled && row.layout !== 'hero' && (SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav'))).sort((a, b) => a.order - b.order).findIndex((row) => row.id === savedId))
+  })
   const [previousShelfIndex, setPreviousShelfIndex] = useState<number | null>(null)
   const [shelfDirection, setShelfDirection] = useState<1 | -1>(1)
-  const activeShelfRef = useRef(0)
+  const activeShelfRef = useRef(activeShelfIndex)
+
+  useEffect(() => {
+    const row = homeRows.filter((item) => item.enabled && item.layout !== 'hero' && (SERVER_INTEGRATIONS_ENABLED || (item.sourceType !== 'jellyfin' && item.sourceType !== 'webdav'))).sort((a, b) => a.order - b.order)[activeShelfIndex]
+    if (row) rememberHomeShelfId(row.id)
+  }, [activeShelfIndex, homeRows])
 
   useEffect(() => {
     // Fixed Focus always hands the active shelf item to the hero. The motion
@@ -1084,11 +1095,35 @@ export default function HomePage() {
   // own roundtrip (and flashing a skeleton) on mount.
   const [cachePreloaded, setCachePreloaded] = useState(() => {
     const state = useHomeCatalogCache.getState()
-    return useAppStore.getState().homeRows
+    const rows = useAppStore.getState().homeRows
       .filter((row) => row.enabled)
-      .map(homeRowCacheKey)
-      .every((key) => !key || state.get(key))
+      .sort((a, b) => a.order - b.order)
+    const visibleKeys = rows.filter((row) => row.layout !== 'hero' && row.layout !== 'continue').slice(0, 3).map(homeRowCacheKey).filter((key): key is string => !!key)
+    const hasCachedShelf = visibleKeys.some((key) => state.get(key) || readHomeShelfStartupSnapshot(key))
+    const store = useAppStore.getState()
+    const hasCachedContinue = rows.some((row) => row.layout === 'continue') && Boolean(readContinueWatchingStartupSnapshot(
+      store.primaryProgressProvider,
+      getContinueWatchingAccountScope(store.primaryProgressProvider),
+      store.continueWatchingLimit,
+    ))
+    return hasCachedShelf || hasCachedContinue
   })
+  const initiallyPreloadedRef = useRef(cachePreloaded)
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const flush = () => {
+      if (timer) clearTimeout(timer)
+      timer = null
+      writeHomeShelfStartupSnapshots(homeRows, (key) => useHomeCatalogCache.getState().get(key))
+    }
+    const unsubscribe = useHomeCatalogCache.subscribe(() => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(flush, 250)
+    })
+    window.addEventListener('pagehide', flush)
+    return () => { unsubscribe(); window.removeEventListener('pagehide', flush); if (timer) flush() }
+  }, [homeRows])
 
   useEffect(() => {
     if (!cachePreloaded) return
@@ -1096,13 +1131,12 @@ export default function HomePage() {
     measurePerformance('shell-to-home-content', 'app-shell-visible', 'home-content-visible')
   }, [cachePreloaded])
   useEffect(() => {
-    if (cachePreloaded) return
     let cancelled = false
     const hydrationStartedAt = performance.now()
     // Cache hydration is an optimization, not a prerequisite for Home. A
     // delayed SQLite IPC must never leave every shelf behind permanent
     // skeletons; mount the row loaders after a short bounded wait.
-    const hydrationFallback = window.setTimeout(() => {
+    const hydrationFallback = initiallyPreloadedRef.current ? null : window.setTimeout(() => {
       if (!cancelled) setCachePreloaded(true)
     }, 1200)
     const state = useHomeCatalogCache.getState()
@@ -1121,16 +1155,16 @@ export default function HomePage() {
         if (Object.keys(seed).length > 0) state.setMany(seed)
       })
       .finally(() => {
-        window.clearTimeout(hydrationFallback)
+        if (hydrationFallback) window.clearTimeout(hydrationFallback)
         if (import.meta.env.DEV) console.debug(`[PERF] Home cache hydration ${Math.round(performance.now() - hydrationStartedAt)}ms`)
         if (!cancelled) setCachePreloaded(true)
       })
 
     return () => {
       cancelled = true
-      window.clearTimeout(hydrationFallback)
+      if (hydrationFallback) window.clearTimeout(hydrationFallback)
     }
-  }, [cachePreloaded])
+  }, [])
 
   // Fixed Focus always has one authoritative selection. Moving to another
   // shelf focuses its first card, which updates the full-screen artwork and
