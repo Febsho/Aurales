@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.7" date="2026-10-03">
+      <description>
+        <p>
+          Fixes Home shelves that jump to the final card and refuse to scroll
+          when more than fifteen entries are available.
+        </p>
+      </description>
+    </release>
     <release version="0.4.6" date="2026-10-03">
       <description>
         <p>

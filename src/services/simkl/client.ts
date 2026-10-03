@@ -66,7 +66,7 @@ export async function simklRequest<T = unknown>(
   const urlParams = new URLSearchParams()
   urlParams.set('client_id', clientId)
   urlParams.set('app-name', 'Aurales')
-  urlParams.set('app-version', '0.4.6')
+  urlParams.set('app-version', '0.4.7')
 
   let finalPath = path
   if (path.includes('?')) {
@@ -97,7 +97,7 @@ export async function simklRequest<T = unknown>(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token.accessToken}`,
-          'User-Agent': 'Aurales/0.4.6',
+          'User-Agent': 'Aurales/0.4.7',
           ...fetchOptions.headers,
         },
       })

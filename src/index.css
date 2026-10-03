@@ -2468,7 +2468,7 @@ html[data-platform="linux"] .context-menu-glass {
   backdrop-filter: blur(12px);
 }
 .cinematic-row-track {
-  scroll-snap-type: x mandatory !important;
+  scroll-snap-type: x proximity;
   scroll-padding-inline: 2rem;
   overflow-y: hidden !important;
   overflow-anchor: none;
@@ -2496,8 +2496,7 @@ html[data-interface-theme="cinematic"] [data-home-card-motion="off"] .media-row-
 html[data-interface-theme="cinematic"] [data-home-card-motion="off"] .cinematic-row-track {
   padding-bottom: 1rem !important;
 }
-.cinematic-row-track > button { overflow-anchor: none; }
-.cinematic-row-track > button { scroll-snap-align: start; }
+.cinematic-row-track > :is(.media-row-card-slot, button) { overflow-anchor: none; scroll-snap-align: start; }
 .cinematic-row-track h3 {
   font-size: 1rem;
   line-height: 1.35rem;

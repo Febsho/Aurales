@@ -102,7 +102,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   // Include their leading media identities so each rail gets its own restored
   // position and progressive-render count.
   const shelfContentKey = items.slice(0, 3).map(mediaIdentity).join('|')
-  const shelfViewKey = `${routeViewKey(location.pathname, location.search)}:${showAllPath || title}:${layout}:${shelfContentKey}`
+  // Older positions were saved while "Show all" was the only snap target,
+  // which forced affected rails to their right edge. Start those rails fresh.
+  const shelfViewKey = `${routeViewKey(location.pathname, location.search)}:${showAllPath || title}:${layout}:${shelfContentKey}:snap-v2`
   // Layout is authoritative. Older shelf records may still carry showRank=true;
   // that must never turn a user-selected Poster shelf back into Ranked. Feature
   // cards retain their chosen presentation on Fixed Home as well—the fixed-home
@@ -374,7 +376,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           const focused = focusedCardIndex === idx || (fixedHome && focusedCardIndex == null && idx === 0)
           return (
             <React.Fragment key={mediaIdentity(item)}>
-              <div className="relative flex-none">
+              <div className="media-row-card-slot relative flex-none">
               <MediaCard
                 item={item}
                 layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
