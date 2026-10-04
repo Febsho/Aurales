@@ -223,7 +223,32 @@ pub fn run() {
             app.manage(database);
             app.manage(core::detail_page::DetailPageCoordinator::default());
 
+            #[cfg(target_os = "windows")]
+            if let Err(error) = commands::repair_native_player_window_frame(app.handle().clone()) {
+                log::warn!("Could not initialize borderless Windows frame: {error}");
+            }
+
             Ok(())
+        })
+        // React timers can be throttled while a game owns focus. Repair the
+        // Win32 frame from the native event instead of waiting for the WebView.
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Focused(_) | tauri::WindowEvent::Resized(_)
+                )
+            {
+                if let Err(error) =
+                    commands::repair_native_player_window_frame(window.app_handle().clone())
+                {
+                    log::warn!("Could not refresh borderless Windows frame: {error}");
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_setting,

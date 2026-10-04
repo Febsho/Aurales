@@ -1164,6 +1164,38 @@ struct WindowBounds {
 
 #[cfg(target_os = "windows")]
 static PLAYER_WINDOWED_BOUNDS: OnceLock<Mutex<Option<WindowBounds>>> = OnceLock::new();
+
+/// Windows can redraw a caption over the transparent WebView when focus moves
+/// to another application. Refresh the decorationless frame without changing
+/// the window's z-order or activating it.
+#[cfg(target_os = "windows")]
+pub fn repair_native_player_window_frame(app: tauri::AppHandle) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+    };
+
+    let hwnd = HWND(main_window_hwnd(&app)? as *mut _);
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if (style & WS_CAPTION.0 as isize) != 0 {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION.0 as isize));
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            )
+            .map_err(|e| format!("Failed to refresh player window frame: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Fullscreen handling for the transparent, decorationless player window.
 /// Native physical coordinates avoid work-area/taskbar and DPI restore bugs.
 #[tauri::command]
@@ -1176,8 +1208,8 @@ pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> 
         };
         use windows::Win32::UI::WindowsAndMessaging::{
             GetClientRect, GetWindowPlacement, GetWindowRect, IsZoomed, SetWindowPos, ShowWindow,
-            HWND_NOTOPMOST, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_SHOWWINDOW, SW_MAXIMIZE,
-            SW_RESTORE, WINDOWPLACEMENT,
+            HWND_NOTOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            SW_MAXIMIZE, SW_RESTORE, WINDOWPLACEMENT,
         };
 
         let main = app
@@ -1233,12 +1265,16 @@ pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> 
             unsafe {
                 SetWindowPos(
                     hwnd,
-                    Some(HWND_TOPMOST),
+                    None,
                     rect.left,
                     rect.top,
                     rect.right - rect.left,
                     rect.bottom - rect.top,
-                    SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    // Keep the fullscreen geometry without raising this transparent
+                    // WebView above other apps on Alt-Tab. The video is a separate
+                    // native window below it; TOPMOST leaves only the controls
+                    // visible over windows such as Steam.
+                    SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE,
                 )
             }
             .map_err(|e| format!("Failed to enter fullscreen: {e}"))?;
@@ -1264,6 +1300,8 @@ pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> 
                 }
             }
         }
+
+        repair_native_player_window_frame(app.clone())?;
 
         // mpv renders in a separate native HWND, so size it from the exact
         // Win32 client rectangle instead of delayed WebView/DPI dimensions.

@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.8" date="2026-10-04">
+      <description>
+        <p>
+          Improves Windows player behavior when switching to another app and
+          updates chapter and seek preview controls.
+        </p>
+      </description>
+    </release>
     <release version="0.4.7" date="2026-10-03">
       <description>
         <p>

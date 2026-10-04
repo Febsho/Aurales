@@ -10,7 +10,7 @@ import { setRequestPlaybackActive } from '../services/network/requestCoordinator
 import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { getTmdbApiKey } from '../services/apiKeys'
 import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
-import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, getOrQueueScrubThumbnail, startThumbnailGeneration, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
+import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -120,21 +120,30 @@ interface TimelinePreview {
 
 type TimelineThumbnail = string | { cue: SeekrPreviewCue }
 
+function SeekrSpriteImage({ cue, onInvalid, onLoad }: { cue: SeekrPreviewCue; onInvalid: () => void; onLoad?: () => void }) {
+  const scale = Math.min(240 / Math.max(1, cue.width), 135 / Math.max(1, cue.height))
+  return (
+    <img
+      src={cue.spriteUrl}
+      alt=""
+      className="absolute max-w-none"
+      style={{ left: -cue.x * scale, top: -cue.y * scale, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+      draggable={false}
+      onLoad={onLoad}
+      onError={onInvalid}
+    />
+  )
+}
+
 function ScrubThumbnailImage({ thumbnail, onInvalid }: { thumbnail: TimelineThumbnail; onInvalid: () => void }) {
   const [loaded, setLoaded] = useState(false)
   const seekrCue = typeof thumbnail === 'string' ? null : thumbnail.cue
   const src = typeof thumbnail === 'string' ? thumbnail : thumbnail.cue.spriteUrl
   return (
     <div className={`relative h-[135px] w-60 overflow-hidden rounded-xl transition-opacity duration-100 ${loaded ? 'border border-white/20 opacity-100 shadow-[0_18px_55px_rgba(0,0,0,0.72)] ring-1 ring-black/50' : 'opacity-0'}`}>
-      <img
-        src={src}
-        alt=""
-        className={seekrCue ? 'absolute max-w-none origin-top-left scale-75' : 'h-full w-full object-cover'}
-        style={seekrCue ? { left: -seekrCue.x * 0.75, top: -seekrCue.y * 0.75 } : undefined}
-        draggable={false}
-        onLoad={() => setLoaded(true)}
-        onError={onInvalid}
-      />
+      {seekrCue
+        ? <SeekrSpriteImage cue={seekrCue} onLoad={() => setLoaded(true)} onInvalid={onInvalid} />
+        : <img src={src} alt="" className="h-full w-full object-cover" draggable={false} onLoad={() => setLoaded(true)} onError={onInvalid} />}
     </div>
   )
 }
@@ -904,9 +913,7 @@ function FullNativeMpvPlayer({
   const [mediaBadges, setMediaBadges] = useState<string[]>([])
   const [chapters, setChapters] = useState<PlayerChapter[]>([])
   const [showChapters, setShowChapters] = useState(false)
-  const [chapterThumbs, setChapterThumbs] = useState<Record<string, string>>({})
-  const chapterThumbsRef = useRef<Record<string, string>>({})
-  const chapterThumbRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [seekrPreview, setSeekrPreview] = useState<SeekrPreviewData | null>(null)
   const chapterStripRef = useRef<HTMLDivElement | null>(null)
   const videoOutputFallbackAttemptedRef = useRef(false)
   const restartPlaybackRef = useRef<(resumeTime: number, options?: { hwdecMode?: 'no'; decodedAudio?: boolean }) => void>(() => {})
@@ -923,7 +930,6 @@ function FullNativeMpvPlayer({
   const timelineThumbnailMetadataRef = useRef<Map<number, ThumbnailMetadata>>(new Map())
   const seekrPreviewRef = useRef<SeekrPreviewData | null>(null)
   const seekrPreviewRequestRef = useRef<SeekrPreviewRequest | null>(null)
-  const chapterThumbnailWaitersRef = useRef<Map<string, (path: string | null) => void>>(new Map())
   const timelinePreviewVisibleRef = useRef(false)
   const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1268,68 +1274,19 @@ function FullNativeMpvPlayer({
 
     const requestId = ++thumbnailRequestRef.current
     if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
-    thumbnailTimerRef.current = setTimeout(async () => {
-      const streamUrl = currentStreamUrlRef.current || url
-      if (!streamUrl || requestId !== thumbnailRequestRef.current) return
-
-      // Prefer ThumbFast inside the active libmpv instance. It already owns
-      // the opened debrid stream and therefore works when a second standalone
-      // ffmpeg process cannot seek that authenticated/redirected URL.
-      // Do not wait for it before consulting the on-disk cache: a nearby
-      // frame is far more useful than a blank preview while dragging, and the
-      // native exact frame can still replace it when it arrives.
-      requestPlayerThumbnail(time).catch(() => {
-        // Process-mode mpv and unsupported sources use the cache fallback.
-      })
-
-      // Cached frames provide the live drag experience. Exact decoding starts
-      // only after the pointer has briefly settled, keeping playback isolated
-      // from a stream of throwaway preview requests.
-      await new Promise((resolve) => window.setTimeout(resolve, 180))
+    thumbnailTimerRef.current = setTimeout(() => {
       if (requestId !== thumbnailRequestRef.current) return
-      if (nativeThumbnailResolvedRef.current === requestId) return
-      if (cachedThumbnail) return
-
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        try {
-          const result = await getOrQueueScrubThumbnail({
-            mediaId: getThumbnailMediaId(),
-            streamUrl,
-            duration,
-            time,
-            thumbnailInterval: 5,
-            thumbnailWidth: 480,
-            thumbnailHeight: 270,
-            quality: 82,
-            maxConcurrentFfmpegWorkers: 2,
-          })
-          if (requestId !== thumbnailRequestRef.current) return
-          if (nativeThumbnailResolvedRef.current === requestId) return
-          const path = result.exactPath || result.nearestPath
-          if (path) {
-            setTimelineThumbnail(convertFileSrc(path))
-            // Keep the native request alive for a short moment. ThumbFast is
-            // exact and can upgrade this cached nearest frame without holding
-            // the scrub interaction hostage.
-            return
-          }
-        } catch {
-          // The timestamp preview still works when the source cannot be thumbnailed.
-          return
-        }
-        // The first request queues an ffmpeg extraction. Poll briefly so a
-        // first-time hover receives the result without requiring mouse movement.
-        await new Promise((resolve) => window.setTimeout(resolve, 250 + attempt * 100))
-        if (requestId !== thumbnailRequestRef.current) return
-        if (nativeThumbnailResolvedRef.current === requestId) return
-      }
+      // The native helper uses the already-open stream. A second FFmpeg
+      // connection to the same remote source can starve the actual seek.
+      requestPlayerThumbnail(time).catch(() => {})
     }, 140)
-  }, [cachedTimelineThumbnailAt, duration, getThumbnailMediaId, scrubThumbnailPreviews, url])
+  }, [cachedTimelineThumbnailAt, duration, scrubThumbnailPreviews])
 
   // Seekr is an optional, one-shot native lookup. It never participates in
   // player startup and it cannot prevent the established thumbnail providers.
   useEffect(() => {
     seekrPreviewRef.current = null
+    setSeekrPreview(null)
     seekrPreviewRequestRef.current = null
     if (!playerReady || !scrubThumbnailPreviews || duration <= 0) return
     const item = currentItemRef.current
@@ -1345,6 +1302,7 @@ function FullNativeMpvPlayer({
     getSeekrPreview(request).then((preview) => {
       if (cancelled || !preview) return
       seekrPreviewRef.current = preview
+      setSeekrPreview(preview)
       // Preload the first unique sheets once. Their URLs are signed but carry
       // no API key; only native code ever performs the authenticated lookup.
       for (const spriteUrl of [...new Set(preview.cues.map((cue) => cue.spriteUrl))].slice(0, 2)) {
@@ -1368,18 +1326,8 @@ function FullNativeMpvPlayer({
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
-    const chapterWaiters = chapterThumbnailWaitersRef.current
     listen<{ path: string; width: number; height: number; time?: number; sessionId: string }>('player-thumbnail-ready', (event) => {
       if (disposed || !scrubThumbnailPreviews) return
-      if (event.payload.time != null) {
-        const waiterKey = event.payload.time.toFixed(3)
-        const waiter = chapterWaiters.get(waiterKey)
-        if (waiter) {
-          chapterWaiters.delete(waiterKey)
-          waiter(event.payload.path)
-          return
-        }
-      }
       if (!timelinePreviewVisibleRef.current) return
       if (event.payload.time != null && Math.abs(event.payload.time - timelinePreviewTimeRef.current) > 1) return
       nativeThumbnailResolvedRef.current = thumbnailRequestRef.current
@@ -1390,8 +1338,6 @@ function FullNativeMpvPlayer({
     }).catch(() => {})
     return () => {
       disposed = true
-      chapterWaiters.forEach((resolve) => resolve(null))
-      chapterWaiters.clear()
       unlisten?.()
     }
   }, [scrubThumbnailPreviews])
@@ -1447,33 +1393,6 @@ function FullNativeMpvPlayer({
       timelineThumbnailMetadataRef.current.clear()
     }
   }, [cachedTimelineThumbnailAt, getThumbnailMediaId, url])
-
-  // Build a useful timeline before most viewers first seek: a coarse frame
-  // every minute, followed by the full five-second cache in the background.
-  // Scrub requests share the refined pass and jump ahead of background work.
-  useEffect(() => {
-    if (!playerReady || !scrubThumbnailPreviews || duration <= 0) return
-    const streamUrl = currentStreamUrlRef.current || url
-    if (!streamUrl) return
-    const timer = window.setTimeout(() => {
-      startThumbnailGeneration({
-        streamUrl,
-        cacheKey: getThumbnailMediaId(),
-        duration,
-        fastInterval: 60,
-        refinedInterval: 5,
-        thumbnailWidth: 480,
-        thumbnailHeight: 270,
-        columns: 10,
-        rows: 10,
-        quality: 82,
-        maxConcurrentFfmpegWorkers: 2,
-      }).then((metadata) => {
-        if (metadata) timelineThumbnailMetadataRef.current.set(metadata.interval, metadata)
-      }).catch(() => {})
-    }, 1500)
-    return () => window.clearTimeout(timer)
-  }, [duration, getThumbnailMediaId, playerReady, scrubThumbnailPreviews, url])
 
   useEffect(() => {
     if (scrubThumbnailPreviews) return
@@ -1555,93 +1474,6 @@ function FullNativeMpvPlayer({
   useEffect(() => {
     autoNextEpisodeChapterTimeRef.current = autoNextEpisodeChapterTime
   }, [autoNextEpisodeChapterTime])
-
-  useEffect(() => {
-    chapterThumbsRef.current = {}
-    setChapterThumbs({})
-  }, [url])
-
-  // Chapter tile thumbnails come from the same ffmpeg scrub-thumbnail cache
-  // as the timeline preview. Generate them only when the strip is opened so
-  // background decoding never competes with normal playback or a real seek.
-  useEffect(() => {
-    if (!showChapters || !scrubThumbnailPreviews || !playerReady || duration <= 0 || displayChapters.length === 0) return
-    const streamUrl = currentStreamUrlRef.current || url
-    if (!streamUrl) return
-    let cancelled = false
-    const chapterWaiters = chapterThumbnailWaitersRef.current
-    const mediaId = getThumbnailMediaId()
-    const initialTime = progressRef.current.currentTime
-    const prioritizedChapters = [...displayChapters].sort((a, b) => {
-      const aDistance = Math.abs(a.time - initialTime)
-      const bDistance = Math.abs(b.time - initialTime)
-      return aDistance - bDistance || a.time - b.time
-    })
-    const loadThumbs = async (attempt: number) => {
-      let stillGenerating = false
-      for (const chapter of prioritizedChapters) {
-        if (cancelled) return
-        const key = `${Math.round(chapter.time)}`
-        if (chapterThumbsRef.current[key]) continue
-        // A chapter card represents its opening cut, so generate exactly one
-        // frame at the chapter start rather than sampling deeper into it.
-        const sampleTime = Math.min(chapter.time, Math.max(duration - 1, 0))
-        try {
-          const waiterKey = sampleTime.toFixed(3)
-          const nativePathPromise = new Promise<string | null>((resolve) => {
-            let settled = false
-            const finish = (path: string | null) => {
-              if (settled) return
-              settled = true
-              chapterWaiters.delete(waiterKey)
-              resolve(path)
-            }
-            chapterWaiters.set(waiterKey, finish)
-            requestPlayerThumbnail(sampleTime).catch(() => finish(null))
-            window.setTimeout(() => finish(null), 300)
-          })
-          const fallbackPromise = getOrQueueScrubThumbnail({
-            mediaId,
-            streamUrl,
-            duration,
-            time: sampleTime,
-            thumbnailInterval: 5,
-            thumbnailWidth: 480,
-            thumbnailHeight: 270,
-            quality: 82,
-            maxConcurrentFfmpegWorkers: 1,
-          })
-          const [nativePath, result] = await Promise.all([nativePathPromise, fallbackPromise])
-          if (cancelled) return
-          if (nativePath) {
-            chapterThumbsRef.current = { ...chapterThumbsRef.current, [key]: nativePath }
-            setChapterThumbs(chapterThumbsRef.current)
-            continue
-          }
-          if (result.exactPath) {
-            chapterThumbsRef.current = { ...chapterThumbsRef.current, [key]: convertFileSrc(result.exactPath) }
-            setChapterThumbs(chapterThumbsRef.current)
-          } else {
-            stillGenerating = true
-          }
-        } catch {
-          // The tile keeps its placeholder when the source can't be thumbnailed.
-        }
-      }
-      if (!cancelled && stillGenerating && attempt < 12) {
-        const retryDelay = Math.min(700 + attempt * 250, 2500)
-        chapterThumbRetryRef.current = setTimeout(() => { loadThumbs(attempt + 1).catch(() => {}) }, retryDelay)
-      }
-    }
-    loadThumbs(0).catch(() => {})
-    return () => {
-      cancelled = true
-      if (chapterThumbRetryRef.current) clearTimeout(chapterThumbRetryRef.current)
-      chapterWaiters.forEach((resolve) => resolve(null))
-      chapterWaiters.clear()
-      clearPlayerThumbnail().catch(() => {})
-    }
-  }, [playerReady, displayChapters, duration, url, getThumbnailMediaId, scrubThumbnailPreviews, showChapters])
 
   // Center the active chapter tile when the strip opens.
   useEffect(() => {
@@ -2881,10 +2713,9 @@ function FullNativeMpvPlayer({
     }
   }, [applyFullVideoViewport])
 
-  // Alt-tabbing a transparent borderless fullscreen window can make Windows
-  // temporarily restore a non-client strip at the top. Repair on BOTH blur and
-  // focus: waiting for focus to return leaves that strip visible the entire time
-  // another app is active. Cached monitor bounds remain valid while unfocused.
+  // The native window handler keeps Windows' caption hidden even while this
+  // WebView is backgrounded. Fullscreen also needs its monitor bounds and
+  // video viewport repaired after focus changes.
   useEffect(() => {
     let unlisten: (() => void) | undefined
     const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -4148,10 +3979,9 @@ function FullNativeMpvPlayer({
                   disabled={isAutoSearching}
                   aria-label={`Skip to next episode, season ${nextEpInfo.season} episode ${nextEpInfo.episode}`}
                   title={`Next episode · S${nextEpInfo.season} E${nextEpInfo.episode}`}
-                  className="flex h-9 items-center gap-2 rounded-full bg-white/12 px-3 text-xs font-semibold text-white transition-colors hover:bg-white/20 disabled:cursor-wait disabled:opacity-60"
+                  className="grid h-10 w-10 place-items-center rounded-full text-white/75 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-60"
                 >
-                  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
-                  <span>{isAutoSearching ? 'Finding episode…' : 'Next episode'}</span>
+                  {isAutoSearching ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" /> : <svg className="h-[19px] w-[19px]" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>}
                 </button>
               )}
               {activeSkip && (
@@ -4485,6 +4315,7 @@ function FullNativeMpvPlayer({
                       thumbnail={timelineThumbnail}
                       onInvalid={() => {
                         seekrPreviewRef.current = null
+                        setSeekrPreview(null)
                         setTimelineThumbnail(null)
                         // A revoked/expired signed sprite URL must hand the
                         // same hover back to the established providers.
@@ -4643,7 +4474,8 @@ function FullNativeMpvPlayer({
                   {displayChapters.map((chapter, index) => {
                     const next = displayChapters[index + 1]
                     const isActive = displayCurrentTime >= chapter.time && (next == null || displayCurrentTime < next.time)
-                    const thumb = chapterThumbs[`${Math.round(chapter.time)}`]
+                    const cue = seekrPreview && seekrCueAt(seekrPreview, chapter.time)
+                    const thumb = cue ? null : cachedTimelineThumbnailAt(chapter.time)
                     return (
                       <button
                         key={`chapter-tile-${chapter.time}-${index}`}
@@ -4662,8 +4494,10 @@ function FullNativeMpvPlayer({
                         }}
                         className="group/chapter flex-none rounded-lg text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-white/70"
                       >
-                        <div className={`relative aspect-video w-[clamp(12.5rem,min(17vw,27vh),18rem)] overflow-hidden rounded-lg border bg-white/5 transition-all duration-150 ${isActive ? 'border-white/65 shadow-[0_8px_28px_rgba(0,0,0,0.55)]' : 'border-white/10 hover:border-white/35'}`}>
-                          {thumb ? (
+                        <div className={`relative aspect-video w-60 overflow-hidden rounded-lg border bg-white/5 transition-all duration-150 ${isActive ? 'border-white/65 shadow-[0_8px_28px_rgba(0,0,0,0.55)]' : 'border-white/10 hover:border-white/35'}`}>
+                          {cue ? (
+                            <SeekrSpriteImage cue={cue} onInvalid={() => { seekrPreviewRef.current = null; setSeekrPreview(null) }} />
+                          ) : thumb ? (
                             <img src={thumb} alt="" draggable={false} className="h-full w-full object-cover" />
                           ) : (
                             <div className="h-full w-full animate-pulse bg-white/10" />

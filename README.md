@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/Febsho/Aurales/releases/latest">
-    <img src="https://img.shields.io/badge/Download-v0.4.7-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+    <img src="https://img.shields.io/badge/Download-v0.4.8-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
   </a>
 </p>
 
@@ -468,7 +468,7 @@ More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHI
 
 The latest release is:
 
-## Aurales v0.4.7
+## Aurales v0.4.8
 
 **[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
 
@@ -488,7 +488,7 @@ Available for:
 The recommended Windows package is the NSIS installer:
 
 ```text
-Aurales_0.4.7_x64-setup.exe
+Aurales_0.4.8_x64-setup.exe
 ```
 
 The MSI package is also available for managed installations.
@@ -502,13 +502,13 @@ The MSI package is also available for managed installations.
 Download:
 
 ```text
-Aurales_0.4.7_amd64.flatpak
+Aurales_0.4.8_amd64.flatpak
 ```
 
 Install:
 
 ```bash
-flatpak install --user ./Aurales_0.4.7_amd64.flatpak
+flatpak install --user ./Aurales_0.4.8_amd64.flatpak
 ```
 
 Run:
@@ -522,19 +522,19 @@ flatpak run com.aurales.app
 Download:
 
 ```text
-Aurales_0.4.7_amd64.AppImage
+Aurales_0.4.8_amd64.AppImage
 ```
 
 Make it executable:
 
 ```bash
-chmod +x Aurales_0.4.7_amd64.AppImage
+chmod +x Aurales_0.4.8_amd64.AppImage
 ```
 
 Run:
 
 ```bash
-./Aurales_0.4.7_amd64.AppImage
+./Aurales_0.4.8_amd64.AppImage
 ```
 
 The AppImage bundles the required media components including:
@@ -550,6 +550,18 @@ so separate media packages are normally unnecessary.
 
 
 
+
+# v0.4.8
+
+Version 0.4.8 improves the native player when switching between Aurales and other Windows applications.
+
+* Keep the transparent player window below the active app and remove the Windows caption that can reappear after Alt-Tab.
+* Use available Seekr sprite previews for scrubbing and chapter cards without competing thumbnail requests against playback.
+* Make the next-episode action more compact in both player modes.
+
+See the full release notes on the **[v0.4.8 release page](https://github.com/Febsho/Aurales/releases/tag/v0.4.8)**.
+
+---
 
 # v0.4.7
 

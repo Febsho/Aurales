@@ -976,10 +976,9 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
                 onClick={() => { handleClose(); onNextEpisode(nextEpisode.season, nextEpisode.episode) }}
                 aria-label={`Skip to next episode, season ${nextEpisode.season} episode ${nextEpisode.episode}`}
                 title={`Next episode · S${nextEpisode.season} E${nextEpisode.episode}`}
-                className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-sm font-semibold hover:bg-white/20"
+                className="grid h-8 w-8 place-items-center rounded-full bg-white/10 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
-                Next episode
               </button>
             )}
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
