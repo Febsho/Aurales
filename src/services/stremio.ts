@@ -6,6 +6,7 @@ const STREMIO_REQUEST_TIMEOUT_MS = 15_000
 const MAX_STREMIO_RESPONSE_BYTES = 16 * 1024 * 1024
 const MAX_CINEMETA_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_CINEMETA_SERIES_VIDEOS = 50_000
+const MAX_STREMIO_WATCHED_ANCHOR_ID_CHARS = 256
 const MAX_STREMIO_WATCHED_FIELD_ENCODED_CHARS = 256 * 1024
 const MAX_STREMIO_WATCHED_FIELD_DECOMPRESSED_BYTES = 128 * 1024
 
@@ -211,11 +212,13 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
   const serialized = entry.watchedField
   if (!serialized || entry.type !== 'series' || !entry.imdbId) return []
   const imdbId = entry.imdbId
-  const components = serialized.split(':')
-  if (components.length < 3) return []
-  const encoded = components.pop() || ''
-  const anchorLength = Number(components.pop())
-  const anchorId = components.join(':')
+  const encodedSeparator = serialized.lastIndexOf(':')
+  const anchorLengthSeparator = serialized.lastIndexOf(':', encodedSeparator - 1)
+  if (encodedSeparator < 0 || anchorLengthSeparator < 0) return []
+  const encoded = serialized.slice(encodedSeparator + 1)
+  const anchorLength = Number(serialized.slice(anchorLengthSeparator + 1, encodedSeparator))
+  const anchorId = serialized.slice(0, anchorLengthSeparator)
+  if (anchorId.length > MAX_STREMIO_WATCHED_ANCHOR_ID_CHARS) return []
   const fallback = parseEpisodeId(anchorId).season != null ? [anchorId] : []
   if (encoded.length > MAX_STREMIO_WATCHED_FIELD_ENCODED_CHARS
     || !Number.isSafeInteger(anchorLength)
