@@ -133,7 +133,7 @@ pub fn get_text(url: String) -> Result<String, String> {
         .timeout(DEFAULT_HTTP_TIMEOUT)
         .set("Accept", "application/json, text/plain, */*")
         .set("Accept-Language", "en-US,en;q=0.9")
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
+        .set("User-Agent", concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/", env!("CARGO_PKG_VERSION"), " Safari/537.36"))
         .call()
         .map_err(|error| format!("HTTP request failed: {error}"))?;
     read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
@@ -153,7 +153,7 @@ pub fn probe_stream(url: String, timeout_ms: Option<u64>) -> Result<StreamProbeR
     let response = match agent.get(&url)
         .set("Range", &format!("bytes=0-{}", SAMPLE_BYTES - 1))
         .set("Accept", "*/*")
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
+        .set("User-Agent", concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/", env!("CARGO_PKG_VERSION"), " Safari/537.36"))
         .call() {
         Ok(response) | Err(ureq::Error::Status(_, response)) => response,
         Err(error) => return Err(format!("Stream probe failed: {error}")),

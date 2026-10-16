@@ -2,6 +2,7 @@ import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { APP_VERSION } from './appVersion'
 
 export interface UpdateInfo {
   version: string
@@ -125,7 +126,5 @@ export async function getLatestReleaseNotes(): Promise<ReleaseNotes | null> {
 }
 
 export function getAppVersion(): string {
-  return __APP_VERSION__
+  return APP_VERSION
 }
-
-declare const __APP_VERSION__: string

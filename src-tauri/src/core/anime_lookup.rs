@@ -433,7 +433,7 @@ fn fetch_dataset() -> Result<Value, String> {
         .build()
         .get(DATA_URL)
         .set("Accept", "application/json")
-        .set("User-Agent", "Aurales/0.3")
+        .set("User-Agent", concat!("Aurales/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();

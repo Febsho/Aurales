@@ -9,6 +9,7 @@ import { getStoredSimklToken, getSimklClientId, getSimklAuthGeneration, isSimklM
 import type { SimklApiItem, SimklMapping } from './types'
 import { logEvent } from '../diagnostics'
 import { readBoundedResponseJson } from '../network/boundedResponse'
+import { APP_VERSION } from '../appVersion'
 
 const BASE = 'https://api.simkl.com'
 const MOCK_DELAY_MS = 200
@@ -91,7 +92,7 @@ export async function simklRequest<T = unknown>(
   const urlParams = new URLSearchParams()
   urlParams.set('client_id', clientId)
   urlParams.set('app-name', 'Aurales')
-  urlParams.set('app-version', '0.4.8')
+  urlParams.set('app-version', APP_VERSION)
 
   let finalPath = path
   if (path.includes('?')) {
@@ -126,7 +127,7 @@ export async function simklRequest<T = unknown>(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token.accessToken}`,
-          'User-Agent': 'Aurales/0.4.8',
+          'User-Agent': `Aurales/${APP_VERSION}`,
           ...fetchOptions.headers,
         },
       })

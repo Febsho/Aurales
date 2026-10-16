@@ -8,6 +8,7 @@ import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
 import { withRequestTimeout } from '../network/timeout'
 import { readBoundedResponseJson } from '../network/boundedResponse'
+import { APP_VERSION } from '../appVersion'
 import type { SimklWatchlistItem, SimklApiItem, SimklCustomList, SimklMediaType, SimklWatchStatus } from './types'
 import type { SearchResult } from '../../types'
 import { profileProviderCacheKey } from '../profiles'
@@ -325,11 +326,11 @@ async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
       const params = new URLSearchParams({
         client_id: clientId || 'aurales',
         'app-name': 'Aurales',
-        'app-version': '0.2.8',
+        'app-version': APP_VERSION,
       })
       return withRequestTimeout(15_000, async (signal) => {
         const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
-          headers: { 'User-Agent': 'Aurales/0.2.8' },
+          headers: { 'User-Agent': `Aurales/${APP_VERSION}` },
           signal,
         })
         if (!res.ok) return []

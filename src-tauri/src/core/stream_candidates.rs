@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 const MAX_CONCURRENT_ADDON_REQUESTS: usize = 4;
 const MAX_STREAM_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ADDON_ERROR_BYTES: u64 = 4 * 1024;
-const AURORALES_USER_AGENT: &str = "Aurales/0.3";
+const AURORALES_USER_AGENT: &str = concat!("Aurales/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

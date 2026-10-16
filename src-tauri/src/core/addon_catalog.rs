@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-const AURALES_USER_AGENT: &str = "Aurales/0.3";
+const AURALES_USER_AGENT: &str = concat!("Aurales/", env!("CARGO_PKG_VERSION"));
 const MAX_ADDON_JSON_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ADDON_ERROR_BYTES: u64 = 4 * 1024;
 
