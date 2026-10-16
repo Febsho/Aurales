@@ -23,7 +23,6 @@
     "core:window:allow-start-resize-dragging",
     "updater:default",
     "process:allow-restart",
-    "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
