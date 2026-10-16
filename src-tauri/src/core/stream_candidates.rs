@@ -338,9 +338,8 @@ fn has_playable_stream_field(stream: &Map<String, Value>) -> bool {
 }
 
 fn addon_stream_url(addon_url: &str, media_type: &str, id: &str) -> Result<String, String> {
-    let mut url = url::Url::parse(addon_url.trim())
+    let url = url::Url::parse(addon_url.trim())
         .map_err(|_| "Addon URL must be a valid URL".to_string())?;
-    url.set_fragment(None);
     let mut base_path = url.path().to_string();
     if base_path.to_ascii_lowercase().ends_with("/manifest.json") {
         base_path.truncate(base_path.len() - "/manifest.json".len());
@@ -353,8 +352,11 @@ fn addon_stream_url(addon_url: &str, media_type: &str, id: &str) -> Result<Strin
     );
     // Keep query-based addon credentials while replacing only the path, just
     // like the frontend endpoint builder. Fragments are intentionally dropped.
-    url.set_path(&endpoint);
-    Ok(url.to_string())
+    // The path already contains percent-encoded IDs; Url::set_path would
+    // escape those percent signs again and turn `%3A` into `%253A`.
+    let prefix = &url[..url::Position::BeforePath];
+    let query = url.query().map(|query| format!("?{query}")).unwrap_or_default();
+    Ok(format!("{prefix}{endpoint}{query}"))
 }
 
 fn addon_provider_key(addon_url: &str) -> String {
