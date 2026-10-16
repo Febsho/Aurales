@@ -17,13 +17,15 @@ export interface UpdateProgress {
 }
 
 const RELEASE_BASE_URL = 'https://github.com/Febsho/Aurales/releases'
+const SAFE_RELEASE_VERSION = /^[0-9][A-Za-z0-9.+-]{0,63}$/
 
 /**
  * CI currently publishes a standalone Flatpak bundle, not an OSTree
  * repository. Installing that bundle creates a disabled `app-origin`, so
  * `flatpak update com.aurales.app` can never discover a newer release.
  */
-export function getFlatpakInstallCommand(version: string): string {
+export function getFlatpakInstallCommand(version: string): string | null {
+  if (!SAFE_RELEASE_VERSION.test(version)) return null
   return `flatpak install --reinstall ~/Downloads/Aurales_${version}_amd64.flatpak`
 }
 

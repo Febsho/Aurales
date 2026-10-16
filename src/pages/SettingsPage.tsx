@@ -256,6 +256,7 @@ function AppUpdateSection() {
   const [selfUpdates, setSelfUpdates] = useState(true)
 
   const appVersion = getAppVersion()
+  const flatpakInstallCommand = updateInfo ? getFlatpakInstallCommand(updateInfo.version) : null
 
   useEffect(() => {
     canSelfUpdate().then(setSelfUpdates)
@@ -377,9 +378,13 @@ function AppUpdateSection() {
             <p className="text-xs text-white/60">
               This app was installed from a standalone Flatpak bundle. Download the new bundle, then reinstall it:
             </p>
-            <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-label text-white/85">
-              {getFlatpakInstallCommand(updateInfo.version)}
-            </code>
+            {flatpakInstallCommand ? (
+              <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-label text-white/85">
+                {flatpakInstallCommand}
+              </code>
+            ) : (
+              <p className="mt-2 text-xs text-amber-200/80">The release returned an invalid version. Open Downloads and select the bundle manually.</p>
+            )}
             <button
               onClick={() => openFlatpakRelease(updateInfo.version).catch((e) => setUpdateError(String(e)))}
               className="mt-3 rounded-full bg-white px-4 py-2 text-xs font-bold text-black transition-colors hover:bg-white/85 cursor-pointer"
