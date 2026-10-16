@@ -146,6 +146,7 @@ export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; pr
   const activeProgress = input.progress.filter((p) => !p.completed)
   const active = new Set(activeProgress.map(progressKey))
   const watched = new Set(input.progress.filter((p) => p.completed).map(progressKey))
+  const watchlistIds = new Set(input.watchlist.map((item) => item.tmdbId || item.imdbId || item.id))
   const activeSeasonByTitle = new Map<string, { season: number; updatedAt: number }>()
   for (const progress of activeProgress) {
     if (!Number.isInteger(progress.season) || (progress.season ?? 0) <= 0) continue
@@ -164,7 +165,7 @@ export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; pr
     const itemEvents: ReleaseEvent[] = []
     const key = upcomingIdentity(item)
     if (item.type === 'movie') {
-      if (item.releaseDate) itemEvents.push({ id: `movie:${key}:${item.releaseDate}`, media: item, type: 'movie', releaseDate: item.releaseDate, artwork: item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : 80, relevanceReasons: [input.watchlist.some((x) => (x.tmdbId || x.imdbId || x.id) === (item.tmdbId || item.imdbId || item.id)) ? 'On your watchlist' : 'From your library'], source: 'local', status: new Date(`${item.releaseDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
+      if (item.releaseDate) itemEvents.push({ id: `movie:${key}:${item.releaseDate}`, media: item, type: 'movie', releaseDate: item.releaseDate, artwork: item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : 80, relevanceReasons: [watchlistIds.has(item.tmdbId || item.imdbId || item.id) ? 'On your watchlist' : 'From your library'], source: 'local', status: new Date(`${item.releaseDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
       return itemEvents
     }
     if (!item.tmdbId) return itemEvents
