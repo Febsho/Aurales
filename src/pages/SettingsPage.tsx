@@ -1575,7 +1575,8 @@ export default function SettingsPage() {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Let WebKit finish starting the download before releasing the blob URL.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
