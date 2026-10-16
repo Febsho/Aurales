@@ -3,6 +3,35 @@ import type { InstalledAddon } from './addons'
 
 const STREMIO_API = 'https://api.strem.io/api'
 const STREMIO_REQUEST_TIMEOUT_MS = 15_000
+const MAX_STREMIO_RESPONSE_BYTES = 16 * 1024 * 1024
+
+async function readStremioText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_STREMIO_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Stremio response exceeded the 16 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+async function readStremioJson<T>(response: Response): Promise<T> {
+  return JSON.parse(await readStremioText(response)) as T
+}
 
 async function withRequestTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController()
@@ -48,8 +77,9 @@ function formatApiError(error: unknown): string {
 async function parseStremioResponse(res: Response, fallbackMessage: string): Promise<Record<string, unknown>> {
   let data: Record<string, unknown> = {}
   try {
-    data = await res.json()
-  } catch (_) {
+    data = await readStremioJson<Record<string, unknown>>(res)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('exceeded the 16 MiB limit')) throw error
     // keep fallback below
   }
 
@@ -188,7 +218,7 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
     return await withRequestTimeout(async (signal) => {
       const response = await fetch(`https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(imdbId)}.json`, { signal })
       if (!response.ok) return fallback
-      const payload = await response.json() as { meta?: { videos?: StremioMetaVideo[] } }
+      const payload = await readStremioJson<{ meta?: { videos?: StremioMetaVideo[] } }>(response)
       const videos = (payload.meta?.videos || [])
         .filter((video) => video?.id)
         .sort((left, right) => (left.season ?? -1) - (right.season ?? -1)
