@@ -44,6 +44,7 @@ interface SimklCacheData { items: SimklWatchlistItem[] }
 interface PmdbCacheData { items: PMDBWatchedItem[] }
 type PmdbDataIndex = Map<number, PMDBWatchedItem[]>
 interface MdblistCacheData { items: MdblistWatchedItem[] }
+type MdblistDataIndex = Map<string, MdblistWatchedItem[]>
 
 export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
   return {
@@ -186,6 +187,7 @@ export async function batchIsWatchedFromProviders(
     ? buildTraktDataIndex(traktData)
     : undefined
   const pmdbIndex = pmdbData && Array.isArray(pmdbData.items) ? buildPmdbDataIndex(pmdbData) : undefined
+  const mdblistIndex = mdblistData && Array.isArray(mdblistData.items) ? buildMdblistDataIndex(mdblistData) : undefined
 
   const checkItem = async (item: WatchedLookupItem) => {
     if (providerSources.includes('trakt')) {
@@ -202,7 +204,7 @@ export async function batchIsWatchedFromProviders(
       if (await isPmdbWatched(item, pmdbData ?? undefined, pmdbIndex)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('mdblist')) {
-      if (await isMdblistWatched(item, mdblistData ?? undefined)) { result.add(toKey(item)); return }
+      if (await isMdblistWatched(item, mdblistData ?? undefined, mdblistIndex)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('anilist')) {
       if (await isAniListWatched(item).catch(() => false)) { result.add(toKey(item)); return }
@@ -922,10 +924,37 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
   }
 }
 
-async function isMdblistWatched(item: WatchedLookupItem, cachedData?: MdblistCacheData): Promise<boolean> {
+function mdblistIdKeys(ids: { imdb_id?: unknown; tmdb_id?: unknown; tvdb_id?: unknown }): string[] {
+  const keys: string[] = []
+  if (typeof ids.imdb_id === 'string' && ids.imdb_id) keys.push(`imdb:${ids.imdb_id.toLowerCase()}`)
+  for (const [provider, value] of [['tmdb', ids.tmdb_id], ['tvdb', ids.tvdb_id]] as const) {
+    if (value == null || value === '') continue
+    const normalized = Number(String(value).replace(new RegExp(`^${provider}[-:]`, 'i'), ''))
+    if (Number.isFinite(normalized) && normalized !== 0) keys.push(`${provider}:${normalized}`)
+  }
+  return keys
+}
+
+function buildMdblistDataIndex(data: MdblistCacheData): MdblistDataIndex {
+  const index: MdblistDataIndex = new Map()
+  for (const entry of data.items) {
+    for (const key of mdblistIdKeys(entry)) {
+      const candidates = index.get(key)
+      if (candidates) candidates.push(entry)
+      else index.set(key, [entry])
+    }
+  }
+  return index
+}
+
+async function isMdblistWatched(item: WatchedLookupItem, cachedData?: MdblistCacheData, index?: MdblistDataIndex): Promise<boolean> {
   try {
     const data = cachedData ?? await getMdblistCache()
-    const matches = data.items.filter((entry) => {
+    const candidates = index
+      ? [...new Set(mdblistIdKeys({ imdb_id: item.imdbId, tmdb_id: item.tmdbId, tvdb_id: item.tvdbId })
+        .flatMap((key) => index.get(key) || []))]
+      : data.items
+    const matches = candidates.filter((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'show') return false
       return (
