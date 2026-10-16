@@ -653,7 +653,6 @@ export default function SeriesDetailPage() {
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
-
   const episodeProgressIndex = useMemo(() => {
     const index = new Map<string, WatchProgress>()
     if (!show) return index
@@ -957,6 +956,12 @@ export default function SeriesDetailPage() {
     (id && /^(mal|anilist)[-:]/i.test(id)),
   )
   const isAnime = show?.isAnime ?? routeIsAnime
+  const appSeasonCounts = useMemo(() => isAnime && show
+    ? show.seasons
+      .filter((season) => season.seasonNumber > 0)
+      .map((season) => ({ season: season.seasonNumber, count: season.episodeCount }))
+      .sort((left, right) => left.season - right.season)
+    : undefined, [isAnime, show])
   const showTitle = show?.title
   const showPoster = show?.poster
   const showImdbId = show?.imdbId
@@ -2859,11 +2864,6 @@ export default function SeriesDetailPage() {
     if (!visibleSeason) return
     let cancelled = false
 
-    const appSeasonEpCounts = isAnime ? show.seasons
-      .filter((s) => s.seasonNumber > 0)
-      .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
-      .sort((a, b) => a.season - b.season) : undefined
-
     const toLookup = (episode: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }): WatchedLookupItem => ({
       id: show.id,
       type: 'series',
@@ -2880,7 +2880,7 @@ export default function SeriesDetailPage() {
       episode: episode.episodeNumber,
       absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
       isAnime,
-      appSeasonEpCounts,
+      appSeasonEpCounts: appSeasonCounts,
     })
 
     // Check visible season first via batch
@@ -2901,7 +2901,7 @@ export default function SeriesDetailPage() {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime])
+  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime, appSeasonCounts])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
@@ -3203,7 +3203,6 @@ export default function SeriesDetailPage() {
                   )
                   if (!episode) return
                   const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                  const appSeasonCounts = isAnime ? show.seasons.filter((season) => season.seasonNumber > 0).map((season) => ({ season: season.seasonNumber, count: season.episodeCount })).sort((left, right) => left.season - right.season) : undefined
                   showCtxMenu(event.clientX, event.clientY, {
                     kind: 'episode', item: searchResult, episode, seasonNumber: episode.seasonNumber,
                     showImdbId: show.imdbId, appSeasonCounts,
@@ -3270,7 +3269,7 @@ export default function SeriesDetailPage() {
               isAnime={isAnime}
               episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber, absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber }))}
               watched={allEpisodesWatched}
-              appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
+              appSeasonCounts={appSeasonCounts}
               onMarked={() => {
                 setWatchedEpisodes(new Set(allEpisodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`)))
                 setWatchProgressBatch(allEpisodes.map((episode) => {
@@ -3380,7 +3379,6 @@ export default function SeriesDetailPage() {
                 onContextMenu={(e) => {
                   e.preventDefault()
                   const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                  const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
                   showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
                 }}
                 className={[
@@ -3452,8 +3450,7 @@ export default function SeriesDetailPage() {
                       e.preventDefault()
                       if (!show) return
                       const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                      const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
-                      showCtxMenu(e.clientX, e.clientY, {
+                          showCtxMenu(e.clientX, e.clientY, {
                         kind: 'episode',
                         item: searchResult,
                         episode: ep,
@@ -3581,7 +3578,7 @@ export default function SeriesDetailPage() {
                             anilistId={show.anilistId}
                             malId={show.malId}
                             isAnime={isAnime}
-                            appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
+                            appSeasonCounts={appSeasonCounts}
                             compact
                             watched={isWatched}
                             onMarked={() => {
