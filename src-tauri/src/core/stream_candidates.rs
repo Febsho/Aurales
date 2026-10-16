@@ -338,18 +338,23 @@ fn has_playable_stream_field(stream: &Map<String, Value>) -> bool {
 }
 
 fn addon_stream_url(addon_url: &str, media_type: &str, id: &str) -> Result<String, String> {
-    let base = addon_url
-        .trim()
-        .trim_end_matches("/manifest.json")
-        .trim_end_matches('/');
-    if base.is_empty() {
-        return Err("Addon URL is required".to_string());
+    let mut url = url::Url::parse(addon_url.trim())
+        .map_err(|_| "Addon URL must be a valid URL".to_string())?;
+    url.set_fragment(None);
+    let mut base_path = url.path().to_string();
+    if base_path.to_ascii_lowercase().ends_with("/manifest.json") {
+        base_path.truncate(base_path.len() - "/manifest.json".len());
     }
-    Ok(format!(
-        "{base}/stream/{}/{}.json",
+    let base_path = base_path.trim_end_matches('/');
+    let endpoint = format!(
+        "{base_path}/stream/{}/{}.json",
         encode_component(media_type),
         encode_component(id)
-    ))
+    );
+    // Keep query-based addon credentials while replacing only the path, just
+    // like the frontend endpoint builder. Fragments are intentionally dropped.
+    url.set_path(&endpoint);
+    Ok(url.to_string())
 }
 
 fn addon_provider_key(addon_url: &str) -> String {
