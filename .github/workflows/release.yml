@@ -36,11 +36,15 @@ jobs:
           const fs = require('node:fs');
           const expected = process.env.GITHUB_REF_NAME.replace(/^v/, '');
           const packageVersion = require('./package.json').version;
-          const lockVersion = require('./package-lock.json').version;
+          const packageLock = require('./package-lock.json');
+          const packageLockVersion = packageLock.version;
+          const packageLockRootVersion = packageLock.packages?.['']?.version;
           const tauriVersion = require('./src-tauri/tauri.conf.json').version;
-          const cargoVersion = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
-            .match(/^version = "([^"]+)"/m)?.[1];
-          const versions = { packageVersion, lockVersion, tauriVersion, cargoVersion };
+          const cargoManifest = fs.readFileSync('./src-tauri/Cargo.toml', 'utf8');
+          const cargoVersion = cargoManifest.match(/^version = "([^"]+)"/m)?.[1];
+          const cargoLock = fs.readFileSync('./src-tauri/Cargo.lock', 'utf8');
+          const cargoLockVersion = cargoLock.match(/\[\[package\]\]\nname = "aurales-app"\nversion = "([^"]+)"/)?.[1];
+          const versions = { packageVersion, packageLockVersion, packageLockRootVersion, tauriVersion, cargoVersion, cargoLockVersion };
           if (Object.values(versions).some((version) => version !== expected)) {
             throw new Error(`Tag v${expected} does not match project versions: ${JSON.stringify(versions)}`);
           }
