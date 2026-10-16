@@ -26,11 +26,33 @@ export interface ViewingActivityRecord {
 }
 
 interface ViewingActivityState {
-  version: 1
+  version: 2
   trackingStartedAt: string
   seededAt?: string
   completedKeys: Record<string, true>
   records: Record<string, ViewingActivityRecord>
+  archive: ViewingActivityArchive
+}
+
+interface ArchivedActivityMedia {
+  title: string
+  poster?: string
+  tmdbId?: string | number
+  mediaType: ActivityMediaType
+  season?: number
+  seconds: number
+  completions: number
+  genreSeconds: Record<string, number>
+  updatedAt: string
+  estimated: boolean
+  classificationVersion?: number
+}
+
+interface ViewingActivityArchive {
+  dailySeconds: Record<string, Partial<Record<ActivityMediaType, number>>>
+  media: Record<string, ArchivedActivityMedia>
+  recentRecords: ViewingActivityRecord[]
+  containsEstimates: boolean
 }
 
 export interface PlaybackActivitySample {
@@ -66,6 +88,7 @@ export interface ViewingActivitySummary {
 
 const sessions = new Map<string, { position: number; sampledAt: number; completed: boolean }>()
 const MAX_PLAYBACK_SESSIONS = 128
+const DETAIL_HISTORY_DAYS = 365
 const pendingPlaybackSamples = new Map<string, { profileId: string; sample: Omit<PlaybackActivitySample, 'playing' | 'durationSeconds'>; seconds: number }>()
 const PLAYBACK_ACTIVITY_FLUSH_MS = 5_000
 const genreEnrichmentAttempts = new Map<string, number>()
@@ -99,7 +122,13 @@ function shiftLocalDays(date: Date, days: number): Date {
 }
 
 function emptyState(): ViewingActivityState {
-  return { version: 1, trackingStartedAt: new Date().toISOString(), completedKeys: {}, records: {} }
+  return {
+    version: 2,
+    trackingStartedAt: new Date().toISOString(),
+    completedKeys: {},
+    records: {},
+    archive: { dailySeconds: {}, media: {}, recentRecords: [], containsEstimates: false },
+  }
 }
 
 function readState(profileId = getActiveProfileId()): ViewingActivityState {
@@ -109,27 +138,120 @@ function readState(profileId = getActiveProfileId()): ViewingActivityState {
     const legacy = scoped == null && profileId === legacyActivityOwnerProfileId
       ? localStorage.getItem(STORAGE_KEY)
       : null
-    const parsed = JSON.parse(scoped ?? legacy ?? 'null') as ViewingActivityState | null
-    if (parsed?.version === 1 && parsed.records) {
-      if (legacy != null) {
+    const parsed = JSON.parse(scoped ?? legacy ?? 'null') as {
+      version?: number
+      trackingStartedAt?: string
+      seededAt?: string
+      completedKeys?: Record<string, true>
+      records?: ViewingActivityState['records']
+      archive?: unknown
+    } | null
+    if ((parsed?.version === 1 || parsed?.version === 2)
+      && parsed.records && typeof parsed.records === 'object' && !Array.isArray(parsed.records)) {
+      const state: ViewingActivityState = {
+        version: 2,
+        trackingStartedAt: parsed.trackingStartedAt || new Date().toISOString(),
+        seededAt: parsed.seededAt,
+        completedKeys: parsed.completedKeys || {},
+        records: parsed.records,
+        archive: parsed.version === 2 && parsed.archive && typeof parsed.archive === 'object'
+          ? {
+            dailySeconds: (parsed.archive as ViewingActivityArchive).dailySeconds || {},
+            media: (parsed.archive as ViewingActivityArchive).media || {},
+            recentRecords: (parsed.archive as ViewingActivityArchive).recentRecords || [],
+            containsEstimates: (parsed.archive as ViewingActivityArchive).containsEstimates === true,
+          }
+          : { dailySeconds: {}, media: {}, recentRecords: [], containsEstimates: false },
+      }
+      if (parsed.version === 1) compactOldRecords(state)
+      if (legacy != null || parsed.version === 1) {
         // Claim the old global history for the first profile that reads it.
         // Store it under that profile immediately, even when it was already
         // seeded and no later playback write would otherwise trigger migration.
         try {
-          localStorage.setItem(storageKey, JSON.stringify(parsed))
-          localStorage.removeItem(STORAGE_KEY)
+          localStorage.setItem(storageKey, JSON.stringify(state))
+          if (legacy != null) localStorage.removeItem(STORAGE_KEY)
         } catch (error) {
           console.warn('[activity] could not migrate legacy viewing activity', error)
         }
       }
-      return parsed
+      return state
     }
     if (legacy != null) localStorage.removeItem(STORAGE_KEY)
   } catch (_) { /* use a clean store */ }
   return emptyState()
 }
 
+function compactOldRecords(state: ViewingActivityState) {
+  const cutoffDate = new Date()
+  cutoffDate.setDate(cutoffDate.getDate() - DETAIL_HISTORY_DAYS)
+  const cutoff = todayKey(cutoffDate.getTime())
+  const archivedRecords: ViewingActivityRecord[] = []
+  for (const [id, record] of Object.entries(state.records)) {
+    if (record.date >= cutoff) continue
+    const mediaType = effectiveMediaType(record)
+    const daily = state.archive.dailySeconds[record.date] || {}
+    daily[mediaType] = (daily[mediaType] || 0) + record.seconds
+    state.archive.dailySeconds[record.date] = daily
+
+    const archived = state.archive.media[record.mediaKey]
+    const media: ArchivedActivityMedia = archived || {
+      title: record.title,
+      poster: record.poster,
+      tmdbId: record.tmdbId,
+      mediaType,
+      season: record.season,
+      seconds: 0,
+      completions: 0,
+      genreSeconds: {},
+      updatedAt: record.updatedAt,
+      estimated: false,
+      classificationVersion: record.classificationVersion,
+    }
+    if (record.updatedAt >= media.updatedAt) {
+      media.title = record.title || media.title
+      media.poster = record.poster || media.poster
+      media.tmdbId = record.tmdbId || media.tmdbId
+      media.mediaType = mediaType
+      media.season = record.season ?? media.season
+      media.updatedAt = record.updatedAt
+      media.classificationVersion = record.classificationVersion || media.classificationVersion
+    }
+    media.seconds += record.seconds
+    media.completions += record.completions
+    for (const genre of record.genres) media.genreSeconds[genre] = (media.genreSeconds[genre] || 0) + record.seconds
+    media.estimated ||= record.estimated
+    state.archive.media[record.mediaKey] = media
+    state.archive.containsEstimates ||= record.estimated
+    archivedRecords.push({ ...record, mediaType })
+    delete state.records[id]
+  }
+  if (archivedRecords.length) {
+    const recentById = new Map(state.archive.recentRecords.map((record) => [record.id, record]))
+    for (const record of archivedRecords) {
+      const previous = recentById.get(record.id)
+      recentById.set(record.id, previous ? {
+        ...previous,
+        title: record.title || previous.title,
+        poster: record.poster || previous.poster,
+        tmdbId: record.tmdbId || previous.tmdbId,
+        mediaType: record.mediaType,
+        seconds: previous.seconds + record.seconds,
+        completions: previous.completions + record.completions,
+        genres: record.genres.length ? record.genres : previous.genres,
+        classificationVersion: record.classificationVersion || previous.classificationVersion,
+        estimated: previous.estimated && record.estimated,
+        updatedAt: record.updatedAt > previous.updatedAt ? record.updatedAt : previous.updatedAt,
+      } : record)
+    }
+    state.archive.recentRecords = [...recentById.values()]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 12)
+  }
+}
+
 function writeState(state: ViewingActivityState, profileId = getActiveProfileId()) {
+  compactOldRecords(state)
   const storageKey = profileStorageKey(STORAGE_KEY, profileId)
   localStorage.setItem(storageKey, JSON.stringify(state))
   // The pre-profile key belongs to the first profile that reads it. Persist
@@ -306,16 +428,24 @@ export function enrichViewingActivityGenres(): Promise<void> {
   const pending = genreEnrichmentPending.get(profileId)
   if (pending) return pending
   flushPendingPlaybackSamples()
-  const candidates = [...new Map(Object.values(readState().records)
-    .filter((record) => record.tmdbId && (record.genres.length === 0 || record.classificationVersion !== 2))
-    .map((record) => [record.mediaKey, record])).values()]
+  const state = readState()
+  const candidateMap = new Map<string, { mediaKey: string; tmdbId: string | number; mediaType: ActivityMediaType; season?: number }>()
+  for (const record of Object.values(state.records)) {
+    if (!record.tmdbId || (record.genres.length > 0 && record.classificationVersion === 2)) continue
+    candidateMap.set(record.mediaKey, { mediaKey: record.mediaKey, tmdbId: record.tmdbId, mediaType: record.mediaType, season: record.season })
+  }
+  for (const [mediaKey, record] of Object.entries(state.archive.media)) {
+    if (!record.tmdbId || (Object.keys(record.genreSeconds).length > 0 && record.classificationVersion === 2)) continue
+    candidateMap.set(mediaKey, { mediaKey, tmdbId: record.tmdbId, mediaType: record.mediaType, season: record.season })
+  }
+  const candidates = [...candidateMap.values()]
   const now = Date.now()
   const retryable = candidates
-    .filter((record) => now - (genreEnrichmentAttempts.get(`${profileId}:${record.id}`) || 0) >= GENRE_ENRICHMENT_RETRY_MS)
+    .filter((record) => now - (genreEnrichmentAttempts.get(`${profileId}:${record.mediaKey}`) || 0) >= GENRE_ENRICHMENT_RETRY_MS)
     .slice(0, 20)
   if (!retryable.length) return Promise.resolve()
   for (const record of retryable) {
-    const key = `${profileId}:${record.id}`
+    const key = `${profileId}:${record.mediaKey}`
     genreEnrichmentAttempts.delete(key)
     genreEnrichmentAttempts.set(key, now)
   }
@@ -353,9 +483,23 @@ export function enrichViewingActivityGenres(): Promise<void> {
         entry.genres = enrichment.genres
         entry.mediaType = enrichment.mediaType
         entry.classificationVersion = 2
-        genreEnrichmentAttempts.delete(`${profileId}:${entry.id}`)
         changed = true
       }
+      for (const entry of latestState.archive.recentRecords) {
+        if (entry.mediaKey !== mediaKey) continue
+        entry.genres = enrichment.genres
+        entry.mediaType = enrichment.mediaType
+        entry.classificationVersion = 2
+        changed = true
+      }
+      const archived = latestState.archive.media[mediaKey]
+      if (archived) {
+        archived.mediaType = enrichment.mediaType
+        archived.classificationVersion = 2
+        archived.genreSeconds = Object.fromEntries(enrichment.genres.map((genre) => [genre, archived.seconds]))
+        changed = true
+      }
+      genreEnrichmentAttempts.delete(`${profileId}:${mediaKey}`)
     }
     if (changed) writeState(latestState)
   }).finally(() => {
@@ -376,6 +520,12 @@ function effectiveMediaType(record: ViewingActivityRecord): ActivityMediaType {
   return animation ? 'anime' : record.season != null ? 'series' : 'movie'
 }
 
+function effectiveArchivedMediaType(record: ArchivedActivityMedia): ActivityMediaType {
+  if (record.mediaType !== 'anime' || Object.keys(record.genreSeconds).length === 0) return record.mediaType
+  const animation = Object.keys(record.genreSeconds).some((genre) => genre.toLowerCase() === 'animation')
+  return animation ? 'anime' : record.season != null ? 'series' : 'movie'
+}
+
 export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '30d', media: 'all' | ActivityMediaType = 'all'): ViewingActivitySummary {
   flushPendingPlaybackSamples()
   const state = readState()
@@ -389,10 +539,44 @@ export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '
   const records = Object.values(state.records)
     .map((record) => ({ ...record, mediaType: effectiveMediaType(record) }))
     .filter((record) => record.date >= cutoff && (media === 'all' || record.mediaType === media))
+  const recentRecords = [
+    ...(range === 'all' ? state.archive.recentRecords : []),
+    ...records,
+  ]
+    .filter((record) => media === 'all' || effectiveMediaType(record) === media)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 12)
+  const archivedMedia = range === 'all'
+    ? Object.entries(state.archive.media)
+      .map(([mediaKey, record]) => ({ ...record, mediaKey, mediaType: effectiveArchivedMediaType(record) }))
+      .filter((record) => media === 'all' || record.mediaType === media)
+    : []
   const dailyMap = new Map<string, number>()
   const titleMap = new Map<string, ViewingActivitySummary['topTitles'][number]>()
   const genreMap = new Map<string, number>()
   const mediaSeconds: ViewingActivitySummary['mediaSeconds'] = { movie: 0, series: 0, anime: 0 }
+  if (range === 'all') {
+    for (const [date, totals] of Object.entries(state.archive.dailySeconds)) {
+      const seconds = media === 'all'
+        ? Object.values(totals).reduce((sum, value) => sum + (value || 0), 0)
+        : totals[media] || 0
+      if (seconds > 0) dailyMap.set(date, seconds)
+    }
+    for (const record of archivedMedia) {
+      mediaSeconds[record.mediaType] += record.seconds
+      titleMap.set(record.mediaKey, {
+        mediaKey: record.mediaKey,
+        title: record.title,
+        poster: record.poster,
+        seconds: record.seconds,
+        completions: record.completions,
+        mediaType: record.mediaType,
+      })
+      for (const [genre, seconds] of Object.entries(record.genreSeconds)) {
+        genreMap.set(genre, (genreMap.get(genre) || 0) + seconds)
+      }
+    }
+  }
   for (const record of records) {
     dailyMap.set(record.date, (dailyMap.get(record.date) || 0) + record.seconds)
     mediaSeconds[record.mediaType] += record.seconds
@@ -402,6 +586,8 @@ export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '
     titleMap.set(record.mediaKey, title)
     record.genres.forEach((genre) => genreMap.set(genre, (genreMap.get(genre) || 0) + record.seconds))
   }
+  const archivedTotalSeconds = archivedMedia.reduce((sum, record) => sum + record.seconds, 0)
+  const archivedCompletions = archivedMedia.reduce((sum, record) => sum + record.completions, 0)
   const activeDates = [...dailyMap.entries()].filter(([, seconds]) => seconds >= 60).map(([date]) => date).sort()
   let longestStreak = 0
   let running = 0
@@ -418,8 +604,8 @@ export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '
   if (!dailyMap.has(todayKey()) && dailyMap.has(todayKey(yesterday.getTime()))) cursor = yesterday
   while ((dailyMap.get(todayKey(cursor.getTime())) || 0) >= 60) { currentStreak += 1; cursor = shiftLocalDays(cursor, -1) }
   return {
-    totalSeconds: records.reduce((sum, record) => sum + record.seconds, 0),
-    completions: records.reduce((sum, record) => sum + record.completions, 0),
+    totalSeconds: archivedTotalSeconds + records.reduce((sum, record) => sum + record.seconds, 0),
+    completions: archivedCompletions + records.reduce((sum, record) => sum + record.completions, 0),
     activeDays: activeDates.length,
     currentStreak,
     longestStreak,
@@ -427,8 +613,8 @@ export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '
     daily: [...dailyMap].map(([date, seconds]) => ({ date, seconds })).sort((a, b) => a.date.localeCompare(b.date)),
     topTitles: [...titleMap.values()].sort((a, b) => b.seconds - a.seconds).slice(0, 8),
     topGenres: [...genreMap].map(([genre, seconds]) => ({ genre, seconds })).sort((a, b) => b.seconds - a.seconds).slice(0, 6),
-    recent: records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 12),
-    containsEstimates: records.some((record) => record.estimated),
+    recent: recentRecords,
+    containsEstimates: (range === 'all' && state.archive.containsEstimates) || records.some((record) => record.estimated),
     trackingStartedAt: state.trackingStartedAt,
   }
 }

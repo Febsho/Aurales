@@ -13,11 +13,17 @@ describe('viewing activity', () => {
   })
 
   it('counts normal playback deltas and ignores large seeks', () => {
-    const base = { mediaKey: 'movie-a', title: 'Movie A', mediaType: 'movie' as const, positionSeconds: 10, durationSeconds: 100, playing: true, completed: false }
+    const base = { mediaKey: 'movie-a', title: 'Movie A', mediaType: 'movie' as const, genres: ['Drama'], positionSeconds: 10, durationSeconds: 100, playing: true, completed: false }
     recordPlaybackSample({ ...base, sampledAt: 1_700_000_000_000 })
     recordPlaybackSample({ ...base, positionSeconds: 20, sampledAt: 1_700_000_010_000 })
     recordPlaybackSample({ ...base, positionSeconds: 90, sampledAt: 1_700_000_012_000 })
-    expect(summarizeViewingActivity('all').totalSeconds).toBe(10)
+    const summary = summarizeViewingActivity('all')
+    expect(summary.totalSeconds).toBe(10)
+    expect(summary.mediaSeconds.movie).toBe(10)
+    expect(summary.topTitles[0]).toMatchObject({ title: 'Movie A', seconds: 10 })
+    expect(summary.topGenres).toContainEqual({ genre: 'Drama', seconds: 10 })
+    expect(summary.recent[0]).toMatchObject({ title: 'Movie A', seconds: 10 })
+    expect(summarizeViewingActivity('12m').totalSeconds).toBe(0)
   })
 
   it('counts a completion once', () => {
@@ -25,7 +31,10 @@ describe('viewing activity', () => {
     recordPlaybackSample({ ...base, positionSeconds: 80, completed: false, sampledAt: 1_700_100_000_000 })
     recordPlaybackSample({ ...base, positionSeconds: 90, completed: true, sampledAt: 1_700_100_010_000 })
     recordPlaybackSample({ ...base, positionSeconds: 95, completed: true, sampledAt: 1_700_100_015_000 })
-    expect(summarizeViewingActivity('all').completions).toBe(1)
+    const summary = summarizeViewingActivity('all')
+    expect(summary.completions).toBe(1)
+    expect(summary.recent).toHaveLength(1)
+    expect(summary.recent[0].seconds).toBe(15)
   })
 
   it('seeds saved progress only once and marks it estimated', () => {
