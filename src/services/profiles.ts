@@ -42,6 +42,8 @@ const MIGRATED_KEYS = [
   'aurales_poster_trailer_sound', 'aurales_trailer_volume',
   'aurales_video_cache_mode',
 ]
+/** Profile-owned preferences included in portable settings backups. */
+export const PROFILE_BACKUP_KEYS = MIGRATED_KEYS
 const PROFILE_OWNED_CACHE_SETTING_KEYS = new Set(['aurales_video_cache_mode'])
 
 function now() { return new Date().toISOString() }

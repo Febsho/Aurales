@@ -45,6 +45,7 @@ import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
 import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
 import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
+import { getActiveProfileId, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -1568,6 +1569,13 @@ export default function SettingsPage() {
     for (const key of BACKUP_KEYS) {
       backup[key] = localStorage.getItem(key)
     }
+    // Profile preferences are stored under profile-specific keys. Preserve
+    // those exact keys so restoring a backup cannot apply them to another
+    // profile.
+    for (const key of PROFILE_BACKUP_KEYS) {
+      const scopedKey = profileStorageKey(key, getActiveProfileId())
+      backup[scopedKey] = localStorage.getItem(scopedKey)
+    }
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
     if (blob.size > MAX_SETTINGS_BACKUP_BYTES) {
       setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
@@ -1604,8 +1612,18 @@ export default function SettingsPage() {
           setTimeout(() => setBackdropCacheMessage(''), 3000)
           return
         }
+        const allowedKeys = new Set([
+          ...BACKUP_KEYS,
+          ...PROFILE_BACKUP_KEYS.map((key) => profileStorageKey(key, getActiveProfileId())),
+        ])
+        const profileKeys = new Set(PROFILE_BACKUP_KEYS)
+        const activeProfileId = getActiveProfileId()
         const entries = Object.entries(data as Record<string, unknown>)
-          .filter(([key]) => BACKUP_KEYS.includes(key))
+          .filter(([key]) => allowedKeys.has(key))
+          .map(([key, value]) => [
+            profileKeys.has(key) ? profileStorageKey(key, activeProfileId) : key,
+            value,
+          ] as [string, unknown])
         if (!entries.length || entries.some(([, value]) => value !== null && typeof value !== 'string')) {
           setBackdropCacheMessage('Invalid backup file format.')
           setTimeout(() => setBackdropCacheMessage(''), 3000)
