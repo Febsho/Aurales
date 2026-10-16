@@ -125,6 +125,7 @@ const BACKUP_KEYS = [
   'orynt_translation_cues_ahead',
   'orynt_context_aware_translation',
 ]
+const MAX_SETTINGS_BACKUP_BYTES = 16 * 1024 * 1024
 
 /* ─── Reusable helper components ─── */
 
@@ -1568,6 +1569,11 @@ export default function SettingsPage() {
       backup[key] = localStorage.getItem(key)
     }
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+    if (blob.size > MAX_SETTINGS_BACKUP_BYTES) {
+      setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
+      setTimeout(() => setBackdropCacheMessage(''), 4000)
+      return
+    }
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -1580,8 +1586,15 @@ export default function SettingsPage() {
   }
 
   const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget
     const file = e.target.files?.[0]
+    input.value = ''
     if (!file) return
+    if (file.size > MAX_SETTINGS_BACKUP_BYTES) {
+      setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
+      setTimeout(() => setBackdropCacheMessage(''), 4000)
+      return
+    }
     const reader = new FileReader()
     reader.onload = (event) => {
       try {
