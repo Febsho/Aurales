@@ -60,6 +60,34 @@ export function isProfileOwnedStorageKey(key: string): boolean {
     && (!key.includes('cache') || PROFILE_OWNED_CACHE_SETTING_KEYS.has(key))
     && !key.includes('snapshot')
 }
+/** Returns only the active profile's app-owned settings and account data. */
+export function getProfileBackupEntries(profileId = getActiveProfileId()): Record<string, string> {
+  const entries: Record<string, string> = {}
+  const suffix = `:profile:${profileId}`
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index)
+    if (!key) continue
+    const scopedBase = key.endsWith(suffix) ? key.slice(0, -suffix.length) : ''
+    if (isProfileOwnedStorageKey(key) || (scopedBase && isProfileOwnedStorageKey(scopedBase))) {
+      const value = localStorage.getItem(key)
+      if (value !== null) entries[key] = value
+    }
+  }
+  return entries
+}
+export function isProfileBackupStorageKey(key: string): boolean {
+  if (isProfileOwnedStorageKey(key)) return true
+  const marker = key.lastIndexOf(':profile:')
+  if (marker <= 0) return false
+  const scopedProfileId = key.slice(marker + ':profile:'.length)
+  return Boolean(scopedProfileId && !scopedProfileId.includes(':') && isProfileOwnedStorageKey(key.slice(0, marker)))
+}
+export function profileBackupStorageKeyForImport(key: string, profileId = getActiveProfileId()): string | null {
+  if (!isProfileBackupStorageKey(key)) return null
+  const marker = key.lastIndexOf(':profile:')
+  if (marker <= 0) return key
+  return profileStorageKey(key.slice(0, marker), profileId)
+}
 export function profileStateStorageKey(profileId: string, key: string): string { return stateKey(profileId, key) }
 /** Capture the active profile's ordinary localStorage state, then restore a
  * different profile into the same runtime key space. This lets legacy provider

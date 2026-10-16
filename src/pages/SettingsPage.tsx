@@ -45,7 +45,7 @@ import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
 import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
 import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
-import { getActiveProfileId, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
+import { getActiveProfileId, getProfileBackupEntries, isProfileBackupStorageKey, profileBackupStorageKeyForImport, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -1576,6 +1576,7 @@ export default function SettingsPage() {
       const scopedKey = profileStorageKey(key, getActiveProfileId())
       backup[scopedKey] = localStorage.getItem(scopedKey)
     }
+    Object.assign(backup, getProfileBackupEntries())
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
     if (blob.size > MAX_SETTINGS_BACKUP_BYTES) {
       setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
@@ -1619,9 +1620,9 @@ export default function SettingsPage() {
         const profileKeys = new Set(PROFILE_BACKUP_KEYS)
         const activeProfileId = getActiveProfileId()
         const entries = Object.entries(data as Record<string, unknown>)
-          .filter(([key]) => allowedKeys.has(key))
+          .filter(([key]) => allowedKeys.has(key) || isProfileBackupStorageKey(key))
           .map(([key, value]) => [
-            profileKeys.has(key) ? profileStorageKey(key, activeProfileId) : key,
+            profileKeys.has(key) ? profileStorageKey(key, activeProfileId) : profileBackupStorageKeyForImport(key, activeProfileId) || key,
             value,
           ] as [string, unknown])
         if (!entries.length || entries.some(([, value]) => value !== null && typeof value !== 'string')) {
