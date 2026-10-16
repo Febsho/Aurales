@@ -2021,6 +2021,16 @@ fn read_metadata(cache_dir: &Path) -> Option<ThumbnailMetadata> {
 fn write_metadata(cache_dir: &Path, metadata: &ThumbnailMetadata) {
     let started = Instant::now();
     if let Ok(text) = serde_json::to_string_pretty(metadata) {
+        if text.len() as u64 > MAX_THUMBNAIL_METADATA_BYTES {
+            debug_event(
+                "metadata-write-error",
+                format!(
+                    "thumbnail metadata exceeded the {} MiB limit",
+                    MAX_THUMBNAIL_METADATA_BYTES / (1024 * 1024)
+                ),
+            );
+            return;
+        }
         let path = cache_dir.join("metadata.json");
         match fs::write(&path, text) {
             Ok(()) => {
