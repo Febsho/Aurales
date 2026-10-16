@@ -20,6 +20,7 @@ const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
 const FAILURE_RETRY_MS = 60 * 1000
 const ANIME_LIST_FETCH_TIMEOUT_MS = 8_000
 const WORKER_REQUEST_TIMEOUT_MS = 15_000
+const MAX_MAPPING_BYTES = 64 * 1024 * 1024
 const DATA_URL =
   'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-mini.json'
 const PERSISTENT_CACHE = 'aurales-anime-lists-v2'
@@ -385,12 +386,44 @@ async function readPersistentCache(): Promise<{ data: AnimeMapping[]; timestamp:
     const cache = await caches.open(PERSISTENT_CACHE)
     const response = await cache.match(DATA_URL)
     if (!response) return null
-    const data = await response.json() as AnimeMapping[]
+    const data = parseMappings(await readBoundedText(response))
     const timestamp = Number(response.headers.get(CACHE_TIMESTAMP_HEADER)) || 0
     return Array.isArray(data) && data.length > 0 ? { data, timestamp } : null
   } catch (_) {
     return null
   }
+}
+
+async function readBoundedText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Anime mapping response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_MAPPING_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Anime mapping response exceeded the 64 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+function parseMappings(text: string): AnimeMapping[] {
+  const parsed = JSON.parse(text) as unknown
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry))) {
+    throw new Error('Anime mapping data is empty or invalid')
+  }
+  return parsed as AnimeMapping[]
 }
 
 async function writePersistentCache(data: AnimeMapping[]): Promise<void> {
@@ -432,9 +465,7 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
       try {
         const response = await fetch(DATA_URL, { signal: controller.signal })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const parsed = await response.json() as unknown
-        if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('Anime mapping response is empty or invalid')
-        data = parsed as AnimeMapping[]
+        data = parseMappings(await readBoundedText(response))
       } finally {
         clearTimeout(timeout)
       }
