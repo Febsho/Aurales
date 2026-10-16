@@ -135,6 +135,17 @@ jobs:
           # Fetch the latest yt-dlp binary
           Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe' -UserAgent 'aurales-ci'
 
+          # The Windows bundle declares ffmpeg.exe as a resource. Download
+          # the current static build and place the executable at that path.
+          $ffmpegRoot = Join-Path $env:RUNNER_TEMP 'ffmpeg'
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP 'ffmpeg-win64.zip'
+          New-Item -ItemType Directory -Force $ffmpegRoot | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $ffmpegZip -UserAgent 'aurales-ci'
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegRoot -Force
+          $ffmpeg = Get-ChildItem -Path $ffmpegRoot -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'The FFmpeg archive did not contain ffmpeg.exe.' }
+          Copy-Item $ffmpeg.FullName 'src-tauri/binaries/ffmpeg.exe' -Force
+
           Write-Host "Bundled binaries:"
           Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize
 
