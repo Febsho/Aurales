@@ -12,10 +12,24 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 const KEYRING_SERVICE: &str = "com.aurales.app.server";
+static REFRESH_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
+
+fn refresh_lock(connection_id: &str) -> Result<Arc<Mutex<()>>, String> {
+    let locks = REFRESH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().map_err(|error| error.to_string())?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(connection_id).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(connection_id.to_string(), Arc::downgrade(&lock));
+    Ok(lock)
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -328,6 +342,8 @@ pub fn test_connection(
 }
 
 pub fn refresh_catalog(db: &Database, id: &str) -> Result<RefreshResult, String> {
+    let refresh_lock = refresh_lock(id)?;
+    let _refresh_guard = refresh_lock.lock().map_err(|error| error.to_string())?;
     let connection =
         get_connection(db, id)?.ok_or_else(|| "Server connection not found".to_string())?;
     if !connection.enabled {
