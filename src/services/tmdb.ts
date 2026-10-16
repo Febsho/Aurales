@@ -915,7 +915,12 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
     throw (settled[0] as PromiseRejectedResult).reason
   }
   const merged = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-  const items = merged.filter((item, idx, self) => self.findIndex((other) => other.id === item.id) === idx)
+  const seenIds = new Set<string>()
+  const items = merged.filter((item) => {
+    if (seenIds.has(item.id)) return false
+    seenIds.add(item.id)
+    return true
+  })
 
   // If the source is TVDB, Simkl, or AniList, we keep the TMDB results (filters are TMDB-specific)
   // but we can label the item's provider.
