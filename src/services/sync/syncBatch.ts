@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SyncRecord } from './syncQueue'
 
 const SYNC_BATCH_TIMEOUT_MS = 30_000
+const MAX_SYNC_RESPONSE_BYTES = 16 * 1024 * 1024
 
 export interface SyncBatchInput {
   endpoint: string
@@ -35,6 +36,41 @@ function isMissingNativeCommand(error: unknown): boolean {
   // do not treat text returned by a server (for example an HTTP 500 body) as
   // proof that no request was sent.
   return /^(?:command\s+[`'"]?sync_batch[`'"]?\s+(?:not found|not registered|does not exist)|unknown\s+command\s+[`'"]?sync_batch[`'"]?)$/i.test(message)
+}
+
+async function readSyncResponse(response: Response): Promise<{ cursor?: string; records: SyncRecord[] }> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Sync response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_SYNC_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Sync response exceeded the 16 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  const body: unknown = JSON.parse(new TextDecoder().decode(bytes))
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid sync response')
+  const envelope = body as { cursor?: unknown; records?: unknown }
+  if (envelope.cursor != null && typeof envelope.cursor !== 'string') throw new Error('Invalid sync response cursor')
+  if (envelope.records != null && !Array.isArray(envelope.records)) throw new Error('Invalid sync response records')
+  if (Array.isArray(envelope.records) && envelope.records.some((record) => !record || typeof record !== 'object' || Array.isArray(record))) {
+    throw new Error('Invalid sync response records')
+  }
+  return {
+    cursor: typeof envelope.cursor === 'string' ? envelope.cursor : undefined,
+    records: (envelope.records || []) as SyncRecord[],
+  }
 }
 
 /** One account sync round-trip. IndexedDB outbox mutation and remote-record
@@ -79,8 +115,7 @@ export async function runSyncBatch(
       signal: controller.signal,
     })
     if (!response.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${response.status})`)
-    const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
-    return { cursor: body.cursor, records: body.records || [] }
+    return await readSyncResponse(response)
   } finally {
     clearTimeout(timeout)
   }
