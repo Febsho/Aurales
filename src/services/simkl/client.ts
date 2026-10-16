@@ -116,7 +116,7 @@ export async function simklRequest<T = unknown>(
     try {
       const fullUrl = `${BASE}${finalPath}?${urlParams.toString()}`
       if (fetchOptions.method === 'POST') {
-        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] POST ${finalPath} body: ${fetchOptions.body}`)
+        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] POST ${finalPath} (request body omitted)`)
       } else {
         logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] GET ${finalPath}`)
       }
