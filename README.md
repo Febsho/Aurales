@@ -676,7 +676,7 @@ See the full release notes on the **[v0.4.1 release page](https://github.com/Feb
 
 * Node.js
 * npm
-* Rust stable
+* Rust 1.88 or newer (stable)
 * Tauri 2 platform dependencies
 
 On Linux you will additionally need the normal WebKitGTK / GTK development dependencies required by Tauri.

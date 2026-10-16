@@ -5,7 +5,7 @@ description = "Aurales - A modern streaming catalog app"
 authors = ["Aurales contributors"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 default-run = "aurales-app"
 
 [lib]
