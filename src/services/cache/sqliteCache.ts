@@ -201,12 +201,15 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
   const generationsAtReadStart = new Map(categoryGenerations)
   const map = new Map<string, CacheResult<T>>()
   const missingKeys: string[] = []
+  const memoryReads = new Map<string, { category: string; generation: number }>()
   for (const key of keys) {
     const memory = sessionCache.get(key)
     if (!memory) {
       missingKeys.push(key)
       continue
     }
+    const category = sessionCategories.get(key)
+    if (category) memoryReads.set(key, { category, generation: categoryGeneration(category) })
     const metadata = sessionMetadata.get(key)
     const now = Date.now()
     const result: CacheResult<T> = {
@@ -220,7 +223,19 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
     map.set(key, result)
     requestCoordinator.recordCacheHit()
   }
-  if (missingKeys.length === 0) return map
+  const discardInvalidatedMemoryReads = () => {
+    for (const [key, read] of memoryReads) {
+      if (read.generation !== categoryGeneration(read.category) || categoryClearPromises.has(read.category)) {
+        map.delete(key)
+      }
+    }
+  }
+  if (missingKeys.length === 0) {
+    // Let same-turn clears run before returning already-resolved session hits.
+    await Promise.resolve()
+    discardInvalidatedMemoryReads()
+    return map
+  }
   try {
     const batches: string[][] = []
     for (let index = 0; index < missingKeys.length; index += CACHE_GET_MANY_BATCH_SIZE) {
@@ -256,9 +271,15 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
     }
     for (let index = 0; index < validEntries; index += 1) requestCoordinator.recordCacheHit()
     for (let index = validEntries; index < missingKeys.length; index += 1) requestCoordinator.recordCacheMiss()
+    // SQLite results are generation-checked above; apply the same protection
+    // to memory hits collected before the asynchronous batch read.
+    await Promise.resolve()
+    discardInvalidatedMemoryReads()
     return map
   } catch (_) {
     for (let index = 0; index < missingKeys.length; index += 1) requestCoordinator.recordCacheMiss()
+    await Promise.resolve()
+    discardInvalidatedMemoryReads()
     return map
   }
 }
