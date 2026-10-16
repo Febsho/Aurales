@@ -27,6 +27,7 @@ let rejectConnection: ((reason: Error) => void) | null = null
 let sourceResolveController: AbortController | null = null
 const MAX_WATCH_TOGETHER_MESSAGE_CHARS = 1024 * 1024
 const MAX_WATCH_TOGETHER_DEBUG_DATA_CHARS = 8 * 1024
+export const MAX_WATCH_TOGETHER_CHAT_MESSAGE_CHARS = 4_000
 
 // Live playback position reported by whichever player component is active.
 // The room's stored playback state only changes on discrete events (play,
@@ -467,11 +468,13 @@ export function stop(): void {
 export function sendChatMessage(message: string): void {
   const store = getStore()
   if (!store.currentRoom || !store.currentUserId) return
+  const boundedMessage = message.trim().slice(0, MAX_WATCH_TOGETHER_CHAT_MESSAGE_CHARS)
+  if (!boundedMessage) return
   send({
     type: 'CHAT_MESSAGE',
     roomId: store.currentRoom.id,
     userId: store.currentUserId,
-    message,
+    message: boundedMessage,
     sentAt: Date.now(),
   })
 }
@@ -759,6 +762,19 @@ function handleServerMessage(msg: ServerMessage): void {
       break
 
     case 'CHAT_RECEIVED':
+      if (!msg.message
+        || typeof msg.message.message !== 'string'
+        || msg.message.message.length > MAX_WATCH_TOGETHER_CHAT_MESSAGE_CHARS
+        || typeof msg.message.id !== 'string'
+        || msg.message.id.length > 128
+        || typeof msg.message.userId !== 'string'
+        || msg.message.userId.length > 128
+        || typeof msg.message.userName !== 'string'
+        || msg.message.userName.length > 128
+        || !Number.isFinite(msg.message.sentAt)) {
+        logDebug('in', 'CHAT_MESSAGE_REJECTED', { reason: 'invalid or oversized message' })
+        break
+      }
       store.addChatMessage(msg.message)
       break
 
