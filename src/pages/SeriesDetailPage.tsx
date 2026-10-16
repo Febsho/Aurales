@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
 import { matchingEpisode } from '../services/metadata/episodeIdentity'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
 import { cachedImage, retryImageFromSource } from '../services/imageCache'
 import type { ShowDetails, SeasonDetails, WatchProgress } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
@@ -688,7 +689,7 @@ export default function SeriesDetailPage() {
         fuzzyIdsMatch(progress.imdbId, show.imdbId) ||
         fuzzyIdsMatch(progress.tmdbId, show.tmdbId)
       )
-      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0] || null
+      .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0] || null
   }, [show, watchedProgress])
 
   const [liveResumePoint, setLiveResumePoint] = useState<{
@@ -757,7 +758,7 @@ export default function SeriesDetailPage() {
               })
 
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -790,7 +791,7 @@ export default function SeriesDetailPage() {
               })
 
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -818,7 +819,7 @@ export default function SeriesDetailPage() {
               })
 
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -853,7 +854,7 @@ export default function SeriesDetailPage() {
               })
 
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -888,7 +889,7 @@ export default function SeriesDetailPage() {
 
       const selected = primaryProgressProvider === 'all'
         ? candidates.filter((candidate) => candidate.progressSeconds >= 0 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
-          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+          .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0]
         : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
       setLiveResumePoint(selected || null)
     }

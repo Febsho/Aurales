@@ -8,6 +8,7 @@ import { getPMDBPlaybackProgress } from '../services/pmdb'
 import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { tmdbProvider } from '../services/tmdb'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
 // Lazy: StreamSelector pulls in the full player stack; only load it on demand
 const StreamSelector = lazy(() => import('./StreamSelector'))
 import type { HomeRowConfig, SearchResult } from '../types'
@@ -333,7 +334,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           const serverItems = serverResults.flatMap((result) => result.status === 'fulfilled'
             ? result.value.map(serverContinueWatchingItem).filter((item): item is ContinueWatchingItem => item !== null)
             : [])
-          sourceList = [...localItems, ...serverItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = [...localItems, ...serverItems].sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
         } else if (activeSource === 'simkl') {
           const simklRaw = await refreshSimklPlaybackCache()
           const simklItems: ContinueWatchingItem[] = simklRaw
@@ -374,7 +375,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } satisfies ContinueWatchingItem
             })
             .filter(Boolean) as ContinueWatchingItem[]
-          sourceList = simklItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = simklItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
         } else if (activeSource === 'trakt') {
           const traktRaw = await getTraktPlaybackProgress() as any[]
           const traktItems: ContinueWatchingItem[] = traktRaw
@@ -406,7 +407,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.paused_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          sourceList = traktItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = traktItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
           sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
         } else if (activeSource === 'pmdb') {
@@ -436,7 +437,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updated_at || i.updated || i.paused_at || i.created_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          sourceList = pmdbItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = pmdbItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
           sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
         } else if (activeSource === 'mdblist') {
@@ -492,7 +493,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
           const seenIds = new Set(playbackItems.map((i) => i.mediaId))
           const merged = [
-            ...playbackItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+            ...playbackItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt)),
             ...upNextItems.filter((i) => !seenIds.has(i.mediaId)),
           ]
           const presentedMerged = mergeContinueWatchingPresentation(merged, providerCached || [])
@@ -542,7 +543,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           const results = await Promise.allSettled(connectedProgressSources(useAppStore.getState()).map(loadSource))
           const seen = new Set<string>()
           list = results.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
             .filter((item) => {
               const episode = `:${item.season ?? ''}:${item.episode ?? ''}`
               const prefix = `${item.mediaType}:`

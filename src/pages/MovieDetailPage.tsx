@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -392,7 +393,7 @@ export default function MovieDetailPage() {
 
       const selected = primaryProgressProvider === 'all'
         ? candidates.filter((candidate) => candidate.progressSeconds > 5 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
-          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+          .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0]
         : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
       setLiveResumePoint(selected || null)
     }
