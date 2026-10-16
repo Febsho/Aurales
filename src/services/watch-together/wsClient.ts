@@ -247,8 +247,13 @@ export function send(event: WatchTogetherEvent): void {
     logDebug('out', 'SEND_FAILED', { event: event.type, reason: 'not connected' })
     return
   }
+  const serialized = JSON.stringify(event)
+  if (serialized.length > MAX_WATCH_TOGETHER_MESSAGE_CHARS) {
+    logDebug('out', 'MESSAGE_TOO_LARGE', { event: event.type, characters: serialized.length })
+    return
+  }
   logDebug('out', event.type, event)
-  ws.send(JSON.stringify(event))
+  ws.send(serialized)
 }
 
 // ── Room actions ────────────────────────────────────────────────────────────
