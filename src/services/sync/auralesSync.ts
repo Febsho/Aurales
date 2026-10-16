@@ -123,11 +123,13 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
 
   let activeChanged = false
   let profilesChanged = false
+  let activeVaultRestored = false
   const vaultRestores: Promise<unknown>[] = []
   const progressUpdates = new Map<string, Array<{ id: string; payload: unknown }>>()
   const watchlistUpdates = new Map<string, SyncRecord[]>()
   const feedbackUpdates = new Map<string, SyncRecord[]>()
   const playbackMemoryUpdates = new Map<string, Array<{ key: string; payload: unknown }>>()
+  const profilePreferenceUpdates = new Map<string, Array<{ id: string; payload: Record<string, unknown> }>>()
   const deletedProfileIds = new Set(records
     .filter((record) => record.type === 'profile' && (record.payload as { deleted?: boolean } | null)?.deleted === true)
     .map((record) => record.profileId))
@@ -168,16 +170,10 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
     }
     if (record.type === 'profile-preferences' && record.payload && typeof record.payload === 'object') {
       const preferenceId = record.recordId.replace(`${record.profileId}:profile-preferences:`, '')
-      if (preferenceId === 'continue-watching-suppressions') {
-        writeProfileValue('aurales_continue_watching_suppressions_v1', record.profileId, record.payload)
-        activeChanged ||= record.profileId === getActiveProfileId()
-        continue
-      }
-      const preferences = record.payload as { preferredAudio?: string[]; preferredSubtitles?: string[]; subtitleMode?: string }
-      if (preferences.preferredAudio) writeProfileValue('aurales_preferred_audio', record.profileId, preferences.preferredAudio)
-      if (preferences.preferredSubtitles) writeProfileValue('aurales_preferred_subtitles', record.profileId, preferences.preferredSubtitles)
-      if (preferences.subtitleMode) localStorage.setItem(profileStorageKey('aurales_subtitle_mode', record.profileId), preferences.subtitleMode)
-      activeChanged ||= record.profileId === getActiveProfileId()
+      const updates = profilePreferenceUpdates.get(record.profileId) || []
+      updates.push({ id: preferenceId, payload: record.payload as Record<string, unknown> })
+      profilePreferenceUpdates.set(record.profileId, updates)
+      continue
     }
     if (record.type === 'encrypted-vault' && record.payload && typeof record.payload === 'object' && isSyncVaultUnlocked()) {
       // Pre-profile releases stored one account vault under a synthetic global
@@ -185,8 +181,26 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
       // profile so existing users do not lose their provider setup on upgrade.
       const targetProfileId = record.profileId === '00000000-0000-0000-0000-000000000000' ? getActiveProfileId() : record.profileId
       vaultRestores.push(restoreEncryptedVault(record.payload as EncryptedVault, targetProfileId).then(() => {
-        if (targetProfileId === getActiveProfileId()) window.location.reload()
+        if (targetProfileId === getActiveProfileId()) activeVaultRestored = true
       }))
+    }
+  }
+  // A vault is a profile-wide snapshot and can be older than the independent
+  // records in this page. Restore it first so typed updates and preferences
+  // from the same batch always win over stale values inside that snapshot.
+  await Promise.all(vaultRestores)
+  for (const [profileId, updates] of profilePreferenceUpdates) {
+    for (const { id, payload } of updates) {
+      if (id === 'continue-watching-suppressions') {
+        writeProfileValue('aurales_continue_watching_suppressions_v1', profileId, payload)
+        activeChanged ||= profileId === getActiveProfileId()
+        continue
+      }
+      const preferences = payload as { preferredAudio?: string[]; preferredSubtitles?: string[]; subtitleMode?: string }
+      if (preferences.preferredAudio) writeProfileValue('aurales_preferred_audio', profileId, preferences.preferredAudio)
+      if (preferences.preferredSubtitles) writeProfileValue('aurales_preferred_subtitles', profileId, preferences.preferredSubtitles)
+      if (preferences.subtitleMode) localStorage.setItem(profileStorageKey('aurales_subtitle_mode', profileId), preferences.subtitleMode)
+      activeChanged ||= profileId === getActiveProfileId()
     }
   }
   // Each profile/type is stored as one JSON value. Merge a server page in
@@ -246,8 +260,8 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
   // Do not let the next sync snapshot a partially restored vault. In
   // particular, a follow-up batch can queue a fresh encrypted copy as soon as
   // the initial pull returns; that copy must include the completed restore.
-  await Promise.all(vaultRestores)
-  if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
+  if (activeVaultRestored) window.location.reload()
+  else if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
 }
 async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: number; downloaded: number }> {
   await outboxReady()
