@@ -916,11 +916,22 @@ fn scan_generated_indices(frame_dir: &Path) -> HashSet<u32> {
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
-        .filter_map(|entry| parse_frame_index(&entry.path()))
+        .filter_map(|entry| parse_frame_entry(entry).map(|(index, _)| index))
         .collect()
 }
 
+fn parse_frame_entry(entry: fs::DirEntry) -> Option<(u32, PathBuf)> {
+    if !entry.file_type().ok()?.is_file() {
+        return None;
+    }
+    let path = entry.path();
+    parse_frame_index(&path).map(|index| (index, path))
+}
+
 fn parse_frame_index(path: &Path) -> Option<u32> {
+    if path.extension()?.to_str()? != "webp" {
+        return None;
+    }
     let stem = path.file_stem()?.to_str()?;
     let index = stem.strip_prefix("frame_")?.parse::<u32>().ok()?;
     (index < MAX_THUMBNAIL_FRAMES).then_some(index)
@@ -1822,9 +1833,7 @@ fn build_metadata(
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("webp"))
-        .filter_map(|path| parse_frame_index(&path).map(|index| (index, path)))
+        .filter_map(parse_frame_entry)
         .collect::<Vec<_>>();
     indexed_thumbnails.sort_by_key(|(index, _)| *index);
     let highest_index = indexed_thumbnails
