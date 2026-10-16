@@ -133,7 +133,9 @@ INSTALL_CMD=""
 if command -v pacman >/dev/null 2>&1; then
     INSTALL_CMD="sudo pacman -S --needed mpv ffmpeg"      # mpv provides libmpv.so.2
 elif command -v apt-get >/dev/null 2>&1; then
-    INSTALL_CMD="sudo apt-get install -y mpv libmpv2 ffmpeg"
+    # Let the distro's mpv package select its matching libmpv ABI (libmpv1 on
+    # older Ubuntu releases, libmpv2 on newer Debian/Ubuntu releases).
+    INSTALL_CMD="sudo apt-get install -y mpv ffmpeg"
 elif command -v dnf >/dev/null 2>&1; then
     INSTALL_CMD="sudo dnf install -y mpv mpv-libs ffmpeg"
 elif command -v zypper >/dev/null 2>&1; then
