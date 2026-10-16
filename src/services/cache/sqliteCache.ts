@@ -410,11 +410,11 @@ function rememberRefreshError(key: string, error: unknown): void {
 }
 
 function metadataFromEntry(entry: RawCacheEntry): SessionCacheMetadata {
-  const createdAt = new Date(entry.created_at + 'Z').getTime()
-  const parsedExpiry = entry.expires_at ? new Date(entry.expires_at + 'Z').getTime() : null
+  const createdAt = parseSqliteUtc(entry.created_at)
+  const parsedExpiry = entry.expires_at ? parseSqliteUtc(entry.expires_at) : null
   return {
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
-    expiresAt: parsedExpiry != null && Number.isFinite(parsedExpiry) ? parsedExpiry : null,
+    expiresAt: parsedExpiry == null ? null : Number.isFinite(parsedExpiry) ? parsedExpiry : 0,
   }
 }
 
