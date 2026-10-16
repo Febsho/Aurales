@@ -41,6 +41,7 @@ interface TraktDataIndex {
   order: Map<TraktWatchedItem, number>
 }
 interface SimklCacheData { items: SimklWatchlistItem[] }
+type SimklDataIndex = Map<string, SimklWatchlistItem[]>
 interface PmdbCacheData { items: PMDBWatchedItem[] }
 type PmdbDataIndex = Map<number, PMDBWatchedItem[]>
 interface MdblistCacheData { items: MdblistWatchedItem[] }
@@ -186,6 +187,7 @@ export async function batchIsWatchedFromProviders(
   const traktIndex = traktData && Array.isArray(traktData.movies) && Array.isArray(traktData.shows)
     ? buildTraktDataIndex(traktData)
     : undefined
+  const simklIndex = simklData && Array.isArray(simklData.items) ? buildSimklDataIndex(simklData) : undefined
   const pmdbIndex = pmdbData && Array.isArray(pmdbData.items) ? buildPmdbDataIndex(pmdbData) : undefined
   const mdblistIndex = mdblistData && Array.isArray(mdblistData.items) ? buildMdblistDataIndex(mdblistData) : undefined
 
@@ -198,7 +200,7 @@ export async function batchIsWatchedFromProviders(
       if (watched) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('simkl')) {
-      if (await isSimklWatched(item, simklData ?? undefined)) { result.add(toKey(item)); return }
+      if (await isSimklWatched(item, simklData ?? undefined, simklIndex)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('pmdb')) {
       if (await isPmdbWatched(item, pmdbData ?? undefined, pmdbIndex)) { result.add(toKey(item)); return }
@@ -628,7 +630,36 @@ async function isTraktWatched(item: WatchedLookupItem): Promise<boolean> {
   }
 }
 
-async function isSimklWatched(item: WatchedLookupItem, cachedData?: SimklCacheData): Promise<boolean> {
+function simklIdKeys(ids: {
+  simklId?: unknown
+  tmdbId?: unknown
+  tvdbId?: unknown
+  malId?: unknown
+  imdbId?: unknown
+}): string[] {
+  const keys: string[] = []
+  for (const [provider, value] of [['simkl', ids.simklId], ['tmdb', ids.tmdbId], ['tvdb', ids.tvdbId], ['mal', ids.malId]] as const) {
+    if (value == null || value === '') continue
+    const normalized = Number(String(value).replace(new RegExp(`^${provider}[-:]`, 'i'), ''))
+    if (Number.isFinite(normalized) && normalized !== 0) keys.push(`${provider}:${normalized}`)
+  }
+  if (typeof ids.imdbId === 'string' && ids.imdbId) keys.push(`imdb:${ids.imdbId.toLowerCase()}`)
+  return keys
+}
+
+function buildSimklDataIndex(data: SimklCacheData): SimklDataIndex {
+  const index: SimklDataIndex = new Map()
+  for (const entry of data.items) {
+    for (const key of simklIdKeys(entry)) {
+      const candidates = index.get(key)
+      if (candidates) candidates.push(entry)
+      else index.set(key, [entry])
+    }
+  }
+  return index
+}
+
+async function isSimklWatched(item: WatchedLookupItem, cachedData?: SimklCacheData, index?: SimklDataIndex): Promise<boolean> {
   try {
     if (item.type === 'series' && item.season != null && item.episode != null) {
       const { isSimklEpisodePending } = await import('./simkl/history')
@@ -688,7 +719,18 @@ async function isSimklWatched(item: WatchedLookupItem, cachedData?: SimklCacheDa
       if (exactState != null) return exactState
     }
 
-    return data.items.some((entry) => {
+    const indexedCandidates = index
+      ? [...new Set([
+        ...simklIdKeys({ simklId: item.simklId, tmdbId: item.tmdbId, tvdbId: item.tvdbId, malId: item.malId, imdbId: item.imdbId }),
+        ...(mappedSimklShowId == null ? [] : [`simkl:${mappedSimklShowId}`]),
+      ].flatMap((key) => index.get(key) || []))]
+      : undefined
+    // Anime films can be present only by exact title in legacy Simkl history.
+    // Preserve that fallback scan while indexing the common ID-based path.
+    const candidates = index && !(item.type === 'movie' && item.isAnime && item.title)
+      ? indexedCandidates || []
+      : data.items
+    return candidates.some((entry) => {
       const historyTitleMatch = item.type === 'movie' && item.isAnime
         ? findExactSimklHistoryItem({
             title: item.title ?? '',
