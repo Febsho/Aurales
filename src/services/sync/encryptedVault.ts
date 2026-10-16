@@ -6,6 +6,8 @@ const ITERATIONS = 600_000
 let vaultPassphrase: string | null = null
 
 export interface EncryptedVault {
+  formatVersion?: 2
+  profileId?: string
   algorithm: 'AES-GCM'
   kdf: 'PBKDF2-SHA-256'
   iterations: number
@@ -88,8 +90,9 @@ export async function queueEncryptedVault(profileId = getActiveProfileId()): Pro
   }
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const iv = crypto.getRandomValues(new Uint8Array(12))
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: bufferSource(iv) }, await vaultKey(vaultPassphrase, salt), new TextEncoder().encode(JSON.stringify(entries)))
-  const payload: EncryptedVault = { algorithm: 'AES-GCM', kdf: 'PBKDF2-SHA-256', iterations: ITERATIONS, salt: bytesToBase64(salt), iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) }
+  const additionalData = new TextEncoder().encode(vaultId(profileId))
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: bufferSource(iv), additionalData: bufferSource(additionalData) }, await vaultKey(vaultPassphrase, salt), new TextEncoder().encode(JSON.stringify(entries)))
+  const payload: EncryptedVault = { formatVersion: 2, profileId, algorithm: 'AES-GCM', kdf: 'PBKDF2-SHA-256', iterations: ITERATIONS, salt: bytesToBase64(salt), iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) }
   enqueueSyncRecord('encrypted-vault', vaultId(profileId), payload, profileId)
   return Object.keys(entries).length
 }
@@ -98,8 +101,11 @@ export async function queueEncryptedVault(profileId = getActiveProfileId()): Pro
 export async function restoreEncryptedVault(payload: EncryptedVault, profileId = getActiveProfileId()): Promise<number> {
   if (!vaultPassphrase) throw new Error('Enter the vault passphrase to restore encrypted settings.')
   if (payload.algorithm !== 'AES-GCM' || payload.kdf !== 'PBKDF2-SHA-256' || !payload.salt || !payload.iv || !payload.ciphertext) throw new Error('Unsupported encrypted vault format.')
+  if (payload.formatVersion != null && payload.formatVersion !== 2) throw new Error('Unsupported encrypted vault format.')
+  if (payload.formatVersion === 2 && payload.profileId !== profileId) throw new Error('This encrypted vault belongs to a different profile.')
   const key = await vaultKey(vaultPassphrase, base64ToBytes(payload.salt))
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bufferSource(base64ToBytes(payload.iv)) }, key, bufferSource(base64ToBytes(payload.ciphertext)))
+  const additionalData = payload.formatVersion === 2 ? bufferSource(new TextEncoder().encode(vaultId(profileId))) : undefined
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bufferSource(base64ToBytes(payload.iv)), ...(additionalData ? { additionalData } : {}) }, key, bufferSource(base64ToBytes(payload.ciphertext)))
   const entries = JSON.parse(new TextDecoder().decode(plain)) as Record<string, unknown>
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Invalid encrypted vault contents.')
   const restoredEntries: Record<string, string> = {}
