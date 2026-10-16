@@ -380,9 +380,14 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_server_catalog_connection ON server_catalog_items(connection_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_tmdb ON server_catalog_items(tmdb_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_tvdb ON server_catalog_items(tvdb_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_anilist ON server_catalog_items(anilist_id);
+            DROP INDEX IF EXISTS idx_server_catalog_tmdb;
+            DROP INDEX IF EXISTS idx_server_catalog_tvdb;
+            DROP INDEX IF EXISTS idx_server_catalog_anilist;
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tmdb ON server_catalog_items(connection_id,tmdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tvdb ON server_catalog_items(connection_id,tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_anilist ON server_catalog_items(connection_id,anilist_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_mal ON server_catalog_items(connection_id,mal_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_parent_episode ON server_catalog_items(connection_id,parent_source_item_id,season,episode);
             ",
         )?;
         Ok(())

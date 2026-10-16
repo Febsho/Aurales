@@ -572,9 +572,24 @@ fn find_stream_items(
                 .unwrap_or(true)
     }) {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1").map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND (source_item_id=?2 OR source_item_id=?3 OR parent_source_item_id=?3 OR tmdb_id=?2 OR tvdb_id=?2 OR anilist_id=?2 OR tmdb_id=?4 OR tvdb_id=?5 OR anilist_id=?6 OR mal_id=?7)").map_err(|e| e.to_string())?;
+        let tmdb_id = requested_id(&request.tmdb_id);
+        let tvdb_id = requested_id(&request.tvdb_id);
+        let anilist_id = requested_id(&request.anilist_id);
+        let mal_id = requested_id(&request.mal_id);
         let rows = stmt
-            .query_map([&connection.id], catalog_item_from_row)
+            .query_map(
+                params![
+                    connection.id,
+                    request.media_id,
+                    request.source_item_id,
+                    tmdb_id,
+                    tvdb_id,
+                    anilist_id,
+                    mal_id,
+                ],
+                catalog_item_from_row,
+            )
             .map_err(|e| e.to_string())?;
         for item in rows.filter_map(Result::ok) {
             let exact = request
@@ -608,10 +623,14 @@ fn find_stream_items(
 }
 
 fn same_value_id(a: &Option<Value>, b: &Option<String>) -> bool {
-    match (a, b) {
-        (Some(Value::String(a)), Some(b)) => a == b,
-        (Some(Value::Number(a)), Some(b)) => a.to_string() == *b,
-        _ => false,
+    requested_id(a).is_some_and(|id| b.as_deref() == Some(id.as_str()))
+}
+
+fn requested_id(value: &Option<Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
     }
 }
 
