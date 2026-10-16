@@ -89,13 +89,26 @@ export interface CacheOptions {
   cacheEmptyResults?: boolean
 }
 
+function parseSqliteUtc(value: string): number {
+  // SQLite datetime('now') uses a space separator. Convert it to the ISO form
+  // required by ECMAScript so WebKit does not need to guess the timezone or
+  // accept a non-standard date string.
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value
+  return Date.parse(iso)
+}
+
 function isExpired(entry: RawCacheEntry): boolean {
   if (!entry.expires_at) return false
-  return new Date(entry.expires_at + 'Z').getTime() < Date.now()
+  const expiresAt = parseSqliteUtc(entry.expires_at)
+  // A malformed expiry must be a cache miss, never a permanently fresh value.
+  return !Number.isFinite(expiresAt) || expiresAt < Date.now()
 }
 
 function ageMs(entry: RawCacheEntry): number {
-  return Date.now() - new Date(entry.created_at + 'Z').getTime()
+  const createdAt = parseSqliteUtc(entry.created_at)
+  return Number.isFinite(createdAt) ? Math.max(0, Date.now() - createdAt) : 0
 }
 
 export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
