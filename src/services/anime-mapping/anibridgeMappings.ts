@@ -125,10 +125,12 @@ function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
       let data: AniBridgeMappings
+      let responseText: string
       try {
         const response = await fetch(DATA_URL, { signal: controller.signal })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const parsed = JSON.parse(await readBoundedText(response)) as unknown
+        responseText = await readBoundedText(response)
+        const parsed = JSON.parse(responseText) as unknown
         if (!isValidMappings(parsed)) throw new Error('AniBridge mapping response is empty or invalid')
         data = parsed
       } finally {
@@ -137,7 +139,7 @@ function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
       cachedData = data
       cacheTimestamp = Date.now()
       lastFetchFailureAt = 0
-      void writePersistentCache(data)
+      void writePersistentCache(responseText)
       console.log(`[anibridge] loaded ${countMappingEntries(data).toLocaleString()} mapping sources`)
       return data
     } catch (e) {
@@ -196,11 +198,11 @@ async function readBoundedText(response: Response): Promise<string> {
   return new TextDecoder().decode(bytes)
 }
 
-async function writePersistentCache(data: AniBridgeMappings): Promise<void> {
+async function writePersistentCache(text: string): Promise<void> {
   if (typeof caches === 'undefined') return
   try {
     const cache = await caches.open(PERSISTENT_CACHE)
-    await cache.put(DATA_URL, new Response(JSON.stringify(data), {
+    await cache.put(DATA_URL, new Response(text, {
       headers: {
         'Content-Type': 'application/json',
         [CACHE_TIMESTAMP_HEADER]: String(Date.now()),

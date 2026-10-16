@@ -426,11 +426,11 @@ function parseMappings(text: string): AnimeMapping[] {
   return parsed as AnimeMapping[]
 }
 
-async function writePersistentCache(data: AnimeMapping[]): Promise<void> {
+async function writePersistentCache(text: string): Promise<void> {
   if (typeof caches === 'undefined') return
   try {
     const cache = await caches.open(PERSISTENT_CACHE)
-    await cache.put(DATA_URL, new Response(JSON.stringify(data), {
+    await cache.put(DATA_URL, new Response(text, {
       headers: {
         'Content-Type': 'application/json',
         [CACHE_TIMESTAMP_HEADER]: String(Date.now()),
@@ -462,10 +462,12 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), ANIME_LIST_FETCH_TIMEOUT_MS)
       let data: AnimeMapping[]
+      let responseText: string
       try {
         const response = await fetch(DATA_URL, { signal: controller.signal })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        data = parseMappings(await readBoundedText(response))
+        responseText = await readBoundedText(response)
+        data = parseMappings(responseText)
       } finally {
         clearTimeout(timeout)
       }
@@ -473,7 +475,7 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
       cacheTimestamp = Date.now()
       lastFetchFailureAt = 0
       buildIndexes(data)
-      void writePersistentCache(data)
+      void writePersistentCache(responseText)
       console.log(`[anime-lists] loaded & indexed ${data.length} mappings`)
       return data
     } catch (e) {
