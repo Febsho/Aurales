@@ -2927,6 +2927,25 @@ struct FlatpakUpdateProgress {
     stage: &'static str,
 }
 
+static FLATPAK_UPDATE_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct FlatpakUpdateGuard;
+
+impl Drop for FlatpakUpdateGuard {
+    fn drop(&mut self) {
+        FLATPAK_UPDATE_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+struct PartialUpdateFile(std::path::PathBuf);
+
+impl Drop for PartialUpdateFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Downloads and reinstalls a standalone Flatpak bundle without blocking the
 /// WebView. The sandbox cannot modify /app, so installation is delegated to
 /// the host through flatpak-spawn after the bundle has been downloaded into
@@ -2936,6 +2955,10 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
     if platform::install_kind() != "flatpak" {
         return Err("The Flatpak update path is only available inside Flatpak.".to_string());
     }
+    FLATPAK_UPDATE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "A Flatpak update is already in progress.".to_string())?;
+    let update_guard = FlatpakUpdateGuard;
 
     let url = platform::flatpak_release_asset_url(&version)?;
     let cache_dir = app
@@ -2949,107 +2972,116 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
     let worker_partial = bundle_path.with_extension("flatpak.part");
     const MAX_FLATPAK_UPDATE_BYTES: u64 = 256 * 1024 * 1024;
 
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        use std::io::{Read, Write};
+    let _update_guard =
+        tokio::task::spawn_blocking(move || -> Result<FlatpakUpdateGuard, String> {
+            use std::io::{Read, Write};
 
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|error| format!("Failed to prepare the update cache: {error}"))?;
-        let _ = std::fs::remove_file(&worker_partial);
-        let _ = worker_app.emit(
-            "flatpak-update-progress",
-            FlatpakUpdateProgress {
-                downloaded: 0,
-                total: None,
-                stage: "downloading",
-            },
-        );
+            // Keep the global guard in the blocking worker. Dropping the command
+            // future cannot cancel spawn_blocking, so releasing it in the async
+            // caller would allow another request to overwrite this download.
+            let _update_guard = update_guard;
 
-        let response = ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(300))
-            .set("Accept", "application/octet-stream")
-            .set("User-Agent", "Aurales-Updater")
-            .call()
-            .map_err(|error| format!("Failed to download the Flatpak update: {error}"))?;
-        let total = response
-            .header("Content-Length")
-            .and_then(|value| value.parse::<u64>().ok());
-        if total.is_some_and(|size| size > MAX_FLATPAK_UPDATE_BYTES) {
-            return Err("The Flatpak update exceeds the 256 MiB download limit.".to_string());
-        }
-        let mut reader = response.into_reader();
-        let mut output = std::fs::File::create(&worker_partial)
-            .map_err(|error| format!("Failed to create the update bundle: {error}"))?;
-        let mut buffer = [0_u8; 128 * 1024];
-        let mut downloaded = 0_u64;
-        loop {
-            let count = reader
-                .read(&mut buffer)
-                .map_err(|error| format!("Failed while downloading the update: {error}"))?;
-            if count == 0 {
-                break;
-            }
-            if downloaded.saturating_add(count as u64) > MAX_FLATPAK_UPDATE_BYTES {
-                drop(output);
-                let _ = std::fs::remove_file(&worker_partial);
+            std::fs::create_dir_all(&cache_dir)
+                .map_err(|error| format!("Failed to prepare the update cache: {error}"))?;
+            let _ = std::fs::remove_file(&worker_partial);
+            let _partial_file = PartialUpdateFile(worker_partial.clone());
+            let _ = worker_app.emit(
+                "flatpak-update-progress",
+                FlatpakUpdateProgress {
+                    downloaded: 0,
+                    total: None,
+                    stage: "downloading",
+                },
+            );
+
+            let response = ureq::get(&url)
+                .timeout(std::time::Duration::from_secs(300))
+                .set("Accept", "application/octet-stream")
+                .set("User-Agent", "Aurales-Updater")
+                .call()
+                .map_err(|error| format!("Failed to download the Flatpak update: {error}"))?;
+            let total = response
+                .header("Content-Length")
+                .and_then(|value| value.parse::<u64>().ok());
+            if total.is_some_and(|size| size > MAX_FLATPAK_UPDATE_BYTES) {
                 return Err("The Flatpak update exceeds the 256 MiB download limit.".to_string());
             }
+            let mut reader = response.into_reader();
+            let mut output = std::fs::File::create(&worker_partial)
+                .map_err(|error| format!("Failed to create the update bundle: {error}"))?;
+            let mut buffer = [0_u8; 128 * 1024];
+            let mut downloaded = 0_u64;
+            loop {
+                let count = reader
+                    .read(&mut buffer)
+                    .map_err(|error| format!("Failed while downloading the update: {error}"))?;
+                if count == 0 {
+                    break;
+                }
+                if downloaded.saturating_add(count as u64) > MAX_FLATPAK_UPDATE_BYTES {
+                    drop(output);
+                    let _ = std::fs::remove_file(&worker_partial);
+                    return Err(
+                        "The Flatpak update exceeds the 256 MiB download limit.".to_string()
+                    );
+                }
+                output
+                    .write_all(&buffer[..count])
+                    .map_err(|error| format!("Failed to save the update bundle: {error}"))?;
+                downloaded += count as u64;
+                let _ = worker_app.emit(
+                    "flatpak-update-progress",
+                    FlatpakUpdateProgress {
+                        downloaded,
+                        total,
+                        stage: "downloading",
+                    },
+                );
+            }
             output
-                .write_all(&buffer[..count])
-                .map_err(|error| format!("Failed to save the update bundle: {error}"))?;
-            downloaded += count as u64;
+                .sync_all()
+                .map_err(|error| format!("Failed to finish the update download: {error}"))?;
+            drop(output);
+            if downloaded == 0 {
+                let _ = std::fs::remove_file(&worker_partial);
+                return Err("The downloaded Flatpak bundle was empty.".to_string());
+            }
+            std::fs::rename(&worker_partial, &worker_bundle)
+                .map_err(|error| format!("Failed to finalize the update bundle: {error}"))?;
+
             let _ = worker_app.emit(
                 "flatpak-update-progress",
                 FlatpakUpdateProgress {
                     downloaded,
-                    total,
-                    stage: "downloading",
+                    total: Some(downloaded),
+                    stage: "installing",
                 },
             );
-        }
-        output
-            .sync_all()
-            .map_err(|error| format!("Failed to finish the update download: {error}"))?;
-        drop(output);
-        if downloaded == 0 {
-            let _ = std::fs::remove_file(&worker_partial);
-            return Err("The downloaded Flatpak bundle was empty.".to_string());
-        }
-        std::fs::rename(&worker_partial, &worker_bundle)
-            .map_err(|error| format!("Failed to finalize the update bundle: {error}"))?;
-
-        let _ = worker_app.emit(
-            "flatpak-update-progress",
-            FlatpakUpdateProgress {
-                downloaded,
-                total: Some(downloaded),
-                stage: "installing",
-            },
-        );
-        let install = Command::new("flatpak-spawn")
-            .args([
-                "--host",
-                "flatpak",
-                "install",
-                "--user",
-                "-y",
-                "--reinstall",
-            ])
-            .arg(&worker_bundle)
-            .output()
-            .map_err(|error| format!("Failed to start the host Flatpak installer: {error}"))?;
-        let _ = std::fs::remove_file(&worker_bundle);
-        if !install.status.success() {
-            let stderr = String::from_utf8_lossy(&install.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                format!("Flatpak installation failed with {}.", install.status)
-            } else {
-                format!("Flatpak installation failed: {stderr}")
-            });
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| format!("Flatpak update task failed: {error}"))??;
+            let install = Command::new("flatpak-spawn")
+                .args([
+                    "--host",
+                    "flatpak",
+                    "install",
+                    "--user",
+                    "-y",
+                    "--reinstall",
+                ])
+                .arg(&worker_bundle)
+                .output()
+                .map_err(|error| format!("Failed to start the host Flatpak installer: {error}"))?;
+            let _ = std::fs::remove_file(&worker_bundle);
+            if !install.status.success() {
+                let stderr = String::from_utf8_lossy(&install.stderr).trim().to_string();
+                return Err(if stderr.is_empty() {
+                    format!("Flatpak installation failed with {}.", install.status)
+                } else {
+                    format!("Flatpak installation failed: {stderr}")
+                });
+            }
+            Ok(_update_guard)
+        })
+        .await
+        .map_err(|error| format!("Flatpak update task failed: {error}"))??;
 
     // Start the newly installed deployment after this sandbox has exited.
     Command::new("flatpak-spawn")
