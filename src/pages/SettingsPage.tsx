@@ -3597,7 +3597,7 @@ export default function SettingsPage() {
                     <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06] flex flex-col justify-between h-36">
                       <div>
                         <span className="text-sm font-semibold text-white">Export Backup</span>
-                        <p className="text-xs text-white/60 mt-1">Download configurations to your local drive.</p>
+                        <p className="text-xs text-white/60 mt-1">Includes API keys and service tokens. Keep the downloaded file private.</p>
                       </div>
                       <button
                         onClick={handleExportConfig}
