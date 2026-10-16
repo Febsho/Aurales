@@ -32,6 +32,7 @@ let runtimeProfileId: string | null | undefined
 const MIGRATED_KEYS = [
   'aurales_watch_progress', 'aurales_recently_viewed',
   'aurales_preferred_subtitles', 'aurales_preferred_audio', 'aurales_subtitle_mode',
+  'aurales_prefer_sdh_subtitles', 'aurales_anime_audio_mode',
   'aurales_local_watchlist_v1', 'aurales_discovery_feedback_v1',
   'aurales_stream_reliability_v1', 'aurales_stream_playback_memory_v1',
   'aurales_home_rows', 'aurales_discovery_starter_genres', 'aurales_discovery_mode',
