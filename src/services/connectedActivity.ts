@@ -65,7 +65,22 @@ function rememberBounded<T>(cache: Map<string, T>, key: string, value: T, limit:
   }
 }
 
-const latest = (...values: (string | undefined)[]) => values.filter(Boolean).sort().at(-1)
+function timestamp(value: string | undefined): number {
+  if (!value) return Number.NaN
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : Number.NaN
+}
+
+const latest = (...values: (string | undefined)[]): string | undefined => values
+  .filter((value): value is string => Boolean(value))
+  .reduce<string | undefined>((best, candidate) => {
+    if (!best) return candidate
+    const candidateTime = timestamp(candidate)
+    const bestTime = timestamp(best)
+    if (Number.isFinite(candidateTime) && (!Number.isFinite(bestTime) || candidateTime > bestTime)) return candidate
+    if (!Number.isFinite(candidateTime) && !Number.isFinite(bestTime) && candidate.localeCompare(best) > 0) return candidate
+    return best
+  }, undefined)
 // Keep titles in every writing system when building fallback identities.
 // Stripping everything outside ASCII made Japanese, Chinese, and Korean
 // titles normalize to the same empty string, which could produce colliding
@@ -119,7 +134,14 @@ function mergeEpisodes(...groups: ({ season: number; episode: number }[] | undef
 }
 
 function mergeDates(...groups: (string[] | string | undefined)[]) {
-  return [...new Set(groups.flatMap((group) => Array.isArray(group) ? group : group ? [group] : []).filter(Boolean))].sort()
+  return [...new Set(groups.flatMap((group) => Array.isArray(group) ? group : group ? [group] : []).filter(Boolean))]
+    .sort((left, right) => {
+      const leftTime = timestamp(left)
+      const rightTime = timestamp(right)
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? -1 : 1
+      return left.localeCompare(right)
+    })
 }
 
 export function dedupeConnectedHistory(items: ConnectedHistoryItem[]) {
@@ -473,7 +495,13 @@ export async function loadConnectedHistory(selected: ConnectedHistorySource[], f
         genres: previous.genres?.length ? previous.genres : item.genres,
       }
     })
-    .sort((left, right) => (right.watchedAt || '').localeCompare(left.watchedAt || '') || left.title.localeCompare(right.title))
+    .sort((left, right) => {
+      const leftTime = timestamp(left.watchedAt)
+      const rightTime = timestamp(right.watchedAt)
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return rightTime - leftTime
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? -1 : 1
+      return (right.watchedAt || '').localeCompare(left.watchedAt || '') || left.title.localeCompare(right.title)
+    })
   const result = { items: combined, errors, sourceCounts }
   rememberBounded(memoryCache, key, { timestamp: Date.now(), result }, MAX_HISTORY_SNAPSHOTS)
   void cacheSet(diskKey, result, {
