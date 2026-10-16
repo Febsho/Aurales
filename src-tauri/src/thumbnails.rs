@@ -15,8 +15,53 @@ const DEFAULT_COLUMNS: u32 = 10;
 const DEFAULT_ROWS: u32 = 10;
 const DEFAULT_QUALITY: u32 = 75;
 const DEFAULT_MAX_FFMPEG_WORKERS: u32 = 2;
-const SPRITE_CACHE_BUDGET_BYTES: u64 = 180 * 1024 * 1024;
+const MAX_PREFETCH_SPRITE_BYTES: u64 = 16 * 1024 * 1024;
+const SPRITE_PREFETCH_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_PREFETCHED_SPRITES: usize = 2;
+const MAX_FFMPEG_STDERR_BYTES: usize = 64 * 1024;
 static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+fn suppress_child_console(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
+}
+
+#[derive(Default)]
+struct FfmpegStderrCapture {
+    tail: VecDeque<u8>,
+    total_bytes: usize,
+}
+
+impl FfmpegStderrCapture {
+    fn append(&mut self, bytes: &[u8]) {
+        self.tail.extend(bytes.iter().copied());
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+        while self.tail.len() > MAX_FFMPEG_STDERR_BYTES {
+            self.tail.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> (usize, String) {
+        let bytes: Vec<u8> = self.tail.iter().copied().collect();
+        (
+            self.total_bytes,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+}
+
+fn ffmpeg_stderr_snapshot(capture: &Mutex<FfmpegStderrCapture>) -> (usize, String) {
+    capture
+        .lock()
+        .map(|capture| capture.snapshot())
+        .unwrap_or_default()
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,18 +140,6 @@ struct ThumbnailFrameReady {
     interval: u32,
     index: u32,
     path: String,
-}
-
-#[derive(Default)]
-struct SpriteMemoryCache {
-    entries: HashMap<String, SpriteMemoryEntry>,
-    order: VecDeque<String>,
-    bytes: u64,
-}
-
-struct SpriteMemoryEntry {
-    bytes: u64,
-    _data: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -326,7 +359,6 @@ impl ThumbnailJobController {
 
 static ACTIVE_JOBS: OnceLock<Mutex<HashMap<String, Arc<ThumbnailJobController>>>> = OnceLock::new();
 static BACKGROUND_GENERATIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static SPRITE_MEMORY_CACHE: OnceLock<Mutex<SpriteMemoryCache>> = OnceLock::new();
 static THUMBNAIL_DEBUG_STATE: OnceLock<Mutex<ThumbnailDebugState>> = OnceLock::new();
 
 fn active_jobs() -> &'static Mutex<HashMap<String, Arc<ThumbnailJobController>>> {
@@ -339,10 +371,6 @@ fn background_generations() -> &'static Mutex<HashSet<String>> {
 
 fn active_job_key(cache_key: &str, interval: u32) -> String {
     format!("{cache_key}:interval-{interval}")
-}
-
-fn sprite_memory_cache() -> &'static Mutex<SpriteMemoryCache> {
-    SPRITE_MEMORY_CACHE.get_or_init(|| Mutex::new(SpriteMemoryCache::default()))
 }
 
 fn thumbnail_debug_state() -> &'static Mutex<ThumbnailDebugState> {
@@ -801,7 +829,7 @@ pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
     if !metadata.is_file() {
         return Err("thumbnail sprite path is not a file".to_string());
     }
-    if metadata.len() > 16 * 1024 * 1024 {
+    if metadata.len() > MAX_PREFETCH_SPRITE_BYTES {
         return Err("thumbnail sprite is too large to prefetch".to_string());
     }
     debug_event(
@@ -813,26 +841,22 @@ pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
         ),
     );
 
-    let key = path.to_string_lossy().to_string();
-    let data = fs::read(&path).map_err(|e| format!("read sprite: {e}"))?;
-    let bytes = data.len() as u64;
-    let mut cache = sprite_memory_cache().lock().map_err(|e| e.to_string())?;
-    if let Some(entry) = cache.entries.remove(&key) {
-        cache.bytes = cache.bytes.saturating_sub(entry.bytes);
-        cache.order.retain(|item| item != &key);
-    }
-    cache
-        .entries
-        .insert(key.clone(), SpriteMemoryEntry { bytes, _data: data });
-    cache.order.push_back(key);
-    cache.bytes += bytes;
-
-    while cache.bytes > SPRITE_CACHE_BUDGET_BYTES {
-        let Some(old_key) = cache.order.pop_front() else {
-            break;
-        };
-        if let Some(entry) = cache.entries.remove(&old_key) {
-            cache.bytes = cache.bytes.saturating_sub(entry.bytes);
+    // Reading the file warms the OS page cache for the WebView. Retaining a
+    // second copy in a process-global Vec cache had no reader and could pin up
+    // to 180 MB of sprite bytes for the rest of the session.
+    let mut file = fs::File::open(&path).map_err(|e| format!("open sprite: {e}"))?;
+    let mut buffer = [0u8; SPRITE_PREFETCH_BUFFER_BYTES];
+    let mut read_bytes = 0u64;
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                read_bytes = read_bytes.saturating_add(count as u64);
+                if read_bytes > MAX_PREFETCH_SPRITE_BYTES {
+                    return Err("thumbnail sprite grew beyond the prefetch size limit".to_string());
+                }
+            }
+            Err(error) => return Err(format!("read sprite: {error}")),
         }
     }
 
@@ -1374,6 +1398,7 @@ fn run_ffmpeg_logged(
     output_path: Option<&Path>,
     timestamp: Option<f64>,
 ) -> Result<LoggedCommandOutput, String> {
+    suppress_child_console(&mut command);
     let command_line = command_to_string(&command);
     let started = Instant::now();
     debug_update(|state| {
@@ -1404,14 +1429,22 @@ fn run_ffmpeg_logged(
         )
     })?;
 
-    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf = Arc::new(Mutex::new(FfmpegStderrCapture::default()));
     let stderr_reader = child.stderr.take().map(|mut stderr_pipe| {
         let stderr_buf = Arc::clone(&stderr_buf);
         std::thread::spawn(move || {
-            let mut local = Vec::new();
-            let _ = stderr_pipe.read_to_end(&mut local);
-            if let Ok(mut shared) = stderr_buf.lock() {
-                shared.extend_from_slice(&local);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stderr_pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => {
+                        if let Ok(mut shared) = stderr_buf.lock() {
+                            shared.append(&chunk[..count]);
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
         })
     });
@@ -1419,14 +1452,12 @@ fn run_ffmpeg_logged(
     let mut last_stderr_len = 0usize;
 
     loop {
-        if let Ok(shared) = stderr_buf.lock() {
-            if shared.len() != last_stderr_len {
-                last_stderr_len = shared.len();
-                let stderr_text = String::from_utf8_lossy(&shared).to_string();
-                debug_update(|state| {
-                    state.last_ffmpeg_stderr = Some(trim_debug_text(&stderr_text));
-                });
-            }
+        let (stderr_bytes, stderr_text) = ffmpeg_stderr_snapshot(&stderr_buf);
+        if stderr_bytes != last_stderr_len {
+            last_stderr_len = stderr_bytes;
+            debug_update(|state| {
+                state.last_ffmpeg_stderr = Some(trim_debug_text(&stderr_text));
+            });
         }
 
         match child.try_wait() {
@@ -1435,10 +1466,7 @@ fn run_ffmpeg_logged(
                     let _ = reader.join();
                 }
                 let duration_ms = started.elapsed().as_millis();
-                let stderr_text = stderr_buf
-                    .lock()
-                    .map(|buf| String::from_utf8_lossy(&buf).to_string())
-                    .unwrap_or_default();
+                let (_, stderr_text) = ffmpeg_stderr_snapshot(&stderr_buf);
                 let output_exists = output_path.map(Path::exists).unwrap_or(false);
                 let output_size = output_path
                     .and_then(|path| fs::metadata(path).ok())
@@ -1481,10 +1509,7 @@ fn run_ffmpeg_logged(
                 let elapsed = started.elapsed();
                 if elapsed >= Duration::from_secs(3) && !warned_three_seconds {
                     warned_three_seconds = true;
-                    let stderr_text = stderr_buf
-                        .lock()
-                        .map(|buf| String::from_utf8_lossy(&buf).to_string())
-                        .unwrap_or_default();
+                    let (_, stderr_text) = ffmpeg_stderr_snapshot(&stderr_buf);
                     let waiting_reason = infer_waiting_reason(&stderr_text, output_path);
                     debug_update(|state| {
                         state.current_ffmpeg_status = "running >3s".to_string();
@@ -1509,6 +1534,18 @@ fn run_ffmpeg_logged(
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(error) => {
+                // Do not detach a still-running ffmpeg child when polling
+                // fails. Kill/reap it before joining the stderr reader, whose
+                // read loop otherwise waits for that child's pipe to close.
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Some(reader) = stderr_reader {
+                    let _ = reader.join();
+                }
+                debug_update(|state| {
+                    state.current_ffmpeg_status = "wait failed".to_string();
+                    state.last_ffmpeg_duration_ms = Some(started.elapsed().as_millis());
+                });
                 return Err(format!("wait ffmpeg stage={} error={}", stage, error));
             }
         }
@@ -1531,10 +1568,16 @@ fn command_to_string(command: &Command) -> String {
 fn trim_debug_text(value: &str) -> String {
     let value = value.trim();
     if value.len() > 2000 {
+        let end = value
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= 2000)
+            .last()
+            .unwrap_or(0);
         format!(
-            "{}...<truncated {} chars>",
-            &value[..2000],
-            value.len() - 2000
+            "{}...<truncated {} bytes>",
+            &value[..end],
+            value.len() - end
         )
     } else {
         value.to_string()
@@ -1898,7 +1941,8 @@ fn inspect_image(
 }
 
 fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let output = Command::new("ffprobe")
+    let mut command = Command::new("ffprobe");
+    command
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -1907,9 +1951,9 @@ fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
         .arg("stream=width,height")
         .arg("-of")
         .arg("csv=s=x:p=0")
-        .arg(path.to_string_lossy().to_string())
-        .output()
-        .ok()?;
+        .arg(path.to_string_lossy().to_string());
+    suppress_child_console(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1923,7 +1967,8 @@ fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
 fn image_is_near_black(path: &Path, width: u32, height: u32) -> Option<bool> {
     let sample_width = width.min(64);
     let sample_height = height.min(64);
-    let output = Command::new(&find_ffmpeg())
+    let mut command = Command::new(&find_ffmpeg());
+    command
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -1937,9 +1982,9 @@ fn image_is_near_black(path: &Path, width: u32, height: u32) -> Option<bool> {
         .arg("rawvideo")
         .arg("-pix_fmt")
         .arg("rgb24")
-        .arg("-")
-        .output()
-        .ok()?;
+        .arg("-");
+    suppress_child_console(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() || output.stdout.is_empty() {
         return None;
     }
@@ -1999,7 +2044,7 @@ fn write_metadata(cache_dir: &Path, metadata: &ThumbnailMetadata) {
 }
 
 fn prefetch_first_sprites(metadata: &ThumbnailMetadata) {
-    for sprite in metadata.sprites.iter().take(2) {
+    for sprite in metadata.sprites.iter().take(MAX_PREFETCHED_SPRITES) {
         let _ = prefetch_thumbnail_sprite(sprite.clone());
     }
 }
@@ -2061,9 +2106,16 @@ fn sanitize_cache_key(value: &str) -> String {
             }
         })
         .collect::<String>();
-    sanitized.truncate(96);
+    let was_truncated = sanitized.len() > 80;
+    sanitized.truncate(80);
+    let lost_information = was_truncated || sanitized != value;
     if sanitized.trim_matches('_').is_empty() {
-        stable_hash(value)
+        return stable_hash(value);
+    }
+    if lost_information {
+        // Replacing punctuation or truncating alone can map distinct media IDs
+        // to the same directory and return another item's thumbnails.
+        format!("{}-{}", sanitized.trim_matches('_'), stable_hash(value))
     } else {
         sanitized
     }
@@ -2081,11 +2133,14 @@ fn clamp_interval(value: u32) -> u32 {
 }
 
 fn ffmpeg_candidate_works(candidate: &Path) -> bool {
-    Command::new(candidate)
+    let mut command = Command::new(candidate);
+    command
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    suppress_child_console(&mut command);
+    command
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -2099,6 +2154,8 @@ pub(crate) fn find_ffmpeg() -> PathBuf {
                 if let Some(dir) = exe.parent() {
                     candidates.push(dir.join("ffmpeg.exe"));
                     candidates.push(dir.join("ffmpeg"));
+                    candidates.push(dir.join("resources").join("ffmpeg.exe"));
+                    candidates.push(dir.join("resources").join("ffmpeg"));
                     candidates.push(dir.join("binaries").join("ffmpeg.exe"));
                     candidates.push(dir.join("binaries").join("ffmpeg"));
                 }

@@ -9,6 +9,7 @@ import { resolveArtFromProviders } from './artwork'
 import { getStremioAuth, getStremioWatchHistory } from './stremio'
 import { cacheGet, cacheGetMany, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { getActiveProfileId, profileProviderCacheKey } from './profiles'
 
 export type ConnectedHistorySource = 'trakt' | 'simkl' | 'anilist' | 'pmdb' | 'mdblist' | 'stremio'
 export type ConnectedHistoryMediaType = 'movie' | 'series' | 'anime'
@@ -40,16 +41,36 @@ export interface ConnectedHistoryResult {
 }
 
 const memoryCache = new Map<string, { timestamp: number; result: ConnectedHistoryResult }>()
-const enrichedItemCache = new Map<string, ConnectedHistoryItem>()
+const enrichedItemCache = new Map<string, Pick<ConnectedHistoryItem, 'title' | 'year' | 'poster' | 'genres'>>()
+const MAX_HISTORY_SNAPSHOTS = 24
+const MAX_ENRICHED_HISTORY_ITEMS = 1_500
 const RUNTIME_CACHE_KEY = 'aurales_connected_runtime_v2'
 const HISTORY_CACHE_VERSION = 1
 
-const latest = (...values: (string | undefined)[]) => values.filter(Boolean).sort().at(-1)
-const normalizedTitle = (value: string) => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')
-const numberOrUndefined = (value: unknown) => {
-  const number = Number(value)
-  return Number.isFinite(number) && number > 0 ? number : undefined
+function getRecent<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key)
+  if (value === undefined) return undefined
+  cache.delete(key)
+  cache.set(key, value)
+  return value
 }
+
+function rememberBounded<T>(cache: Map<string, T>, key: string, value: T, limit: number): void {
+  cache.delete(key)
+  cache.set(key, value)
+  while (cache.size > limit) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+}
+
+const latest = (...values: (string | undefined)[]) => values.filter(Boolean).sort().at(-1)
+// Keep titles in every writing system when building fallback identities.
+// Stripping everything outside ASCII made Japanese, Chinese, and Korean
+// titles normalize to the same empty string, which could produce colliding
+// display IDs and prevent title-based deduplication from working correctly.
+const normalizedTitle = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 
 function baseId(item: ConnectedHistoryItem) {
   return item.tmdbId ? `tmdb:${item.tmdbId}` : item.imdbId ? `imdb:${item.imdbId}` : item.tvdbId ? `tvdb:${item.tvdbId}` : item.anilistId ? `anilist:${item.anilistId}` : `${item.mediaType}:${normalizedTitle(item.title)}:${item.year || ''}`
@@ -101,45 +122,67 @@ function mergeDates(...groups: (string[] | string | undefined)[]) {
   return [...new Set(groups.flatMap((group) => Array.isArray(group) ? group : group ? [group] : []).filter(Boolean))].sort()
 }
 
-function sameKind(left: ConnectedHistoryItem, right: ConnectedHistoryItem) {
-  return left.mediaType === 'movie' ? right.mediaType === 'movie' : right.mediaType !== 'movie'
-}
-
 export function dedupeConnectedHistory(items: ConnectedHistoryItem[]) {
   const merged: ConnectedHistoryItem[] = []
-  const identifiers: Set<string>[] = []
+  const parent: number[] = []
+  const firstIndexByIdentity = new Map<string, number>()
+  const findRoot = (index: number): number => {
+    let root = index
+    while (parent[root] !== root) root = parent[root]
+    while (parent[index] !== index) {
+      const next = parent[index]
+      parent[index] = root
+      index = next
+    }
+    return root
+  }
+  const combine = (existing: ConnectedHistoryItem, item: ConnectedHistoryItem): ConnectedHistoryItem => ({
+    ...existing,
+    title: existing.title || item.title,
+    year: existing.year || item.year,
+    mediaType: existing.mediaType === 'anime' || item.mediaType === 'anime' ? 'anime' : existing.mediaType,
+    poster: existing.poster || item.poster,
+    watchedAt: latest(existing.watchedAt, item.watchedAt),
+    watchedCount: Math.max(existing.watchedCount, item.watchedCount),
+    tmdbId: existing.tmdbId || item.tmdbId,
+    tvdbId: existing.tvdbId || item.tvdbId,
+    imdbId: existing.imdbId || item.imdbId,
+    anilistId: existing.anilistId || item.anilistId,
+    malId: existing.malId || item.malId,
+    watchedEpisodes: mergeEpisodes(existing.watchedEpisodes, item.watchedEpisodes),
+    watchedDates: mergeDates(existing.watchedDates, item.watchedDates, existing.watchedAt, item.watchedAt),
+    genres: existing.genres?.length ? existing.genres : item.genres,
+    sources: [...new Set([...existing.sources, ...item.sources])],
+  })
   for (const item of items) {
     const ids = identifierSet(item)
-    const index = merged.findIndex((candidate, candidateIndex) => sameKind(candidate, item) && [...ids].some((id) => identifiers[candidateIndex].has(id)))
-    if (index < 0) {
+    const kind = item.mediaType === 'movie' ? 'movie' : 'series'
+    const matches = new Set<number>()
+    for (const id of ids) {
+      const candidate = firstIndexByIdentity.get(`${kind}:${id}`)
+      if (candidate != null) matches.add(findRoot(candidate))
+    }
+    if (!matches.size) {
+      const index = merged.length
       merged.push({ ...item, id: baseId(item), sources: [...new Set(item.sources)] })
-      identifiers.push(ids)
+      parent.push(index)
+      for (const id of ids) firstIndexByIdentity.set(`${kind}:${id}`, index)
       continue
     }
-    const existing = merged[index]
-    const sources = [...new Set([...existing.sources, ...item.sources])]
-    merged[index] = {
-      ...existing,
-      title: existing.title || item.title,
-      year: existing.year || item.year,
-      mediaType: existing.mediaType === 'anime' || item.mediaType === 'anime' ? 'anime' : existing.mediaType,
-      poster: existing.poster || item.poster,
-      watchedAt: latest(existing.watchedAt, item.watchedAt),
-      watchedCount: Math.max(existing.watchedCount, item.watchedCount),
-      tmdbId: existing.tmdbId || item.tmdbId,
-      tvdbId: existing.tvdbId || item.tvdbId,
-      imdbId: existing.imdbId || item.imdbId,
-      anilistId: existing.anilistId || item.anilistId,
-      malId: existing.malId || item.malId,
-      watchedEpisodes: mergeEpisodes(existing.watchedEpisodes, item.watchedEpisodes),
-      watchedDates: mergeDates(existing.watchedDates, item.watchedDates, existing.watchedAt, item.watchedAt),
-      genres: existing.genres?.length ? existing.genres : item.genres,
-      sources,
+    const index = Math.min(...matches)
+    for (const other of matches) {
+      if (other === index) continue
+      merged[index] = combine(merged[index], merged[other])
+      parent[other] = index
     }
-    identifiers[index] = new Set([...identifiers[index], ...ids])
+    merged[index] = combine(merged[index], item)
+    // Older aliases can still point at a merged child; findRoot resolves them
+    // on lookup, so copying every accumulated identifier here would turn a
+    // long alias chain into quadratic work.
+    for (const id of ids) firstIndexByIdentity.set(`${kind}:${id}`, index)
     merged[index].id = baseId(merged[index])
   }
-  return merged
+  return merged.filter((_, index) => findRoot(index) === index)
 }
 
 async function loadTrakt(): Promise<ConnectedHistoryItem[]> {
@@ -161,7 +204,10 @@ async function loadSimkl(): Promise<ConnectedHistoryItem[]> {
 
 async function loadAniList(): Promise<ConnectedHistoryItem[]> {
   const entries = (await getAniListFullList()).filter((entry) => entry.progress > 0 || entry.status === 'COMPLETED' || entry.repeat > 0)
-  return Promise.all(entries.map(async (entry) => {
+  // A large AniList account can contain hundreds of watched entries. Resolve
+  // external IDs with bounded concurrency instead of opening one request per
+  // title at once (which can overwhelm the mapping service and delay the page).
+  return mapLimit(entries, 6, async (entry) => {
     const mapped = await resolveAnimeIds({ anilistId: entry.mediaId, malId: entry.idMal }).catch(() => null)
     return {
       id: '', title: entry.title, year: entry.seasonYear, mediaType: 'anime' as const, poster: entry.poster,
@@ -170,7 +216,7 @@ async function loadAniList(): Promise<ConnectedHistoryItem[]> {
       watchedCount: Math.max(entry.progress, entry.status === 'COMPLETED' ? entry.episodes || 1 : 0) + entry.repeat * (entry.episodes || 1),
       tmdbId: mapped?.tmdbId, tvdbId: mapped?.tvdbId, imdbId: mapped?.imdbId, anilistId: entry.mediaId, malId: entry.idMal, sources: ['anilist' as const],
     }
-  }))
+  })
 }
 
 async function loadPmdb(): Promise<ConnectedHistoryItem[]> {
@@ -204,8 +250,27 @@ async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Pr
 
 interface RuntimeMetadata { minutes?: number; genres: string[] }
 
+function normalizeRuntimeMetadata(value: unknown): RuntimeMetadata | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entry = value as { minutes?: unknown; genres?: unknown }
+  const minutes = typeof entry.minutes === 'number' && Number.isFinite(entry.minutes) && entry.minutes > 0
+    ? entry.minutes
+    : undefined
+  const genres = Array.isArray(entry.genres)
+    ? entry.genres.filter((genre): genre is string => typeof genre === 'string')
+    : []
+  if (minutes == null && genres.length === 0) return undefined
+  return { minutes, genres }
+}
+
 function readRuntimeCache() {
-  try { return JSON.parse(localStorage.getItem(RUNTIME_CACHE_KEY) || '{}') as Record<string, RuntimeMetadata> } catch (_) { return {} }
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RUNTIME_CACHE_KEY) || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed)
+      .map(([key, value]) => [key, normalizeRuntimeMetadata(value)] as const)
+      .filter((entry): entry is readonly [string, RuntimeMetadata] => entry[1] != null))
+  } catch (_) { return {} }
 }
 
 function writeRuntimeCache(cache: Record<string, RuntimeMetadata>) {
@@ -221,21 +286,42 @@ function runtimeDiskCacheKey(item: ConnectedHistoryItem) {
   return `connected_history:runtime:v3:${runtimeCacheKey(item)}`
 }
 
-function historyCacheKey(selected: ConnectedHistorySource[]) {
-  return `connected_history:snapshot:v${HISTORY_CACHE_VERSION}:${[...selected].sort().join('|')}`
+function stremioAccountScope(): string {
+  const auth = getStremioAuth()
+  if (!auth) return 'anonymous'
+  // Do not put Stremio's authentication key in a SQLite cache key.
+  const value = `${auth.email}:${auth.authKey}`
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) { hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619) }
+  return (hash >>> 0).toString(36)
 }
 
-export async function persistConnectedHistorySnapshot(selected: ConnectedHistorySource[], items: ConnectedHistoryItem[]) {
+function historySelectionKey(selected: ConnectedHistorySource[], profileId = getActiveProfileId()): string {
+  return [...selected].sort().map((source) => {
+    if (source === 'stremio') return `stremio:${profileId}:${stremioAccountScope()}`
+    return profileProviderCacheKey(`connected-history:${source}`, source, profileId)
+  }).join('|')
+}
+
+function historyCacheKey(selected: ConnectedHistorySource[], profileId = getActiveProfileId()) {
+  return `connected_history:snapshot:v${HISTORY_CACHE_VERSION}:${historySelectionKey(selected, profileId)}`
+}
+
+export async function persistConnectedHistorySnapshot(
+  selected: ConnectedHistorySource[],
+  items: ConnectedHistoryItem[],
+  profileId = getActiveProfileId(),
+) {
   if (!selected.length) return
-  const key = [...selected].sort().join('|')
-  const previous = memoryCache.get(key)?.result
+  const key = historySelectionKey(selected, profileId)
+  const previous = getRecent(memoryCache, key)?.result
   const result: ConnectedHistoryResult = {
     items,
     errors: previous?.errors || {},
     sourceCounts: previous?.sourceCounts || {},
   }
-  memoryCache.set(key, { timestamp: Date.now(), result })
-  await cacheSet(historyCacheKey(selected), result, {
+  rememberBounded(memoryCache, key, { timestamp: Date.now(), result }, MAX_HISTORY_SNAPSHOTS)
+  void cacheSet(historyCacheKey(selected, profileId), result, {
     category: CACHE_CATEGORIES.CONNECTED_HISTORY,
     ttlSeconds: CACHE_TTLS.CONNECTED_HISTORY,
   })
@@ -261,7 +347,10 @@ async function resolveRuntimeMetadata(item: ConnectedHistoryItem): Promise<Runti
   if (watchedEpisodes.length) {
     const bySeason = new Map<number, { season: number; episode: number }[]>()
     watchedEpisodes.forEach((episode) => { const list = bySeason.get(episode.season) || []; list.push(episode); bySeason.set(episode.season, list) })
-    const seasons = await Promise.all([...bySeason].map(async ([seasonNumber, episodes]) => ({ episodes, details: await tmdbProvider.getSeason(`tmdb-${item.tmdbId}`, seasonNumber).catch(() => null) })))
+    const seasons = await mapLimit([...bySeason], 4, async ([seasonNumber, episodes]) => ({
+      episodes,
+      details: await tmdbProvider.getSeason(`tmdb-${item.tmdbId}`, seasonNumber).catch(() => null),
+    }))
     for (const season of seasons) for (const watched of season.episodes) {
       const runtime = season.details?.episodes.find((episode) => episode.episodeNumber === watched.episode)?.runtime
       if (runtime && runtime > 0) { exactTotal += runtime; knownRuntimes.push(runtime) }
@@ -307,7 +396,8 @@ export async function estimateConnectedHistoryRuntime(
   const misses: number[] = []
   items.forEach((item, index) => {
     const key = runtimeCacheKey(item)
-    const cached = cache[key] || diskCache.get(runtimeDiskCacheKey(item))?.data
+    const cached = normalizeRuntimeMetadata(cache[key])
+      || normalizeRuntimeMetadata(diskCache.get(runtimeDiskCacheKey(item))?.data)
     if (cached) { fresh[key] = cached; applyMetadata(index, cached) } else misses.push(index)
   })
 
@@ -333,27 +423,31 @@ export async function estimateConnectedHistoryRuntime(
 }
 
 export async function enrichConnectedHistoryItems(items: ConnectedHistoryItem[]) {
+  const profileId = getActiveProfileId()
   return mapLimit(items, 4, async (item) => {
-    const cached = enrichedItemCache.get(item.id)
+    const cacheKey = `${profileId}:${item.id}`
+    const cached = getRecent(enrichedItemCache, cacheKey)
     if (cached?.poster && cached.title) return { ...item, ...cached, sources: item.sources }
     if (item.poster && item.title) return item
     try {
       const details = item.tmdbId ? (item.mediaType === 'movie' ? await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`) : await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)) : undefined
       const art = await resolveArtFromProviders(item.mediaType === 'movie' ? 'movie' : 'series', { tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId }, item.mediaType === 'anime').catch(() => undefined)
       const result = { ...item, title: item.title || details?.title || `TMDB ${item.tmdbId}`, year: item.year || details?.year, poster: item.poster || art?.poster || details?.poster, genres: item.genres?.length ? item.genres : details?.genres }
-      enrichedItemCache.set(item.id, result)
+      rememberBounded(enrichedItemCache, cacheKey, { title: result.title, year: result.year, poster: result.poster, genres: result.genres }, MAX_ENRICHED_HISTORY_ITEMS)
       return result
     } catch (_) { return { ...item, title: item.title || `TMDB ${item.tmdbId}` } }
   })
 }
 
 export async function loadConnectedHistory(selected: ConnectedHistorySource[], force = false): Promise<ConnectedHistoryResult> {
-  const key = [...selected].sort().join('|')
-  const cached = memoryCache.get(key)
+  const profileId = getActiveProfileId()
+  const key = historySelectionKey(selected, profileId)
+  const diskKey = historyCacheKey(selected, profileId)
+  const cached = getRecent(memoryCache, key)
   if (!force && cached && Date.now() - cached.timestamp < 5 * 60_000) return cached.result
-  const persisted = await cacheGet<ConnectedHistoryResult>(historyCacheKey(selected))
+  const persisted = await cacheGet<ConnectedHistoryResult>(diskKey)
   if (!force && persisted) {
-    memoryCache.set(key, { timestamp: Date.now(), result: persisted.data })
+    rememberBounded(memoryCache, key, { timestamp: Date.now(), result: persisted.data }, MAX_HISTORY_SNAPSHOTS)
     return persisted.data
   }
   const settled = await Promise.all(selected.map(async (source) => ({ source, items: await loaders[source]() })).map((request) => request.then((value) => ({ status: 'fulfilled' as const, value })).catch((reason) => ({ status: 'rejected' as const, reason }))))
@@ -366,9 +460,10 @@ export async function loadConnectedHistory(selected: ConnectedHistorySource[], f
     return result.value.items
   })
   const previousItems = persisted?.data.items || []
+  const previousById = new Map(previousItems.map((item) => [item.id, item]))
   const combined = dedupeConnectedHistory(raw)
     .map((item) => {
-      const previous = previousItems.find((candidate) => candidate.id === item.id)
+      const previous = previousById.get(item.id)
       if (!previous) return item
       return {
         ...item,
@@ -380,8 +475,8 @@ export async function loadConnectedHistory(selected: ConnectedHistorySource[], f
     })
     .sort((left, right) => (right.watchedAt || '').localeCompare(left.watchedAt || '') || left.title.localeCompare(right.title))
   const result = { items: combined, errors, sourceCounts }
-  memoryCache.set(key, { timestamp: Date.now(), result })
-  await cacheSet(historyCacheKey(selected), result, {
+  rememberBounded(memoryCache, key, { timestamp: Date.now(), result }, MAX_HISTORY_SNAPSHOTS)
+  void cacheSet(diskKey, result, {
     category: CACHE_CATEGORIES.CONNECTED_HISTORY,
     ttlSeconds: CACHE_TTLS.CONNECTED_HISTORY,
   })

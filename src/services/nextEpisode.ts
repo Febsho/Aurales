@@ -11,10 +11,16 @@ export interface NextEpInfo {
 
 export async function fetchNextEpisodeFromTmdb(tmdbId: number, season: number, episode: number): Promise<NextEpInfo | null> {
   const apiKey = getTmdbApiKey()
+  if (!apiKey || !Number.isFinite(tmdbId) || tmdbId <= 0 || !Number.isFinite(season) || season < 0 || !Number.isFinite(episode) || episode <= 0) return null
   const tryFetch = async (s: number, e: number): Promise<NextEpInfo | null> => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 8_000)
     try {
-      const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${s}/episode/${e}?api_key=${apiKey}`)
-      if (!res.ok) return null
+      const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${s}/episode/${e}?api_key=${apiKey}`, { signal: controller.signal })
+      if (!res.ok) {
+        await res.body?.cancel()
+        return null
+      }
       const data = await res.json()
       if (!data.name) return null
       return {
@@ -27,6 +33,8 @@ export async function fetchNextEpisodeFromTmdb(tmdbId: number, season: number, e
       }
     } catch (_) {
       return null
+    } finally {
+      clearTimeout(timeout)
     }
   }
 

@@ -7,6 +7,7 @@ use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
@@ -17,6 +18,7 @@ const CACHE_KEY: &str = "anime-mappings:fribb-mini:v1";
 const CACHE_TTL_SECONDS: i64 = 24 * 60 * 60;
 const FAILURE_RETRY_SECONDS: i64 = 60;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_DATASET_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,22 +428,29 @@ fn append(
 }
 
 fn fetch_dataset() -> Result<Value, String> {
-    ureq::AgentBuilder::new()
+    let response = ureq::AgentBuilder::new()
         .timeout(FETCH_TIMEOUT)
         .build()
         .get(DATA_URL)
         .set("Accept", "application/json")
         .set("User-Agent", "Aurales/0.3")
         .call()
-        .map_err(|error| error.to_string())?
-        .into_json::<Value>()
-        .map_err(|error| format!("Invalid anime mapping response: {error}"))
-        .and_then(|value| {
-            value
-                .is_array()
-                .then_some(value)
-                .ok_or_else(|| "Anime mapping response is not an array".to_string())
-        })
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_DATASET_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read anime mapping response: {error}"))?;
+    if bytes.len() as u64 > MAX_DATASET_RESPONSE_BYTES {
+        return Err("Anime mapping response exceeded the 64 MiB limit".into());
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Invalid anime mapping response: {error}"))?;
+    value
+        .is_array()
+        .then_some(value)
+        .ok_or_else(|| "Anime mapping response is not an array".to_string())
 }
 
 fn cache_expiry(expires_at: &Option<String>) -> i64 {

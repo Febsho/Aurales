@@ -29,7 +29,8 @@ export function parseSizeGb(value: string): number | undefined {
   return unit === 'tb' ? amount * 1024 : unit.startsWith('m') ? amount / 1024 : amount
 }
 const resolution = (value: string) => /\b(4k|2160p|uhd)\b/i.test(value) ? 2160 : /\b1080p\b/i.test(value) ? 1080 : /\b720p\b/i.test(value) ? 720 : /\b(480p|sd)\b/i.test(value) ? 480 : 0
-const normalized = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+const normalized = (v: string) => v.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export function scoreStream(stream: SmartStream, context: SmartScoreContext): ScoredStream {
   const value = text(stream); const reasons: string[] = []
@@ -48,14 +49,24 @@ export function scoreStream(stream: SmartStream, context: SmartScoreContext): Sc
   }
   const incompatibleWeb = context.player === 'web' && /\b(hevc|h\.?265|x265|av1|truehd|dts)\b/i.test(value)
   score += incompatibleWeb ? -55 : 10; reasons.push(incompatibleWeb ? 'codec may be incompatible' : 'player compatible')
-  const preferredAudio = context.preferredAudio || []
-  const audioMatch = preferredAudio.find((lang) => new RegExp(`\\b${lang.replace(/[-_].*/, '')}\\b`, 'i').test(value))
+  const preferredAudio = (Array.isArray(context.preferredAudio) ? context.preferredAudio : []).filter((lang): lang is string => typeof lang === 'string' && Boolean(lang.trim()))
+  const audioMatch = preferredAudio.find((lang) => {
+    const languageCode = lang.split(/[-_]/, 1)[0].trim()
+    return Boolean(languageCode && new RegExp(`\\b${escapeRegExp(languageCode)}\\b`, 'i').test(value))
+  })
   if (audioMatch) { score += 18; reasons.push(`preferred audio: ${audioMatch}`) }
   else if (preferredAudio.length && /\b(french|german|italian|spanish|rus|jpn|japanese|dub)\b/i.test(value)) { score -= 25; reasons.push('possible wrong language') }
-  const allSubs = [...(stream.subtitles || []), ...(context.subtitles || [])]
-  if ((context.preferredSubtitles || []).some((lang) => allSubs.some((sub) => sub.lang.toLowerCase().startsWith(lang.toLowerCase())))) { score += 8; reasons.push('preferred subtitles') }
-  const expected = normalized(context.title).split(' ').filter((word) => word.length > 2)
-  const overlap = expected.filter((word) => normalized(value).includes(word)).length / Math.max(1, expected.length)
+  const allSubs = [
+    ...(Array.isArray(stream.subtitles) ? stream.subtitles : []),
+    ...(Array.isArray(context.subtitles) ? context.subtitles : []),
+  ].filter((sub): sub is SubtitleResult => Boolean(sub && typeof sub.lang === 'string'))
+  const preferredSubtitles = (Array.isArray(context.preferredSubtitles) ? context.preferredSubtitles : []).filter((lang): lang is string => typeof lang === 'string' && Boolean(lang.trim()))
+  if (preferredSubtitles.some((lang) => allSubs.some((sub) => sub.lang.toLowerCase().startsWith(lang.toLowerCase())))) { score += 8; reasons.push('preferred subtitles') }
+  const expected = normalized(context.title).split(' ').filter((word) =>
+    word.length > 2 || /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(word),
+  )
+  const normalizedStreamText = expected.length ? normalized(value) : ''
+  const overlap = expected.filter((word) => normalizedStreamText.includes(word)).length / Math.max(1, expected.length)
   if (overlap >= .6) { score += 18; reasons.push('strong title match') } else if (expected.length && overlap === 0 && stream.filename) { score -= 35; reasons.push('weak title match') }
   if (context.season != null && context.episode != null) {
     const episodeMatch = new RegExp(`(?:s0?${context.season}e0?${context.episode}|${context.season}x0?${context.episode})`, 'i').test(value)
@@ -75,5 +86,11 @@ export function scoreStream(stream: SmartStream, context: SmartScoreContext): Sc
 }
 
 export function rankStreams(streams: SmartStream[], context: SmartScoreContext): ScoredStream[] {
-  return streams.map((stream) => scoreStream(stream, context)).sort((a, b) => b.score - a.score || streamFingerprint(a.stream).localeCompare(streamFingerprint(b.stream)))
+  // Ties are common (especially for sparse addon titles). Fingerprinting
+  // parses URLs and hashes fallback labels, so do it once per stream instead
+  // of repeating both operations for every sort comparison.
+  return streams
+    .map((stream) => ({ scored: scoreStream(stream, context), fingerprint: streamFingerprint(stream) }))
+    .sort((a, b) => b.scored.score - a.scored.score || a.fingerprint.localeCompare(b.fingerprint))
+    .map(({ scored }) => scored)
 }

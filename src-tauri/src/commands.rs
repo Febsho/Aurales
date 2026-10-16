@@ -49,33 +49,47 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
 
 #[tauri::command]
-pub fn list_server_connections(db: State<'_, Database>) -> Result<Vec<ServerConnection>, String> {
-    server::list_connections(&db)
+pub async fn list_server_connections(
+    db: State<'_, Database>,
+) -> Result<Vec<ServerConnection>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::list_connections(&db))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn save_server_connection(
+pub async fn save_server_connection(
     request: SaveServerConnectionRequest,
     db: State<'_, Database>,
 ) -> Result<ServerConnection, String> {
-    server::save_connection(&db, request)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::save_connection(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn remove_server_connection(
+pub async fn remove_server_connection(
     connection_id: String,
     db: State<'_, Database>,
 ) -> Result<(), String> {
-    server::remove_connection(&db, &connection_id)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::remove_connection(&db, &connection_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn set_server_connection_enabled(
+pub async fn set_server_connection_enabled(
     connection_id: String,
     enabled: bool,
     db: State<'_, Database>,
 ) -> Result<ServerConnection, String> {
-    server::set_enabled(&db, &connection_id, enabled)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::set_enabled(&db, &connection_id, enabled))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -103,26 +117,37 @@ pub async fn refresh_server_catalog(
 }
 
 #[tauri::command]
-pub fn list_server_catalogs(db: State<'_, Database>) -> Result<Vec<ServerCatalog>, String> {
-    server::list_catalogs(&db)
+pub async fn list_server_catalogs(db: State<'_, Database>) -> Result<Vec<ServerCatalog>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::list_catalogs(&db))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_server_catalog_items(
+pub async fn get_server_catalog_items(
     connection_id: String,
     catalog_id: String,
     max_items: Option<usize>,
     db: State<'_, Database>,
 ) -> Result<Vec<ServerCatalogItem>, String> {
-    server::catalog_items(&db, &connection_id, &catalog_id, max_items)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        server::catalog_items(&db, &connection_id, &catalog_id, max_items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn search_server_catalogs(
+pub async fn search_server_catalogs(
     query: String,
     db: State<'_, Database>,
 ) -> Result<Vec<ServerCatalogItem>, String> {
-    server::search_catalogs(&db, &query)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::search_catalogs(&db, &query))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -454,6 +479,23 @@ fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
     NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
 }
 
+fn player_lifecycle_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub(crate) fn is_current_player_session(session_id: &str) -> bool {
+    native_player_state()
+        .lock()
+        .map(|state| {
+            state
+                .as_ref()
+                .map(|player| player.session_id == session_id)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
 static PROPERTY_CACHE: OnceLock<
     std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
 > = OnceLock::new();
@@ -463,26 +505,40 @@ fn get_property_cache(
     PROPERTY_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-pub(crate) fn cache_mpv_property(name: String, value: serde_json::Value) {
+pub(crate) fn cache_mpv_property(session_id: &str, name: String, value: serde_json::Value) {
+    let Ok(state) = native_player_state().lock() else {
+        return;
+    };
+    if !state
+        .as_ref()
+        .map(|player| player.session_id == session_id)
+        .unwrap_or(false)
+    {
+        return;
+    }
     if let Ok(mut cache) = get_property_cache().write() {
         cache.insert(name, value);
     }
 }
 
 pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
-    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
-    let should_clear = state
-        .as_ref()
-        .map(|player| player.session_id == session_id)
-        .unwrap_or(false);
-    if should_clear {
-        if let Some(mut player) = state.take() {
-            if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
-                #[cfg(target_os = "linux")]
-                crate::linux_render_surface::detach(libmpv);
-            }
-            cleanup_player_windows(player.host_hwnd, player.video_hwnd);
+    let player = {
+        let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+        if state
+            .as_ref()
+            .is_some_and(|player| player.session_id == session_id)
+        {
+            state.take()
+        } else {
+            None
         }
+    };
+    if let Some(mut player) = player {
+        if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
+            #[cfg(target_os = "linux")]
+            crate::linux_render_surface::detach(libmpv);
+        }
+        cleanup_player_windows(player.host_hwnd, player.video_hwnd);
     }
     Ok(())
 }
@@ -553,21 +609,26 @@ pub fn clear_cache(db: State<Database>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn save_app_metadata(
+pub async fn save_app_metadata(
     media_json: String,
     addon_id: String,
     addon_item_id: String,
     media_type: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Result<(), String> {
-    metadata::save_persisted_metadata(&db, media_json, addon_id, addon_item_id, media_type)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        metadata::save_persisted_metadata(&db, media_json, addon_id, addon_item_id, media_type)
+    })
+    .await
+    .map_err(|e| format!("Metadata save task failed: {e}"))?
 }
 
 #[tauri::command]
 pub fn get_app_metadata_for_addon(
     addon_id: String,
     addon_item_id: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Option<String> {
     metadata::get_persisted_for_addon(&db, addon_id, addon_item_id)
 }
@@ -579,7 +640,7 @@ pub fn get_app_metadata_by_ids(
     tmdb_id: Option<i64>,
     tvdb_id: Option<i64>,
     anilist_id: Option<i64>,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Option<String> {
     metadata::get_persisted_by_ids(
         &db,
@@ -594,33 +655,55 @@ pub fn get_app_metadata_by_ids(
 }
 
 #[tauri::command]
-pub fn get_app_metadata_by_ids_batch(
+pub async fn get_app_metadata_by_ids_batch(
     items: Vec<MetadataLookup>,
-    db: State<Database>,
-) -> Vec<Option<String>> {
-    metadata::get_persisted_by_ids_batch(&db, items)
+    db: State<'_, Database>,
+) -> Result<Vec<Option<String>>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::get_persisted_by_ids_batch(&db, items))
+        .await
+        .map_err(|e| format!("Metadata lookup task failed: {e}"))
 }
 
 #[tauri::command]
-pub fn delete_app_metadata(
+pub async fn delete_app_metadata(
     addon_id: String,
     addon_item_id: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Result<(), String> {
-    metadata::delete_persisted_metadata(&db, addon_id, addon_item_id)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        metadata::delete_persisted_metadata(&db, addon_id, addon_item_id)
+    })
+    .await
+    .map_err(|e| format!("Metadata delete task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn hard_reset_anime_metadata(
+pub async fn hard_reset_anime_metadata(
     local_media_id: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Result<(), String> {
-    metadata::hard_reset_anime_metadata(&db, local_media_id)
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::hard_reset_anime_metadata(&db, local_media_id))
+        .await
+        .map_err(|e| format!("Anime metadata reset task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn clear_app_metadata(db: State<Database>) -> Result<(), String> {
-    metadata::clear_persisted_metadata(&db)
+pub async fn clear_app_metadata(db: State<'_, Database>) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::clear_persisted_metadata(&db))
+        .await
+        .map_err(|e| format!("Metadata clear task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn clear_anime_app_metadata(db: State<'_, Database>) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::clear_persisted_anime_metadata(&db))
+        .await
+        .map_err(|e| format!("Anime metadata clear task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -806,6 +889,7 @@ pub fn launch_embedded_mpv(
     width: Option<i32>,
     height: Option<i32>,
 ) -> Result<(), String> {
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
     // Deduplicate rapid double-launches (React re-running the mount effect
     // fires two identical launches ~20ms apart; the second used to kill the
     // just-spawned mpv and start another one).
@@ -861,7 +945,7 @@ pub fn launch_embedded_mpv(
         }
     }
 
-    stop_embedded_mpv()?;
+    stop_embedded_mpv_inner()?;
 
     #[cfg(target_os = "windows")]
     let hwnd = main_window_hwnd(&app)?;
@@ -921,7 +1005,8 @@ pub fn launch_minimal_mpv(
     start_time: Option<f64>,
     hwdec_mode: Option<String>,
 ) -> Result<MinimalPlayerInfo, String> {
-    stop_embedded_mpv()?;
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
+    stop_embedded_mpv_inner()?;
 
     let mpv =
         player::find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
@@ -1049,7 +1134,15 @@ pub fn launch_minimal_mpv(
                     Some(format!("{}", status))
                 }
                 Ok(None) => None,
-                Err(error) => Some(format!("wait-error: {}", error)),
+                Err(error) => {
+                    let reap = if child.kill().is_ok() {
+                        child.wait().ok().map(|status| format!("reaped: {status}"))
+                    } else {
+                        None
+                    };
+                    *state = None;
+                    Some(format!("wait-error: {}; {:?}", error, reap))
+                }
             }
         };
         if let Some(status) = exit {
@@ -1115,6 +1208,15 @@ pub fn get_embedded_player_running() -> Result<bool, String> {
         .lock()
         .map_err(|e| e.to_string())?
         .is_some())
+}
+
+#[tauri::command]
+pub fn get_embedded_player_session_id() -> Result<Option<String>, String> {
+    Ok(native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .map(|player| player.session_id.clone()))
 }
 
 #[tauri::command]
@@ -1747,24 +1849,26 @@ fn launch_mpv_with_window(
             "sub-end",
             "chapter-list",
         ]);
-        player.start_event_loop(app);
-        if let Err(error) = player.command("loadfile", &[serde_json::Value::String(url)]) {
-            #[cfg(target_os = "linux")]
-            crate::linux_render_surface::detach(&player);
-            player.shutdown();
-            libmpv_player::destroy_video_child(video_hwnd);
-            return Err(error);
-        }
-
+        // Register the session before loadfile can produce asynchronous
+        // property/ready events. The event loop drops events from sessions
+        // that are no longer the active player.
         {
             let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
             *state = Some(NativePlayerState {
                 host_hwnd: hwnd,
                 video_hwnd,
-                session_id,
-                backend: NativePlayerBackend::LibMpv { player },
+                session_id: session_id.clone(),
+                backend: NativePlayerBackend::LibMpv {
+                    player: Arc::clone(&player),
+                },
                 launch_config: Some(launch_config),
             });
+        }
+        player.start_event_loop(app);
+        if let Err(error) = player.command("loadfile", &[serde_json::Value::String(url)]) {
+            let _ = clear_player_if_session(&session_id);
+            player.shutdown();
+            return Err(error);
         }
 
         Ok(())
@@ -2009,7 +2113,19 @@ fn launch_mpv_with_window(
                     Some(status.to_string())
                 }
                 Ok(None) => None,
-                Err(error) => Some(format!("wait-error: {}", error)),
+                Err(error) => {
+                    let reap = if player.child.kill().is_ok() {
+                        player
+                            .child
+                            .wait()
+                            .ok()
+                            .map(|status| format!("reaped: {status}"))
+                    } else {
+                        None
+                    };
+                    *state = None;
+                    Some(format!("wait-error: {}; {:?}", error, reap))
+                }
             }
         };
         if let Some(status) = exit {
@@ -2159,7 +2275,14 @@ fn launch_mpv_with_window(
                         "[PLAYER WATCHDOG] session={} mpv unresponsive for {}ms — killing process to unfreeze the app",
                         watchdog_session, silent_ms
                     ));
-                    let _ = player.child.kill();
+                    if player.child.kill().is_ok() {
+                        if let Err(error) = player.child.wait() {
+                            player_debug_log(format!(
+                                "[PLAYER WATCHDOG] session={} reap failed: {}",
+                                watchdog_session, error
+                            ));
+                        }
+                    }
                     *state = None;
                     return;
                 }
@@ -2362,39 +2485,55 @@ pub async fn clear_player_thumbnail() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn start_thumbnail_generation(
+pub async fn start_thumbnail_generation(
     app: tauri::AppHandle,
     request: crate::thumbnails::ThumbnailStartRequest,
 ) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
-    crate::thumbnails::start_thumbnail_generation(app, request)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::start_thumbnail_generation(app, request)
+    })
+    .await
+    .map_err(|e| format!("Thumbnail start task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_thumbnail_metadata(
+pub async fn get_thumbnail_metadata(
     app: tauri::AppHandle,
     cache_key: String,
 ) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
-    crate::thumbnails::get_thumbnail_metadata(app, cache_key)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::get_thumbnail_metadata(app, cache_key)
+    })
+    .await
+    .map_err(|e| format!("Thumbnail metadata task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_or_queue_scrub_thumbnail(
+pub async fn get_or_queue_scrub_thumbnail(
     app: tauri::AppHandle,
     request: crate::thumbnails::ScrubThumbnailRequest,
 ) -> Result<crate::thumbnails::ScrubThumbnailResponse, String> {
-    crate::thumbnails::get_or_queue_scrub_thumbnail(app, request)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::get_or_queue_scrub_thumbnail(app, request)
+    })
+    .await
+    .map_err(|e| format!("Scrub thumbnail task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
-    crate::thumbnails::prefetch_thumbnail_sprite(path)
+pub async fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::thumbnails::prefetch_thumbnail_sprite(path))
+        .await
+        .map_err(|e| format!("Thumbnail sprite prefetch task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_seekr_preview(
+pub async fn get_seekr_preview(
     request: crate::seekr::SeekrPreviewRequest,
-) -> Option<crate::seekr::SeekrPreviewData> {
-    crate::seekr::get_preview(request)
+) -> Result<Option<crate::seekr::SeekrPreviewData>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::seekr::get_preview(request))
+        .await
+        .map_err(|error| format!("Seekr preview task failed: {error}"))
 }
 
 #[tauri::command]
@@ -2675,8 +2814,16 @@ pub fn setup_player_click_through() -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_embedded_mpv() -> Result<(), String> {
-    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
-    if let Some(mut player) = state.take() {
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
+    stop_embedded_mpv_inner()
+}
+
+fn stop_embedded_mpv_inner() -> Result<(), String> {
+    let player = native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take();
+    if let Some(mut player) = player {
         let session_id = player.session_id.clone();
         let host_hwnd = player.host_hwnd;
         let video_hwnd = player.video_hwnd;
@@ -2698,7 +2845,21 @@ pub fn stop_embedded_mpv() -> Result<(), String> {
                     session_id,
                     child.id()
                 ));
-                let _ = child.kill();
+                if let Err(error) = child.kill() {
+                    player_debug_log(format!(
+                        "[PLAYER STOP] session={} kill failed: {}",
+                        session_id, error
+                    ));
+                }
+                // Taking the player state stops its monitor thread from
+                // calling try_wait. Reap the child here so a successfully
+                // killed mpv process cannot remain a zombie until app exit.
+                if let Err(error) = child.wait() {
+                    player_debug_log(format!(
+                        "[PLAYER STOP] session={} wait failed: {}",
+                        session_id, error
+                    ));
+                }
             }
         }
     }
@@ -2785,12 +2946,15 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
     let bundle_path = cache_dir.join(format!("Aurales_{version}_amd64.flatpak"));
     let worker_app = app.clone();
     let worker_bundle = bundle_path.clone();
+    let worker_partial = bundle_path.with_extension("flatpak.part");
+    const MAX_FLATPAK_UPDATE_BYTES: u64 = 256 * 1024 * 1024;
 
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         use std::io::{Read, Write};
 
         std::fs::create_dir_all(&cache_dir)
             .map_err(|error| format!("Failed to prepare the update cache: {error}"))?;
+        let _ = std::fs::remove_file(&worker_partial);
         let _ = worker_app.emit(
             "flatpak-update-progress",
             FlatpakUpdateProgress {
@@ -2801,6 +2965,7 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
         );
 
         let response = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(300))
             .set("Accept", "application/octet-stream")
             .set("User-Agent", "Aurales-Updater")
             .call()
@@ -2808,8 +2973,11 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
         let total = response
             .header("Content-Length")
             .and_then(|value| value.parse::<u64>().ok());
+        if total.is_some_and(|size| size > MAX_FLATPAK_UPDATE_BYTES) {
+            return Err("The Flatpak update exceeds the 256 MiB download limit.".to_string());
+        }
         let mut reader = response.into_reader();
-        let mut output = std::fs::File::create(&worker_bundle)
+        let mut output = std::fs::File::create(&worker_partial)
             .map_err(|error| format!("Failed to create the update bundle: {error}"))?;
         let mut buffer = [0_u8; 128 * 1024];
         let mut downloaded = 0_u64;
@@ -2819,6 +2987,11 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
                 .map_err(|error| format!("Failed while downloading the update: {error}"))?;
             if count == 0 {
                 break;
+            }
+            if downloaded.saturating_add(count as u64) > MAX_FLATPAK_UPDATE_BYTES {
+                drop(output);
+                let _ = std::fs::remove_file(&worker_partial);
+                return Err("The Flatpak update exceeds the 256 MiB download limit.".to_string());
             }
             output
                 .write_all(&buffer[..count])
@@ -2836,9 +3009,13 @@ pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> R
         output
             .sync_all()
             .map_err(|error| format!("Failed to finish the update download: {error}"))?;
+        drop(output);
         if downloaded == 0 {
+            let _ = std::fs::remove_file(&worker_partial);
             return Err("The downloaded Flatpak bundle was empty.".to_string());
         }
+        std::fs::rename(&worker_partial, &worker_bundle)
+            .map_err(|error| format!("Failed to finalize the update bundle: {error}"))?;
 
         let _ = worker_app.emit(
             "flatpak-update-progress",
@@ -3033,6 +3210,11 @@ pub async fn start_simkl_callback_server() -> Result<String, String> {
     providers::wait_for_simkl_callback().await
 }
 
+#[tauri::command]
+pub async fn cancel_simkl_callback_server() -> Result<(), String> {
+    providers::cancel_simkl_callback().await
+}
+
 /// Exchanges a Simkl authorization code for an access token.
 ///
 /// The `SIMKL_CLIENT_SECRET` must be present as an environment variable at
@@ -3098,25 +3280,41 @@ pub fn open_simkl_auth(app: tauri::AppHandle, url: String) -> Result<(), String>
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for AniList's
 /// OAuth redirect. Returns the `code` query parameter from the redirect URL.
 #[tauri::command]
-pub async fn start_anilist_callback_server() -> Result<String, String> {
+pub async fn start_anilist_callback_server(provider: String) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
 
-    let (listener, _guard) = providers::begin_anilist_callback().await?;
+    if provider != "anilist" && provider != "mdblist" {
+        return Err("Unsupported OAuth callback provider.".to_string());
+    }
+    let (listener, _guard, mut cancel) = providers::begin_anilist_callback(&provider).await?;
 
     let mut stream = providers::accept_oauth_callback(
         &listener,
+        &mut cancel,
         120,
         "Timed out waiting for OAuth callback.",
         "Failed to accept OAuth callback",
     )
     .await?;
 
-    let request = providers::read_oauth_callback(&mut stream, "AniList").await?;
+    let request = providers::read_oauth_callback(&mut stream, "AniList", &mut cancel).await?;
+    let callback_code = providers::parse_oauth_code(&request);
+    let callback_state = providers::parse_oauth_param(&request, "state");
+    let callback_error = providers::parse_oauth_param(&request, "error");
+    if provider == "mdblist" && (callback_code.is_some() || callback_error.is_some()) {
+        providers::write_oauth_success_response(&mut stream, "Authorization received").await;
+        return Ok(serde_json::json!({
+            "code": callback_code,
+            "state": callback_state,
+            "error": callback_error,
+        })
+        .to_string());
+    }
     if let Some(token) = providers::parse_oauth_param(&request, "access_token") {
         providers::write_oauth_success_response(&mut stream, "Connected!").await;
         return Ok(token);
     }
-    if let Some(code) = providers::parse_oauth_code(&request) {
+    if let Some(code) = callback_code {
         providers::write_oauth_success_response(&mut stream, "Authorization received").await;
         return Ok(code);
     }
@@ -3143,17 +3341,24 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
 
     let mut stream = providers::accept_oauth_callback(
         &listener,
+        &mut cancel,
         15,
         "Timed out waiting for AniList access token relay.",
         "Failed to accept AniList token relay",
     )
     .await?;
 
-    let request = providers::read_oauth_callback(&mut stream, "AniList token relay").await?;
+    let request =
+        providers::read_oauth_callback(&mut stream, "AniList token relay", &mut cancel).await?;
     let token = providers::parse_oauth_param(&request, "access_token")
         .ok_or_else(|| "AniList OAuth callback did not contain an access token.".to_string())?;
     providers::write_oauth_success_response(&mut stream, "Connected!").await;
     Ok(token)
+}
+
+#[tauri::command]
+pub async fn cancel_anilist_callback_server(provider: String) -> Result<(), String> {
+    providers::cancel_anilist_callback(&provider).await
 }
 
 /// Exchanges an AniList authorization code for an access token.
@@ -3203,6 +3408,23 @@ pub fn cache_entry_get(key: String, db: State<Database>) -> Option<CacheEntry> {
 #[tauri::command]
 pub fn cache_entry_get_many(keys: Vec<String>, db: State<Database>) -> Vec<CacheEntry> {
     cache::entry_get_many(&db, keys)
+}
+
+#[tauri::command]
+pub fn cache_entry_delete(
+    key: String,
+    expected_value: String,
+    db: State<Database>,
+) -> Result<(), String> {
+    cache::entry_delete(&db, key, expected_value)
+}
+
+#[tauri::command]
+pub fn cache_entry_delete_many(
+    entries: Vec<cache::CacheEntryDelete>,
+    db: State<Database>,
+) -> Result<(), String> {
+    cache::entry_delete_many(&db, entries)
 }
 
 #[tauri::command]

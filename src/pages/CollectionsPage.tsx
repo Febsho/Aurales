@@ -7,7 +7,7 @@
  */
 
 import SelectMenu from '../components/ui/SelectMenu'
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
@@ -43,6 +43,7 @@ import { getHomeShelfRows, getSmartCollections, newSmartCollectionDefaults, SMAR
 import { Modal } from '../components/ui'
 import LibraryCalendar from '../components/LibraryCalendar'
 import LibraryActivity from '../components/LibraryActivity'
+import { localDateKey } from '../services/localDate'
 import LocalWatchlist from '../components/LocalWatchlist'
 import { v4 as uuid } from 'uuid'
 import { getPosterStackItems, inferCatalogContentType, isCatalogUsedByHomeShelf, normalizeShelfDraft, shelfDraftKey, type CatalogContentType, type CatalogPickerItem, type CatalogPickerSource, type PendingShelfSelection, type ShelfDraft } from '../services/homeShelves'
@@ -66,26 +67,9 @@ import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { homeRowCacheKey, providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { cachedImage } from '../services/imageCache'
 import { SERVER_INTEGRATIONS_ENABLED, listServerCatalogs, serverCatalogListId, type ServerCatalogDescriptor } from '../services/serverIntegrations'
+import { getActiveProfileId } from '../services/profiles'
 
 // ── Simkl list options (for add-widget overlay) ────────────────────────────────
-
-const SIMKL_LIST_SOURCES = [
-  { id: 'watchlist',          label: 'Plan to Watch (All)',       type: 'poster' as const },
-  { id: 'watching',           label: 'Currently Watching (All)',  type: 'landscape' as const },
-  { id: 'completed',          label: 'Completed (All)',           type: 'poster' as const },
-  { id: 'movies-watchlist',   label: 'Movies — Watchlist',        type: 'poster' as const },
-  { id: 'movies-watching',    label: 'Movies — Watching',         type: 'landscape' as const },
-  { id: 'movies-completed',   label: 'Movies — Completed',        type: 'poster' as const },
-  { id: 'shows-watchlist',    label: 'Shows — Watchlist',         type: 'poster' as const },
-  { id: 'shows-watching',     label: 'Shows — Watching',          type: 'landscape' as const },
-  { id: 'shows-completed',    label: 'Shows — Completed',         type: 'poster' as const },
-  { id: 'anime-watchlist',    label: 'Anime — Watchlist',         type: 'poster' as const },
-  { id: 'anime-watching',     label: 'Anime — Watching',          type: 'landscape' as const },
-  { id: 'anime-completed',    label: 'Anime — Completed',         type: 'poster' as const },
-  { id: 'on-hold',            label: 'On Hold',                   type: 'poster' as const },
-  { id: 'dropped',            label: 'Dropped',                   type: 'poster' as const },
-]
-
 const SIMKL_LIBRARY_CATALOGS = [
   { id: 'movies-watchlist',          label: 'Plan to Watch',             type: 'poster' as const, group: 'watchlist', section: 'Movies' },
   { id: 'movies-completed',          label: 'Completed',                 type: 'poster' as const, group: 'watchlist', section: 'Movies' },
@@ -130,7 +114,8 @@ function libraryShelfPosterCacheKey(row: HomeRowConfig): string {
     sortBy: row.sortBy,
     accountScope: providerCacheScope(row.sourceType),
   })
-  return `library:shelf-posters:v1:${contentKey}`
+  const profileScope = row.layout === 'continue' ? `profile:${getActiveProfileId()}:` : ''
+  return `library:shelf-posters:v1:${profileScope}${contentKey}`
 }
 
 async function fetchSimklPosters(listId: string): Promise<string[]> {
@@ -162,7 +147,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
   const [posters, setPosters] = useState<string[]>(() => initial?.posters || [])
   const [count, setCount] = useState(() => initial?.count || 0)
   const [loading, setLoading] = useState(() => !initial)
-  const watchProgress = useAppStore((s) => s.watchProgress)
+  const watchProgress = useAppStore((s) => row.layout === 'continue' ? s.watchProgress : null)
 
   useEffect(() => {
     let cancelled = false
@@ -191,7 +176,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
       // The local Continue Watching preview should follow live progress and is
       // cheap to derive; remote shelves refresh only once during this session.
       if (row.layout === 'continue') {
-        const items = Array.from(watchProgress.values()).filter((item) => !item.completed && item.progressSeconds > 5)
+        const items = Array.from(watchProgress?.values() ?? []).filter((item) => !item.completed && item.progressSeconds > 5)
         const snapshot = { posters: items.slice(0, 5).map((item) => item.poster || item.backdrop || '').filter(Boolean), count: items.length }
         libraryShelfPosterMemory.set(cacheKey, snapshot)
         if (!cancelled) { setPosters(snapshot.posters); setCount(snapshot.count); setLoading(false) }
@@ -266,7 +251,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
           const snapshot = { posters: urls, count: total }
           libraryShelfPosterMemory.set(cacheKey, snapshot)
           settledWithPosters = true
-          await cacheSet(cacheKey, snapshot, { category: CACHE_CATEGORIES.HOME_ROW, ttlSeconds: null })
+          void cacheSet(cacheKey, snapshot, { category: CACHE_CATEGORIES.HOME_ROW, ttlSeconds: null })
           if (!cancelled) { setPosters(urls); setCount(total) }
         }
       } catch (_) {
@@ -347,16 +332,8 @@ function shelfSourceLabel(row: HomeRowConfig): string {
   return 'Catalog'
 }
 
-function shelfLayoutLabel(row: HomeRowConfig): string {
-  switch (row.layout) {
-    case 'poster': return 'Poster'
-    case 'landscape': return 'Landscape'
-    case 'list': return 'List'
-    case 'continue': return 'Continue'
-    case 'upcoming': return 'Upcoming'
-    case 'hero': return 'Hero'
-    default: return row.layout || 'Poster'
-  }
+function isServerRowVisible(row: HomeRowConfig): boolean {
+  return SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
 }
 
 function sourceColor(row: HomeRowConfig): string {
@@ -765,7 +742,7 @@ function ProviderListPickerSection({
 
   const badgeBg = service === 'anilist' ? 'bg-[#3b82f6]/15 text-[#60a5fa] ring-[#3b82f6]/20' : service === 'pmdb' ? 'bg-[#a855f7]/15 text-[#c084fc] ring-[#a855f7]/20' : service === 'pmdb-picks' ? 'bg-[#d946ef]/15 text-[#e879f9] ring-[#d946ef]/20' : service === 'mdblist' ? 'bg-[#22c55e]/15 text-[#4ade80] ring-[#22c55e]/20' : 'bg-[#ef4444]/15 text-[#f87171] ring-[#ef4444]/20'
   return (
-    <div className="space-y-1.5">
+    <div role="group" aria-label={title} className="space-y-1.5">
       {lists.map((list) => {
         const key = `${service}:${list.id}`
         const added = isAlreadyAdded(key)
@@ -794,7 +771,7 @@ function ProviderListPickerSection({
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-white/85 truncate">{list.label}</p>
               <div className="mt-1 flex items-center gap-1.5">
-                <span className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-meta font-semibold uppercase text-white/60">poster</span>
+                <span className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-meta font-semibold uppercase text-white/60">{list.type}</span>
                 <span className="text-meta text-white/20">{label}</span>
               </div>
             </div>
@@ -888,20 +865,30 @@ function AddWidgetOverlay({
   const [mdblistPublicLists, setMdblistPublicLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
   const [mdblistPublicSearch, setMdblistPublicSearch] = useState('')
   const [mdblistPublicSearching, setMdblistPublicSearching] = useState(false)
+  const mdblistPublicSearchRequestRef = useRef(0)
   const [traktPublicLists, setTraktPublicLists] = useState<{ id: string; label: string; layout: 'poster' | 'landscape' }[]>([])
   const [traktPublicSearch, setTraktPublicSearch] = useState('')
   const [traktPublicSearching, setTraktPublicSearching] = useState(false)
+  const traktPublicSearchRequestRef = useRef(0)
   const [serverCatalogs, setServerCatalogs] = useState<ServerCatalogDescriptor[]>([])
 
   useEffect(() => {
-    if (!simklConnected) { setSimklCustomLists([]); return }
-    getSimklCustomLists().then((lists) => setSimklCustomLists(lists.map((list) => ({
-      id: `custom:${list.id}`,
-      label: list.name,
-      type: list.mediaType === 'show' ? 'landscape' : 'poster',
-      group: 'custom',
-      section: list.itemCount ? `${list.itemCount} titles` : 'Custom List',
-    })))).catch(() => setSimklCustomLists([]))
+    let cancelled = false
+    if (!simklConnected) {
+      setSimklCustomLists([])
+      return () => { cancelled = true }
+    }
+    getSimklCustomLists().then((lists) => {
+      if (cancelled) return
+      setSimklCustomLists(lists.map((list) => ({
+        id: `custom:${list.id}`,
+        label: list.name,
+        type: list.mediaType === 'show' ? 'landscape' : 'poster',
+        group: 'custom',
+        section: list.itemCount ? `${list.itemCount} titles` : 'Custom List',
+      })))
+    }).catch(() => { if (!cancelled) setSimklCustomLists([]) })
+    return () => { cancelled = true }
   }, [simklConnected])
 
   const simklCatalogs = useMemo(() => [...SIMKL_LIBRARY_CATALOGS, ...simklCustomLists], [simklCustomLists])
@@ -917,50 +904,100 @@ function AddWidgetOverlay({
   }, [])
 
   useEffect(() => {
-    if (traktConnected) getAvailableTraktListSources().then(setTraktLists).catch(() => setTraktLists(TRAKT_LIST_SOURCES))
+    let cancelled = false
+    if (!traktConnected) {
+      setTraktLists(TRAKT_LIST_SOURCES)
+      return () => { cancelled = true }
+    }
+    const timer = window.setTimeout(() => {
+      getAvailableTraktListSources()
+        .then((lists) => { if (!cancelled) setTraktLists(lists) })
+        .catch(() => { if (!cancelled) setTraktLists(TRAKT_LIST_SOURCES) })
+    }, 250)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [traktConnected])
 
   useEffect(() => {
-    if (pmdbApiKey) getAvailablePmdbListSources().then(setPmdbLists).catch(() => setPmdbLists(PMDB_LIST_SOURCES))
+    let cancelled = false
+    if (!pmdbApiKey) {
+      setPmdbLists(PMDB_LIST_SOURCES)
+      return () => { cancelled = true }
+    }
+    const timer = window.setTimeout(() => {
+      getAvailablePmdbListSources()
+        .then((lists) => { if (!cancelled) setPmdbLists(lists) })
+        .catch(() => { if (!cancelled) setPmdbLists(PMDB_LIST_SOURCES) })
+    }, 250)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [pmdbApiKey])
 
   useEffect(() => {
-    if (pmdbApiKey) getAvailablePmdbPickSources().then(setPmdbPicks).catch(() => setPmdbPicks([]))
-    else setPmdbPicks([])
+    let cancelled = false
+    if (!pmdbApiKey) {
+      setPmdbPicks([])
+      return () => { cancelled = true }
+    }
+    const timer = window.setTimeout(() => {
+      getAvailablePmdbPickSources()
+        .then((lists) => { if (!cancelled) setPmdbPicks(lists) })
+        .catch(() => { if (!cancelled) setPmdbPicks([]) })
+    }, 250)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [pmdbApiKey])
 
   useEffect(() => {
-    if (mdblistApiKey) getAvailableMdblistSources().then(setMdblistLists).catch(() => setMdblistLists(MDBLIST_LIST_SOURCES))
-    else setMdblistLists(MDBLIST_LIST_SOURCES)
+    let cancelled = false
+    if (!mdblistApiKey) {
+      setMdblistLists(MDBLIST_LIST_SOURCES)
+      return () => { cancelled = true }
+    }
+    const timer = window.setTimeout(() => {
+      getAvailableMdblistSources()
+        .then((lists) => { if (!cancelled) setMdblistLists(lists) })
+        .catch(() => { if (!cancelled) setMdblistLists(MDBLIST_LIST_SOURCES) })
+    }, 250)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [mdblistApiKey])
 
   const handleMdblistPublicSearch = useCallback(async () => {
+    const requestId = ++mdblistPublicSearchRequestRef.current
     const q = mdblistPublicSearch.trim()
-    if (!q) return
+    if (!q) {
+      setMdblistPublicLists([])
+      setMdblistPublicSearching(false)
+      return
+    }
     setMdblistPublicSearching(true)
     try {
       const results = await getAvailableMdblistSources(q)
+      if (requestId !== mdblistPublicSearchRequestRef.current) return
       const publicOnly = results.filter((r) => !mdblistLists.some((own) => own.id === r.id) && r.id !== 'watchlist')
       setMdblistPublicLists(publicOnly)
     } catch (_) {
-      setMdblistPublicLists([])
+      if (requestId === mdblistPublicSearchRequestRef.current) setMdblistPublicLists([])
     } finally {
-      setMdblistPublicSearching(false)
+      if (requestId === mdblistPublicSearchRequestRef.current) setMdblistPublicSearching(false)
     }
   }, [mdblistPublicSearch, mdblistLists])
 
   const handleTraktPublicSearch = useCallback(async () => {
+    const requestId = ++traktPublicSearchRequestRef.current
     const q = traktPublicSearch.trim()
-    if (!q) return
+    if (!q) {
+      setTraktPublicLists([])
+      setTraktPublicSearching(false)
+      return
+    }
     setTraktPublicSearching(true)
     try {
       const results = await searchTraktPublicListSources(q)
+      if (requestId !== traktPublicSearchRequestRef.current) return
       const publicOnly = results.filter((r) => !traktLists.some((own) => own.id === r.id))
       setTraktPublicLists(publicOnly)
     } catch (_) {
-      setTraktPublicLists([])
+      if (requestId === traktPublicSearchRequestRef.current) setTraktPublicLists([])
     } finally {
-      setTraktPublicSearching(false)
+      if (requestId === traktPublicSearchRequestRef.current) setTraktPublicSearching(false)
     }
   }, [traktPublicSearch, traktLists])
 
@@ -1318,11 +1355,12 @@ function AddWidgetOverlay({
   // Autocomplete debouncing hooks
   useEffect(() => {
     if (!peopleSearch.trim()) { setPeopleSuggestions([]); return }
+    let cancelled = false
     const t = setTimeout(async () => {
       const results = await searchTmdbPeople(peopleSearch)
-      setPeopleSuggestions(results.slice(0, 5))
+      if (!cancelled) setPeopleSuggestions(results.slice(0, 5))
     }, 350)
-    return () => clearTimeout(t)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [peopleSearch])
 
   useEffect(() => {
@@ -1331,25 +1369,28 @@ function AddWidgetOverlay({
 
   useEffect(() => {
     if (!companySearch.trim()) { setCompanySuggestions([]); return }
+    let cancelled = false
     const t = setTimeout(async () => {
       const results = await searchTmdbCompanies(companySearch)
-      setCompanySuggestions(results.slice(0, 5))
+      if (!cancelled) setCompanySuggestions(results.slice(0, 5))
     }, 350)
-    return () => clearTimeout(t)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [companySearch])
 
   useEffect(() => {
     if (!keywordSearch.trim()) { setKeywordSuggestions([]); return }
+    let cancelled = false
     const t = setTimeout(async () => {
       const results = await searchTmdbKeywords(keywordSearch)
-      setKeywordSuggestions(results.slice(0, 5))
+      if (!cancelled) setKeywordSuggestions(results.slice(0, 5))
     }, 350)
-    return () => clearTimeout(t)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [keywordSearch])
 
   // Load TMDB Reference Lists
   useEffect(() => {
     if (!open || mode !== 'discover') return
+    let cancelled = false
     const loadData = async () => {
       try {
         const type = contentType === 'movie' ? 'movie' : 'tv'
@@ -1360,6 +1401,7 @@ function AddWidgetOverlay({
           getTmdbCertifications(type),
           getTmdbWatchProviders(type, watchRegion),
         ])
+        if (cancelled) return
         setGenresList(gList)
         setLanguagesList(lList)
         setCountriesList(cList)
@@ -1370,6 +1412,7 @@ function AddWidgetOverlay({
       }
     }
     loadData()
+    return () => { cancelled = true }
   }, [open, mode, contentType, watchRegion])
 
   // Filtered providers listing
@@ -1382,29 +1425,29 @@ function AddWidgetOverlay({
   // Certification Options
   const certificationCountries = Object.keys(certificationsMap)
   const certificationsForCountry = certificationCountry && certificationsMap[certificationCountry]
-    ? certificationsMap[certificationCountry].sort((a, b) => a.order - b.order)
+    ? [...certificationsMap[certificationCountry]].sort((a, b) => a.order - b.order)
     : []
 
   // Presets trigger
   const applyPreset = (preset: string) => {
     const now = new Date()
     const currentYear = now.getFullYear()
-    let from = ''
-    let to = ''
+    let from: string
+    let to: string
 
     switch (preset) {
       case 'This Month': {
         const firstDay = new Date(currentYear, now.getMonth(), 1)
         const lastDay = new Date(currentYear, now.getMonth() + 1, 0)
-        from = firstDay.toISOString().split('T')[0]
-        to = lastDay.toISOString().split('T')[0]
+        from = localDateKey(firstDay)
+        to = localDateKey(lastDay)
         break
       }
       case 'Last Month': {
         const firstDay = new Date(currentYear, now.getMonth() - 1, 1)
         const lastDay = new Date(currentYear, now.getMonth(), 0)
-        from = firstDay.toISOString().split('T')[0]
-        to = lastDay.toISOString().split('T')[0]
+        from = localDateKey(firstDay)
+        to = localDateKey(lastDay)
         break
       }
       case 'This Year': {
@@ -1418,13 +1461,17 @@ function AddWidgetOverlay({
         break
       }
       case 'Last 5 Years': {
-        from = `${currentYear - 5}-01-01`
-        to = now.toISOString().split('T')[0]
+        const firstDay = new Date(now)
+        firstDay.setFullYear(currentYear - 5)
+        from = localDateKey(firstDay)
+        to = localDateKey(now)
         break
       }
       case 'Last 10 Years': {
-        from = `${currentYear - 10}-01-01`
-        to = now.toISOString().split('T')[0]
+        const firstDay = new Date(now)
+        firstDay.setFullYear(currentYear - 10)
+        from = localDateKey(firstDay)
+        to = localDateKey(now)
         break
       }
       case '2010s': {
@@ -1759,7 +1806,7 @@ function AddWidgetOverlay({
 
   // Match mode toggle
   const MatchModeToggle = ({ value, onChange, name }: { value: 'AND' | 'OR'; onChange: (v: 'AND' | 'OR') => void; name: string }) => (
-    <div className="flex rounded-lg border border-white/[0.06] overflow-hidden">
+    <div role="group" aria-label={`${name} match mode`} className="flex rounded-lg border border-white/[0.06] overflow-hidden">
       {(['OR', 'AND'] as const).map((m) => (
         <button
           key={m}
@@ -3557,20 +3604,19 @@ export default function CollectionsPage() {
   const [sourceFilter, setSourceFilter] = useState('All')
   const [heroExpanded, setHeroExpanded] = useState(false)
 
-  const serverRowVisible = (row: HomeRowConfig) => SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
-  const heroRow = homeRows.find((r) => r.layout === 'hero' && serverRowVisible(r))
-  const allWidgetRows = homeRows
-    .filter((r) => r.layout !== 'hero' && serverRowVisible(r))
-    .sort((a, b) => a.order - b.order)
-  const smartCollectionRows = getSmartCollections(allWidgetRows)
-  const allHomeShelfRows = getHomeShelfRows(allWidgetRows)
-  const activeRows = activeTab === 'collections' ? smartCollectionRows : allHomeShelfRows
+  const heroRow = homeRows.find((r) => r.layout === 'hero' && isServerRowVisible(r))
+  const allWidgetRows = useMemo(() => homeRows
+    .filter((r) => r.layout !== 'hero' && isServerRowVisible(r))
+    .sort((a, b) => a.order - b.order), [homeRows])
+  const smartCollectionRows = useMemo(() => getSmartCollections(allWidgetRows), [allWidgetRows])
+  const allHomeShelfRows = useMemo(() => getHomeShelfRows(allWidgetRows), [allWidgetRows])
+  const activeRows = useMemo(() => activeTab === 'collections' ? smartCollectionRows : allHomeShelfRows, [activeTab, smartCollectionRows, allHomeShelfRows])
   const enabledWidgetRows = activeRows
   // Upcoming is a protected built-in shelf, but unlike Continue Watching it
   // may be reordered with the rest of the shelves.
-  const fixedWidgetRows = enabledWidgetRows.filter((r) => r.layout === 'continue')
-  const movableWidgetRows = enabledWidgetRows.filter((r) => r.layout !== 'continue')
-  const widgetRows = [...fixedWidgetRows, ...movableWidgetRows]
+  const fixedWidgetRows = useMemo(() => enabledWidgetRows.filter((r) => r.layout === 'continue'), [enabledWidgetRows])
+  const movableWidgetRows = useMemo(() => enabledWidgetRows.filter((r) => r.layout !== 'continue'), [enabledWidgetRows])
+  const widgetRows = useMemo(() => [...fixedWidgetRows, ...movableWidgetRows], [fixedWidgetRows, movableWidgetRows])
   const hiddenCount = activeTab === 'shelves' ? activeRows.filter((row) => !row.enabled).length : 0
 
   const sourceOptions = useMemo(

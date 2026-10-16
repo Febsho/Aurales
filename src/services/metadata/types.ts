@@ -116,6 +116,7 @@ export interface AppMediaItem {
   animeResolverVersion?: number
   animeSettingsSignature?: string
   metadataClassifierVersion?: number
+  metadataSettingsSignature?: string
   updatedAt: string
 }
 

@@ -1,5 +1,24 @@
 use std::path::PathBuf;
 
+fn is_usable_binary(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 pub fn stable_stream_hash(value: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -46,7 +65,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
         .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_usable_binary(candidate))
 }
 
 pub fn mpv_candidates() -> Vec<PathBuf> {
@@ -56,7 +75,7 @@ pub fn mpv_candidates() -> Vec<PathBuf> {
 pub fn find_mpv() -> Option<PathBuf> {
     if let Some(found) = mpv_candidates()
         .into_iter()
-        .find(|candidate| candidate.exists())
+        .find(|candidate| is_usable_binary(candidate))
     {
         return Some(found);
     }
@@ -71,7 +90,7 @@ pub fn find_mpv() -> Option<PathBuf> {
 pub fn find_ytdlp() -> Option<PathBuf> {
     if let Some(found) = binary_candidates(YTDLP_BINARY_NAMES)
         .into_iter()
-        .find(|candidate| candidate.exists())
+        .find(|candidate| is_usable_binary(candidate))
     {
         return Some(found);
     }
@@ -115,9 +134,34 @@ pub fn resolve_ytdlp(video_id: String, max_height: Option<u32>) -> Result<Vec<St
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
+    use std::process::Stdio;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("Failed to run yt-dlp: {error}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("yt-dlp timed out after 30 seconds.".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Failed while waiting for yt-dlp: {error}"));
+            }
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Failed to collect yt-dlp output: {error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(

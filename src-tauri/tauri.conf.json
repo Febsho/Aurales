@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Aurales",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "identifier": "com.aurales.app",
   "build": {
     "frontendDist": "../dist",
@@ -45,6 +45,7 @@
     "targets": ["msi", "nsis"],
     "externalBin": ["binaries/mpv", "binaries/yt-dlp"],
     "resources": {
+      "binaries/ffmpeg.exe": "",
       "binaries/*.dll": "",
       "resources/mpv-scripts/*": "mpv-scripts/",
       "resources/mpv-script-opts/*": "mpv-script-opts/"

@@ -12,14 +12,18 @@ import { createRoomStream, isSameRoomStream, resolveLocalSourceCandidates } from
 import type { LocalSourceCandidate, PendingRoomSync } from '../../stores/watchTogetherStore'
 import { estimateRoomPosition, estimateServerTiming, serverTimestampToLocal } from './clockSync'
 import { getActiveProfile } from '../profiles'
-import { getProfileAvatar } from '../../data/profileAvatars'
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let syncTimer: ReturnType<typeof setInterval> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let reconnectAttempt = 0
+let reconnectControlGeneration = 0
+let reconnectAttemptGeneration = 0
+let reconnectEnabled = false
 let lastServerUrl = ''
+let connectionPromise: Promise<void> | null = null
+let rejectConnection: ((reason: Error) => void) | null = null
 let sourceResolveController: AbortController | null = null
 
 // Live playback position reported by whichever player component is active.
@@ -28,8 +32,15 @@ let sourceResolveController: AbortController | null = null
 // that would rubber-band every guest back to the last event timestamp.
 let localPlayback: { time: number; isPlaying: boolean; updatedAt: number } | null = null
 
-function activeProfileAvatar(): string | undefined {
-  return getProfileAvatar(getActiveProfile().avatarRef)?.imageUrl
+async function activeProfileAvatar(): Promise<string | undefined> {
+  const profile = getActiveProfile()
+  if (!profile.avatarRef) return profile.avatar
+  try {
+    const { getProfileAvatar } = await import('../../data/profileAvatars')
+    return getProfileAvatar(profile.avatarRef)?.imageUrl || profile.avatar
+  } catch (_) {
+    return profile.avatar
+  }
 }
 
 export function reportLocalPlayback(time: number, isPlaying: boolean): void {
@@ -70,55 +81,85 @@ function logDebug(direction: 'in' | 'out', event: string, data?: any) {
 // ── Connection ──────────────────────────────────────────────────────────────
 
 export function connect(serverUrl: string): Promise<void> {
-  console.log('[WT DEBUG] connect() called, current ws:', ws ? `readyState=${ws.readyState}` : 'null')
-  return new Promise((resolve, reject) => {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      console.log('[WT DEBUG] Already connected/connecting, resolving immediately')
-      resolve()
-      return
-    }
+  reconnectControlGeneration++
+  reconnectEnabled = true
+  return connectToServer(serverUrl)
+}
 
-    lastServerUrl = serverUrl
+function connectToServer(serverUrl: string): Promise<void> {
+  clearReconnectTimer()
+  if (lastServerUrl && lastServerUrl !== serverUrl) reconnectAttempt = 0
+  if (ws && lastServerUrl === serverUrl) {
+    if (ws.readyState === WebSocket.OPEN) return Promise.resolve()
+    if (ws.readyState === WebSocket.CONNECTING && connectionPromise) return connectionPromise
+  }
+
+  // A saved server URL can change while the old socket is open or connecting.
+  // Close that socket before making a new one, and settle any callers waiting
+  // for its connection attempt instead of leaving them pending.
+  if (ws) {
+    rejectConnection?.(new Error('Connection target changed'))
+    ws.onclose = null
+    ws.onerror = null
+    try { ws.close() } catch (_) {}
+    ws = null
+  }
+  stopPingLoop()
+  stopSyncLoop()
+
+  lastServerUrl = serverUrl
+  const promise = new Promise<void>((resolve, reject) => {
+    let socket: WebSocket
     getStore().setConnectionStatus('connecting')
 
     let settled = false
+    const settle = (callback: () => void) => {
+      if (settled) return false
+      settled = true
+      clearTimeout(timeout)
+      if (connectionPromise === promise) {
+        connectionPromise = null
+        rejectConnection = null
+      }
+      callback()
+      return true
+    }
     const timeout = setTimeout(() => {
       if (!settled) {
-        console.log('[WT DEBUG] TIMEOUT after 8s, ws readyState:', ws?.readyState)
-        settled = true
+        settle(() => reject(new Error('Connection timed out — is the Watch Together server running?')))
         getStore().setConnectionStatus('disconnected')
-        if (ws) { try { ws.close() } catch (_) {} }
-        ws = null
-        reject(new Error('Connection timed out — is the Watch Together server running?'))
+        if (ws === socket) {
+          try { socket.close() } catch (_) {}
+          ws = null
+        }
       }
     }, 8000)
+    rejectConnection = (reason) => { settle(() => reject(reason)) }
 
-    console.log('[WT DEBUG] Attempting WebSocket connection to:', serverUrl)
     try {
-      ws = new WebSocket(serverUrl)
+      socket = new WebSocket(serverUrl)
+      ws = socket
     } catch (err) {
-      console.error('[WT DEBUG] WebSocket constructor threw:', err)
       clearTimeout(timeout)
       settled = true
+      connectionPromise = null
+      rejectConnection = null
       getStore().setConnectionStatus('disconnected')
       reject(err)
       return
     }
 
-    ws.onopen = () => {
-      console.log('[WT DEBUG] >>> onopen fired!')
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
+    socket.onopen = () => {
+      if (ws !== socket || !settle(() => resolve())) return
       reconnectAttempt = 0
       getStore().setConnectionStatus('connected')
       startPingLoop()
       ping()
       logDebug('in', 'CONNECTED')
-      resolve()
     }
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (ws !== socket) return
       try {
         const msg: ServerMessage = JSON.parse(event.data)
         logDebug('in', msg.type, msg)
@@ -128,46 +169,50 @@ export function connect(serverUrl: string): Promise<void> {
       }
     }
 
-    ws.onclose = (event) => {
-      console.log('[WT DEBUG] onclose:', event.code, event.reason)
+    socket.onclose = (event) => {
+      if (ws !== socket) return
       logDebug('in', 'CLOSE', { code: event.code, reason: event.reason })
       stopPingLoop()
       stopSyncLoop()
       ws = null
 
       if (!settled) {
-        settled = true
-        clearTimeout(timeout)
+        settle(() => reject(new Error('Connection closed before opening')))
         getStore().setConnectionStatus('disconnected')
-        reject(new Error('Connection closed before opening'))
         return
       }
 
       const store = getStore()
-      if (store.connectionStatus !== 'disconnected') {
+      if (store.connectionStatus !== 'disconnected' && reconnectEnabled) {
         store.setConnectionStatus('reconnecting')
         attemptReconnect()
       }
     }
 
-    ws.onerror = (event) => {
-      console.error('[WT DEBUG] onerror:', (event as ErrorEvent).message ?? 'unknown error')
+    socket.onerror = (event) => {
+      if (ws !== socket) return
       logDebug('in', 'ERROR', { message: (event as ErrorEvent).message ?? 'unknown' })
       if (!settled) {
-        settled = true
-        clearTimeout(timeout)
+        settle(() => reject(new Error('Failed to connect to Watch Together server')))
         getStore().setConnectionStatus('disconnected')
+        try { socket.close() } catch (_) {}
         ws = null
-        reject(new Error('Failed to connect to Watch Together server'))
       }
     }
   })
+  connectionPromise = promise
+  return promise
 }
 
 export function disconnect(): void {
+  reconnectControlGeneration++
+  reconnectEnabled = false
   clearReconnectTimer()
   stopSyncLoop()
   stopPingLoop()
+  rejectConnection?.(new Error('Connection cancelled'))
+  connectionPromise = null
+  rejectConnection = null
   getStore().setConnectionStatus('disconnected')
   if (ws) {
     ws.onclose = null
@@ -177,15 +222,12 @@ export function disconnect(): void {
 }
 
 export function send(event: WatchTogetherEvent): void {
-  console.log('[WT DEBUG] send():', event.type, 'ws:', ws ? `readyState=${ws.readyState}` : 'null')
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.log('[WT DEBUG] SEND_FAILED: not connected')
     logDebug('out', 'SEND_FAILED', { event: event.type, reason: 'not connected' })
     return
   }
   logDebug('out', event.type, event)
   ws.send(JSON.stringify(event))
-  console.log('[WT DEBUG] sent OK:', JSON.stringify(event))
 }
 
 // ── Room actions ────────────────────────────────────────────────────────────
@@ -195,11 +237,12 @@ export async function createRoom(name: string): Promise<void> {
   if (store.connectionStatus !== 'connected') {
     await connect(store.serverUrl)
   }
+  const avatar = await activeProfileAvatar()
   send({
     type: 'ROOM_JOIN',
     roomCode: '',
     name,
-    avatar: activeProfileAvatar(),
+    avatar,
     roomSettings: {
       everyoneCanControl: store.defaultControlMode === 'everyone',
       requireReadyCheck: store.requireReadyCheck,
@@ -215,8 +258,7 @@ export async function createRoom(name: string): Promise<void> {
         cleanup()
         resolve()
       }
-      const newErrors = state.errors.length - (prev.errors?.length ?? 0)
-      if (newErrors > 0) {
+      if (state.errors !== prev.errors && state.errors.length > 0) {
         cleanup()
         reject(new Error(state.errors[state.errors.length - 1]))
       }
@@ -233,11 +275,12 @@ export async function joinRoom(code: string, name: string): Promise<void> {
   if (store.connectionStatus !== 'connected') {
     await connect(store.serverUrl)
   }
+  const avatar = await activeProfileAvatar()
   send({
     type: 'ROOM_JOIN',
     roomCode: code,
     name,
-    avatar: activeProfileAvatar(),
+    avatar,
     clientId: store.currentUserId || undefined,
   })
   return new Promise<void>((resolve, reject) => {
@@ -250,8 +293,7 @@ export async function joinRoom(code: string, name: string): Promise<void> {
         cleanup()
         resolve()
       }
-      const newErrors = state.errors.length - (prev.errors?.length ?? 0)
-      if (newErrors > 0) {
+      if (state.errors !== prev.errors && state.errors.length > 0) {
         cleanup()
         reject(new Error(state.errors[state.errors.length - 1]))
       }
@@ -495,6 +537,15 @@ export function startSyncLoop(): void {
   syncTimer = setInterval(broadcastPosition, intervalMs)
 }
 
+// Settings are available while the host is already in a room. Restart the
+// timer immediately when the interval changes instead of silently retaining
+// the value captured at room join.
+useWatchTogetherStore.subscribe((state, previous) => {
+  if (state.syncInterval !== previous.syncInterval && state.isHost && state.currentRoom) {
+    startSyncLoop()
+  }
+})
+
 export function stopSyncLoop(): void {
   if (syncTimer) {
     clearInterval(syncTimer)
@@ -534,10 +585,11 @@ export async function autoResolveStream(
     logDebug('out', 'AUTO_RESOLVE_START', { media: m.title, generation })
     const candidates = await resolveLocalSourceCandidates(m, ep, signal)
     if (signal.aborted) return false
+    const isHostNow = getStore().isHost
     // The host publishes a non-sensitive release fingerprint. Put an exact
     // local match first; other valid sources remain fallbacks in case a peer
     // does not have that addon or its link has expired.
-    const orderedCandidates = !store.isHost && hostStream
+    const orderedCandidates = !isHostNow && hostStream
       ? (() => {
           const exact = candidates.filter((candidate) => isSameRoomStream({ ...candidate.stream, addonId: candidate.addonId }, hostStream))
           // Keep every verified source as a fallback. A guest may not have the
@@ -550,7 +602,7 @@ export async function autoResolveStream(
     if (match) {
       // Publish the host's release after it has passed local resolution. This
       // lets guests select the same release without ever exposing its URL.
-      if (getStore().isHost) selectStream(createRoomStream({ ...match.stream, addonId: match.addonId }))
+      if (isHostNow) selectStream(createRoomStream({ ...match.stream, addonId: match.addonId }))
       sendLocalSourceStatus('ready')
       setReady(true)
       logDebug('in', 'AUTO_RESOLVE_OK', { addon: match.addonName, count: candidates.length, stream: match.stream.name ?? match.stream.title })
@@ -574,6 +626,9 @@ export async function autoResolveStream(
 
 function publishSync(sync: PendingRoomSync): void {
   const store = getStore()
+  // A queued server broadcast can arrive after ROOM_LEAVE. Do not dispatch a
+  // room correction into a player that is now playing outside Watch Together.
+  if (!store.currentRoom) return
   if (!store.queuePendingSync(sync)) return
   const localServerTimestamp = serverTimestampToLocal(sync.serverTime, store.serverClockOffsetMs)
   window.dispatchEvent(new CustomEvent('wt:sync_request', {
@@ -594,12 +649,25 @@ function handleServerMessage(msg: ServerMessage): void {
   switch (msg.type) {
     case 'ROOM_CREATED':
     case 'ROOM_JOINED': {
+      const roomChanged = store.currentRoom?.id !== msg.room.id
+      // A room can change while source discovery is still awaiting addon
+      // responses. Invalidate it before publishing the new room so a late
+      // result cannot select a stream in the wrong room.
+      sourceResolveController?.abort()
+      sourceResolveController = null
+      stopSyncLoop()
+      if (roomChanged) {
+        clearLocalPlayback()
+        store.clearLocalSource()
+      }
       store.setCurrentRoom(msg.room)
       store.setCurrentUserId(msg.userId)
       store.setIsHost(msg.room.hostUserId === msg.userId)
       store.setRoomPanelOpen(true)
       if (msg.room.hostUserId === msg.userId) {
         startSyncLoop()
+      } else {
+        stopSyncLoop()
       }
       if (msg.room.selectedMedia) {
         autoResolveStream(msg.room.selectedMedia, msg.room.selectedEpisode, msg.room.selectedStream)
@@ -608,6 +676,9 @@ function handleServerMessage(msg: ServerMessage): void {
     }
 
     case 'ROOM_STATE':
+      // Ignore delayed broadcasts after leaving, or from a room that has
+      // already been replaced by another join.
+      if (!store.currentRoom || store.currentRoom.id !== msg.room.id) break
       store.setCurrentRoom(msg.room)
       store.setIsHost(msg.room.hostUserId === store.currentUserId)
       break
@@ -715,26 +786,47 @@ function clearReconnectTimer() {
 }
 
 function attemptReconnect(): void {
+  if (!reconnectEnabled) return
   clearReconnectTimer()
+  const generation = reconnectControlGeneration
+  const attemptGeneration = ++reconnectAttemptGeneration
   const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 30_000)
   reconnectAttempt++
   logDebug('out', 'RECONNECT_SCHEDULED', { attempt: reconnectAttempt, delayMs: delay })
 
   reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null
+    if (!reconnectEnabled || generation !== reconnectControlGeneration || attemptGeneration !== reconnectAttemptGeneration) return
     try {
-      await connect(lastServerUrl)
+      await connectToServer(lastServerUrl)
+      if (!reconnectEnabled || generation !== reconnectControlGeneration || attemptGeneration !== reconnectAttemptGeneration) return
       const store = getStore()
       if (store.currentRoom && store.currentUserId) {
+        const roomId = store.currentRoom.id
+        const roomCode = store.currentRoom.code
+        const userId = store.currentUserId
+        const name = store.defaultNickname || 'Reconnecting...'
+        const avatar = await activeProfileAvatar()
+        const latest = getStore()
+        // Avatar resolution can outlive the room/session that initiated the
+        // rejoin. Never send a stale ROOM_JOIN after leave, room replacement,
+        // disconnect, or a newer reconnect attempt.
+        if (!reconnectEnabled
+          || generation !== reconnectControlGeneration
+          || attemptGeneration !== reconnectAttemptGeneration
+          || ws?.readyState !== WebSocket.OPEN
+          || latest.currentRoom?.id !== roomId
+          || latest.currentUserId !== userId) return
         send({
           type: 'ROOM_JOIN',
-          roomCode: store.currentRoom.code,
-          name: store.defaultNickname || 'Reconnecting...',
-          avatar: activeProfileAvatar(),
-          clientId: store.currentUserId,
+          roomCode,
+          name,
+          avatar,
+          clientId: userId,
         })
       }
     } catch (_) {
-      attemptReconnect()
+      if (reconnectEnabled && generation === reconnectControlGeneration) attemptReconnect()
     }
   }, delay)
 }

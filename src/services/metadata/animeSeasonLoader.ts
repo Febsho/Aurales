@@ -11,7 +11,7 @@ interface NativeAnimeSeasonResponse {
   cacheStatus: 'hit' | 'miss'
 }
 
-const groups = new Map<string, { key: string; generation: number }>()
+const groups = new Map<string, { key: string; generation: number; users: number }>()
 
 function staleError(): DOMException {
   return new DOMException('Anime season request was superseded', 'AbortError')
@@ -19,9 +19,20 @@ function staleError(): DOMException {
 
 function begin(group: string, key: string): number {
   const current = groups.get(group)
-  const generation = current?.key === key ? current.generation : (current?.generation || 0) + 1
-  groups.set(group, { key, generation })
+  if (current?.key === key) {
+    current.users += 1
+    return current.generation
+  }
+  const generation = (current?.generation || 0) + 1
+  groups.set(group, { key, generation, users: 1 })
   return generation
+}
+
+function finish(group: string, key: string, generation: number): void {
+  const current = groups.get(group)
+  if (!current || current.key !== key || current.generation !== generation) return
+  current.users -= 1
+  if (current.users === 0) groups.delete(group)
 }
 
 function ensureCurrent(group: string, key: string, generation: number): void {
@@ -70,40 +81,47 @@ export async function loadAnimeSeason(
   const key = cacheKey(id, season)
   const group = options.cancelGroup || 'detail:anime-season:visible'
   const generation = begin(group, key)
-  const cached = await cacheGet<SeasonDetails>(key)
-  if (cached) {
-    ensureCurrent(group, key, generation)
-    if (cached.stale) {
-      void invokeNative(id, season, key, `background:${key}`, 'background', true)
-        .then((response) => cacheSet(key, response.data, {
-          category: CACHE_CATEGORIES.TVDB_SEASON,
-          ttlSeconds: CACHE_TTLS.TVDB_SEASON,
-        }))
-        .catch(() => {
-          // The legacy provider owns stale-while-revalidate for this same
-          // English cache key. Background priority would select its raw cache.
-          return tvdbProvider.getSeason(`tvdb-${id}`, season)
-        })
-        .catch(() => undefined)
-    }
-    return cached.data
-  }
-
   try {
-    const response = await invokeNative(id, season, key, group, options.priority || 'interactive', false)
-    if (response.stale) throw staleError()
-    ensureCurrent(group, key, generation)
-    return response.data
-  } catch (error) {
-    if ((error instanceof DOMException && error.name === 'AbortError') || nativeCancelled(error)) throw staleError()
-    ensureCurrent(group, key, generation)
-    const getSeason = tvdbProvider.getSeason as (
-      showId: string,
-      seasonNumber: number,
-      priority?: 'interactive' | 'visible' | 'background',
-    ) => Promise<SeasonDetails>
-    const fallback = await getSeason(`tvdb-${id}`, season, options.priority === 'background' ? 'background' : 'interactive')
-    ensureCurrent(group, key, generation)
-    return fallback
+    const cached = await cacheGet<SeasonDetails>(key)
+    if (cached) {
+      ensureCurrent(group, key, generation)
+      if (cached.stale) {
+        void invokeNative(id, season, key, `background:${key}`, 'background', true)
+          .then((response) => {
+            if (response.stale) throw staleError()
+            return cacheSet(key, response.data, {
+              category: CACHE_CATEGORIES.TVDB_SEASON,
+              ttlSeconds: CACHE_TTLS.TVDB_SEASON,
+            })
+          })
+          .catch(() => {
+            // The legacy provider owns stale-while-revalidate for this same
+            // English cache key. Background priority would select its raw cache.
+            return tvdbProvider.getSeason(`tvdb-${id}`, season)
+          })
+          .catch(() => undefined)
+      }
+      return cached.data
+    }
+
+    try {
+      const response = await invokeNative(id, season, key, group, options.priority || 'interactive', false)
+      if (response.stale) throw staleError()
+      ensureCurrent(group, key, generation)
+      return response.data
+    } catch (error) {
+      if ((error instanceof DOMException && error.name === 'AbortError') || nativeCancelled(error)) throw staleError()
+      ensureCurrent(group, key, generation)
+      const getSeason = tvdbProvider.getSeason as (
+        showId: string,
+        seasonNumber: number,
+        priority?: 'interactive' | 'visible' | 'background',
+      ) => Promise<SeasonDetails>
+      const fallback = await getSeason(`tvdb-${id}`, season, options.priority === 'background' ? 'background' : 'interactive')
+      ensureCurrent(group, key, generation)
+      return fallback
+    }
+  } finally {
+    finish(group, key, generation)
   }
 }

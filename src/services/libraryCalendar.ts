@@ -9,6 +9,8 @@ import { resolveAnimeIds } from './animeLists'
 import { applySearchResultArt, resolveArtFromProviders } from './artwork'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { getActiveProfileId, profileProviderCacheKey } from './profiles'
+import { isValidDateKey } from './localDate'
 
 export interface CalendarEntry {
   id: string
@@ -38,6 +40,8 @@ export interface CalendarLoadResult {
   errors: string[]
 }
 
+const progressSignatureCache = new WeakMap<Map<string, WatchProgress>, string>()
+
 const toNumber = (value: string | number | undefined) => {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? number : undefined
@@ -45,7 +49,7 @@ const toNumber = (value: string | number | undefined) => {
 
 function toLocalDateKey(value?: string): string | undefined {
   const match = value?.match(/^(\d{4}-\d{2}-\d{2})/)
-  return match?.[1]
+  return match && isValidDateKey(match[1]) ? match[1] : undefined
 }
 
 function monthRange(month: Date) {
@@ -55,10 +59,9 @@ function monthRange(month: Date) {
   return { start: key(start), end: key(end) }
 }
 
-function inMonth(date: string | undefined, month: Date) {
+function inMonth(date: string | undefined, range: { start: string; end: string }) {
   if (!date) return false
-  const { start, end } = monthRange(month)
-  return date >= start && date <= end
+  return date >= range.start && date <= range.end
 }
 
 function localTodayKey() {
@@ -66,28 +69,64 @@ function localTodayKey() {
   return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
 }
 
-function getReleaseState(date: string): CalendarEntry['releaseState'] {
-  const today = localTodayKey()
+function getReleaseState(date: string, today: string): CalendarEntry['releaseState'] {
   return date === today ? 'today' : date < today ? 'past' : 'upcoming'
 }
 
-function progressMatches(item: SearchResult, progress: WatchProgress, season?: number, episode?: number) {
-  if (!progress.completed) return false
-  if (season != null && episode != null && (progress.season !== season || progress.episode !== episode)) return false
-  const values = [item.id, item.imdbId, item.tmdbId, item.tvdbId, item.anilistId, item.malId].filter(Boolean).map(String)
-  const progressValues = [progress.mediaId, progress.imdbId, progress.tmdbId, progress.anilistId, progress.malId].filter(Boolean).map(String)
-  return values.some((value) => progressValues.includes(value) || progress.id === value || progress.id.startsWith(`${value}:`))
-    || Boolean(item.title && progress.title && item.title.toLowerCase() === progress.title.toLowerCase())
+interface WatchedProgressIndex {
+  byIdentity: Map<string, WatchProgress[]>
+  byTitle: Map<string, WatchProgress[]>
 }
 
-function isWatched(item: SearchResult, progress: Map<string, WatchProgress>, season?: number, episode?: number) {
-  return [...progress.values()].some((entry) => progressMatches(item, entry, season, episode))
+function indexWatchedProgress(progress: Map<string, WatchProgress>): WatchedProgressIndex {
+  const byIdentity = new Map<string, WatchProgress[]>()
+  const byTitle = new Map<string, WatchProgress[]>()
+  const add = (map: Map<string, WatchProgress[]>, key: string, value: WatchProgress) => {
+    const entries = map.get(key)
+    if (entries) entries.push(value)
+    else map.set(key, [value])
+  }
+
+  for (const entry of progress.values()) {
+    if (!entry.completed) continue
+    const identities = new Set([entry.mediaId, entry.imdbId, entry.tmdbId, entry.anilistId, entry.malId].filter(Boolean).map(String))
+    if (entry.id) {
+      identities.add(entry.id)
+      // A progress record may use an episode-qualified ID while a catalog
+      // only has the series ID. Index each prefix once instead of scanning all
+      // history records for every calendar episode.
+      for (let separator = entry.id.indexOf(':'); separator >= 0; separator = entry.id.indexOf(':', separator + 1)) {
+        identities.add(entry.id.slice(0, separator))
+      }
+    }
+    for (const identity of identities) add(byIdentity, `${entry.mediaType}:${identity}`, entry)
+    if (entry.title) add(byTitle, `${entry.mediaType}:${entry.title.toLowerCase()}`, entry)
+  }
+  return { byIdentity, byTitle }
+}
+
+function isWatched(item: SearchResult, progress: WatchedProgressIndex, season?: number, episode?: number) {
+  const candidates = new Set<WatchProgress>()
+  const identities = [item.id, item.imdbId, item.tmdbId, item.tvdbId, item.anilistId, item.malId]
+    .filter(Boolean).map(String)
+  for (const identity of identities) {
+    for (const entry of progress.byIdentity.get(`${item.type}:${identity}`) || []) candidates.add(entry)
+  }
+  if (item.title) {
+    for (const entry of progress.byTitle.get(`${item.type}:${item.title.toLowerCase()}`) || []) candidates.add(entry)
+  }
+  for (const entry of candidates) {
+    if (season != null && episode != null && (entry.season !== season || entry.episode !== episode)) continue
+    return true
+  }
+  return false
 }
 
 function dedupe(items: SearchResult[]) {
   const map = new Map<string, SearchResult>()
   for (const item of items) {
-    const key = item.tmdbId ? `tmdb:${item.tmdbId}` : item.tvdbId ? `tvdb:${item.tvdbId}` : item.imdbId ? `imdb:${item.imdbId}` : item.anilistId ? `anilist:${item.anilistId}` : `${item.type}:${item.title}:${item.year || ''}`
+    // Movie and TV IDs live in separate provider namespaces and can overlap.
+    const key = item.tmdbId ? `${item.type}:tmdb:${item.tmdbId}` : item.tvdbId ? `${item.type}:tvdb:${item.tvdbId}` : item.imdbId ? `${item.type}:imdb:${item.imdbId}` : item.anilistId ? `${item.type}:anilist:${item.anilistId}` : `${item.type}:${item.title}:${item.year || ''}`
     if (!map.has(key)) map.set(key, item)
   }
   return [...map.values()]
@@ -121,6 +160,52 @@ function localItems(progress: Map<string, WatchProgress>): SearchResult[] {
       anilistId: item.anilistId,
       malId: item.malId,
     })))
+}
+
+/**
+ * Playback checkpoints change every few seconds, but the calendar only uses
+ * local progress to decide which titles are tracked and which entries are
+ * watched. Keep those relevant identities in the cache/effect key so normal
+ * position updates do not repeat provider and episode lookups.
+ */
+export function calendarProgressSignature(progress: Map<string, WatchProgress>): string {
+  const cached = progressSignatureCache.get(progress)
+  if (cached) return cached
+  const local = { count: 0, sum: 0, xor: 0 }
+  const watched = { count: 0, sum: 0, xor: 0 }
+  const add = (target: typeof local, row: unknown[], seed: number) => {
+    const serialized = JSON.stringify(row)
+    let hash = seed
+    for (let index = 0; index < serialized.length; index += 1) {
+      hash ^= serialized.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+    hash >>>= 0
+    target.count += 1
+    target.sum = (target.sum + hash) >>> 0
+    target.xor ^= Math.imul(hash ^ serialized.length, 0x9e3779b1)
+  }
+  for (const item of progress.values()) {
+    if (item.progressSeconds > 5 && !item.completed) {
+      add(local, [
+        item.mediaId, item.title || 'Untitled', item.mediaType === 'movie' ? 'movie' : 'series',
+        item.poster, item.backdrop, item.tmdbId, item.imdbId, item.anilistId, item.malId,
+      ], 2166136261)
+    }
+    if (item.completed) {
+      add(watched, [
+        item.id, item.mediaId, item.imdbId, item.tmdbId, item.anilistId, item.malId,
+        item.mediaType, item.title?.toLowerCase(), item.season, item.episode,
+      ], 2246822519)
+    }
+  }
+  // Watch progress is selected from the Zustand store, so this runs on every
+  // store update. Commutative per-row hashes preserve order independence while
+  // avoiding temporary row arrays, two O(n log n) sorts, and a JSON string
+  // proportional to the full library for each selector evaluation.
+  const signature = `${local.count}:${local.sum}:${local.xor >>> 0}|${watched.count}:${watched.sum}:${watched.xor >>> 0}`
+  progressSignatureCache.set(progress, signature)
+  return signature
 }
 
 function traktItems(raw: unknown[], type: 'movie' | 'series'): SearchResult[] {
@@ -159,7 +244,7 @@ async function getTrackedItems(options: CalendarLoadOptions, errors: string[]): 
   }))
 }
 
-async function entriesForItem(item: SearchResult, month: Date, progress: Map<string, WatchProgress>): Promise<CalendarEntry[]> {
+async function entriesForItem(item: SearchResult, range: { start: string; end: string }, today: string, progress: WatchedProgressIndex): Promise<CalendarEntry[]> {
   const artwork = await resolveArtFromProviders(
     item.type === 'series' ? 'series' : 'movie',
     { tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId },
@@ -170,7 +255,7 @@ async function entriesForItem(item: SearchResult, month: Date, progress: Map<str
   if (displayItem.type === 'movie') {
     let date = toLocalDateKey(displayItem.releaseDate)
     if (!date && displayItem.tmdbId) date = toLocalDateKey((await tmdbProvider.getMovie(`tmdb-${displayItem.tmdbId}`)).releaseDate)
-    return inMonth(date, month) && date ? [{ id: `movie:${displayItem.id}:${date}`, date, kind: 'movie', title: displayItem.title, subtitle: 'Movie release', poster: displayItem.poster, media: displayItem, watched: isWatched(displayItem, progress), releaseState: getReleaseState(date) }] : []
+    return inMonth(date, range) && date ? [{ id: `movie:${displayItem.id}:${date}`, date, kind: 'movie', title: displayItem.title, subtitle: 'Movie release', poster: displayItem.poster, media: displayItem, watched: isWatched(displayItem, progress), releaseState: getReleaseState(date, today) }] : []
   }
 
   let tmdbId = toNumber(displayItem.tmdbId)
@@ -188,7 +273,7 @@ async function entriesForItem(item: SearchResult, month: Date, progress: Map<str
   const seasonDetails = await mapLimit(seasons, 4, (season) => provider.getSeason(showId, season.seasonNumber).catch(() => null))
   return seasonDetails.flatMap((season) => season ? season.episodes.flatMap((episode) => {
     const date = toLocalDateKey(episode.airDate)
-    if (!date || !inMonth(date, month)) return []
+    if (!date || !inMonth(date, range)) return []
     return [{
       id: `episode:${showId}:${episode.seasonNumber}:${episode.episodeNumber}:${date}`,
       date,
@@ -200,23 +285,30 @@ async function entriesForItem(item: SearchResult, month: Date, progress: Map<str
       season: episode.seasonNumber,
       episode: episode.episodeNumber,
       watched: isWatched(displayItem, progress, episode.seasonNumber, episode.episodeNumber),
-      releaseState: getReleaseState(date),
+      releaseState: getReleaseState(date, today),
     }]
   }) : [])
 }
 
 function calendarCacheKey(options: CalendarLoadOptions) {
-  const progress = [...options.watchProgress.values()]
-    .map((item) => `${item.id}:${item.updatedAt || ''}:${item.completed ? 1 : 0}:${Math.floor(item.progressSeconds)}`)
-    .sort()
-    .join('|')
-  return `library:calendar:v2:${monthRange(options.month).start.slice(0, 7)}:${options.traktConnected ? 1 : 0}${options.simklConnected ? 1 : 0}${options.anilistConnected ? 1 : 0}${options.mdblistConnected ? 1 : 0}:${progress}`
+  const progress = calendarProgressSignature(options.watchProgress)
+  const profileId = getActiveProfileId()
+  const accounts = [
+    options.traktConnected && profileProviderCacheKey('calendar:trakt', 'trakt', profileId),
+    options.simklConnected && profileProviderCacheKey('calendar:simkl', 'simkl', profileId),
+    options.anilistConnected && profileProviderCacheKey('calendar:anilist', 'anilist', profileId),
+    options.mdblistConnected && profileProviderCacheKey('calendar:mdblist', 'mdblist', profileId),
+  ].filter(Boolean).join('|')
+  return `library:calendar:v5:${profileId}:${accounts}:${monthRange(options.month).start.slice(0, 7)}:${localTodayKey()}:${progress}`
 }
 
 async function buildLibraryCalendar(options: CalendarLoadOptions): Promise<CalendarLoadResult> {
   const errors: string[] = []
   const items = await getTrackedItems(options, errors)
-  const batches = await mapLimit(items, 4, (item) => entriesForItem(item, options.month, options.watchProgress).catch((error) => {
+  const progress = indexWatchedProgress(options.watchProgress)
+  const range = monthRange(options.month)
+  const today = localTodayKey()
+  const batches = await mapLimit(items, 4, (item) => entriesForItem(item, range, today, progress).catch((error) => {
     errors.push(error instanceof Error ? error.message : `Could not load ${item.title}`)
     return [] as CalendarEntry[]
   }))

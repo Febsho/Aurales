@@ -4,9 +4,10 @@ import { normalizeMovieWithNativeFallback, normalizeShowWithNativeFallback, sele
 import { useAppStore } from '../../stores/appStore'
 import { mapTvdbSeasons } from './tvdbSeasonMapper'
 import { validateAnimeTvdbStructureWithNativeFallback, debugAnimeMapping } from './animeStructureValidator'
-import { resolveSeasonTitlesWithNativeFallback } from './animeTitleResolver'
+import { resolveSeasonTitles } from './animeTitleResolver'
 import type { AddonMediaInput, AnimeTitleLanguage, AnimeTitlePreference, AppMediaItem, AppSeason, ResolvedExternalIds } from './types'
 import { anilistRequest } from '../anilist'
+import { withRequestTimeout } from '../network/timeout'
 
 interface AnimeSourceMetadata {
   titles?: { english?: string; romaji?: string; native?: string }
@@ -30,9 +31,10 @@ async function fetchSelectedAnimeMetadata(source: string, ids: ResolvedExternalI
     return { titles: media.title, overview: cleanOverview(media.description), poster: media.coverImage?.extraLarge || media.coverImage?.large, backdrop: media.bannerImage, genres: media.genres, rating: media.averageScore ? Number(media.averageScore) / 10 : undefined, year: media.seasonYear }
   }
   if (source === 'mal' && ids.malId) {
-    const response = await fetch(`https://api.jikan.moe/v4/anime/${ids.malId}/full`).catch(() => null)
-    if (!response?.ok) return null
-    const media = ((await response.json()) as any)?.data
+    const media = await withRequestTimeout(8_000, async (signal) => {
+      const response = await fetch(`https://api.jikan.moe/v4/anime/${ids.malId}/full`, { signal })
+      return response.ok ? ((await response.json()) as any)?.data : null
+    }).catch(() => null)
     if (!media) return null
     const titles = Array.isArray(media.titles) ? media.titles : []
     return { titles: { english: titles.find((t: any) => t.type === 'English')?.title, romaji: titles.find((t: any) => t.type === 'Default')?.title || media.title, native: titles.find((t: any) => t.type === 'Japanese')?.title }, overview: cleanOverview(media.synopsis), poster: media.images?.jpg?.large_image_url || media.images?.webp?.large_image_url, genres: [...(media.genres || []), ...(media.themes || [])].map((g: any) => g.name).filter(Boolean), rating: media.score, year: media.year }
@@ -41,9 +43,10 @@ async function fetchSelectedAnimeMetadata(source: string, ids: ResolvedExternalI
     const { resolveViaIdsMoe } = await import('../idsMoe')
     const mapped = await resolveViaIdsMoe(ids).catch(() => null)
     if (!mapped?.kitsuId) return null
-    const response = await fetch(`https://kitsu.io/api/edge/anime/${mapped.kitsuId}`).catch(() => null)
-    if (!response?.ok) return null
-    const attrs = ((await response.json()) as any)?.data?.attributes
+    const attrs = await withRequestTimeout(8_000, async (signal) => {
+      const response = await fetch(`https://kitsu.io/api/edge/anime/${mapped.kitsuId}`, { signal })
+      return response.ok ? ((await response.json()) as any)?.data?.attributes : null
+    }).catch(() => null)
     if (!attrs) return null
     return { titles: { english: attrs.titles?.en || attrs.titles?.en_us, romaji: attrs.titles?.en_jp || attrs.canonicalTitle, native: attrs.titles?.ja_jp }, overview: cleanOverview(attrs.synopsis || attrs.description), poster: attrs.posterImage?.original || attrs.posterImage?.large, backdrop: attrs.coverImage?.original || attrs.coverImage?.large, rating: attrs.averageRating ? Number(attrs.averageRating) / 10 : undefined, year: attrs.startDate ? Number(String(attrs.startDate).slice(0, 4)) : undefined }
   }
@@ -61,21 +64,36 @@ function applyAnimeSourceMetadata(item: AppMediaItem, metadata: AnimeSourceMetad
   if (source === 'anilist' || source === 'mal' || source === 'kitsu') item.sourceMetadataProvider = source
 }
 
+interface AniListSeriesMetadata {
+  titles: { english?: string; romaji?: string; native?: string } | null
+  relations: { hasSequels: boolean; relatedCount: number }
+}
+
+function summarizeAniListRelations(edges: Array<{ relationType: string; node: { id: number; type: string; format: string } }> = []) {
+  const animeRelations = edges.filter((edge) => edge.node.type === 'ANIME' && (edge.node.format === 'TV' || edge.node.format === 'TV_SHORT'))
+  return {
+    hasSequels: animeRelations.some((edge) => edge.relationType === 'SEQUEL' || edge.relationType === 'PREQUEL'),
+    relatedCount: animeRelations.length,
+  }
+}
+
 async function getAniListTitles(ids: ResolvedExternalIds): Promise<{ english?: string; romaji?: string; native?: string } | null> {
   if (!ids.anilistId && !ids.malId) return null
-  const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { title { english romaji native } relations { edges { relationType node { id type format title { english romaji native } } } } } }`
+  const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { title { english romaji native } } }`
   const payload = await anilistRequest<{ Media?: { title?: { english?: string; romaji?: string; native?: string }; relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null)
   return payload?.Media?.title || null
 }
 
-async function getAniListRelations(ids: ResolvedExternalIds): Promise<{ hasSequels: boolean; relatedCount: number }> {
-  if (!ids.anilistId && !ids.malId) return { hasSequels: false, relatedCount: 0 }
-  const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { relations { edges { relationType node { id type format } } } } }`
-  const payload = await anilistRequest<{ Media?: { relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null)
-  const edges = payload?.Media?.relations?.edges || []
-  const animeRelations = edges.filter((e) => e.node.type === 'ANIME' && (e.node.format === 'TV' || e.node.format === 'TV_SHORT'))
-  const hasSequels = animeRelations.some((e) => e.relationType === 'SEQUEL' || e.relationType === 'PREQUEL')
-  return { hasSequels, relatedCount: animeRelations.length }
+async function getAniListSeriesMetadata(ids: ResolvedExternalIds): Promise<AniListSeriesMetadata> {
+  const empty = { titles: null, relations: { hasSequels: false, relatedCount: 0 } }
+  if (!ids.anilistId && !ids.malId) return empty
+  const query = `query ($id: Int, $malId: Int) { Media(id: $id, idMal: $malId, type: ANIME) { title { english romaji native } relations { edges { relationType node { id type format } } } } }`
+  const payload = await anilistRequest<{ Media?: { title?: AniListSeriesMetadata['titles']; relations?: { edges?: Array<{ relationType: string; node: { id: number; type: string; format: string } }> } } }>(query, { id: ids.anilistId, malId: ids.malId }, false).catch(() => null)
+  if (!payload?.Media) return empty
+  return {
+    titles: payload.Media.title || null,
+    relations: summarizeAniListRelations(payload.Media.relations?.edges),
+  }
 }
 
 export interface AnimeResolverOptions {
@@ -133,22 +151,22 @@ async function tryTmdbSeasonsFallback(tmdbId: number, options: AnimeResolverOpti
   }
 }
 
-async function applySeasonTitleResolution(seasons: AppSeason[], options: AnimeResolverOptions): Promise<AppSeason[]> {
-  return Promise.all(seasons.map(async (s) => {
-    const resolved = await resolveSeasonTitlesWithNativeFallback(
-      s.title,
-      s.seasonNumber,
+function applySeasonTitleResolution(seasons: AppSeason[], options: AnimeResolverOptions): AppSeason[] {
+  return seasons.map((season) => {
+    const resolved = resolveSeasonTitles(
+      season.title,
+      season.seasonNumber,
       options.titlePreference,
       options.useGenericSeasonLabels,
       options.avoidJapaneseSeasonNames,
     )
     return {
-      ...s,
+      ...season,
       title: resolved.displayTitle,
-      originalTitle: resolved.originalTitle || s.originalTitle,
-      nativeTitle: resolved.nativeTitle || s.nativeTitle,
+      originalTitle: resolved.originalTitle || season.originalTitle,
+      nativeTitle: resolved.nativeTitle || season.nativeTitle,
     }
-  }))
+  })
 }
 
 export async function resolveAnimeMetadata(
@@ -190,9 +208,6 @@ export async function resolveAnimeMetadata(
     return normalized
   }
 
-  let details: any = null
-  let usedSource: 'tvdb' | 'tmdb' = 'tvdb'
-
   // Provider details, source metadata, and title data are independent. Start
   // them together; the old waterfall made anime details wait for each service
   // in turn and fetched TMDB a second time for artwork at the end.
@@ -203,16 +218,25 @@ export async function resolveAnimeMetadata(
     ? tvdbProvider.getShow(`tvdb-${ids.tvdbId}`).catch(() => null)
     : Promise.resolve(null)
   const selectedSourceRequest = fetchSelectedAnimeMetadata(source, ids).catch(() => null)
+  const needsSeasonMapping = options.includeSeasonMapping && options.preferTvdbSeasons && Boolean(ids.tvdbId)
+  const aniListDataRequest = needsSeasonMapping
+    ? getAniListSeriesMetadata(ids)
+    : Promise.resolve(null)
   const fallbackTitlesRequest = source === 'anilist'
     ? Promise.resolve(null)
-    : getAniListTitles(ids)
-  const [tmdbDetails, tvdbDetails, selectedSource, fallbackTitles] = await Promise.all([
+    : needsSeasonMapping
+      ? aniListDataRequest.then((data) => data?.titles || null)
+      : getAniListTitles(ids)
+  const [tmdbDetails, tvdbDetails, selectedSource, fallbackTitles, aniListSeriesMetadata] = await Promise.all([
     tmdbDetailsRequest,
     tvdbDetailsRequest,
     selectedSourceRequest,
     fallbackTitlesRequest,
+    aniListDataRequest,
   ])
 
+  let details: typeof tvdbDetails
+  let usedSource: 'tvdb' | 'tmdb' = 'tvdb'
   if (source === 'tmdb') {
     details = tmdbDetails
     if (details) usedSource = 'tmdb'
@@ -258,7 +282,7 @@ export async function resolveAnimeMetadata(
         hideUnairedEpisodes: options.hideUnairedEpisodes,
         includeSpecials: options.includeSpecials,
       }),
-      getAniListRelations(ids),
+      aniListSeriesMetadata?.relations || { hasSequels: false, relatedCount: 0 },
     ])
     let mappedSeasons = initialMappedSeasons
     const validation = await validateAnimeTvdbStructureWithNativeFallback(mappedSeasons, relations.hasSequels)
@@ -300,7 +324,7 @@ export async function resolveAnimeMetadata(
     }
 
     // Apply season title resolution
-    mappedSeasons = await applySeasonTitleResolution(mappedSeasons, options)
+    mappedSeasons = applySeasonTitleResolution(mappedSeasons, options)
     normalized.seasons = mappedSeasons
   }
 

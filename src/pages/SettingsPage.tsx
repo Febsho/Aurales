@@ -3,7 +3,7 @@ import Switch from '../components/ui/Switch'
 import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
-import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   DndContext,
@@ -25,6 +25,7 @@ import { CSS } from '@dnd-kit/utilities'
 import {
   getDeviceCode,
   pollForToken,
+  cancelDeviceAuth,
   clearTokens,
   isAuthenticated,
 } from '../services/trakt/auth'
@@ -42,7 +43,7 @@ import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, getStremioLibrary, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
-import { checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistPKCESession, type MdblistUser } from '../services/mdblist'
+import { cancelMdblistOAuthLogin, checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistUser } from '../services/mdblist'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken, syncAniListWatchedHistory } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
@@ -55,7 +56,7 @@ import type { UpdateInfo, UpdateProgress } from '../services/updater'
 import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
-import { clearTorBoxToken, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
+import { cancelTorBoxDeviceAuth, clearTorBoxToken, getTorBoxAuthGeneration, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
 import ProfilesSettings from '../components/settings/ProfilesSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
@@ -71,6 +72,7 @@ const BACKUP_KEYS = [
   'trakt_tokens',
   'trakt_account',
   'mdblist_api_key',
+  'mdblist_client_id',
   'fanart_api_key',
   'orynt_addons',
   'orynt_home_rows',
@@ -129,8 +131,10 @@ const BACKUP_KEYS = [
   'orynt_sub_bg_opacity',
   'simkl_token',
   'simkl_account',
+  'simkl_v2_client_id',
   'anilist_token',
   'anilist_account',
+  'anilist_client_id',
   'openrouter_api_key',
   'openrouter_model',
   'torbox_api_token',
@@ -468,6 +472,7 @@ function CacheManagementSection() {
     [CACHE_CATEGORIES.TMDB_CARD]: 'TMDB Cards',
     [CACHE_CATEGORIES.TVDB_CARD]: 'TVDB Cards',
     [CACHE_CATEGORIES.TMDB_TVDB_ID]: 'TMDB→TVDB IDs',
+    [CACHE_CATEGORIES.TVDB_REMOTE_ID]: 'TVDB Remote IDs',
     [CACHE_CATEGORIES.WATCHED_STATUS]: 'Watch Status',
     [CACHE_CATEGORIES.SIMKL_LIST]: 'Simkl Lists',
     [CACHE_CATEGORIES.ARTWORK]: 'Artwork',
@@ -525,6 +530,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
   const [cacheInUseMb, setCacheInUseMb] = useState<number | null>(null)
   const [clearing, setClearing] = useState(false)
   const [cleared, setCleared] = useState(false)
+  const [clearError, setClearError] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -533,18 +539,28 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
       .then((stats) => {
         if (!cancelled && stats) setCacheInUseMb(Math.round((stats.bytes / 1024 / 1024) * 10) / 10)
       })
+      .catch((error) => {
+        if (!cancelled) console.warn('[settings] could not read image cache usage', error)
+      })
     return () => { cancelled = true }
   }, [clearing])
 
   const handleClear = async () => {
     setClearing(true)
     setCleared(false)
-    onClearBackdropCache()
-    const { clearImageCache } = await import('../services/imageCache')
-    await clearImageCache()
-    setClearing(false)
-    setCleared(true)
-    setTimeout(() => setCleared(false), 2500)
+    setClearError(false)
+    try {
+      onClearBackdropCache()
+      const { clearImageCache } = await import('../services/imageCache')
+      await clearImageCache()
+      setCleared(true)
+      setTimeout(() => setCleared(false), 2500)
+    } catch (error) {
+      console.error('[ImageCache] clear failed:', error)
+      setClearError(true)
+    } finally {
+      setClearing(false)
+    }
   }
 
   // Quality option config
@@ -655,9 +671,11 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
               className="rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-2 text-sm font-semibold transition-colors hover:border-red-400/40 hover:bg-red-400/15 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
               style={{ color: cleared ? 'rgb(134 239 172)' : 'rgb(239 68 68)' }}
             >
-              {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : 'Clear Image Cache'}
+              {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : clearError ? 'Clear Failed — Retry' : 'Clear Image Cache'}
             </button>
-            <p className="text-xs text-white/60 mt-1.5 leading-relaxed">Images re-download as needed after clearing.</p>
+            <p role={clearError ? 'alert' : undefined} className={`text-xs mt-1.5 leading-relaxed ${clearError ? 'text-red-300' : 'text-white/60'}`}>
+              {clearError ? 'The image cache could not be cleared. Try again.' : 'Images re-download as needed after clearing.'}
+            </p>
           </div>
         </div>
       </div>
@@ -875,7 +893,7 @@ function SortablePriorityItem({ id, label, connected }: PriorityItemProps) {
 
 function ResumePriorityList() {
   const store = useAppStore()
-  
+
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
@@ -956,7 +974,7 @@ export default function SettingsPage() {
   useEffect(() => {
     document.querySelector<HTMLElement>('.app-scroll-root')?.scrollTo({ top: 0 })
   }, [activeTab])
-  
+
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
   const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
   const [localPrefs, setLocalPrefs] = useState<DiscoverPrefs>(prefs)
@@ -1010,6 +1028,7 @@ export default function SettingsPage() {
   const [simklAuthStarted, setSimklAuthStarted] = useState(false)
   const [simklCode, setSimklCode] = useState('')
   const [simklVerificationUrl, setSimklVerificationUrl] = useState('')
+  const simklAuthRunRef = useRef(0)
   const simklPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simklTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1019,23 +1038,30 @@ export default function SettingsPage() {
   const [stremioLoading, setStremioLoading] = useState(false)
   const [stremioError, setStremioError] = useState('')
   const [stremioAuth, setStremioAuth] = useState(getStremioAuth)
+  const stremioAuthRunRef = useRef(0)
   const [torBoxUser, setTorBoxUser] = useState<TorBoxUser | null>(null)
   const [torBoxDevice, setTorBoxDevice] = useState<TorBoxDeviceCode | null>(null)
   const [torBoxLoading, setTorBoxLoading] = useState(false)
   const [torBoxMessage, setTorBoxMessage] = useState('')
   const [torBoxTokenInput, setTorBoxTokenInput] = useState(getTorBoxToken)
   const torBoxPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const torBoxAuthRunRef = useRef(0)
   const [backdropCacheMessage, setBackdropCacheMessage] = useState('')
 
   const [pmdbConnStatus, setPmdbConnStatus] = useState<PMDBConnectionStatus | null>(null)
   const [pmdbConnChecking, setPmdbConnChecking] = useState(false)
+  const pmdbApiKeyAtFocusRef = useRef(store.pmdbApiKey)
   const [mdblistConnStatus, setMdblistConnStatus] = useState<{ connected: boolean; user?: MdblistUser; error?: string } | null>(null)
   const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
+  const mdblistAuthRunRef = useRef(0)
+  const mdblistApiKeyAtFocusRef = useRef(store.mdblistApiKey)
   const [mdblistClientIdInput, setMdblistClientIdInput] = useState(getMdblistClientId)
   const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
+  const anilistAuthRunRef = useRef(0)
+  const anilistCallbackCancellationRef = useRef<Promise<void> | null>(null)
 
   const testPmdbConnection = async () => {
     setPmdbConnChecking(true)
@@ -1054,32 +1080,42 @@ export default function SettingsPage() {
   }
 
   const handleMdblistOAuthConnect = async () => {
+    const authRun = ++mdblistAuthRunRef.current
     setMdblistConnChecking(true)
     setMdblistConnStatus(null)
     try {
       setMdblistClientId(mdblistClientIdInput)
       const { authUrl, session } = await startMdblistPKCELogin()
+      if (authRun !== mdblistAuthRunRef.current) return
       setMdblistOAuthPolling(true)
 
       const callbackPromise = waitForMdblistCallback()
       await invoke('open_simkl_auth', { url: authUrl })
 
-      const code = await callbackPromise
+      const callback = await callbackPromise
+      if (authRun !== mdblistAuthRunRef.current) return
+      if (callback.error) throw new Error(`MDBList authorization failed: ${callback.error}`)
+      if (callback.state !== session.state) throw new Error('MDBList OAuth state did not match.')
+      const code = callback.code
       if (!code) throw new Error('MDBList did not return an authorization code.')
 
       await exchangeMdblistPKCEToken(code, session)
+      if (authRun !== mdblistAuthRunRef.current) return
       setMdblistOAuthPolling(false)
       const status = await checkMdblistConnection()
-      setMdblistConnStatus(status)
+      if (authRun === mdblistAuthRunRef.current) setMdblistConnStatus(status)
     } catch (err: any) {
+      if (authRun !== mdblistAuthRunRef.current) return
       setMdblistOAuthPolling(false)
       setMdblistConnStatus({ connected: false, error: err?.message || 'MDBList OAuth failed' })
     } finally {
-      setMdblistConnChecking(false)
+      if (authRun === mdblistAuthRunRef.current) setMdblistConnChecking(false)
     }
   }
 
   const handleMdblistOAuthDisconnect = () => {
+    mdblistAuthRunRef.current++
+    cancelMdblistOAuthLogin()
     clearMdblistOAuth()
     setMdblistOAuthPolling(false)
     setMdblistConnStatus(null)
@@ -1087,17 +1123,28 @@ export default function SettingsPage() {
 
   const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
 
+  const cancelAniListCallback = () => {
+    const cancellation = invoke<void>('cancel_anilist_callback_server', { provider: 'anilist' })
+    anilistCallbackCancellationRef.current = cancellation
+    void cancellation.finally(() => {
+      if (anilistCallbackCancellationRef.current === cancellation) anilistCallbackCancellationRef.current = null
+    }).catch(() => {})
+  }
+
   const handleAnilistConnect = async () => {
+    const authRun = ++anilistAuthRunRef.current
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
+      if (anilistCallbackCancellationRef.current) await anilistCallbackCancellationRef.current
+      if (authRun !== anilistAuthRunRef.current) return
       const clientId = getAnilistClientId()
       if (!clientId) {
         throw new Error('AniList client ID not configured.')
       }
 
       setAnilistMessage('Waiting for browser authorization callback...')
-      const callbackServerPromise = invoke<string>('start_anilist_callback_server')
+      const callbackServerPromise = invoke<string>('start_anilist_callback_server', { provider: 'anilist' })
 
       const redirectUri = 'http://localhost:42814/'
       const authParams = new URLSearchParams({
@@ -1107,9 +1154,11 @@ export default function SettingsPage() {
       })
       const authUrl = `https://anilist.co/api/v2/oauth/authorize?${authParams}`
       await invoke('open_simkl_auth', { url: authUrl })
+      if (authRun !== anilistAuthRunRef.current) return
 
       setAnilistMessage('Waiting for AniList authorization...')
       const code = await callbackServerPromise
+      if (authRun !== anilistAuthRunRef.current) return
       if (!code) {
         throw new Error('AniList did not return an authorization code.')
       }
@@ -1122,42 +1171,51 @@ export default function SettingsPage() {
         redirectUri,
       })
 
+      if (authRun !== anilistAuthRunRef.current) return
       setAniListToken(token)
       setAnilistTokenInput(token)
       const account = await fetchAniListViewer()
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(true)
       store.setAnilistAccount(account)
       setAnilistMessage(`Successfully connected as ${account.name}!`)
     } catch (err: any) {
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
       const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
       setAnilistMessage(msg)
     } finally {
-      setAnilistLoading(false)
+      if (authRun === anilistAuthRunRef.current) setAnilistLoading(false)
     }
   }
 
   const connectAniListManual = async () => {
+    const authRun = ++anilistAuthRunRef.current
+    cancelAniListCallback()
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
       setAniListToken(anilistTokenInput)
       const account = await fetchAniListViewer()
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(true)
       store.setAnilistAccount(account)
       setAnilistMessage(`Connected manually as ${account.name}`)
     } catch (err: any) {
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
       const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
       setAnilistMessage(msg)
     } finally {
-      setAnilistLoading(false)
+      if (authRun === anilistAuthRunRef.current) setAnilistLoading(false)
     }
   }
 
   const handleAnilistDisconnect = () => {
+    anilistAuthRunRef.current++
+    cancelAniListCallback()
     setAniListToken('')
     setAnilistTokenInput('')
     store.setAnilistConnected(false)
@@ -1196,12 +1254,18 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
+    const stremioAuthRun = stremioAuthRunRef
+    const torBoxAuthRun = torBoxAuthRunRef
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      cancelDeviceAuth()
+      stremioAuthRun.current++
       if (simklPollRef.current) clearInterval(simklPollRef.current)
       if (simklTimeoutRef.current) clearTimeout(simklTimeoutRef.current)
       if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      torBoxAuthRun.current++
+      cancelTorBoxDeviceAuth()
     }
   }, [])
 
@@ -1217,32 +1281,39 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (store.traktConnected && !store.traktAccount) {
+      let cancelled = false
       import('../services/trakt/auth').then(({ fetchTraktAccount }) => {
         fetchTraktAccount()
-          .then((account) => store.setTraktAccount(account))
+          .then((account) => { if (!cancelled) useAppStore.getState().setTraktAccount(account) })
           .catch((err) => console.error('Failed to load Trakt user profile:', err))
       })
+      return () => { cancelled = true }
     }
   }, [store.traktConnected, store.traktAccount])
 
   useEffect(() => {
-    const hasBrokenAvatar = store.simklAccount &&
-      (!store.simklAccount.avatar || !store.simklAccount.avatar.includes('wsrv.nl/?url=https://simkl.in'))
+    // Missing avatars are valid for Simkl users; re-fetching on every account
+    // update cannot repair an absent URL and can otherwise loop indefinitely.
+    const hasBrokenAvatar = store.simklAccount?.avatar &&
+      !store.simklAccount.avatar.includes('wsrv.nl/?url=https://simkl.in')
 
     if (store.simklConnected && (!store.simklAccount || hasBrokenAvatar)) {
+      let cancelled = false
       import('../services/simkl/auth').then(({ getStoredSimklToken, finaliseSimklLogin }) => {
         const token = getStoredSimklToken()
         if (token) {
           finaliseSimklLogin(token)
-            .then((account) => store.setSimklAccount(account))
+            .then((account) => { if (!cancelled) useAppStore.getState().setSimklAccount(account) })
             .catch((err) => console.error('Failed to load Simkl user profile:', err))
         }
       })
+      return () => { cancelled = true }
     }
   }, [store.simklConnected, store.simklAccount])
 
   const importStremioAddons = async (authKey: string) => {
     const addons = await getStremioAddons(authKey)
+    if (getStremioAuth()?.authKey !== authKey) return { imported: 0, updated: 0 }
     const byId = new Map(store.addons.map((addon) => [addon.manifest.id, addon]))
     let imported = 0
     let updated = 0
@@ -1266,6 +1337,7 @@ export default function SettingsPage() {
 
   const importStremioActivity = async (authKey: string) => {
     const entries = await getStremioLibrary(authKey, true)
+    if (getStremioAuth()?.authKey !== authKey) return { watchedImported: 0, continueImported: 0 }
     let watchedImported = 0
     let continueImported = 0
     const completedKeys = new Set<string>()
@@ -1353,7 +1425,10 @@ export default function SettingsPage() {
         window.open(code.verificationUrl, '_blank', 'noopener,noreferrer')
       }
 
+      let pollInFlight = false
       pollRef.current = setInterval(async () => {
+        if (pollInFlight) return
+        pollInFlight = true
         try {
           const tokens = await pollForToken(code.deviceCode)
           if (tokens) {
@@ -1373,11 +1448,14 @@ export default function SettingsPage() {
           }
         } catch (_) {
           // polling error, keep trying
+        } finally {
+          pollInFlight = false
         }
       }, (code.interval || 5) * 1000)
 
       timeoutRef.current = setTimeout(() => {
         if (pollRef.current) clearInterval(pollRef.current)
+        cancelDeviceAuth()
         setTraktPolling(false)
         setTraktError('Authorization timed out. Try again.')
       }, code.expiresIn * 1000)
@@ -1403,18 +1481,23 @@ export default function SettingsPage() {
       setStremioError('Enter both email and password')
       return
     }
+    const authRun = ++stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
       const result = await stremioLogin(stremioEmail, stremioPassword)
+      if (authRun !== stremioAuthRunRef.current) return
       saveStremioAuth(result.authKey, stremioEmail)
       setStremioAuth({ authKey: result.authKey, email: stremioEmail })
 
       const addons = await importStremioAddons(result.authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       const activity = await importStremioActivity(result.authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       setStremioPassword('')
       setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
+      if (authRun !== stremioAuthRunRef.current) return
       const message = e instanceof Error ? e.message : String(e)
       setStremioError(
         message.toLowerCase().includes('passphrase')
@@ -1422,7 +1505,7 @@ export default function SettingsPage() {
           : `Login failed: ${message}`,
       )
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
@@ -1432,49 +1515,63 @@ export default function SettingsPage() {
       setStremioError('Enter a Stremio auth key')
       return
     }
+    const authRun = ++stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
       saveStremioAuth(authKey, 'AuthKey login')
       setStremioAuth({ authKey, email: 'AuthKey login' })
       const addons = await importStremioAddons(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       const activity = await importStremioActivity(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       setStremioAuthKey('')
       setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
-      clearStremioAuth()
-      setStremioAuth(null)
-      setStremioError(`Import failed: ${e instanceof Error ? e.message : e}`)
+      if (authRun === stremioAuthRunRef.current) {
+        if (getStremioAuth()?.authKey === authKey) clearStremioAuth()
+        setStremioAuth(null)
+        setStremioError(`Import failed: ${e instanceof Error ? e.message : e}`)
+      }
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
   const handleStremioSync = async () => {
     if (!stremioAuth) return
+    const authKey = stremioAuth.authKey
+    const authRun = stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
-      const addons = await importStremioAddons(stremioAuth.authKey)
-      const activity = await importStremioActivity(stremioAuth.authKey)
-      setStremioError(formatStremioSyncResult(addons, activity))
+      const addons = await importStremioAddons(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
+      const activity = await importStremioActivity(authKey)
+      if (authRun === stremioAuthRunRef.current) setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
-      setStremioError(`Sync failed: ${e instanceof Error ? e.message : e}`)
+      if (authRun === stremioAuthRunRef.current) setStremioError(`Sync failed: ${e instanceof Error ? e.message : e}`)
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
   const handleStremioDisconnect = () => {
+    stremioAuthRunRef.current++
     clearStremioAuth()
     setStremioAuth(null)
+    setStremioLoading(false)
     setStremioError('')
   }
 
-  const finishTorBoxConnection = async (token: string) => {
+  const finishTorBoxConnection = async (token: string, authRun: number) => {
+    if (authRun !== torBoxAuthRunRef.current) return
+    cancelTorBoxDeviceAuth()
     setTorBoxToken(token)
+    const tokenGeneration = getTorBoxAuthGeneration()
     try {
       const user = await getTorBoxUser()
+      if (authRun !== torBoxAuthRunRef.current || tokenGeneration !== getTorBoxAuthGeneration()) return
       setTorBoxTokenInput(token)
       setTorBoxUser(user)
       setTorBoxDevice(null)
@@ -1482,37 +1579,46 @@ export default function SettingsPage() {
       if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
       torBoxPollRef.current = null
     } catch (error) {
-      clearTorBoxToken()
+      if (authRun === torBoxAuthRunRef.current && tokenGeneration === getTorBoxAuthGeneration()) clearTorBoxToken()
       throw error
     }
   }
 
   const handleTorBoxConnect = async () => {
+    const authRun = ++torBoxAuthRunRef.current
     setTorBoxLoading(true)
     setTorBoxMessage('')
     try {
       const device = await startTorBoxDeviceAuth()
+      if (authRun !== torBoxAuthRunRef.current) return
       setTorBoxDevice(device)
       if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      let pollInFlight = false
       const poll = async () => {
-        if (Date.now() >= new Date(device.expires_at).getTime()) {
-          if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
-          torBoxPollRef.current = null
-          setTorBoxLoading(false)
-          setTorBoxMessage('TorBox authorization expired. Try again.')
-          return
-        }
+        if (pollInFlight || authRun !== torBoxAuthRunRef.current) return
+        pollInFlight = true
         try {
-          const token = await pollTorBoxDeviceToken(device.device_code)
-          if (token) {
-            await finishTorBoxConnection(token)
+          if (Date.now() >= new Date(device.expires_at).getTime()) {
+            if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+            torBoxPollRef.current = null
             setTorBoxLoading(false)
+            setTorBoxMessage('TorBox authorization expired. Try again.')
+            return
+          }
+          const token = await pollTorBoxDeviceToken(device.device_code)
+          if (authRun !== torBoxAuthRunRef.current) return
+          if (token) {
+            await finishTorBoxConnection(token, authRun)
+            if (authRun === torBoxAuthRunRef.current) setTorBoxLoading(false)
           }
         } catch (error) {
+          if (authRun !== torBoxAuthRunRef.current) return
           if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
           torBoxPollRef.current = null
           setTorBoxLoading(false)
           setTorBoxMessage(error instanceof Error ? error.message : String(error))
+        } finally {
+          pollInFlight = false
         }
       }
       torBoxPollRef.current = setInterval(poll, Math.max(2, device.interval || 5) * 1000)
@@ -1531,6 +1637,7 @@ export default function SettingsPage() {
         window.open(authUrl, '_blank', 'noopener,noreferrer')
       }
     } catch (error) {
+      if (authRun !== torBoxAuthRunRef.current) return
       setTorBoxLoading(false)
       setTorBoxMessage(error instanceof Error ? error.message : String(error))
     }
@@ -1538,22 +1645,29 @@ export default function SettingsPage() {
 
   const handleTorBoxManualConnect = async () => {
     if (!torBoxTokenInput.trim()) return
+    const authRun = ++torBoxAuthRunRef.current
+    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+    torBoxPollRef.current = null
+    cancelTorBoxDeviceAuth()
     setTorBoxLoading(true)
     setTorBoxMessage('')
     try {
-      await finishTorBoxConnection(torBoxTokenInput)
+      await finishTorBoxConnection(torBoxTokenInput, authRun)
     } catch (error) {
-      clearTorBoxToken()
-      setTorBoxUser(null)
-      setTorBoxMessage(error instanceof Error ? error.message : String(error))
+      if (authRun === torBoxAuthRunRef.current) {
+        setTorBoxUser(null)
+        setTorBoxMessage(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setTorBoxLoading(false)
+      if (authRun === torBoxAuthRunRef.current) setTorBoxLoading(false)
     }
   }
 
   const handleTorBoxDisconnect = () => {
+    torBoxAuthRunRef.current++
     if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
     torBoxPollRef.current = null
+    cancelTorBoxDeviceAuth()
     clearTorBoxToken()
     setTorBoxTokenInput('')
     setTorBoxUser(null)
@@ -1585,17 +1699,32 @@ export default function SettingsPage() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string)
-        if (typeof data !== 'object' || data === null) {
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
           setBackdropCacheMessage('Invalid backup file format.')
           setTimeout(() => setBackdropCacheMessage(''), 3000)
           return
         }
-        for (const [key, value] of Object.entries(data)) {
-          if (value !== null && typeof value === 'string') {
-            localStorage.setItem(key, value)
-          } else {
-            localStorage.removeItem(key)
+        const entries = Object.entries(data as Record<string, unknown>)
+          .filter(([key]) => BACKUP_KEYS.includes(key))
+        if (!entries.length || entries.some(([, value]) => value !== null && typeof value !== 'string')) {
+          setBackdropCacheMessage('Invalid backup file format.')
+          setTimeout(() => setBackdropCacheMessage(''), 3000)
+          return
+        }
+        const previous = new Map(entries.map(([key]) => [key, localStorage.getItem(key)]))
+        try {
+          for (const [key, value] of entries) {
+            if (value === null) localStorage.removeItem(key)
+            else localStorage.setItem(key, value as string)
           }
+        } catch (error) {
+          for (const [key, value] of previous) {
+            try {
+              if (value === null) localStorage.removeItem(key)
+              else localStorage.setItem(key, value)
+            } catch (_) { /* best-effort rollback if storage remains full */ }
+          }
+          throw error
         }
         window.location.reload()
       } catch (err) {
@@ -1664,22 +1793,26 @@ export default function SettingsPage() {
   }
 
   const handleSimklConnect = async () => {
+    const authRun = ++simklAuthRunRef.current
     setSimklError('')
     setSimklLoading(true)
     try {
       await initiateSimklLogin()
+      if (authRun !== simklAuthRunRef.current) return
       setSimklAuthStarted(true)
       setSimklError('Waiting for Simkl approval...')
       const account = await waitForSimklOauthCallback()
+      if (authRun !== simklAuthRunRef.current) return
       store.setSimklConnected(true)
       store.setSimklAccount(account)
       setSimklAuthStarted(false)
       setSimklError('')
     } catch (e) {
+      if (authRun !== simklAuthRunRef.current) return
       setSimklAuthStarted(false)
       setSimklError(`Simkl connection failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
-      setSimklLoading(false)
+      if (authRun === simklAuthRunRef.current) setSimklLoading(false)
     }
   }
 
@@ -1701,6 +1834,7 @@ export default function SettingsPage() {
   }
 
   const handleSimklDisconnect = () => {
+    simklAuthRunRef.current++
     cancelSimklAuth()
     disconnectSimkl()
     store.setSimklConnected(false)
@@ -2020,13 +2154,13 @@ export default function SettingsPage() {
                   state: mdblistOAuthPolling || mdblistConnChecking ? 'syncing' : getStoredMdblistTokens() ? 'connected' : mdblistConnStatus && !mdblistConnStatus.connected ? 'needs-attention' : 'not-connected',
                   statusLabel: getStoredMdblistTokens() ? 'Connected' : store.mdblistApiKey ? 'Key configured' : undefined, isAccount: true, isConfigured: Boolean(store.mdblistApiKey), account: mdblistConnStatus?.user?.username ? `@${mdblistConnStatus.user.username}` : undefined, message: mdblistConnStatus?.error,
                   primaryLabel: getStoredMdblistTokens() ? 'Manage' : 'Connect MDBList', onPrimary: handleMdblistOAuthConnect, showAdvancedLink: true, onDisconnect: handleMdblistOAuthDisconnect,
-                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
+                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onFocus={() => { mdblistApiKeyAtFocusRef.current = store.mdblistApiKey }} onBlur={() => { if (mdblistApiKeyAtFocusRef.current !== store.mdblistApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
                 },
                 {
                   id: 'pmdb', name: 'PublicMetaDB', iconService: 'pmdb', group: 'history', description: 'History · Scrobbles · Skip data',
                   state: pmdbConnChecking ? 'syncing' : pmdbConnStatus && !pmdbConnStatus.connected ? 'needs-attention' : store.pmdbApiKey ? 'connected' : 'not-connected', statusLabel: store.pmdbApiKey ? (pmdbConnStatus?.connected ? 'Connection healthy' : 'Key configured') : 'Not configured', isConfigured: Boolean(store.pmdbApiKey), message: pmdbConnStatus?.connected ? undefined : pmdbConnStatus?.error,
                   primaryLabel: store.pmdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true,
-                  setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.pmdbApiKey} onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }} placeholder="pm-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testPmdbConnection} disabled={!store.pmdbApiKey || pmdbConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{pmdbConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div>{pmdbConnStatus && <p className={`text-xs ${pmdbConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{pmdbConnStatus.connected ? '✓ Connection successful' : `⚠ ${pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}`}</p>}</div>,
+                  setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.pmdbApiKey} onFocus={() => { pmdbApiKeyAtFocusRef.current = store.pmdbApiKey }} onBlur={() => { if (pmdbApiKeyAtFocusRef.current !== store.pmdbApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }} placeholder="pm-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testPmdbConnection} disabled={!store.pmdbApiKey || pmdbConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{pmdbConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div>{pmdbConnStatus && <p className={`text-xs ${pmdbConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{pmdbConnStatus.connected ? '✓ Connection successful' : `⚠ ${pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}`}</p>}</div>,
                 },
                 { id: 'introdb', name: 'IntroDB', iconService: 'introdb', group: 'playback', description: 'Intro · Recap · Credits', state: store.introdbApiKey ? 'connected' : 'not-connected', statusLabel: store.introdbApiKey ? 'Key configured' : 'Using Aurales key', isConfigured: Boolean(store.introdbApiKey), primaryLabel: store.introdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its default IntroDB key unless you provide a personal key.</p><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.introdbApiKey} onChange={(e) => store.setIntrodbApiKey(e.target.value)} placeholder="Optional personal API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex gap-3 text-xs text-white/60"><span>Intro</span><span>Recap</span><span>Credits</span></div><a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div> },
                 { id: 'discord', name: 'Discord Rich Presence', iconService: 'discord', group: 'playback', description: 'Show what you’re watching on Discord', state: store.discordRichPresence ? 'connected' : 'not-connected', statusLabel: store.discordRichPresence ? 'Enabled' : 'Disabled', isConfigured: store.discordRichPresence, primaryLabel: 'Manage', onPrimary: () => undefined, hidePrimaryAction: true, inlineControl: <PresenceToggle checked={store.discordRichPresence} onChange={store.setDiscordRichPresence} /> },
@@ -3558,7 +3692,7 @@ export default function SettingsPage() {
                   />
                 </div>
               </SettingSection>
-              
+
               {/* SAVE / CANCEL BAR */}
               <div className="flex items-center justify-between pt-4 mt-6">
                 <span className="text-xs text-white/60">Ready to save</span>

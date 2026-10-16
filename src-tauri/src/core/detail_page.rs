@@ -3,6 +3,7 @@ use crate::db::Database;
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::io::Read;
 use std::time::Duration;
 mod coordinator;
 pub use coordinator::DetailPageCoordinator;
@@ -14,6 +15,27 @@ const TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL: &str = "https://image.tmdb.org/t/p";
 const TVDB_BASE_URL: &str = "https://api4.thetvdb.com/v4";
 const DETAIL_CACHE_TTL_SECONDS: i64 = 24 * 60 * 60;
+const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_PROVIDER_ERROR_BYTES: u64 = 8 * 1024;
+
+fn read_provider_body(response: ureq::Response, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Failed to read provider response: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("Provider response exceeded {limit} bytes"));
+    }
+    Ok(bytes)
+}
+
+fn parse_provider_response(response: ureq::Response, provider: &str) -> Result<Value, String> {
+    let bytes = read_provider_body(response, MAX_PROVIDER_RESPONSE_BYTES)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Failed to parse {provider} detail response: {error}"))
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +87,6 @@ pub async fn load_detail_page(
             "Unsupported native movie detail provider: {provider}"
         ));
     }
-    let key = format!("detail:{media_type}-provider:v2:{provider}:{id}");
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(15_000).clamp(1_000, 60_000));
     let group = request.cancel_group;
     let priority = priority_score(&request.priority);
@@ -73,6 +94,9 @@ pub async fn load_detail_page(
     let image_quality = request
         .image_quality
         .unwrap_or_else(|| "balanced".to_string());
+    // Provider results contain image URLs sized for this setting, so sharing
+    // one key across quality modes can keep the wrong resolution for a day.
+    let key = format!("detail:{media_type}-provider:v3:{provider}:{id}:image:{image_quality}");
 
     coordinator
         .run(key.clone(), group, priority, timeout, || async move {
@@ -150,14 +174,14 @@ fn tmdb_get(
     }
     let response = request.call().map_err(|error| match error {
         ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
+            let body = read_provider_body(response, MAX_PROVIDER_ERROR_BYTES)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|error| error);
             format!("TMDB detail request failed: HTTP {status}: {body}")
         }
         other => format!("TMDB detail request failed: {other}"),
     })?;
-    response
-        .into_json()
-        .map_err(|error| format!("Failed to parse TMDB detail response: {error}"))
+    parse_provider_response(response, "TMDB")
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {
@@ -182,14 +206,14 @@ fn tvdb_get(agent: &ureq::Agent, path: &str, token: &str) -> Result<Value, Strin
         .call()
         .map_err(|error| match error {
             ureq::Error::Status(status, response) => {
-                let body = response.into_string().unwrap_or_default();
+                let body = read_provider_body(response, MAX_PROVIDER_ERROR_BYTES)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_else(|error| error);
                 format!("TVDB detail request failed: HTTP {status}: {body}")
             }
             other => format!("TVDB detail request failed: {other}"),
         })?;
-    response
-        .into_json()
-        .map_err(|error| format!("Failed to parse TVDB detail response: {error}"))
+    parse_provider_response(response, "TVDB")
 }
 
 fn has_japanese_text(value: &str) -> bool {
@@ -236,14 +260,18 @@ fn fetch_tvdb_show(id: &str, api_key: &str) -> Result<Value, String> {
     if api_key.trim().is_empty() {
         return Err("TVDB API key is required".to_string());
     }
-    let agent = ureq::builder().timeout(Duration::from_secs(12)).build();
-    let login = agent
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .timeout_connect(Duration::from_secs(8))
+        .timeout_read(Duration::from_secs(12))
+        .timeout_write(Duration::from_secs(8))
+        .build();
+    let login_response = agent
         .post(&format!("{TVDB_BASE_URL}/login"))
         .set("Content-Type", "application/json")
         .send_json(json!({ "apikey": api_key }))
-        .map_err(|error| format!("TVDB login failed: {error}"))?
-        .into_json::<Value>()
-        .map_err(|error| format!("Failed to parse TVDB login response: {error}"))?;
+        .map_err(|error| format!("TVDB login failed: {error}"))?;
+    let login = parse_provider_response(login_response, "TVDB login")?;
     let token = login
         .pointer("/data/token")
         .and_then(Value::as_str)
@@ -605,7 +633,12 @@ fn fetch_tmdb_show(id: &str, api_key: &str, image_quality: &str) -> Result<Value
     if api_key.trim().is_empty() {
         return Err("TMDB API key is required".to_string());
     }
-    let agent = ureq::builder().timeout(Duration::from_secs(12)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .timeout_connect(Duration::from_secs(8))
+        .timeout_read(Duration::from_secs(12))
+        .timeout_write(Duration::from_secs(8))
+        .build();
     let paths = [
         format!("/tv/{id}"),
         format!("/tv/{id}/credits"),
@@ -882,7 +915,12 @@ fn fetch_tmdb_movie(id: &str, api_key: &str, image_quality: &str) -> Result<Valu
     if api_key.trim().is_empty() {
         return Err("TMDB API key is required".to_string());
     }
-    let agent = ureq::builder().timeout(Duration::from_secs(12)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .timeout_connect(Duration::from_secs(8))
+        .timeout_read(Duration::from_secs(12))
+        .timeout_write(Duration::from_secs(8))
+        .build();
     let paths = [
         format!("/movie/{id}"),
         format!("/movie/{id}/credits"),
@@ -1257,7 +1295,7 @@ mod tests {
         let cached = json!({"id": "tmdb-7", "title": "Cached", "genres": [], "seasons": [], "cast": [], "crew": [], "recommendations": [], "trailers": []});
         cache::entry_set(
             &db,
-            "detail:series-provider:v2:tmdb:7".into(),
+            "detail:series-provider:v3:tmdb:7:image:balanced".into(),
             cached.to_string(),
             "detail_page".into(),
             Some(-1),

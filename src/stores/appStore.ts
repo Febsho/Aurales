@@ -9,8 +9,8 @@ import { v4 as uuid } from 'uuid'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
-import { getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
-import { enqueueSyncRecord } from '../services/sync/syncQueue'
+import { getActiveProfileId, getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
+import { enqueueSyncRecord, enqueueSyncRecords } from '../services/sync/syncQueue'
 import { DEFAULT_BETTER_POSTERS_SETTINGS, type BetterPostersSettings } from '../services/betterPosters'
 
 function invalidateCatalogData(): void {
@@ -19,6 +19,43 @@ function invalidateCatalogData(): void {
     CACHE_CATEGORIES.HOME_ROW, CACHE_CATEGORIES.TMDB_CARD, CACHE_CATEGORIES.TVDB_CARD, CACHE_CATEGORIES.ARTWORK,
     CACHE_CATEGORIES.DETAIL_PAGE,
   ].forEach((category) => { cacheClearCategory(category).catch(() => {}) })
+}
+
+const CONTINUE_WATCHING_LIMITS = [5, 10, 20, 50] as const
+function loadContinueWatchingLimit(): number {
+  const saved = Number(localStorage.getItem('aurales_cw_limit') || '10')
+  return CONTINUE_WATCHING_LIMITS.includes(saved as typeof CONTINUE_WATCHING_LIMITS[number]) ? saved : 10
+}
+
+const DISCOVERY_MIN_RATINGS = [0, 5, 6, 7, 8] as const
+function loadDiscoveryMinRating(): number {
+  const saved = Number(localStorage.getItem('aurales_discovery_min_rating') || '6')
+  return DISCOVERY_MIN_RATINGS.includes(saved as typeof DISCOVERY_MIN_RATINGS[number]) ? saved : 6
+}
+
+function loadNumberInRange(key: string, fallback: number, min: number, max: number): number {
+  const raw = localStorage.getItem(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
+}
+
+function loadNumberOption(key: string, fallback: number, options: readonly number[]): number {
+  const raw = localStorage.getItem(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return options.includes(value) ? value : fallback
+}
+
+function loadProfileNumberOption(key: string, fallback: number, options: readonly number[]): number {
+  const raw = getProfileSetting(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return options.includes(value) ? value : fallback
+}
+
+export function notifyWatchedProviderAccountChanged(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('aurales:provider-account-changed'))
 }
 
 export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
@@ -62,8 +99,8 @@ function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): M
     // duplicate identifiers for a title and its current episode.
     const ids = [item.id, item.mediaId, item.imdbId, item.tmdbId != null ? String(item.tmdbId) : undefined,
       item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
-      item.malId != null ? String(item.malId) : undefined, item.malId != null ? `mal-${item.malId}` : undefined,
-      item.anilistId != null ? String(item.anilistId) : undefined, item.anilistId != null ? `anilist-${item.anilistId}` : undefined]
+      item.malId != null ? `mal-${item.malId}` : undefined,
+      item.anilistId != null ? `anilist-${item.anilistId}` : undefined]
     for (const key of ids) {
       if (!key) continue
       progress.set(key, Math.max(progress.get(key) || 0, pct))
@@ -82,7 +119,7 @@ function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): M
 
 function loadContinueWatchingProgress(): Map<string, number> {
   const source = loadProgressSelection()
-  const limit = Number(localStorage.getItem('aurales_cw_limit') || '10')
+  const limit = loadContinueWatchingLimit()
   return buildContinueWatchingProgress(readContinueWatchingStartupSnapshot(source, getContinueWatchingAccountScope(source), limit) || [])
 }
 
@@ -110,12 +147,6 @@ export interface CustomArtUrls {
   episodeThumbnailUrl: string
 }
 
-const DEFAULT_ART_PROVIDERS: ArtProviderSettings = {
-  moviePoster: 'tmdb', movieBackdrop: 'tmdb', movieLogo: 'tmdb',
-  seriesPoster: 'tmdb', seriesBackdrop: 'tmdb', seriesLogo: 'tmdb',
-  animePoster: 'tmdb', animeBackdrop: 'tmdb', animeLogo: 'tmdb',
-}
-
 function normalizeArtProviderSettings(value: unknown): ArtProviderSettings {
   const raw = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof ArtProviderSettings, string>>
   const normalize = (provider?: string): ArtProvider =>
@@ -130,6 +161,44 @@ function normalizeArtProviderSettings(value: unknown): ArtProviderSettings {
     animePoster: normalize(raw.animePoster),
     animeBackdrop: normalize(raw.animeBackdrop),
     animeLogo: normalize(raw.animeLogo),
+  }
+}
+
+function readStoredObject(key: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) || 'null')
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+function loadCustomArtUrls(): CustomArtUrls {
+  const saved = readStoredObject('aurales_custom_art_urls')
+  return {
+    posterUrl: typeof saved.posterUrl === 'string' ? saved.posterUrl : '',
+    backdropUrl: typeof saved.backdropUrl === 'string' ? saved.backdropUrl : '',
+    logoUrl: typeof saved.logoUrl === 'string' ? saved.logoUrl : '',
+    episodeThumbnailUrl: typeof saved.episodeThumbnailUrl === 'string' ? saved.episodeThumbnailUrl : '',
+  }
+}
+
+function loadBetterPosterSettings(): BetterPostersSettings {
+  const saved = readStoredObject('aurales_better_posters')
+  const ratingSources: BetterPostersSettings['ratingSource'][] = ['avg', 'IM', 'TM', 'RT', 'MC', 'TR', 'LB', 'RE']
+  return {
+    enabled: typeof saved.enabled === 'boolean' ? saved.enabled : DEFAULT_BETTER_POSTERS_SETTINGS.enabled,
+    trendTags: typeof saved.trendTags === 'boolean' ? saved.trendTags : DEFAULT_BETTER_POSTERS_SETTINGS.trendTags,
+    qualityTags: typeof saved.qualityTags === 'boolean' ? saved.qualityTags : DEFAULT_BETTER_POSTERS_SETTINGS.qualityTags,
+    showGenre: typeof saved.showGenre === 'boolean' ? saved.showGenre : DEFAULT_BETTER_POSTERS_SETTINGS.showGenre,
+    showRating: typeof saved.showRating === 'boolean' ? saved.showRating : DEFAULT_BETTER_POSTERS_SETTINGS.showRating,
+    ratingSource: ratingSources.includes(saved.ratingSource as BetterPostersSettings['ratingSource'])
+      ? saved.ratingSource as BetterPostersSettings['ratingSource']
+      : DEFAULT_BETTER_POSTERS_SETTINGS.ratingSource,
+    ageRating: typeof saved.ageRating === 'boolean' ? saved.ageRating : DEFAULT_BETTER_POSTERS_SETTINGS.ageRating,
+    language: typeof saved.language === 'string' && saved.language ? saved.language : DEFAULT_BETTER_POSTERS_SETTINGS.language,
   }
 }
 
@@ -192,6 +261,7 @@ interface AppState {
   watchProgress: Map<string, WatchProgress>
   completedIds: Set<string>
   setWatchProgress: (id: string, progress: WatchProgress) => void
+  setWatchProgressBatch: (updates: Array<{ id: string; progress: WatchProgress }>) => void
   removeWatchProgress: (mediaIds: string[], season?: number, episode?: number) => void
 
   // Recently watched
@@ -527,8 +597,14 @@ function loadPersistedWatchProgress(): Map<string, WatchProgress> {
   try {
     const raw = localStorage.getItem(profileStorageKey('aurales_watch_progress'))
     if (raw) {
-      const parsed = JSON.parse(raw)
-      return new Map(Object.entries(parsed))
+      const parsed: unknown = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map()
+      const entries = Object.entries(parsed).flatMap(([key, value]) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+          typeof (value as Record<string, unknown>).completed !== 'boolean') return []
+        return [[key, value as WatchProgress] as [string, WatchProgress]]
+      })
+      return new Map(entries)
     }
   } catch (_) { /* ignore */ }
   return new Map()
@@ -538,11 +614,50 @@ function buildCompletedIds(map: Map<string, WatchProgress>): Set<string> {
   const ids = new Set<string>()
   for (const [key, p] of map) {
     if (!p.completed) continue
-    ids.add(key)
-    if (p.mediaId) ids.add(String(p.mediaId))
-    if (p.imdbId) ids.add(String(p.imdbId))
+
+    const tmdbId = p.tmdbId != null && p.tmdbId !== ''
+      ? String(p.tmdbId).replace(/^tmdb[-:]/i, '')
+      : undefined
+    const normalizeAlias = (value: string) => {
+      if (!tmdbId) return value
+      if (value === tmdbId) return `tmdb-${tmdbId}`
+      if (value.startsWith(`${tmdbId}:`)) return `tmdb-${value}`
+      return value
+    }
+
+    // Keep the batch lookup's local index in step with normalizedIds() in
+    // watchedStatus. Playback progress can be keyed by a provider's canonical
+    // id while detail rows are keyed by a different provider id.
+    const mediaIds = new Set<string>([key, p.id, p.mediaId].filter(Boolean).map((value) => normalizeAlias(String(value))))
+    if (p.imdbId) mediaIds.add(String(p.imdbId))
+    if (p.tmdbId != null && p.tmdbId !== '') {
+      mediaIds.add(`tmdb-${tmdbId}`)
+    }
+    if (p.malId != null && p.malId !== '') {
+      mediaIds.add(`mal-${p.malId}`)
+    }
+    if (p.anilistId != null && p.anilistId !== '') {
+      mediaIds.add(`anilist-${p.anilistId}`)
+    }
+
+    for (const id of mediaIds) {
+      ids.add(id)
+      if (p.season != null && p.episode != null) ids.add(`${id}:${p.season}:${p.episode}`)
+    }
   }
   return ids
+}
+
+function hasSameCompletedIdentity(a: WatchProgress, b: WatchProgress): boolean {
+  return a.completed === b.completed
+    && a.id === b.id
+    && a.mediaId === b.mediaId
+    && a.imdbId === b.imdbId
+    && a.tmdbId === b.tmdbId
+    && a.malId === b.malId
+    && a.anilistId === b.anilistId
+    && a.season === b.season
+    && a.episode === b.episode
 }
 
 function persistWatchProgress(map: Map<string, WatchProgress>): void {
@@ -555,7 +670,10 @@ function persistWatchProgress(map: Map<string, WatchProgress>): void {
 function loadPersistedPreferredSubtitles(): string[] {
   try {
     const raw = localStorage.getItem(profileStorageKey('aurales_preferred_subtitles'))
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === 'string')
+    }
   } catch (_) { /* ignore */ }
   return ['en']
 }
@@ -568,7 +686,10 @@ function loadPersistedSubtitleMode(): 'show' | 'forced' | 'hide' {
 function loadPersistedPreferredAudio(): string[] {
   try {
     const raw = localStorage.getItem(profileStorageKey('aurales_preferred_audio'))
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === 'string')
+    }
   } catch (_) { /* ignore */ }
   return ['en', 'ja']
 }
@@ -576,7 +697,9 @@ function loadPersistedPreferredAudio(): string[] {
 function loadRecentlyViewed(): SearchResult[] {
   try {
     const raw = localStorage.getItem(profileStorageKey('aurales_recently_viewed'))
-    return raw ? JSON.parse(raw) as SearchResult[] : []
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((item): item is SearchResult => Boolean(item && typeof item === 'object')) : []
   } catch (_) {
     return []
   }
@@ -650,6 +773,7 @@ export function getLanguageNameFromTrack(langStr?: string): string {
 }
 
 const DEFAULT_HOME_ROWS: HomeRowConfig[] = buildDefaultHomeRows()
+const INITIAL_WATCH_PROGRESS = loadPersistedWatchProgress()
 
 export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: true,
@@ -674,10 +798,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setTraktAccount: (account) => {
     const previous = get().traktAccount
-    if (previous?.username && previous.username !== account?.username) clearContinueWatchingSnapshotsForSource('trakt')
+    const changed = previous?.username !== account?.username
+    if (previous?.username && changed) clearContinueWatchingSnapshotsForSource('trakt')
     if (account) localStorage.setItem('trakt_account', JSON.stringify(account))
     else localStorage.removeItem('trakt_account')
     set({ traktAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
   setMdblistApiKey: (key) => {
     const changed = get().mdblistApiKey !== key
@@ -711,10 +837,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setSimklAccount: (account) => {
     const previous = get().simklAccount
-    if (previous?.id && previous.id !== account?.id) clearContinueWatchingSnapshotsForSource('simkl')
+    const changed = previous?.id !== account?.id
+    if (previous?.id && changed) clearContinueWatchingSnapshotsForSource('simkl')
     if (account) localStorage.setItem('simkl_account', JSON.stringify(account))
     else localStorage.removeItem('simkl_account')
     set({ simklAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
 
   anilistConnected: !!localStorage.getItem('anilist_token'),
@@ -731,10 +859,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setAnilistAccount: (account) => {
     const previous = get().anilistAccount
-    if (previous?.id && previous.id !== account?.id) clearContinueWatchingSnapshotsForSource('anilist')
+    const changed = previous?.id !== account?.id
+    if (previous?.id && changed) clearContinueWatchingSnapshotsForSource('anilist')
     if (account) localStorage.setItem('anilist_account', JSON.stringify(account))
     else localStorage.removeItem('anilist_account')
     set({ anilistAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
 
   addons: loadPersistedAddons(),
@@ -785,31 +915,51 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   resetHomeRows: () => { persistHomeRows(DEFAULT_HOME_ROWS); set({ homeRows: DEFAULT_HOME_ROWS }) },
 
-  watchProgress: loadPersistedWatchProgress(),
-  completedIds: buildCompletedIds(loadPersistedWatchProgress()),
-  setWatchProgress: (id, progress) => set((s) => {
-    void import('../services/continueWatchingPolicy').then(({ reconcileContinueWatchingSuppression }) => reconcileContinueWatchingSuppression(progress))
+  watchProgress: INITIAL_WATCH_PROGRESS,
+  completedIds: buildCompletedIds(INITIAL_WATCH_PROGRESS),
+  setWatchProgress: (id, progress) => get().setWatchProgressBatch([{ id, progress }]),
+  setWatchProgressBatch: (updates) => set((s) => {
+    if (updates.length === 0) return s
+    const profileId = getActiveProfileId()
     const map = new Map(s.watchProgress)
-    map.set(id, progress)
+    const completedIdsChanged = updates.some(({ id, progress }) => {
+      const previous = s.watchProgress.get(id)
+      return !previous || !hasSameCompletedIdentity(previous, progress)
+    })
+    for (const { id, progress } of updates) map.set(id, progress)
+    void import('../services/continueWatchingPolicy').then(({ reconcileContinueWatchingSuppressions }) => {
+      reconcileContinueWatchingSuppressions(updates.map(({ progress }) => progress), profileId)
+    }).catch((error) => console.warn('[appStore] could not reconcile Continue Watching suppressions', error))
     persistWatchProgress(map)
-    // The outbox compacts repeated checkpoints for the same episode, so mpv
-    // progress persistence stays local and cheap even during long playback.
-    enqueueSyncRecord('progress', id, progress)
-    return { watchProgress: map, completedIds: buildCompletedIds(map) }
+    enqueueSyncRecords('progress', updates.map(({ id, progress }) => ({ identity: id, payload: progress })))
+    return { watchProgress: map, completedIds: completedIdsChanged ? buildCompletedIds(map) : s.completedIds }
   }),
   removeWatchProgress: (mediaIds, season, episode) => set((s) => {
     const ids = new Set(mediaIds.filter(Boolean).map(String))
     const map = new Map(s.watchProgress)
+    const removedIds: string[] = []
     for (const [key, progress] of map) {
-      const matchesMedia = ids.has(String(progress.mediaId))
-        || (progress.imdbId != null && ids.has(String(progress.imdbId)))
-        || (progress.tmdbId != null && (ids.has(String(progress.tmdbId)) || ids.has(`tmdb-${progress.tmdbId}`)))
+      const progressIds = [
+        progress.id,
+        progress.mediaId,
+        progress.imdbId,
+        progress.tmdbId,
+        progress.tmdbId != null ? `tmdb-${progress.tmdbId}` : undefined,
+        progress.malId != null ? `mal-${progress.malId}` : undefined,
+        progress.anilistId != null ? `anilist-${progress.anilistId}` : undefined,
+      ]
+      const matchesMedia = progressIds.some((id) => id != null && ids.has(String(id)))
         || Array.from(ids).some((id) => key === id || key.startsWith(`${id}:`))
-      const matchesEpisode = season == null || episode == null
-        || (progress.season === season && progress.episode === episode)
-      if (matchesMedia && matchesEpisode) map.delete(key)
+      const matchesEpisode = season == null
+        || (progress.season === season && (episode == null || progress.episode === episode))
+      if (matchesMedia && matchesEpisode) {
+        map.delete(key)
+        removedIds.push(key)
+      }
     }
     persistWatchProgress(map)
+    const deletedAt = new Date().toISOString()
+    enqueueSyncRecords('progress', removedIds.map((identity) => ({ identity, payload: { deleted: true, deletedAt } })))
     return { watchProgress: map, completedIds: buildCompletedIds(map) }
   }),
 
@@ -862,7 +1012,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Migrate the former Continue Watching-only choice into the unified source.
   continueWatchingSource: loadProgressSelection(),
   primaryProgressProvider: loadProgressSelection(),
-  continueWatchingLimit: Number(localStorage.getItem('aurales_cw_limit') || '10'),
+  continueWatchingLimit: loadContinueWatchingLimit(),
   watchedCheckmarkSources: loadProgressSelection() === 'all' ? connectedProgressSources({
     traktConnected: Boolean(localStorage.getItem('trakt_tokens')),
     simklConnected: Boolean(localStorage.getItem('simkl_token')),
@@ -894,7 +1044,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   keepNextEpisodeVisible: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
   posterSize: (getProfileSetting('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
   nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
-  heroTrailerDelay: Number(getProfileSetting('aurales_hero_trailer_delay') || '3'),
+  heroTrailerDelay: loadProfileNumberOption('aurales_hero_trailer_delay', 3, [0, 3, 5, 10, 15, 30]),
   homeHeroMode: (getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic') as HomeHeroMode,
   homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
   fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
@@ -943,13 +1093,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     return Number.isFinite(volume) ? Math.min(100, Math.max(0, volume)) : 50
   })(),
   discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
-  discoveryMinRating: Number(localStorage.getItem('aurales_discovery_min_rating') || '6'),
+  discoveryMinRating: loadDiscoveryMinRating(),
   discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
   isolatedPlaybackMode: false,
   isolatedPlaybackHwdec: (localStorage.getItem('aurales_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
   isolatedPlaybackResume: localStorage.getItem('aurales_isolated_resume') === 'true',
   videoCacheMode: (() => {
-    const mode = localStorage.getItem('aurales_video_cache_mode')
+    const mode = getProfileSetting('aurales_video_cache_mode')
     return mode === 'memory' || mode === 'disk' ? mode : 'auto'
   })() as 'memory' | 'disk' | 'auto',
   audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
@@ -976,23 +1126,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('aurales_playback_preload_mode', migrated)
     return migrated
   })(),
-  subtitleFontSize: Number(localStorage.getItem('aurales_sub_font_size') || '24'),
+  subtitleFontSize: loadNumberInRange('aurales_sub_font_size', 24, 16, 64),
   subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
   subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
   subtitleBorderStyle: (localStorage.getItem('aurales_sub_border_style') as 'outline' | 'shadow' | 'none') || 'outline',
   subtitlePreset: (localStorage.getItem('aurales_sub_preset') as any) || 'standard',
-  subtitleScale: Number(localStorage.getItem('aurales_sub_scale') || '1.0'),
+  subtitleScale: loadNumberInRange('aurales_sub_scale', 1, 0.5, 2.5),
   subtitleBold: localStorage.getItem('aurales_sub_bold') === 'true',
   subtitleItalic: localStorage.getItem('aurales_sub_italic') === 'true',
   subtitleOutlineColor: localStorage.getItem('aurales_sub_outline_color') || '#000000',
   subtitleBgColor: localStorage.getItem('aurales_sub_bg_color') || '#000000',
-  subtitleOutlineThickness: Number(localStorage.getItem('aurales_sub_outline_thickness') || '1.4'),
-  subtitleShadowOffset: Number(localStorage.getItem('aurales_sub_shadow_offset') || '1.0'),
-  subtitleShadowOpacity: Number(localStorage.getItem('aurales_sub_shadow_opacity') || '0.5'),
-  subtitleVerticalPosition: Number(localStorage.getItem('aurales_sub_vertical_position') || '100'),
+  subtitleOutlineThickness: loadNumberInRange('aurales_sub_outline_thickness', 1.4, 0, 4),
+  subtitleShadowOffset: loadNumberInRange('aurales_sub_shadow_offset', 1, 0, 5),
+  subtitleShadowOpacity: loadNumberInRange('aurales_sub_shadow_opacity', 0.5, 0, 1),
+  subtitleVerticalPosition: loadNumberInRange('aurales_sub_vertical_position', 100, 50, 150),
   subtitleAlignment: (localStorage.getItem('aurales_sub_alignment') as any) || 'center',
-  subtitleHorizontalMargin: Number(localStorage.getItem('aurales_sub_horizontal_margin') || '19'),
-  subtitleTextBlur: Number(localStorage.getItem('aurales_sub_text_blur') || '0.0'),
+  subtitleHorizontalMargin: loadNumberInRange('aurales_sub_horizontal_margin', 19, 0, 100),
+  subtitleTextBlur: loadNumberInRange('aurales_sub_text_blur', 0, 0, 5),
   subtitleScaleWithWindow: localStorage.getItem('aurales_sub_scale_with_window') !== 'false',
   subtitleAssOverride: (localStorage.getItem('aurales_sub_ass_override') as any) || 'scale_only',
   visibleHeroRatings: (() => {
@@ -1017,7 +1167,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       resumePriorityOrder: state.resumePriorityOrder,
     }))
   },
-  setContinueWatchingLimit: (limit) => { localStorage.setItem('aurales_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
+  setContinueWatchingLimit: (limit) => { const safe = CONTINUE_WATCHING_LIMITS.includes(limit as typeof CONTINUE_WATCHING_LIMITS[number]) ? limit : 10; localStorage.setItem('aurales_cw_limit', String(safe)); set({ continueWatchingLimit: safe }) },
   setContinueWatchingProgress: (items) => set({ continueWatchingProgress: buildContinueWatchingProgress(items) }),
   setShowPosterWatchStatus: (enabled) => { localStorage.setItem('aurales_show_poster_watch_status', String(enabled)); set({ showPosterWatchStatus: enabled }) },
   setWatchedCheckmarkSources: (sources) => {
@@ -1115,12 +1265,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ trailerVolume: safe })
   },
   setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); invalidateCatalogData(); set({ discoveryRegion: region }) },
-  setDiscoveryMinRating: (rating) => { localStorage.setItem('aurales_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
+  setDiscoveryMinRating: (rating) => { const safe = DISCOVERY_MIN_RATINGS.includes(rating as typeof DISCOVERY_MIN_RATINGS[number]) ? rating : 6; localStorage.setItem('aurales_discovery_min_rating', String(safe)); set({ discoveryMinRating: safe }) },
   setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
   setIsolatedPlaybackMode: (value) => { localStorage.removeItem('aurales_isolated_playback'); set({ isolatedPlaybackMode: value }) },
   setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('aurales_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
   setIsolatedPlaybackResume: (value) => { localStorage.setItem('aurales_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
-  setVideoCacheMode: (mode) => { localStorage.setItem('aurales_video_cache_mode', mode); set({ videoCacheMode: mode }) },
+  setVideoCacheMode: (mode) => { setProfileSetting('aurales_video_cache_mode', mode); set({ videoCacheMode: mode }) },
   setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
   setAutoSkipSegments: (val) => {
     localStorage.setItem('aurales_auto_skip_segments', String(val))
@@ -1288,11 +1438,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
-  seekStepSeconds: Number(localStorage.getItem('aurales_seek_step_secs') || '10'),
+  seekStepSeconds: loadNumberOption('aurales_seek_step_secs', 10, [5, 10, 15, 30, 60]),
   setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
     localStorage.removeItem('aurales_hwdec_mode')
-    localStorage.setItem('aurales_video_cache_mode', 'auto')
+    setProfileSetting('aurales_video_cache_mode', 'auto')
     localStorage.removeItem('aurales_cache_buffer_size')
     localStorage.removeItem('aurales_mpv_cache_secs')
     localStorage.removeItem('aurales_mpv_network_timeout')
@@ -1324,18 +1474,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Image cache settings
   imageQuality: (localStorage.getItem('aurales_image_quality') || 'balanced') as 'data-saver' | 'balanced' | 'high',
-  imageCacheSizeMb: Number(localStorage.getItem('aurales_image_cache_size_mb') || '500'),
-  imageKeepDays: Number(localStorage.getItem('aurales_image_keep_days') || '3'),
+  imageCacheSizeMb: loadNumberOption('aurales_image_cache_size_mb', 500, [100, 250, 500, 1000, 2000]),
+  imageKeepDays: loadNumberOption('aurales_image_keep_days', 3, [1, 3, 7, 14, 30]),
   setImageQuality: (q) => { localStorage.setItem('aurales_image_quality', q); set({ imageQuality: q }) },
   setImageCacheSizeMb: (mb) => {
     localStorage.setItem('aurales_image_cache_size_mb', String(mb))
     set({ imageCacheSizeMb: mb })
-    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(mb, get().imageKeepDays))
+    void import('../services/imageCache')
+      .then(({ configureImageCache }) => configureImageCache(mb, get().imageKeepDays))
+      .catch((error) => console.warn('[appStore] could not apply image cache size', error))
   },
   setImageKeepDays: (days) => {
     localStorage.setItem('aurales_image_keep_days', String(days))
     set({ imageKeepDays: days })
-    void import('../services/imageCache').then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
+    void import('../services/imageCache')
+      .then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
+      .catch((error) => console.warn('[appStore] could not apply image cache retention', error))
   },
   hydrateProfileState: () => {
     const progress = loadPersistedWatchProgress()
@@ -1350,7 +1504,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       preferSdhSubtitles: localStorage.getItem(profileStorageKey('aurales_prefer_sdh_subtitles')) === 'true',
       animeAudioMode: localStorage.getItem(profileStorageKey('aurales_anime_audio_mode')) === 'dub' ? 'dub' : 'sub',
       posterSize: (getProfileSetting('aurales_poster_size') || 'default') as AppState['posterSize'],
-      heroTrailerDelay: Number(getProfileSetting('aurales_hero_trailer_delay') || '3'),
+      heroTrailerDelay: loadProfileNumberOption('aurales_hero_trailer_delay', 3, [0, 3, 5, 10, 15, 30]),
       homeHeroMode: getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic',
       homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
       fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
@@ -1358,18 +1512,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  artProviders: normalizeArtProviderSettings(JSON.parse(localStorage.getItem('aurales_art_providers') || 'null') || DEFAULT_ART_PROVIDERS),
+  artProviders: normalizeArtProviderSettings(readStoredObject('aurales_art_providers')),
   setArtProviders: (providers) => {
     const normalized = normalizeArtProviderSettings(providers)
     localStorage.setItem('aurales_art_providers', JSON.stringify(normalized))
     invalidateCatalogData()
     set({ artProviders: normalized })
   },
-  customArtUrls: JSON.parse(localStorage.getItem('aurales_custom_art_urls') || 'null') || {
-    posterUrl: '', backdropUrl: '', logoUrl: '', episodeThumbnailUrl: '',
-  } as CustomArtUrls,
+  customArtUrls: loadCustomArtUrls(),
   setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
-  betterPosters: { ...DEFAULT_BETTER_POSTERS_SETTINGS, ...JSON.parse(localStorage.getItem('aurales_better_posters') || 'null') },
+  betterPosters: loadBetterPosterSettings(),
   setBetterPosters: (settings) => {
     localStorage.setItem('aurales_better_posters', JSON.stringify(settings))
     invalidateCatalogData()
@@ -1393,8 +1545,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',
   useGenericAnimeSeasonLabels: localStorage.getItem('aurales_generic_anime_season_labels') !== 'false',
   avoidJapaneseSeasonNames: localStorage.getItem('aurales_avoid_jp_season_names') !== 'false',
-  setMovieMetadataFallback: (val) => { localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
-  setSeriesMetadataFallback: (val) => { localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
+  setMovieMetadataFallback: (val) => {
+    localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val })
+    void import('../services/metadata/metadataResolver').then(({ clearAppMetadataCache }) => clearAppMetadataCache()).catch((e) => console.warn('[appStore] clear movie metadata failed:', e))
+  },
+  setSeriesMetadataFallback: (val) => {
+    localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val })
+    void import('../services/metadata/metadataResolver').then(({ clearAppMetadataCache }) => clearAppMetadataCache()).catch((e) => console.warn('[appStore] clear series metadata failed:', e))
+  },
   setAnimeMetadataFallback: (val) => { localStorage.setItem('aurales_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
   setEnableCommunityRatings: (val) => { localStorage.setItem('aurales_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
   setAppManagedMetadata: (val) => { localStorage.setItem('aurales_app_managed_metadata', String(val)); invalidateCatalogData(); set({ appManagedMetadata: val }) },
@@ -1436,7 +1594,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   subtitleTranslationLang: localStorage.getItem('aurales_sub_translation_lang') || loadPersistedPreferredSubtitles()[0] || '',
   subtitleTranslationEnabled: localStorage.getItem('aurales_sub_translation_enabled') === 'true',
-  translationCuesAhead: Number(localStorage.getItem('aurales_translation_cues_ahead') || '10'),
+  translationCuesAhead: loadNumberInRange('aurales_translation_cues_ahead', 10, 0, 50),
   contextAwareTranslation: localStorage.getItem('aurales_context_aware_translation') !== 'false',
   setSubtitleTranslationLang: (lang) => { localStorage.setItem('aurales_sub_translation_lang', lang); set({ subtitleTranslationLang: lang }) },
   setSubtitleTranslationEnabled: (enabled) => { localStorage.setItem('aurales_sub_translation_enabled', String(enabled)); set({ subtitleTranslationEnabled: enabled }) },

@@ -7,44 +7,73 @@ import { isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
 import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklEpisode } from './types'
+import { getActiveProfileId, profileProviderCacheKey, profileStorageKey } from '../profiles'
 
 const EXACT_EPISODE_PREFIX = 'simkl_episode_state_v1:'
 const EXACT_EPISODE_TTL_MS = 10 * 60 * 1000
+const SIMKL_PENDING_EPISODES_KEY = 'simkl_pending_episode_marks_v1'
+const SIMKL_PENDING_TTL_MS = 24 * 60 * 60 * 1000
+
+function profileEpisodeStateKey(localId: string, season: number, episode: number): string {
+  return profileStorageKey(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`, getActiveProfileId())
+}
 
 export function getSimklEpisodeExactState(localId: string, season: number, episode: number): boolean | undefined {
   try {
-    const raw = localStorage.getItem(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`)
+    const key = profileEpisodeStateKey(localId, season, episode)
+    const raw = localStorage.getItem(key)
     if (!raw) return undefined
-    const parsed = JSON.parse(raw) as { watched: boolean; updatedAt: number }
-    if (Date.now() - parsed.updatedAt > EXACT_EPISODE_TTL_MS) {
-      localStorage.removeItem(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`)
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return undefined
+    const state = parsed as { watched?: unknown; updatedAt?: unknown }
+    if (typeof state.watched !== 'boolean' || typeof state.updatedAt !== 'number' || !Number.isFinite(state.updatedAt)) {
+      localStorage.removeItem(key)
       return undefined
     }
-    return parsed.watched
+    if (Date.now() - state.updatedAt > EXACT_EPISODE_TTL_MS) {
+      localStorage.removeItem(key)
+      return undefined
+    }
+    return state.watched
   } catch (_) { return undefined }
 }
 
 function setSimklEpisodeExactState(localId: string, season: number, episode: number, watched: boolean): void {
-  localStorage.setItem(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`, JSON.stringify({ watched, updatedAt: Date.now() }))
+  try { localStorage.setItem(profileEpisodeStateKey(localId, season, episode), JSON.stringify({ watched, updatedAt: Date.now() })) }
+  catch (_) { /* Provider history remains authoritative if local cache storage is full/unavailable. */ }
 }
-
-const SIMKL_PENDING_EPISODES_KEY = 'simkl_pending_episode_marks_v1'
-const SIMKL_PENDING_TTL_MS = 24 * 60 * 60 * 1000
 
 type PendingSimklEpisode = { localId: string; season: number; episode: number; markedAt: number }
 
 function readPendingSimklEpisodes(): PendingSimklEpisode[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SIMKL_PENDING_EPISODES_KEY) || '[]') as PendingSimklEpisode[]
+    const key = profileStorageKey(SIMKL_PENDING_EPISODES_KEY, getActiveProfileId())
+    let raw = localStorage.getItem(key)
+    // Attribute pre-profile pending marks to the profile active at migration.
+    if (raw == null) {
+      raw = localStorage.getItem(SIMKL_PENDING_EPISODES_KEY)
+      if (raw != null) {
+        localStorage.setItem(key, raw)
+        localStorage.removeItem(SIMKL_PENDING_EPISODES_KEY)
+      }
+    }
+    const parsed: unknown = JSON.parse(raw || '[]')
     const cutoff = Date.now() - SIMKL_PENDING_TTL_MS
-    return Array.isArray(parsed) ? parsed.filter((mark) => mark.markedAt >= cutoff) : []
+    if (!Array.isArray(parsed)) return []
+    const valid = parsed.filter((mark): mark is PendingSimklEpisode => Boolean(mark
+      && typeof mark.localId === 'string' && mark.localId.length > 0
+      && Number.isInteger(mark.season) && mark.season >= 0
+      && Number.isInteger(mark.episode) && mark.episode > 0
+      && Number.isFinite(mark.markedAt) && mark.markedAt >= cutoff))
+    if (valid.length !== parsed.length) localStorage.setItem(key, JSON.stringify(valid))
+    return valid
   } catch (_) {
     return []
   }
 }
 
 function writePendingSimklEpisodes(marks: PendingSimklEpisode[]): void {
-  try { localStorage.setItem(SIMKL_PENDING_EPISODES_KEY, JSON.stringify(marks)) } catch (_) { /* storage unavailable */ }
+  try { localStorage.setItem(profileStorageKey(SIMKL_PENDING_EPISODES_KEY, getActiveProfileId()), JSON.stringify(marks)) } catch (_) { /* storage unavailable */ }
 }
 
 export function markSimklEpisodePending(localId: string, season: number, episode: number): void {
@@ -84,7 +113,7 @@ async function fetchSimklWatchedMovies(): Promise<SimklWatchlistItem[]> {
 export async function getSimklWatchedMovies(forceRefresh = false): Promise<SimklWatchlistItem[]> {
   if (forceRefresh) return fetchSimklWatchedMovies()
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_history:movies',
+    profileProviderCacheKey('simkl_history:movies', 'simkl'),
     fetchSimklWatchedMovies,
     { category: 'SIMKL_LISTS', ttlSeconds: 300 },
   )
@@ -125,7 +154,7 @@ export async function getSimklWatchedEpisodes(forceRefresh = false): Promise<Sim
   return cachedFetch<SimklWatchlistItem[]>(
     // Version the key so cached responses fetched before TVDB episode mapping
     // was requested cannot keep anime episodes falsely unchecked.
-    'simkl_history:episodes:v2',
+    profileProviderCacheKey('simkl_history:episodes:v2', 'simkl'),
     fetchSimklWatchedEpisodes,
     { category: 'SIMKL_LISTS', ttlSeconds: 300 },
   )
@@ -142,9 +171,11 @@ export function findExactSimklHistoryItem(
 ): SimklWatchlistItem | null {
   if (!item.isAnime || item.contentType !== 'movie' || !item.title) return null
   const title = normalizeHistoryTitle(item.title)
+  if (!title) return null
   return history.find((entry) => {
     if (entry.type !== 'anime' && entry.type !== 'movie') return false
-    if (normalizeHistoryTitle(entry.title) !== title) return false
+    const entryTitle = normalizeHistoryTitle(entry.title)
+    if (!entryTitle || entryTitle !== title) return false
     return !item.year || !entry.year || Number(item.year) === Number(entry.year)
   }) ?? null
 }
@@ -390,5 +421,5 @@ export function extractWatchedEpisodes(raw: any) {
 }
 
 function normalizeHistoryTitle(value: string): string {
-  return value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return value.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }

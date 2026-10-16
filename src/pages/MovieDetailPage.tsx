@@ -194,6 +194,8 @@ export default function MovieDetailPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const state = (location.state || {}) as LocationState
+  const locationStateRef = useRef(state)
+  locationStateRef.current = state
   const [movie, setMovie] = useState<MovieDetails | null>(null)
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_TRENDING)
@@ -207,6 +209,9 @@ export default function MovieDetailPage() {
   const showCtxMenu = useContextMenu((state) => state.show)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
+  const watchedProgressRef = useRef(watchedProgress)
+  watchedProgressRef.current = watchedProgress
+  const completedIds = useAppStore((s) => s.completedIds)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
@@ -505,6 +510,7 @@ export default function MovieDetailPage() {
         } catch (e) {
           console.error('[MovieDetailPage] Failed early anime resolution:', e)
         }
+        if (cancelled) return
       }
 
       if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
@@ -514,6 +520,7 @@ export default function MovieDetailPage() {
           tvdbId: Number(knownIds.tvdbId) || undefined, anilistId: Number(knownIds.anilistId) || undefined,
           malId: Number(knownIds.malId) || undefined,
         }).catch(() => null)
+        if (cancelled) return
         if (normalized && normalized.sourceMetadataProvider !== 'fallback_addon') {
           result = appMediaToMovie(normalized)
           knownIds.imdbId ||= normalized.imdbId
@@ -528,8 +535,10 @@ export default function MovieDetailPage() {
       if (shouldRequestAddonMeta && (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId))) {
         const tryAddonMeta = async (addonUrl: string) => {
           try {
+            if (cancelled) return null
             const addonItemId = state.sourceAddonItemId || id || ''
             const meta = await getAddonMeta(addonUrl, 'movie', addonItemId)
+            if (cancelled) return null
             if (meta) {
               const parsed = addonMetaToMovie(meta, addonItemId)
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
@@ -544,11 +553,13 @@ export default function MovieDetailPage() {
 
         let addonResult: MovieDetails | null = null
         if (state.addonUrl) addonResult = await tryAddonMeta(state.addonUrl)
+        if (cancelled) return
         if (!addonResult) {
           const metaAddons = getMetaAddons('movie')
           const storeMetaAddons = addons.filter((a) => a.enabled)
           for (const addon of metaAddons.length > 0 ? metaAddons : storeMetaAddons) {
             addonResult = await tryAddonMeta(addon.url)
+            if (cancelled) return
             if (addonResult) break
           }
         }
@@ -605,6 +616,7 @@ export default function MovieDetailPage() {
         try {
           const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
           const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
+          if (cancelled) return
           if (found.tmdbId) tmdbId = String(found.tmdbId)
         } catch (_) { /* continue */ }
       }
@@ -613,6 +625,7 @@ export default function MovieDetailPage() {
       if (tmdbId) {
         try {
           appResult = await loadMovieDetailPage(tmdbId)
+          if (cancelled) return
           appResult = {
             ...appResult,
             id: id || appResult.id,
@@ -637,6 +650,7 @@ export default function MovieDetailPage() {
           if (imdbId) finalResult.imdbId = imdbId
         } catch (_) { /* continue */ }
       }
+      if (cancelled) return
 
       const cleanTmdb = cleanId(finalResult.tmdbId)
       const finalTmdbId = cleanTmdb ? String(cleanTmdb).replace(/^[a-z_]+[-:]/i, '') : undefined
@@ -675,7 +689,7 @@ export default function MovieDetailPage() {
 
       if (id && artApplied.id && artApplied.id !== id) {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
-        navigate(`/movie/${artApplied.id}`, { replace: true, state })
+        navigate(`/movie/${artApplied.id}`, { replace: true, state: locationStateRef.current })
       }
 
       // Artwork providers are optional enhancement requests. Do not delay the
@@ -710,10 +724,34 @@ export default function MovieDetailPage() {
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature, loadAttempt])
+  }, [
+    id,
+    state.addonUrl,
+    state.provider,
+    state.title,
+    state.year,
+    state.overview,
+    state.rating,
+    state.poster,
+    state.backdrop,
+    state.logo,
+    state.imdbId,
+    state.tmdbId,
+    state.tvdbId,
+    state.malId,
+    state.anilistId,
+    state.isAnime,
+    state.addonMeta,
+    state.sourceAddonId,
+    state.sourceAddonItemId,
+    addons,
+    artSettingsSignature,
+    loadAttempt,
+    navigate,
+  ])
 
   useEffect(() => {
-    if (!movie || playbackPreloadMode === 'off') return
+    if (!movie) return
     const isAnime = !!(movie.malId || movie.anilistId)
     if (!isAnime) return
 
@@ -752,55 +790,69 @@ export default function MovieDetailPage() {
       malId: movie.malId,
       anilistId: movie.anilistId,
       isAnime: isAnimeMovie,
-    }, watchedCheckmarkSources, watchedProgress).then((watched) => {
+    }, watchedCheckmarkSources, watchedProgressRef.current).then((watched) => {
       if (!cancelled) setMovieWatched(watched)
     }).catch(() => {
       if (!cancelled) setMovieWatched(false)
     })
     return () => { cancelled = true }
-  }, [movie, watchedCheckmarkSources, watchedProgress])
+  }, [movie, watchedCheckmarkSources, completedIds])
 
+  const fallbackMovieId = movie?.id
+  const fallbackMovieTitle = movie?.title
+  const fallbackMovieGenre = movie?.genres[0]
+  const movieRecommendationCount = movie?.recommendations.length ?? 0
   useEffect(() => {
-    if (!movie || movie.recommendations.length > 0) return
-    const query = movie.genres[0] || movie.title
+    if (!fallbackMovieId || movieRecommendationCount > 0) return
+    let cancelled = false
+    const query = fallbackMovieGenre || fallbackMovieTitle || ''
     tmdbProvider.recommendationsForText?.(query, 'movie')
       .then((results) => {
-        const filtered = results.filter((item) => item.id !== movie.id && item.title !== movie.title)
-        setFallbackRecommendations((filtered.length ? filtered : rotateFallback(MOCK_TRENDING, movie.id)).map(applySearchResultArt))
+        if (cancelled) return
+        const filtered = results.filter((item) => item.id !== fallbackMovieId && item.title !== fallbackMovieTitle)
+        setFallbackRecommendations((filtered.length ? filtered : rotateFallback(MOCK_TRENDING, fallbackMovieId)).map(applySearchResultArt))
       })
-      .catch(() => setFallbackRecommendations(rotateFallback(MOCK_TRENDING, movie.id).map(applySearchResultArt)))
-  }, [movie])
+      .catch(() => {
+        if (!cancelled) setFallbackRecommendations(rotateFallback(MOCK_TRENDING, fallbackMovieId).map(applySearchResultArt))
+      })
+    return () => { cancelled = true }
+  }, [fallbackMovieId, fallbackMovieTitle, fallbackMovieGenre, movieRecommendationCount])
 
   useGlobalBackdrop(movie?.backdrop || movie?.poster)
 
   const movieIsAnime = !!(movie?.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
+  const movieId = movie?.id
+  const movieTitle = movie?.title
+  const moviePoster = movie?.poster
+  const movieImdbId = movie?.imdbId
+  const movieTmdbId = movie?.tmdbId
 
   useEffect(() => {
-    if (!movie || !discordRichPresence) return
-    const image = movie.poster?.startsWith('http') ? movie.poster : undefined
+    if (!movieId || !movieTitle || !discordRichPresence) return
+    const image = moviePoster?.startsWith('http') ? moviePoster : undefined
     setDiscordBrowsingActivity({
-      details: `Browsing ${movie.title}`,
+      details: `Browsing ${movieTitle}`,
       state: movieIsAnime ? 'Anime Movie' : 'Movie',
       largeImage: image || 'aurales_logo',
-      largeText: movie.title,
+      largeText: movieTitle,
       activityType: 3,
     }).catch(() => {})
     return () => { setDiscordBrowsingActivity().catch(() => {}) }
-  }, [movie?.title, movie?.poster, movieIsAnime, discordRichPresence])
+  }, [movieId, movieTitle, moviePoster, movieIsAnime, discordRichPresence])
 
   useEffect(() => {
-    if (!movie) return
-    const mediaId = movie.imdbId || state.sourceAddonItemId || id || ''
+    if (!movieId || playbackPreloadMode === 'off') return
+    const mediaId = movieImdbId || state.sourceAddonItemId || id || ''
     if (!mediaId) return
     streamPreloadManager.request({
       mediaType: 'movie',
       mediaId,
-      imdbId: movie.imdbId,
-      tmdbId: movie.tmdbId,
+      imdbId: movieImdbId,
+      tmdbId: movieTmdbId,
       sourceAddonId: state.sourceAddonId,
       sourceAddonItemId: state.sourceAddonItemId,
     }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
-  }, [movie?.id, movie?.imdbId, movie?.tmdbId, id, state.sourceAddonId, state.sourceAddonItemId, playbackPreloadMode])
+  }, [movieId, movieImdbId, movieTmdbId, id, state.sourceAddonId, state.sourceAddonItemId, playbackPreloadMode])
 
   // After a short dwell, rank + probe the best direct stream so Play is instant.
   const preparedMediaId = movie ? (movie.imdbId || state.sourceAddonItemId || id || '') : ''
@@ -968,12 +1020,14 @@ export default function MovieDetailPage() {
                   backdrop: movie.backdrop,
                   imdbId: movie.imdbId,
                   tmdbId: movie.tmdbId,
+                  malId: movie.malId,
+                  anilistId: movie.anilistId,
                   updatedAt: new Date().toISOString(),
                 })
               }}
               onUnmarked={() => {
                 setMovieWatched(false)
-                removeWatchProgress([movie.id, movie.imdbId || '', String(movie.tmdbId || ''), movie.tmdbId ? `tmdb-${movie.tmdbId}` : ''])
+                removeWatchProgress([movie.id, movie.imdbId || '', String(movie.tmdbId || ''), movie.tmdbId ? `tmdb-${movie.tmdbId}` : '', movie.malId ? `mal-${movie.malId}` : '', movie.anilistId ? `anilist-${movie.anilistId}` : ''])
               }}
             />
             <StartInRoomButton

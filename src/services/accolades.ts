@@ -191,10 +191,21 @@ export async function fetchTitleAccolade(
     apikey: getOmdbApiKey(),
     plot: 'short',
   })
-  const response = await fetch(`https://www.omdbapi.com/?${params}`, { signal })
-  if (!response.ok) throw new Error(`OMDb accolade request failed (${response.status})`)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(new DOMException('OMDb accolade request timed out', 'TimeoutError')), 8_000)
+  const abortFromCaller = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abortFromCaller()
+  else signal?.addEventListener('abort', abortFromCaller, { once: true })
 
-  const data = await response.json() as OmdbTitleResponse
+  let data: OmdbTitleResponse
+  try {
+    const response = await fetch(`https://www.omdbapi.com/?${params}`, { signal: controller.signal })
+    if (!response.ok) throw new Error(`OMDb accolade request failed (${response.status})`)
+    data = await response.json() as OmdbTitleResponse
+  } finally {
+    window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortFromCaller)
+  }
   const label = data.Response === 'True' ? accoladeFromAwards(data.Awards) : null
   writeCachedAccolade(imdbId, label)
   return label

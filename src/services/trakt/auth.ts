@@ -1,9 +1,12 @@
 import type { TraktTokens, TraktDeviceCode, TraktAccount } from '../../types'
 import { invoke } from '@tauri-apps/api/core'
+import { withRequestTimeout } from '../network/timeout'
 
 const TRAKT_API = 'https://api.trakt.tv'
 const LS_ACCOUNT = 'trakt_account'
 const BUILTIN_TRAKT_CLIENT_ID = '3649670f0821f9da74ec71ac83ec7b37c71397d22aaa3c44997bb46477262010'
+const refreshPending = new Map<string, Promise<TraktTokens | null>>()
+let authGeneration = 0
 
 type TraktHttpResult = { status: number; data: any }
 
@@ -18,8 +21,10 @@ function parseJson(raw: string): any {
 
 async function traktRequest(url: string, options: RequestInit = {}): Promise<TraktHttpResult> {
   if (!isTauri()) {
-    const response = await fetch(url, options)
-    return { status: response.status, data: parseJson(await response.text()) }
+    return withRequestTimeout(15_000, async (signal) => {
+      const response = await fetch(url, { ...options, signal })
+      return { status: response.status, data: parseJson(await response.text()) }
+    }, 'Trakt request timed out', options.signal ?? undefined)
   }
 
   const nativeHeaders: Record<string, string> = {}
@@ -54,7 +59,15 @@ function getClientSecret(): string {
 export function getStoredTokens(): TraktTokens | null {
   const raw = localStorage.getItem('trakt_tokens')
   if (!raw) return null
-  return JSON.parse(raw)
+  try {
+    const parsed = JSON.parse(raw) as Partial<TraktTokens> | null
+    if (!parsed || typeof parsed.accessToken !== 'string' || !parsed.accessToken ||
+      typeof parsed.refreshToken !== 'string' || !parsed.refreshToken ||
+      typeof parsed.expiresAt !== 'number') return null
+    return parsed as TraktTokens
+  } catch (_) {
+    return null
+  }
 }
 
 export function storeTokens(tokens: TraktTokens): void {
@@ -76,8 +89,13 @@ export function getStoredTraktAccount(): TraktAccount | null {
 }
 
 export function clearTokens(): void {
+  authGeneration++
   localStorage.removeItem('trakt_tokens')
   localStorage.removeItem(LS_ACCOUNT)
+}
+
+export function cancelDeviceAuth(): void {
+  authGeneration++
 }
 
 export function isAuthenticated(): boolean {
@@ -87,6 +105,7 @@ export function isAuthenticated(): boolean {
 }
 
 export async function getDeviceCode(): Promise<TraktDeviceCode> {
+  const generation = ++authGeneration
   const clientId = getClientId()
   if (!clientId) throw new Error('Trakt client ID not configured')
 
@@ -95,6 +114,7 @@ export async function getDeviceCode(): Promise<TraktDeviceCode> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: clientId }),
   })
+  if (generation !== authGeneration) throw new Error('Trakt sign-in was cancelled.')
   if (res.status < 200 || res.status >= 300) throw new Error(`Trakt device code error: ${res.status}`)
   const data = res.data
 
@@ -108,6 +128,7 @@ export async function getDeviceCode(): Promise<TraktDeviceCode> {
 }
 
 export async function pollForToken(deviceCode: string): Promise<TraktTokens | null> {
+  const generation = authGeneration
   const clientId = getClientId()
   if (!clientId) throw new Error('Trakt client ID not configured')
 
@@ -124,6 +145,7 @@ export async function pollForToken(deviceCode: string): Promise<TraktTokens | nu
     body: JSON.stringify(body),
   })
 
+  if (generation !== authGeneration) return null
   if (res.status === 400) return null
   if (res.status === 200) {
     const data = res.data
@@ -139,9 +161,26 @@ export async function pollForToken(deviceCode: string): Promise<TraktTokens | nu
   return null
 }
 
-export async function refreshAccessToken(): Promise<TraktTokens | null> {
+export function refreshAccessToken(): Promise<TraktTokens | null> {
   const tokens = getStoredTokens()
-  if (!tokens) return null
+  if (!tokens) return Promise.resolve(null)
+  const key = `${getClientId()}\u0000${tokens.refreshToken}\u0000${tokens.accessToken}`
+  const existing = refreshPending.get(key)
+  if (existing) return existing
+  const pending = refreshAccessTokenImpl(tokens)
+  const tracked = pending.finally(() => {
+    if (refreshPending.get(key) === tracked) refreshPending.delete(key)
+  })
+  refreshPending.set(key, tracked)
+  return tracked
+}
+
+async function refreshAccessTokenImpl(tokens: TraktTokens): Promise<TraktTokens | null> {
+  const generation = authGeneration
+  const isCurrentRefresh = () => {
+    const current = getStoredTokens()
+    return generation === authGeneration && Boolean(current && current.refreshToken === tokens.refreshToken && current.accessToken === tokens.accessToken)
+  }
 
   const body: Record<string, string> = {
     refresh_token: tokens.refreshToken,
@@ -159,14 +198,18 @@ export async function refreshAccessToken(): Promise<TraktTokens | null> {
   })
 
   if (res.status < 200 || res.status >= 300) {
-    clearTokens()
+    if (!isCurrentRefresh()) return null
+    if (res.status === 400 || res.status === 401 || res.status === 403) clearTokens()
     return null
   }
 
   const data = res.data
+  if (!isCurrentRefresh()) return null
+  if (typeof data?.access_token !== 'string' || !data.access_token ||
+    typeof data?.created_at !== 'number' || typeof data?.expires_in !== 'number') return null
   const newTokens: TraktTokens = {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
+    refreshToken: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : tokens.refreshToken,
     expiresAt: data.created_at + data.expires_in,
     createdAt: data.created_at,
   }
@@ -183,6 +226,14 @@ export async function traktFetch(path: string, options: RequestInit = {}): Promi
     if (!tokens) throw new Error('Failed to refresh Trakt token')
   }
 
+  const assertCurrentToken = () => {
+    const current = getStoredTokens()
+    if (!current || current.accessToken !== tokens!.accessToken || current.refreshToken !== tokens!.refreshToken) {
+      throw new Error('Trakt connection changed before the request completed.')
+    }
+  }
+  assertCurrentToken()
+
   const res = await traktRequest(`${TRAKT_API}${path}`, {
     ...options,
     headers: {
@@ -194,6 +245,7 @@ export async function traktFetch(path: string, options: RequestInit = {}): Promi
     },
   })
 
+  assertCurrentToken()
   if (res.status < 200 || res.status >= 300) throw new Error(`Trakt API error: ${res.status}`)
   if (res.status === 204) return null
   return res.data

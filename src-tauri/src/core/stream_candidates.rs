@@ -9,14 +9,14 @@ use crate::core::detail_page::{priority_score, DetailPageCoordinator, SharedResu
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
 const MAX_CONCURRENT_ADDON_REQUESTS: usize = 4;
-const MAX_CONCURRENT_REQUESTS_PER_PROVIDER: usize = 1;
+const MAX_STREAM_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ADDON_ERROR_BYTES: u64 = 4 * 1024;
 const AURORALES_USER_AGENT: &str = "Aurales/0.3";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -64,11 +64,19 @@ pub struct AddonStreamFailure {
     pub error: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddonStreamLatency {
+    pub addon_id: String,
+    pub latency_ms: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadStreamCandidatesResponse {
     pub candidates: Vec<StreamCandidate>,
     pub failures: Vec<AddonStreamFailure>,
+    pub latencies: Vec<AddonStreamLatency>,
     pub stale: bool,
 }
 
@@ -105,10 +113,11 @@ pub async fn load_stream_candidates(
             priority,
             operation_timeout,
             || async move {
-                let (candidates, failures) =
-                    fetch_addon_streams(addons, media_type, id, timeout, retry_once).await;
+                let (candidates, failures, latencies) =
+                    fetch_addon_streams(coordinator, addons, media_type, id, timeout, retry_once)
+                        .await;
                 Ok(SharedResult {
-                    data: json!({ "candidates": candidates, "failures": failures }),
+                    data: json!({ "candidates": candidates, "failures": failures, "latencies": latencies }),
                     // StreamPreloadManager deliberately retains its player-
                     // lifecycle cache; Rust owns only the coordinated live
                     // provider fan-out represented by this operation.
@@ -124,9 +133,13 @@ pub async fn load_stream_candidates(
     let failures =
         serde_json::from_value(response.data.get("failures").cloned().unwrap_or_default())
             .map_err(|error| format!("Failed to decode stream addon failures: {error}"))?;
+    let latencies =
+        serde_json::from_value(response.data.get("latencies").cloned().unwrap_or_default())
+            .map_err(|error| format!("Failed to decode stream addon latencies: {error}"))?;
     Ok(LoadStreamCandidatesResponse {
         candidates,
         failures,
+        latencies,
         stale: response.stale,
     })
 }
@@ -156,43 +169,30 @@ fn stream_request_key(
 }
 
 async fn fetch_addon_streams(
+    coordinator: &DetailPageCoordinator,
     addons: Vec<StreamAddonDescriptor>,
     media_type: String,
     id: String,
     timeout: Duration,
     retry_once: bool,
-) -> (Vec<StreamCandidate>, Vec<AddonStreamFailure>) {
+) -> (
+    Vec<StreamCandidate>,
+    Vec<AddonStreamFailure>,
+    Vec<AddonStreamLatency>,
+) {
     let global_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_ADDON_REQUESTS));
-    let provider_limiters = Arc::new(Mutex::new(HashMap::<String, Arc<Semaphore>>::new()));
     let mut tasks = Vec::with_capacity(addons.len());
 
     for addon in addons {
         let global_limiter = global_limiter.clone();
-        let provider_limiters = provider_limiters.clone();
+        let provider_limiter = coordinator
+            .provider_limiter(&addon_provider_key(&addon.url))
+            .await;
         let media_type = media_type.clone();
         let id = id.clone();
         tasks.push(tokio::spawn(async move {
-            let provider_key = addon_provider_key(&addon.url);
-            let provider_limiter = {
-                let mut limiters = provider_limiters
-                    .lock()
-                    .expect("provider limiter lock poisoned");
-                limiters
-                    .entry(provider_key)
-                    .or_insert_with(|| {
-                        Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS_PER_PROVIDER))
-                    })
-                    .clone()
-            };
-            let _global_permit =
-                global_limiter
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| AddonStreamFailure {
-                        addon_id: addon.id.clone(),
-                        addon_name: addon.name.clone(),
-                        error: "Stream request coordinator closed".to_string(),
-                    })?;
+            // Wait for the per-origin slot first. Otherwise same-origin
+            // waiters consume every batch slot and starve unrelated addons.
             let _provider_permit =
                 provider_limiter
                     .acquire_owned()
@@ -202,8 +202,18 @@ async fn fetch_addon_streams(
                         addon_name: addon.name.clone(),
                         error: "Stream provider limiter closed".to_string(),
                     })?;
+            let _global_permit =
+                global_limiter
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| AddonStreamFailure {
+                        addon_id: addon.id.clone(),
+                        addon_name: addon.name.clone(),
+                        error: "Stream request coordinator closed".to_string(),
+                    })?;
             let addon_for_worker = addon.clone();
-            tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let streams = tokio::task::spawn_blocking(move || {
                 fetch_one_addon(&addon_for_worker, &media_type, &id, timeout, retry_once)
             })
             .await
@@ -213,18 +223,29 @@ async fn fetch_addon_streams(
                 error: format!("Stream addon worker failed: {error}"),
             })?
             .map_err(|error| AddonStreamFailure {
-                addon_id: addon.id,
-                addon_name: addon.name,
+                addon_id: addon.id.clone(),
+                addon_name: addon.name.clone(),
                 error,
-            })
+            })?;
+            Ok((
+                streams,
+                AddonStreamLatency {
+                    addon_id: addon.id,
+                    latency_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                },
+            ))
         }));
     }
 
     let mut candidates = Vec::new();
     let mut failures = Vec::new();
+    let mut latencies = Vec::new();
     for task in tasks {
         match task.await {
-            Ok(Ok(streams)) => candidates.extend(streams),
+            Ok(Ok((streams, latency))) => {
+                candidates.extend(streams);
+                latencies.push(latency);
+            }
             Ok(Err(failure)) => failures.push(failure),
             Err(error) => failures.push(AddonStreamFailure {
                 addon_id: "unknown".to_string(),
@@ -233,7 +254,7 @@ async fn fetch_addon_streams(
             }),
         }
     }
-    (candidates, failures)
+    (candidates, failures, latencies)
 }
 
 fn fetch_one_addon(
@@ -259,20 +280,20 @@ fn fetch_one_addon(
 
 fn fetch_streams_once(url: &str, timeout: Duration) -> Result<Value, String> {
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    agent
+    let response = agent
         .get(url)
         .set("Accept", "application/json")
         .set("User-Agent", AURORALES_USER_AGENT)
         .call()
         .map_err(|error| match error {
             ureq::Error::Status(status, response) => {
-                let body = response.into_string().unwrap_or_default();
+                let body =
+                    crate::core::request::read_error_body_bounded(response, MAX_ADDON_ERROR_BYTES);
                 format!("HTTP {status}: {body}")
             }
             other => other.to_string(),
-        })?
-        .into_json()
-        .map_err(|error| format!("Invalid JSON response: {error}"))
+        })?;
+    crate::core::request::read_json_bounded(response, MAX_STREAM_RESPONSE_BYTES)
 }
 
 fn parse_stream_response(

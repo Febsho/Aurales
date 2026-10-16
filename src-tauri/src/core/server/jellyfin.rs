@@ -4,8 +4,11 @@ use super::{
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
+use std::io::Read;
 
 const CLIENT_HEADER: &str = "MediaBrowser Client=\"Aurales\", Device=\"Desktop\", DeviceId=\"aurales-desktop\", Version=\"0.4.1\"";
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_JSON_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub fn test(
     request: &SaveServerConnectionRequest,
@@ -24,11 +27,12 @@ pub fn test(
         let password = secret.ok_or_else(|| "Jellyfin password is required".to_string())?;
         let url = format!("{}/Users/AuthenticateByName", request.server_url);
         let response = ureq::post(&url)
+            .timeout(HTTP_TIMEOUT)
             .set("Content-Type", "application/json")
             .set("X-Emby-Authorization", CLIENT_HEADER)
             .send_json(json!({"Username":username,"Pw":password}))
             .map_err(http_error)?;
-        let body: Value = response.into_json().map_err(|e| e.to_string())?;
+        let body = read_json_response(response)?;
         let token = body
             .get("AccessToken")
             .and_then(Value::as_str)
@@ -61,29 +65,74 @@ pub fn scan(
     if token.is_empty() {
         return Err("Jellyfin credentials are missing".into());
     }
-    let mut path=format!("/Items?Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode,BoxSet&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,ParentId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,PremiereDate,UserData&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop&Limit=10000");
+    const PAGE_SIZE: usize = 1000;
+    let mut path=format!("/Items?Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode,BoxSet&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,ParentId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,PremiereDate,UserData&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop&Limit={PAGE_SIZE}");
     if let Some(user) = user_id {
         path.push_str("&UserId=");
         path.push_str(&encoded(user));
     }
     // Jellyfin supports MinDateLastSaved on modern servers. If an older server
     // rejects it, retry as a complete refresh rather than failing the provider.
-    let (body, complete) = if let Some(cursor) = cursor {
+    let (first_page, page_path, complete) = if let Some(cursor) = cursor {
         let incremental = format!("{path}&MinDateLastSaved={}", encoded(cursor));
-        match get_json(&connection.server_url, &incremental, Some(token)) {
-            Ok(v) => (v, false),
-            Err(_) => (get_json(&connection.server_url, &path, Some(token))?, true),
+        match get_json(
+            &connection.server_url,
+            &format!("{incremental}&StartIndex=0"),
+            Some(token),
+        ) {
+            Ok(v) => (v, incremental, false),
+            Err(_) => (
+                get_json(
+                    &connection.server_url,
+                    &format!("{path}&StartIndex=0"),
+                    Some(token),
+                )?,
+                path.clone(),
+                true,
+            ),
         }
     } else {
-        (get_json(&connection.server_url, &path, Some(token))?, true)
+        (
+            get_json(
+                &connection.server_url,
+                &format!("{path}&StartIndex=0"),
+                Some(token),
+            )?,
+            path.clone(),
+            true,
+        )
     };
-    let mut items = Vec::new();
-    for raw in body
+    let mut raw_items = first_page
         .get("Items")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
-    {
+        .unwrap_or_default();
+    let mut next_start = raw_items.len();
+    let mut last_page_count = raw_items.len();
+    let mut total = first_page
+        .get("TotalRecordCount")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+    while total.map_or(last_page_count == PAGE_SIZE, |count| next_start < count) {
+        let page_url = format!("{page_path}&StartIndex={next_start}");
+        let page = get_json(&connection.server_url, &page_url, Some(token))?;
+        let page_items = page
+            .get("Items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(count) = page.get("TotalRecordCount").and_then(Value::as_u64) {
+            total = Some(count as usize);
+        }
+        if page_items.is_empty() {
+            break;
+        }
+        last_page_count = page_items.len();
+        next_start += page_items.len();
+        raw_items.extend(page_items);
+    }
+    let mut items = Vec::new();
+    for raw in raw_items {
         if let Some(item) = catalog_item(connection, raw) {
             items.push(item)
         }
@@ -141,14 +190,14 @@ pub fn streams(
     }
     let path = format!(
         "/Items/{}/PlaybackInfo{}",
-        encoded(item_id),
+        encoded_path_segment(item_id),
         user_id
             .map(|v| format!("?UserId={}", encoded(v)))
             .unwrap_or_default()
     );
     let url = format!("{}{}", connection.server_url, path);
-    let response=ureq::post(&url).set("Content-Type","application/json").set("X-Emby-Token",token).set("X-Emby-Authorization",CLIENT_HEADER).send_json(json!({"UserId":user_id,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":false,"AutoOpenLiveStream":false})).map_err(http_error)?;
-    let body: Value = response.into_json().map_err(|e| e.to_string())?;
+    let response=ureq::post(&url).timeout(HTTP_TIMEOUT).set("Content-Type","application/json").set("X-Emby-Token",token).set("X-Emby-Authorization",CLIENT_HEADER).send_json(json!({"UserId":user_id,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":false,"AutoOpenLiveStream":false})).map_err(http_error)?;
+    let body = read_json_response(response)?;
     let chapters = body
         .get("Chapters")
         .and_then(Value::as_array)
@@ -177,17 +226,11 @@ pub fn streams(
         let audio = streams
             .iter()
             .find(|v| v.get("Type").and_then(Value::as_str) == Some("Audio"));
-        let direct_path = source
-            .get("DirectStreamUrl")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                format!(
-                    "/Videos/{}/stream?Static=true&MediaSourceId={}",
-                    encoded(item_id),
-                    encoded(source_id)
-                )
-            });
+        let fallback_path = format!(
+            "/Videos/{}/stream?Static=true&MediaSourceId={}",
+            encoded_path_segment(item_id),
+            encoded(source_id)
+        );
         let direct_play = source
             .get("SupportsDirectPlay")
             .and_then(Value::as_bool)
@@ -196,10 +239,20 @@ pub fn streams(
             .get("SupportsDirectStream")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let mut play_url = absolute(&connection.server_url, &direct_path);
-        play_url.push_str(if play_url.contains('?') { "&" } else { "?" });
-        play_url.push_str("api_key=");
-        play_url.push_str(&encoded(token));
+        // DirectStreamUrl comes from the server response. Never attach the
+        // stored API token to a URL on another origin.
+        let mut play_url = source
+            .get("DirectStreamUrl")
+            .and_then(Value::as_str)
+            .and_then(|candidate| same_origin_url(&connection.server_url, candidate))
+            .unwrap_or_else(|| absolute(&connection.server_url, &fallback_path));
+        let Ok(mut parsed_play_url) = url::Url::parse(&play_url) else {
+            continue;
+        };
+        parsed_play_url
+            .query_pairs_mut()
+            .append_pair("api_key", token);
+        play_url = parsed_play_url.into();
         let subtitle_tracks: Vec<Value> = streams
             .iter()
             .filter(|v| v.get("Type").and_then(Value::as_str) == Some("Subtitle"))
@@ -295,11 +348,11 @@ fn catalog_item(connection: &ServerConnection, raw: Value) -> Option<ServerCatal
         .and_then(|v| id_value(v, "MyAnimeList").or_else(|| id_value(v, "Mal")));
     let poster = Some(format!(
         "/Items/{}/Images/Primary?fillHeight=900&quality=90",
-        encoded(&id)
+        encoded_path_segment(&id)
     ));
     let backdrop = Some(format!(
         "/Items/{}/Images/Backdrop?fillHeight=900&quality=90",
-        encoded(&id)
+        encoded_path_segment(&id)
     ));
     let mut raw = raw;
     if let Some(object) = raw.as_object_mut() {
@@ -364,6 +417,11 @@ fn id_value(ids: &Value, key: &str) -> Option<String> {
 fn encoded(v: &str) -> String {
     url::form_urlencoded::byte_serialize(v.as_bytes()).collect()
 }
+fn encoded_path_segment(v: &str) -> String {
+    // `+` is a space only in query/form encoding. In a URL path it is a literal
+    // plus, so convert the query encoder's spaces to their path representation.
+    encoded(v).replace('+', "%20")
+}
 fn absolute(base: &str, path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
         path.into()
@@ -379,17 +437,39 @@ fn absolute(base: &str, path: &str) -> String {
         )
     }
 }
+fn same_origin_url(base: &str, candidate: &str) -> Option<String> {
+    let base_url = url::Url::parse(base).ok()?;
+    let resolved = base_url.join(candidate).ok()?;
+    if resolved.origin() != base_url.origin()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        return None;
+    }
+    Some(resolved.into())
+}
 fn get_json(base: &str, path: &str, token: Option<&str>) -> Result<Value, String> {
     let mut req = ureq::get(&absolute(base, path))
+        .timeout(HTTP_TIMEOUT)
         .set("Accept", "application/json")
         .set("X-Emby-Authorization", CLIENT_HEADER);
     if let Some(token) = token {
         req = req.set("X-Emby-Token", token)
     }
-    req.call()
-        .map_err(http_error)?
-        .into_json()
-        .map_err(|e| e.to_string())
+    let response = req.call().map_err(http_error)?;
+    read_json_response(response)
+}
+fn read_json_response(response: ureq::Response) -> Result<Value, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_JSON_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read Jellyfin response: {error}"))?;
+    if bytes.len() as u64 > MAX_JSON_RESPONSE_BYTES {
+        return Err("Jellyfin response exceeded the 64 MiB limit".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| format!("Invalid Jellyfin response: {error}"))
 }
 fn http_error(error: ureq::Error) -> String {
     match error {

@@ -71,7 +71,7 @@ export function watchStalledImage(
   url: string | undefined,
   timeoutMs = 5000,
 ): () => void {
-  if (!image || !url) return () => {}
+  if (!image || !url || !isTauri()) return () => {}
   const timer = window.setTimeout(() => {
     if (image.complete && image.naturalWidth > 0) return
     retryImageFromSource(image, url)
@@ -90,6 +90,7 @@ const sessionDecodedImages = new Map<string, HTMLImageElement>()
 // entries covers the viewport and next rail batch without pinning hundreds of
 // megabytes in WebKit's decoded-image memory.
 const MAX_SESSION_DECODED_IMAGES = 12
+const WARM_IMAGE_TIMEOUT_MS = 8_000
 
 function rememberDecodedImage(source: string, image: HTMLImageElement): void {
   // Map insertion order gives us a compact LRU without retaining the DOM for
@@ -103,12 +104,24 @@ function rememberDecodedImage(source: string, image: HTMLImageElement): void {
   }
 }
 const queuedImageWarmups = new Map<string, Promise<void>>()
-const imageWarmupQueue: Array<() => void> = []
+interface ImageWarmupJob {
+  source: string
+  priority: 'interactive' | 'background'
+  sequence: number
+  run: () => void
+  cancel: () => void
+}
+const imageWarmupQueue: ImageWarmupJob[] = []
+// Warmups are optional speculation. Keep a short look-ahead window so rapid
+// shelf/route changes cannot leave hundreds of no-longer-visible downloads
+// queued behind the small native image worker pool.
+const MAX_QUEUED_IMAGE_WARMUPS = 24
 // Match the native cache's bounded downloader. This maximizes cold-cache
 // throughput without allowing background artwork to monopolize connections.
 const IMAGE_WARMUP_CONCURRENCY = 3
 let activeImageWarmups = 0
 let imageWarmupWakeup: number | null = null
+let imageWarmupSequence = 0
 
 function scheduleImageWarmup(): void {
   if (imageWarmupWakeup !== null) return
@@ -129,36 +142,77 @@ function runNextImageWarmup(): void {
   }
   while (activeImageWarmups < IMAGE_WARMUP_CONCURRENCY && imageWarmupQueue.length > 0) {
     activeImageWarmups += 1
-    imageWarmupQueue.shift()?.()
+    imageWarmupQueue.sort((a, b) => Number(b.priority === 'interactive') - Number(a.priority === 'interactive') || a.sequence - b.sequence)
+    imageWarmupQueue.shift()?.run()
   }
 }
 
-/** Warm the same URL the destination component will render. Concurrent card
- * focus/click requests share one browser/custom-protocol fetch. */
-export function warmCachedImage(url: string | undefined): Promise<void> {
-  if (!url) return Promise.resolve()
-  const source = cachedImage(url)
-  if (!source) return Promise.resolve()
-  if (sessionDecodedImages.has(source)) return Promise.resolve()
-  const existing = imageWarmups.get(source)
-  if (existing) return existing
-
-  const request = new Promise<void>((resolve) => {
+function loadWarmImage(source: string): Promise<void> {
+  return new Promise<void>((resolve) => {
     const image = new Image()
     image.decoding = 'async'
-    image.onload = () => {
-      rememberDecodedImage(source, image)
+    let settled = false
+    const finish = (loaded: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      image.onload = null
+      image.onerror = null
+      if (loaded) rememberDecodedImage(source, image)
+      else image.removeAttribute('src')
       resolve()
     }
-    image.onerror = () => resolve()
+    const timeout = window.setTimeout(() => finish(false), WARM_IMAGE_TIMEOUT_MS)
+    image.onload = () => finish(true)
+    image.onerror = () => finish(false)
     image.src = source
-  }).finally(() => {
-    // Keep successful decodes above, but release failed attempts so a later
-    // origin/cache recovery can retry them.
-    imageWarmups.delete(source)
   })
-  imageWarmups.set(source, request)
+}
+
+function enqueueImageWarmup(url: string | undefined, variant: ImageCacheVariant, startImmediately: boolean): Promise<void> {
+  if (!url) return Promise.resolve()
+  const source = cachedImage(url, variant)
+  if (!source || sessionDecodedImages.has(source)) return Promise.resolve()
+  const active = imageWarmups.get(source)
+  if (active) return active
+  const queued = queuedImageWarmups.get(source)
+  if (queued) return queued
+  if (imageWarmupQueue.length >= MAX_QUEUED_IMAGE_WARMUPS) {
+    if (!startImmediately) return Promise.resolve()
+    const backgroundIndex = imageWarmupQueue.findIndex((job) => job.priority === 'background')
+    if (backgroundIndex < 0) return Promise.resolve()
+    const [displaced] = imageWarmupQueue.splice(backgroundIndex, 1)
+    queuedImageWarmups.delete(displaced.source)
+    displaced.cancel()
+  }
+
+  let resolve!: () => void
+  const request = new Promise<void>((done) => { resolve = done })
+  queuedImageWarmups.set(source, request)
+  const job: ImageWarmupJob = {
+    source,
+    priority: startImmediately ? 'interactive' : 'background',
+    sequence: imageWarmupSequence++,
+    cancel: resolve,
+    run: () => {
+      const loading = loadWarmImage(source).finally(() => {
+        activeImageWarmups -= 1
+        imageWarmups.delete(source)
+        queuedImageWarmups.delete(source)
+        resolve()
+        runNextImageWarmup()
+      })
+      imageWarmups.set(source, loading)
+    },
+  }
+  imageWarmupQueue.push(job)
+  if (startImmediately) runNextImageWarmup()
   return request
+}
+
+/** Direct card focus and shelf look-ahead share bounded concurrency and URL deduplication. */
+export function warmCachedImage(url: string | undefined, variant: ImageCacheVariant = 'card'): Promise<void> {
+  return enqueueImageWarmup(url, variant, true)
 }
 
 /**
@@ -169,25 +223,7 @@ export function warmCachedImage(url: string | undefined): Promise<void> {
  */
 export function warmCachedImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = [...new Set(urls.filter((url): url is string => Boolean(url)))]
-  const requests = uniqueUrls.map((url) => {
-    const source = cachedImage(url)
-    if (!source) return Promise.resolve()
-    const existing = queuedImageWarmups.get(source)
-    if (existing) return existing
-
-    let resolve!: () => void
-    const request = new Promise<void>((done) => { resolve = done })
-    queuedImageWarmups.set(source, request)
-    imageWarmupQueue.push(() => {
-      void warmCachedImage(url).finally(() => {
-        activeImageWarmups -= 1
-        queuedImageWarmups.delete(source)
-        resolve()
-        runNextImageWarmup()
-      })
-    })
-    return request
-  })
+  const requests = uniqueUrls.map((url) => enqueueImageWarmup(url, 'card', false))
   // Enqueue the full batch before waking the scheduler so a shelf can only
   // create one input-pending retry timer, not one per image URL.
   runNextImageWarmup()
@@ -210,5 +246,5 @@ export async function imageCacheStats(): Promise<{ bytes: number; files: number 
 
 export async function clearImageCache(): Promise<void> {
   if (!isTauri()) return
-  await invoke('image_cache_clear').catch(() => undefined)
+  await invoke('image_cache_clear')
 }

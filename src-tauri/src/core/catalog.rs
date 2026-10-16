@@ -24,11 +24,13 @@ pub struct AddonRecord {
 }
 
 pub fn save_home_rows(db: &Database, rows: Vec<HomeRow>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM home_rows", [])
+    let mut conn = db.conn.lock().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM home_rows", [])
         .map_err(|error| error.to_string())?;
     for row in rows {
-        conn.execute(
+        transaction.execute(
             "INSERT INTO home_rows (id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 row.id,
@@ -43,34 +45,40 @@ pub fn save_home_rows(db: &Database, rows: Vec<HomeRow>) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     }
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
 
 pub fn get_home_rows(db: &Database) -> Vec<HomeRow> {
-    let conn = db.conn.lock().unwrap();
-    let mut statement = conn
-        .prepare("SELECT id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order FROM home_rows ORDER BY sort_order")
-        .unwrap();
-    statement
-        .query_map([], |row| {
-            Ok(HomeRow {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                addon_id: row.get(2)?,
-                catalog_type: row.get(3)?,
-                catalog_id: row.get(4)?,
-                layout: row.get(5)?,
-                enabled: row.get::<_, i32>(6)? != 0,
-                sort_order: row.get(7)?,
-            })
+    let Ok(conn) = db.conn.lock() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = conn
+        .prepare("SELECT id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order FROM home_rows ORDER BY sort_order") else {
+            return Vec::new();
+        };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok(HomeRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            addon_id: row.get(2)?,
+            catalog_type: row.get(3)?,
+            catalog_id: row.get(4)?,
+            layout: row.get(5)?,
+            enabled: row.get::<_, i32>(6)? != 0,
+            sort_order: row.get(7)?,
         })
-        .unwrap()
-        .filter_map(|row| row.ok())
-        .collect()
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 pub fn save_addon(db: &Database, addon: AddonRecord) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection lock is poisoned".to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO addons (id, name, version, url, manifest_json, enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
@@ -87,31 +95,37 @@ pub fn save_addon(db: &Database, addon: AddonRecord) -> Result<(), String> {
 }
 
 pub fn remove_addon(db: &Database, addon_id: String) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection lock is poisoned".to_string())?;
     conn.execute("DELETE FROM addons WHERE id = ?1", [&addon_id])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 pub fn get_addons(db: &Database) -> Vec<AddonRecord> {
-    let conn = db.conn.lock().unwrap();
-    let mut statement = conn
-        .prepare("SELECT id, name, version, url, manifest_json, enabled FROM addons")
-        .unwrap();
-    statement
-        .query_map([], |row| {
-            Ok(AddonRecord {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                version: row.get(2)?,
-                url: row.get(3)?,
-                manifest_json: row.get(4)?,
-                enabled: row.get::<_, i32>(5)? != 0,
-            })
+    let Ok(conn) = db.conn.lock() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) =
+        conn.prepare("SELECT id, name, version, url, manifest_json, enabled FROM addons")
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok(AddonRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            version: row.get(2)?,
+            url: row.get(3)?,
+            manifest_json: row.get(4)?,
+            enabled: row.get::<_, i32>(5)? != 0,
         })
-        .unwrap()
-        .filter_map(|row| row.ok())
-        .collect()
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[cfg(test)]

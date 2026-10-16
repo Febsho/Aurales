@@ -1,5 +1,6 @@
 import type { SearchResult, WatchProgress } from '../types'
-import { getProfileSetting, setProfileSetting } from './profiles'
+import { mediaIdentity } from './mediaPresentation'
+import { getActiveProfileId, getProfileSetting, setProfileSetting } from './profiles'
 
 export type ReleaseType = 'episode' | 'season' | 'movie' | 'anime_episode'
 export interface ReleaseEvent {
@@ -26,13 +27,27 @@ export interface UpcomingPreferences {
   includeConnectedWatching: boolean
 }
 const KEY = 'aurales_upcoming_preferences_v1'
-export function getUpcomingPreferences(): UpcomingPreferences {
+const HIDDEN_RELEASE_TTL_MS = 180 * 24 * 60 * 60 * 1000
+const MAX_HIDDEN_RELEASES = 500
+export function getUpcomingPreferences(profileId = getActiveProfileId()): UpcomingPreferences {
   try {
-    const value = JSON.parse(getProfileSetting(KEY) || '{}')
+    const value = JSON.parse(getProfileSetting(KEY, profileId) || '{}')
+    const rawHidden = value?.hidden && typeof value.hidden === 'object' && !Array.isArray(value.hidden)
+      ? Object.entries(value.hidden as Record<string, unknown>)
+      : []
+    const cutoff = Date.now() - HIDDEN_RELEASE_TTL_MS
+    const hiddenEntries = rawHidden
+      .filter(([id, timestamp]) => id.length > 0 && typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp >= cutoff)
+      .sort((a, b) => (b[1] as number) - (a[1] as number))
+      .slice(0, MAX_HIDDEN_RELEASES)
+    const hidden = Object.fromEntries(hiddenEntries) as Record<string, number>
+    if (hiddenEntries.length !== rawHidden.length) {
+      setProfileSetting(KEY, JSON.stringify({ ...value, hidden }), profileId)
+    }
     return {
       showOnHome: value.showOnHome !== false,
       horizonDays: [3, 7, 14, 30, 60, 90].includes(value.horizonDays) ? value.horizonDays : 14,
-      hidden: value.hidden || {},
+      hidden,
       includeLocalWatchlist: value.includeLocalWatchlist !== false,
       includeContinueWatching: value.includeContinueWatching !== false,
       includeConnectedWatchlists: value.includeConnectedWatchlists !== false,
@@ -54,14 +69,49 @@ export function isReleaseInHorizon(event: ReleaseEvent, days: number, now = new 
 }
 export function releaseTiming(date?: string, now = new Date()): string {
   if (!date) return 'Coming soon'
-  const target = new Date(`${date.slice(0, 10)}T12:00:00`); const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()); const days = Math.round((target.getTime() - start.getTime()) / 86400000)
+  const target = new Date(`${date.slice(0, 10)}T12:00:00`)
+  if (!Number.isFinite(target.getTime())) return 'Coming soon'
+  // Compare local calendar days at the same hour. Starting at midnight made
+  // today's noon release appear half a day away and round up to "In 1 day".
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12)
+  const days = Math.round((target.getTime() - start.getTime()) / 86400000)
   if (days <= 0) return 'In 0 days'
   return `In ${days} ${days === 1 ? 'day' : 'days'}`
 }
 
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await mapper(items[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
 function upcomingMediaKey(event: ReleaseEvent): string {
-  const media = event.media
-  return `${media.type}:${String(media.tmdbId || media.imdbId || media.id).replace(/^tmdb[-:]/i, '')}`
+  return upcomingIdentity(event.media)
+}
+
+function upcomingIdentity(item: Pick<SearchResult, 'id' | 'type' | 'provider' | 'tmdbId' | 'imdbId'>): string {
+  if (item.tmdbId != null || item.imdbId) return mediaIdentity(item)
+  // Local watchlist rows and playback progress describe the same local item
+  // under different UI-facing provider labels. Keep other provider-local IDs
+  // namespaced so a coincident ID from another catalog cannot merge with it.
+  const provider = item.provider === 'progress' ? 'local' : item.provider.trim().toLowerCase()
+  return `${item.type}:${provider}:${item.id}`
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function seasonDateKey(value?: string): string | undefined {
+  const key = value?.slice(0, 10)
+  return key && /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : undefined
 }
 
 /**
@@ -74,7 +124,9 @@ export function keepNextReleasePerTitle(events: ReleaseEvent[], now = new Date()
   const grouped = new Map<string, ReleaseEvent[]>()
   for (const event of events) {
     const key = upcomingMediaKey(event)
-    grouped.set(key, [...(grouped.get(key) || []), event])
+    const releases = grouped.get(key)
+    if (releases) releases.push(event)
+    else grouped.set(key, [event])
   }
 
   return [...grouped.values()].flatMap((releases) => {
@@ -89,36 +141,87 @@ export function keepNextReleasePerTitle(events: ReleaseEvent[], now = new Date()
 }
 
 /** Normalize existing provider metadata into release events; never invent a date. */
-export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; progress: WatchProgress[]; getShow: (id: string) => Promise<{ seasons: { seasonNumber: number; airDate?: string; name?: string; poster?: string }[]; title: string; backdrop?: string; poster?: string; tmdbId?: string | number }>; getSeason?: (id: string, season: number) => Promise<{ episodes: { episodeNumber: number; seasonNumber: number; name?: string; airDate?: string; still?: string }[] }> }): Promise<ReleaseEvent[]> {
-  const mediaKey = (value: string | number | undefined) => String(value || '').replace(/^tmdb[-:]/i, '')
-  const active = new Set(input.progress.filter((p) => !p.completed).map((p) => mediaKey(p.tmdbId || p.mediaId)))
-  const watched = new Set(input.progress.filter((p) => p.completed).map((p) => mediaKey(p.tmdbId || p.mediaId)))
+export async function buildUpcomingEvents(input: { watchlist: SearchResult[]; progress: WatchProgress[]; preferences?: UpcomingPreferences; getShow: (id: string) => Promise<{ seasons: { seasonNumber: number; airDate?: string; name?: string; poster?: string }[]; title: string; backdrop?: string; poster?: string; tmdbId?: string | number }>; getSeason?: (id: string, season: number) => Promise<{ episodes: { episodeNumber: number; seasonNumber: number; name?: string; airDate?: string; still?: string }[] }> }): Promise<ReleaseEvent[]> {
+  const progressKey = (progress: WatchProgress) => upcomingIdentity({ id: progress.mediaId, type: progress.mediaType === 'movie' ? 'movie' : 'series', provider: 'local', tmdbId: progress.tmdbId, imdbId: progress.imdbId })
+  const activeProgress = input.progress.filter((p) => !p.completed)
+  const active = new Set(activeProgress.map(progressKey))
+  const watched = new Set(input.progress.filter((p) => p.completed).map(progressKey))
+  const activeSeasonByTitle = new Map<string, { season: number; updatedAt: number }>()
+  for (const progress of activeProgress) {
+    if (!Number.isInteger(progress.season) || (progress.season ?? 0) <= 0) continue
+    const key = progressKey(progress)
+    const updatedAt = Date.parse(progress.updatedAt || '') || 0
+    const current = activeSeasonByTitle.get(key)
+    if (!current || updatedAt >= current.updatedAt) activeSeasonByTitle.set(key, { season: progress.season!, updatedAt })
+  }
   const seeds = new Map<string, SearchResult>()
-  input.watchlist.forEach((item) => seeds.set(`${item.type}:${item.tmdbId || item.imdbId || item.id}`, item))
-  input.progress.forEach((p) => seeds.set(`${p.mediaType === 'movie' ? 'movie' : 'series'}:${p.tmdbId || p.imdbId || p.mediaId}`, { id: p.mediaId, title: p.title || 'Untitled', type: p.mediaType === 'movie' ? 'movie' : 'series', provider: 'local', poster: p.poster, backdrop: p.backdrop, tmdbId: p.tmdbId, imdbId: p.imdbId }))
-  const events: ReleaseEvent[] = []
-  for (const item of seeds.values()) {
-    const key = mediaKey(item.tmdbId || item.imdbId || item.id)
+  input.watchlist.forEach((item) => seeds.set(upcomingIdentity(item), item))
+  input.progress.forEach((p) => {
+    const item: SearchResult = { id: p.mediaId, title: p.title || 'Untitled', type: p.mediaType === 'movie' ? 'movie' : 'series', provider: 'local', poster: p.poster, backdrop: p.backdrop, tmdbId: p.tmdbId, imdbId: p.imdbId }
+    seeds.set(upcomingIdentity(item), item)
+  })
+  const eventsBySeed = await mapLimit([...seeds.values()], 4, async (item) => {
+    const itemEvents: ReleaseEvent[] = []
+    const key = upcomingIdentity(item)
     if (item.type === 'movie') {
-      if (item.releaseDate) events.push({ id: `movie:${key}:${item.releaseDate}`, media: item, type: 'movie', releaseDate: item.releaseDate, artwork: item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : 80, relevanceReasons: [input.watchlist.some((x) => (x.tmdbId || x.imdbId || x.id) === (item.tmdbId || item.imdbId || item.id)) ? 'On your watchlist' : 'From your library'], source: 'local', status: new Date(`${item.releaseDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
-      continue
+      if (item.releaseDate) itemEvents.push({ id: `movie:${key}:${item.releaseDate}`, media: item, type: 'movie', releaseDate: item.releaseDate, artwork: item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : 80, relevanceReasons: [input.watchlist.some((x) => (x.tmdbId || x.imdbId || x.id) === (item.tmdbId || item.imdbId || item.id)) ? 'On your watchlist' : 'From your library'], source: 'local', status: new Date(`${item.releaseDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
+      return itemEvents
     }
-    if (!item.tmdbId) continue
+    if (!item.tmdbId) return itemEvents
     try {
       const show = await input.getShow(String(item.tmdbId))
-      for (const season of show.seasons.filter((s) => s.seasonNumber > 0 && s.airDate)) {
-        const reason = active.has(key) ? 'Currently watching' : watched.has(key) ? 'Because you watched this series' : 'On your watchlist'
-        events.push({ id: `season:${show.tmdbId || item.tmdbId}:${season.seasonNumber}:${season.airDate}`, media: { ...item, title: show.title, poster: show.poster || item.poster, backdrop: show.backdrop || item.backdrop }, type: 'season', seasonNumber: season.seasonNumber, releaseDate: season.airDate, artwork: show.backdrop || season.poster || item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : watched.has(key) ? 90 : 80, relevanceReasons: [reason], source: 'tmdb', status: new Date(`${season.airDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
-        if (active.has(key) && input.getSeason) {
-          const details = await input.getSeason(String(item.tmdbId), season.seasonNumber)
-          for (const episode of details.episodes.filter((ep) => ep.airDate)) {
-            events.push({ id: `episode:${item.tmdbId}:${episode.seasonNumber}:${episode.episodeNumber}:${episode.airDate}`, media: { ...item, title: show.title, poster: show.poster || item.poster, backdrop: show.backdrop || item.backdrop }, type: 'episode', seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber, episodeTitle: episode.name, releaseDate: episode.airDate, artwork: episode.still || show.backdrop || item.backdrop || item.poster, relevanceScore: 120, relevanceReasons: ['Currently watching'], source: 'tmdb', status: new Date(`${episode.airDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
-          }
+      const seasons = show.seasons.filter((season) => season.seasonNumber > 0)
+      const today = localDateKey(new Date())
+      const latestAiredSeason = seasons
+        .filter((season) => {
+          const date = seasonDateKey(season.airDate)
+          return date && date < today
+        })
+        .sort((a, b) => b.seasonNumber - a.seasonNumber)[0]?.seasonNumber
+      const currentSeason = activeSeasonByTitle.get(key)?.season ?? latestAiredSeason
+      const reason = active.has(key) ? 'Currently watching' : watched.has(key) ? 'Because you watched this series' : 'On your watchlist'
+      const media = { ...item, title: show.title, poster: show.poster || item.poster, backdrop: show.backdrop || item.backdrop }
+      for (const season of seasons) {
+        if (season.airDate) {
+          itemEvents.push({ id: `season:${show.tmdbId || item.tmdbId}:${season.seasonNumber}:${season.airDate}`, media, type: 'season', seasonNumber: season.seasonNumber, releaseDate: season.airDate, artwork: show.backdrop || season.poster || item.backdrop || item.poster, relevanceScore: active.has(key) ? 100 : watched.has(key) ? 90 : 80, relevanceReasons: [reason], source: 'tmdb', status: new Date(`${season.airDate}T12:00:00`) <= new Date() ? 'available' : 'upcoming' })
         }
       }
+      const getSeason = input.getSeason
+      if (active.has(key) && getSeason) {
+        const episodeSeasons = seasons.filter((season) => {
+          const seasonDate = seasonDateKey(season.airDate)
+          return !seasonDate || seasonDate >= today || season.seasonNumber === currentSeason
+        })
+        // TMDB metadata requests are globally limited by the request coordinator.
+        // Starting up to four seasons together fills that pool without allowing
+        // one active show to wait through a long sequence of network round trips.
+        const episodeEvents = await mapLimit(episodeSeasons, 4, async (season) => {
+          try {
+            const details = await getSeason(String(item.tmdbId), season.seasonNumber)
+            return details.episodes.filter((episode) => episode.airDate).map((episode) => ({
+              id: `episode:${item.tmdbId}:${episode.seasonNumber}:${episode.episodeNumber}:${episode.airDate}`,
+              media,
+              type: 'episode' as const,
+              seasonNumber: episode.seasonNumber,
+              episodeNumber: episode.episodeNumber,
+              episodeTitle: episode.name,
+              releaseDate: episode.airDate,
+              artwork: episode.still || show.backdrop || item.backdrop || item.poster,
+              relevanceScore: 120,
+              relevanceReasons: ['Currently watching'],
+              source: 'tmdb' as const,
+              status: new Date(`${episode.airDate}T12:00:00`) <= new Date() ? 'available' as const : 'upcoming' as const,
+            }))
+          } catch { /* keep the season event when episode metadata is unavailable */ }
+          return []
+        })
+        itemEvents.push(...episodeEvents.flat())
+      }
     } catch { /* retain cached/offline items; a failed provider cannot create a release */ }
-  }
-  const prefs = getUpcomingPreferences()
+    return itemEvents
+  })
+  const events = eventsBySeed.flat()
+  const prefs = input.preferences || getUpcomingPreferences()
   return keepNextReleasePerTitle(events.filter((event) => !prefs.hidden[event.id]))
     .sort((a, b) => b.relevanceScore - a.relevanceScore || String(a.releaseDate || '9999').localeCompare(String(b.releaseDate || '9999')))
 }

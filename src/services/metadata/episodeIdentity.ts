@@ -1,4 +1,5 @@
 import type { EpisodeDetails } from '../../types'
+import { isValidDateKey } from '../localDate'
 
 /** Season/episode numbers alone are not identity across anime providers. */
 export function matchingEpisode(source: EpisodeDetails, candidates: EpisodeDetails[]): EpisodeDetails | undefined {
@@ -9,7 +10,7 @@ export function matchingEpisode(source: EpisodeDetails, candidates: EpisodeDetai
   )
   if (linked.length === 1) return linked[0]
   const day = source.airDate?.slice(0, 10)
-  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return undefined
+  if (!day || !isValidDateKey(day)) return undefined
   const sameDay = candidates.filter(candidate => candidate.airDate?.slice(0, 10) === day)
   // Batch releases are ambiguous even if both providers happen to number
   // an episode 1. Require an explicit provider link for those cases.

@@ -5,9 +5,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_longlong, c_ulonglong, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
 const MPV_FORMAT_NONE: c_int = 0;
@@ -210,6 +210,7 @@ pub(crate) struct LibMpvPlayer {
     api: Arc<LibMpvApi>,
     handle: *mut MpvHandle,
     destroyed: AtomicBool,
+    api_lock: Mutex<()>,
     session_id: String,
     #[cfg(target_os = "linux")]
     render_context: std::sync::Mutex<Option<usize>>,
@@ -233,6 +234,7 @@ impl LibMpvPlayer {
             api,
             handle,
             destroyed: AtomicBool::new(false),
+            api_lock: Mutex::new(()),
             session_id,
             #[cfg(target_os = "linux")]
             render_context: std::sync::Mutex::new(None),
@@ -240,6 +242,7 @@ impl LibMpvPlayer {
     }
 
     pub(crate) fn set_option(&self, name: &str, value: &str) -> Result<(), String> {
+        let _guard = self.api_guard()?;
         let name = cstring(name)?;
         let value = cstring(value)?;
         let rc =
@@ -248,14 +251,13 @@ impl LibMpvPlayer {
     }
 
     pub(crate) fn initialize(&self) -> Result<(), String> {
+        let _guard = self.api_guard()?;
         let rc = unsafe { (self.api.initialize)(self.handle) };
         self.check(rc)
     }
 
     pub(crate) fn command(&self, command: &str, args: &[Value]) -> Result<(), String> {
-        if self.destroyed.load(Ordering::SeqCst) {
-            return Err("mpv player is shutting down".to_string());
-        }
+        let _guard = self.api_guard()?;
 
         let mut values = Vec::with_capacity(args.len() + 1);
         let command = match command {
@@ -277,11 +279,23 @@ impl LibMpvPlayer {
     }
 
     pub(crate) fn client_target(&self) -> String {
+        let Ok(_guard) = self.api_lock.lock() else {
+            return String::new();
+        };
+        if self.destroyed.load(Ordering::SeqCst) {
+            return String::new();
+        }
         let id = unsafe { (self.api.client_id)(self.handle) };
         format!("@{}", id)
     }
 
     pub(crate) fn observe_properties(&self, properties: &[&str]) {
+        let Ok(_guard) = self.api_lock.lock() else {
+            return;
+        };
+        if self.destroyed.load(Ordering::SeqCst) {
+            return;
+        }
         for (index, property) in properties.iter().enumerate() {
             if let Ok(name) = cstring(property) {
                 let rc = unsafe {
@@ -304,6 +318,12 @@ impl LibMpvPlayer {
     }
 
     pub(crate) fn request_log_messages(&self, level: &str) {
+        let Ok(_guard) = self.api_lock.lock() else {
+            return;
+        };
+        if self.destroyed.load(Ordering::SeqCst) {
+            return;
+        }
         if let Ok(level) = cstring(level) {
             let rc = unsafe { (self.api.request_log_messages)(self.handle, level.as_ptr()) };
             if rc < 0 {
@@ -322,7 +342,16 @@ impl LibMpvPlayer {
                 return;
             }
 
+            let Ok(_api_guard) = player.api_lock.lock() else {
+                return;
+            };
+            if player.destroyed.load(Ordering::SeqCst) {
+                return;
+            }
             let event = unsafe { (player.api.wait_event)(player.handle, 0.5) };
+            if player.destroyed.load(Ordering::SeqCst) {
+                return;
+            }
             if event.is_null() {
                 continue;
             }
@@ -334,12 +363,18 @@ impl LibMpvPlayer {
                         "[MPV EVENT] session={} shutdown",
                         player.session_id
                     ));
+                    drop(_api_guard);
                     let _ = crate::commands::clear_player_if_session(&player.session_id);
                     return;
                 }
                 MPV_EVENT_PROPERTY_CHANGE => {
                     if !event.data.is_null() {
-                        unsafe { handle_property_event(event.data as *const MpvEventProperty) };
+                        unsafe {
+                            handle_property_event(
+                                &player.session_id,
+                                event.data as *const MpvEventProperty,
+                            )
+                        };
                     }
                 }
                 MPV_EVENT_LOG_MESSAGE => {
@@ -353,6 +388,9 @@ impl LibMpvPlayer {
                     }
                 }
                 MPV_EVENT_CLIENT_MESSAGE => {
+                    if !crate::commands::is_current_player_session(&player.session_id) {
+                        continue;
+                    }
                     if !event.data.is_null() {
                         unsafe {
                             handle_client_message_event(
@@ -364,6 +402,9 @@ impl LibMpvPlayer {
                     }
                 }
                 MPV_EVENT_END_FILE => {
+                    if !crate::commands::is_current_player_session(&player.session_id) {
+                        continue;
+                    }
                     let (reason, error_code) = if event.data.is_null() {
                         (-1, 0)
                     } else {
@@ -413,6 +454,7 @@ impl LibMpvPlayer {
                     if event.error >= 0
                         && (event.event_id == MPV_EVENT_FILE_LOADED
                             || event.event_id == MPV_EVENT_PLAYBACK_RESTART)
+                        && crate::commands::is_current_player_session(&player.session_id)
                     {
                         let _ = app.emit(
                             "mpv-playback-ready",
@@ -434,10 +476,24 @@ impl LibMpvPlayer {
 
     pub(crate) fn shutdown(&self) {
         if !self.destroyed.swap(true, Ordering::SeqCst) {
+            // Destruction must still run after a panic while an API guard was
+            // held; skipping it on mutex poison would leak the native handle.
+            let _guard = self
+                .api_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             unsafe {
                 (self.api.terminate_destroy)(self.handle);
             }
         }
+    }
+
+    fn api_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let guard = self.api_lock.lock().map_err(|error| error.to_string())?;
+        if self.destroyed.load(Ordering::SeqCst) {
+            return Err("mpv player is shutting down".to_string());
+        }
+        Ok(guard)
     }
 
     #[cfg(target_os = "linux")]
@@ -446,6 +502,7 @@ impl LibMpvPlayer {
         get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
     ) -> Result<(), String> {
         let mut slot = self.render_context.lock().map_err(|e| e.to_string())?;
+        let _api_guard = self.api_guard()?;
         if slot.is_some() {
             return Ok(());
         }
@@ -487,6 +544,7 @@ impl LibMpvPlayer {
         height: c_int,
     ) -> Result<(), String> {
         let slot = self.render_context.lock().map_err(|e| e.to_string())?;
+        let _api_guard = self.api_guard()?;
         let Some(context) = *slot else {
             return Ok(());
         };
@@ -521,6 +579,9 @@ impl LibMpvPlayer {
     #[cfg(target_os = "linux")]
     pub(crate) unsafe fn free_opengl_render_context(&self) {
         if let Ok(mut slot) = self.render_context.lock() {
+            let Ok(_api_guard) = self.api_guard() else {
+                return;
+            };
             if let Some(context) = slot.take() {
                 (self.api.render_context_free)(context as *mut MpvRenderContext);
             }
@@ -726,7 +787,7 @@ fn json_arg_to_mpv_string(value: &Value) -> String {
     }
 }
 
-unsafe fn handle_property_event(data: *const MpvEventProperty) {
+unsafe fn handle_property_event(session_id: &str, data: *const MpvEventProperty) {
     let property = &*data;
     if property.name.is_null() {
         return;
@@ -741,7 +802,7 @@ unsafe fn handle_property_event(data: *const MpvEventProperty) {
         mpv_raw_property_to_json(property.format, property.data)
     };
 
-    crate::commands::cache_mpv_property(name, value);
+    crate::commands::cache_mpv_property(session_id, name, value);
 }
 
 unsafe fn handle_log_event(session_id: &str, data: *const MpvEventLogMessage) {

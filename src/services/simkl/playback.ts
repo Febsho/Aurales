@@ -24,6 +24,7 @@ import {
 } from './scrobble'
 import type { SimklScrobbleIds, SimklPlaybackProgressItem } from './types'
 import { mapEpisodeToProviders, isConfidenceSufficient } from '../anime-mapping'
+import { profileProviderCacheKey } from '../profiles'
 
 const THROTTLE_MS = 20_000
 let _lastScrobbleCall = 0
@@ -130,7 +131,7 @@ export async function getSimklPlaybackProgress(): Promise<SimklPlaybackProgressI
   if (isSimklMockMode()) return []
   const { cachedFetch } = await import('../cache/sqliteCache')
   return cachedFetch<SimklPlaybackProgressItem[]>(
-    'simkl_playback',
+    profileProviderCacheKey('simkl_playback', 'simkl'),
     async () => normalizePlaybackResponse(await simklRequest<unknown>('/sync/playback')),
     { category: 'SIMKL_LISTS', ttlSeconds: 120 },
   )
@@ -151,9 +152,10 @@ export async function saveSimklPlaybackProgress(item: PlaybackItem, progress: nu
 }
 
 export async function refreshSimklPlaybackCache(): Promise<SimklPlaybackProgressItem[]> {
+  const cacheKey = profileProviderCacheKey('simkl_playback', 'simkl')
   const fresh = normalizePlaybackResponse(await simklRequest<unknown>('/sync/playback'))
   const { cacheSet } = await import('../cache/sqliteCache')
-  await cacheSet('simkl_playback', fresh, { category: 'SIMKL_LISTS', ttlSeconds: 120 })
+  void cacheSet(cacheKey, fresh, { category: 'SIMKL_LISTS', ttlSeconds: 120 })
   return fresh
 }
 
@@ -162,17 +164,12 @@ export async function removeSimklPlaybackProgress(id: number): Promise<void> {
   if (isSimklMockMode()) return
   try {
     await simklRequest(`/sync/playback/${id}`, { method: 'DELETE' })
-    // The playback list is served from the sqlite cache (120s TTL) — drop the
-    // deleted entry there too, or the item reappears until the cache expires.
-    const { cacheGet, cacheSet } = await import('../cache/sqliteCache')
-    const cached = await cacheGet<SimklPlaybackProgressItem[]>('simkl_playback')
-    if (cached?.data) {
-      await cacheSet(
-        'simkl_playback',
-        cached.data.filter((entry) => Number(entry.id) !== id),
-        { category: 'SIMKL_LISTS', ttlSeconds: 120 },
-      )
-    }
+    // Invalidate the whole Simkl category so a playback refresh that started
+    // before DELETE cannot write its stale response back afterward. The
+    // category generation also prevents already-queued writes from restoring it.
+    const { cacheClearCategory } = await import('../cache/sqliteCache')
+    await cacheClearCategory('SIMKL_LISTS')
+    notifySimklPlaybackChanged()
   } catch (_) {
     // Swallow
   }

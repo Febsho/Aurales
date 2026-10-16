@@ -11,15 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+/scratch/
 
 # Simkl local credentials (NEVER commit)
 src/config/simkl.local.ts
 .env
 .env.local
-
-# Agent documentation (local knowledge base)
-AGENTS.md
-docs/
 
 # Editor directories and files
 .vscode/*
@@ -31,5 +28,3 @@ docs/
 *.njsproj
 *.sln
 *.sw?
-aurales-sync-server/
-watch-together-server/

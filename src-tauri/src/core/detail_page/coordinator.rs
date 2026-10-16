@@ -2,7 +2,7 @@ use super::LoadDetailPageResponse;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
 use tokio::sync::{oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -14,20 +14,97 @@ pub(crate) struct SharedResult {
 
 #[derive(Default)]
 struct CoordinatorState {
+    next_generation: u64,
     inflight: HashMap<String, watch::Sender<Option<Result<SharedResult, String>>>>,
-    groups: HashMap<String, (String, u64)>,
+    groups: HashMap<String, RequestGroup>,
+}
+
+struct RequestGroup {
+    key: String,
+    generation: u64,
+    users: usize,
+}
+
+struct InflightRequestGuard {
+    state: Arc<Mutex<CoordinatorState>>,
+    key: String,
+    group: String,
+    generation: u64,
+    sender: watch::Sender<Option<Result<SharedResult, String>>>,
+    armed: bool,
+}
+
+impl InflightRequestGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+fn cleanup_abandoned_request(
+    state: &mut CoordinatorState,
+    key: &str,
+    group: &str,
+    generation: u64,
+    sender: &watch::Sender<Option<Result<SharedResult, String>>>,
+) {
+    if state
+        .inflight
+        .get(key)
+        .is_some_and(|current| current.same_channel(sender))
+    {
+        state.inflight.remove(key);
+    }
+    let should_remove = match state.groups.get_mut(group) {
+        Some(active) if active.key == key && active.generation == generation => {
+            active.users = active.users.saturating_sub(1);
+            active.users == 0
+        }
+        _ => false,
+    };
+    if should_remove {
+        state.groups.remove(group);
+    }
+}
+
+impl Drop for InflightRequestGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.sender
+            .send_replace(Some(Err("Detail request was cancelled".to_string())));
+        let state = self.state.clone();
+        let key = self.key.clone();
+        let group = self.group.clone();
+        let generation = self.generation;
+        let sender = self.sender.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut state = state.lock().await;
+                cleanup_abandoned_request(&mut state, &key, &group, generation, &sender);
+            });
+        } else if let Ok(mut state) = self.state.try_lock() {
+            cleanup_abandoned_request(
+                &mut state,
+                &self.key,
+                &self.group,
+                self.generation,
+                &self.sender,
+            );
+        }
+    }
 }
 
 pub struct DetailPageCoordinator {
-    state: Mutex<CoordinatorState>,
+    state: Arc<Mutex<CoordinatorState>>,
     limiter: Arc<PriorityLimiter>,
-    provider_limiters: Mutex<HashMap<String, Arc<Semaphore>>>,
+    provider_limiters: Mutex<HashMap<String, Weak<Semaphore>>>,
 }
 
 impl Default for DetailPageCoordinator {
     fn default() -> Self {
         Self {
-            state: Mutex::new(CoordinatorState::default()),
+            state: Arc::new(Mutex::new(CoordinatorState::default())),
             limiter: Arc::new(PriorityLimiter::new(4)),
             provider_limiters: Mutex::new(HashMap::new()),
         }
@@ -35,9 +112,10 @@ impl Default for DetailPageCoordinator {
 }
 
 struct PriorityWaiter {
+    key: String,
     priority: u8,
     sequence: u64,
-    sender: oneshot::Sender<()>,
+    sender: oneshot::Sender<PriorityPermit>,
 }
 
 struct PriorityLimitState {
@@ -48,14 +126,14 @@ struct PriorityLimitState {
 
 pub(super) struct PriorityLimiter {
     limit: usize,
-    state: Mutex<PriorityLimitState>,
+    state: StdMutex<PriorityLimitState>,
 }
 
 impl PriorityLimiter {
     pub(super) fn new(limit: usize) -> Self {
         Self {
             limit,
-            state: Mutex::new(PriorityLimitState {
+            state: StdMutex::new(PriorityLimitState {
                 active: 0,
                 sequence: 0,
                 waiting: vec![],
@@ -64,35 +142,70 @@ impl PriorityLimiter {
     }
 
     pub(super) async fn acquire(self: &Arc<Self>, priority: u8) -> Result<PriorityPermit, String> {
+        self.acquire_for(String::new(), priority).await
+    }
+
+    async fn acquire_for(
+        self: &Arc<Self>,
+        key: String,
+        priority: u8,
+    ) -> Result<PriorityPermit, String> {
         let receiver = {
-            let mut state = self.state.lock().await;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.active < self.limit {
                 state.active += 1;
-                None
+                return Ok(PriorityPermit {
+                    limiter: self.clone(),
+                    armed: true,
+                });
             } else {
                 let sequence = state.sequence;
                 state.sequence = state.sequence.saturating_add(1);
                 let (sender, receiver) = oneshot::channel();
                 state.waiting.push(PriorityWaiter {
+                    key,
                     priority,
                     sequence,
                     sender,
                 });
-                Some(receiver)
+                (receiver, sequence)
             }
         };
-        if let Some(receiver) = receiver {
-            receiver
-                .await
-                .map_err(|_| "Detail request coordinator closed".to_string())?;
-        }
-        Ok(PriorityPermit {
+        let (receiver, sequence) = receiver;
+        let mut waiter_guard = PriorityWaiterGuard {
             limiter: self.clone(),
-        })
+            sequence,
+            armed: true,
+        };
+        let permit = receiver
+            .await
+            .map_err(|_| "Detail request coordinator closed".to_string())?;
+        waiter_guard.armed = false;
+        Ok(permit)
     }
 
-    async fn release(&self) {
-        let mut state = self.state.lock().await;
+    fn reprioritize(&self, key: &str, priority: u8) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(waiter) = state
+            .waiting
+            .iter_mut()
+            .find(|waiter| waiter.key.as_str() == key)
+        {
+            waiter.priority = waiter.priority.max(priority);
+        }
+    }
+
+    fn release(self: &Arc<Self>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.active = state.active.saturating_sub(1);
         while state.active < self.limit && !state.waiting.is_empty() {
             let index = state
@@ -107,22 +220,57 @@ impl PriorityLimiter {
                 .map(|(index, _)| index)
                 .unwrap_or_default();
             let waiter = state.waiting.swap_remove(index);
-            if waiter.sender.send(()).is_ok() {
-                state.active += 1;
-                break;
+            state.active += 1;
+            match waiter.sender.send(PriorityPermit {
+                limiter: self.clone(),
+                armed: true,
+            }) {
+                Ok(()) => break,
+                Err(mut permit) => {
+                    // A cancelled waiter may still be selected after its
+                    // receiver was dropped. Reclaim the reservation here and
+                    // continue so it cannot leak a global queue slot.
+                    permit.armed = false;
+                    state.active = state.active.saturating_sub(1);
+                }
             }
         }
     }
 }
 
+struct PriorityWaiterGuard {
+    limiter: Arc<PriorityLimiter>,
+    sequence: u64,
+    armed: bool,
+}
+
+impl Drop for PriorityWaiterGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = self
+            .limiter
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .waiting
+            .retain(|waiter| waiter.sequence != self.sequence);
+    }
+}
+
 pub(super) struct PriorityPermit {
     limiter: Arc<PriorityLimiter>,
+    armed: bool,
 }
 
 impl Drop for PriorityPermit {
     fn drop(&mut self) {
-        let limiter = self.limiter.clone();
-        tokio::spawn(async move { limiter.release().await });
+        if !self.armed {
+            return;
+        }
+        self.limiter.release();
     }
 }
 
@@ -139,18 +287,23 @@ pub(crate) fn priority_score(priority: &str) -> u8 {
 impl DetailPageCoordinator {
     /// Preserve the frontend coordinator's one-active-request-per-addon
     /// contract while allowing unrelated providers to progress concurrently.
+    pub(crate) async fn provider_limiter(&self, provider: &str) -> Arc<Semaphore> {
+        let mut limiters = self.provider_limiters.lock().await;
+        limiters.retain(|_, limiter| limiter.strong_count() > 0);
+        if let Some(limiter) = limiters.get(provider).and_then(Weak::upgrade) {
+            return limiter;
+        }
+        let limiter = Arc::new(Semaphore::new(1));
+        limiters.insert(provider.to_string(), Arc::downgrade(&limiter));
+        limiter
+    }
+
     pub(crate) async fn acquire_provider(
         &self,
         provider: &str,
     ) -> Result<OwnedSemaphorePermit, String> {
-        let limiter = {
-            let mut limiters = self.provider_limiters.lock().await;
-            limiters
-                .entry(provider.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(1)))
-                .clone()
-        };
-        limiter
+        self.provider_limiter(provider)
+            .await
             .acquire_owned()
             .await
             .map_err(|_| "Provider request coordinator closed".to_string())
@@ -167,13 +320,28 @@ impl DetailPageCoordinator {
     ) {
         let mut state = self.state.lock().await;
         let generation = match state.groups.get(group) {
-            Some((active_key, generation)) if active_key == key => *generation,
-            Some((_, generation)) => generation.saturating_add(1),
-            None => 1,
+            Some(active) if active.key == key => active.generation,
+            _ => {
+                state.next_generation = state.next_generation.saturating_add(1);
+                state.next_generation
+            }
         };
-        state
+        if let Some(active) = state
             .groups
-            .insert(group.to_string(), (key.to_string(), generation));
+            .get_mut(group)
+            .filter(|active| active.key == key && active.generation == generation)
+        {
+            active.users += 1;
+        } else {
+            state.groups.insert(
+                group.to_string(),
+                RequestGroup {
+                    key: key.to_string(),
+                    generation,
+                    users: 1,
+                },
+            );
+        }
 
         if let Some(sender) = state.inflight.get(key) {
             return (generation, Some(sender.subscribe()), None);
@@ -190,14 +358,38 @@ impl DetailPageCoordinator {
             .await
             .groups
             .get(group)
-            .map(|(active_key, active_generation)| {
-                active_key != key || *active_generation != generation
-            })
+            .map(|active| active.key != key || active.generation != generation)
             .unwrap_or(true)
     }
 
-    async fn finish(&self, key: &str) {
-        self.state.lock().await.inflight.remove(key);
+    /// Releases one caller's generation reference and removes completed group
+    /// keys. The stale check and decrement share one lock so a new generation
+    /// cannot race between validation and cleanup.
+    async fn finish_group(
+        &self,
+        key: &str,
+        group: &str,
+        generation: u64,
+        finish_request: bool,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if finish_request {
+            state.inflight.remove(key);
+        }
+        let should_remove = {
+            let Some(active) = state.groups.get_mut(group) else {
+                return true;
+            };
+            if active.key != key || active.generation != generation {
+                return true;
+            }
+            active.users = active.users.saturating_sub(1);
+            active.users == 0
+        };
+        if should_remove {
+            state.groups.remove(group);
+        }
+        false
     }
 
     pub(crate) async fn run<F, Fut>(
@@ -213,51 +405,74 @@ impl DetailPageCoordinator {
         Fut: Future<Output = Result<SharedResult, String>>,
     {
         let (generation, follower, leader) = self.begin(&key, &group).await;
+        let owns_request = leader.is_some();
+        let deadline = tokio::time::Instant::now() + timeout;
         let result = if let Some(mut receiver) = follower {
+            // The shared operation may still be queued behind the global
+            // limiter. A newly visible consumer must be able to raise its
+            // priority instead of waiting behind unrelated background work.
+            self.limiter.reprioritize(&key, priority);
             loop {
                 if let Some(result) = receiver.borrow().clone() {
                     break result;
                 }
-                receiver
-                    .changed()
-                    .await
-                    .map_err(|_| "Detail request was cancelled".to_string())?;
+                match tokio::time::timeout_at(deadline, receiver.changed()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break Err("Detail request was cancelled".to_string()),
+                    Err(_) => break Err("Detail request timed out".to_string()),
+                }
             }
         } else {
             let sender = leader.expect("a new request always owns a sender");
-            let deadline = tokio::time::Instant::now() + timeout;
-            let result =
-                match tokio::time::timeout_at(deadline, self.limiter.acquire(priority)).await {
-                    Ok(Ok(permit)) => {
-                        let result = if self.is_stale(&key, &group, generation).await {
-                            Err("Detail request was superseded".to_string())
-                        } else {
-                            // Blocking HTTP workers cannot be cancelled by dropping their
-                            // join handle. Keep the slot and shared request until they
-                            // finish, so a timeout cannot overlap a legacy retry.
-                            let operation = operation();
-                            tokio::pin!(operation);
-                            match tokio::time::timeout_at(deadline, &mut operation).await {
-                                Ok(result) => result,
-                                // Preserve a successful late result instead of causing
-                                // compatibility code to repeat completed provider work.
-                                Err(_) => operation.await,
-                            }
-                        };
-                        drop(permit);
-                        result
-                    }
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err("Detail request timed out".to_string()),
-                };
+            let mut request_guard = InflightRequestGuard {
+                state: self.state.clone(),
+                key: key.clone(),
+                group: group.clone(),
+                generation,
+                sender: sender.clone(),
+                armed: true,
+            };
+            let result = match tokio::time::timeout_at(
+                deadline,
+                self.limiter.acquire_for(key.clone(), priority),
+            )
+            .await
+            {
+                Ok(Ok(permit)) => {
+                    let result = if self.is_stale(&key, &group, generation).await {
+                        Err("Detail request was superseded".to_string())
+                    } else {
+                        // Blocking HTTP workers cannot be cancelled by dropping their
+                        // join handle. Keep the slot and shared request until they
+                        // finish, so a timeout cannot overlap a legacy retry.
+                        let operation = operation();
+                        tokio::pin!(operation);
+                        match tokio::time::timeout_at(deadline, &mut operation).await {
+                            Ok(result) => result,
+                            // Preserve a successful late result instead of causing
+                            // compatibility code to repeat completed provider work.
+                            Err(_) => operation.await,
+                        }
+                    };
+                    drop(permit);
+                    result
+                }
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err("Detail request timed out".to_string()),
+            };
             let _ = sender.send(Some(result.clone()));
-            self.finish(&key).await;
+            request_guard.disarm();
             result
-        }?;
+        };
+
+        let stale = self
+            .finish_group(&key, &group, generation, owns_request)
+            .await;
+        let result = result?;
 
         Ok(LoadDetailPageResponse {
             data: result.data,
-            stale: self.is_stale(&key, &group, generation).await,
+            stale,
             cache_status: result.cache_status,
         })
     }

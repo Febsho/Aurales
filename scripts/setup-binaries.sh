@@ -83,7 +83,9 @@ fi
 have_libmpv() {
     # libmpv.so.2 lives on the loader path; check the common dirs.
     for d in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu; do
-        [ -e "$d/libmpv.so.2" ] || [ -e "$d/libmpv.so.1" ] && return 0
+        if [ -e "$d/libmpv.so.2" ] || [ -e "$d/libmpv.so.1" ]; then
+            return 0
+        fi
     done
     return 1
 }

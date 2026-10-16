@@ -1,7 +1,7 @@
-import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { connectedProgressSources, useAppStore, type ProgressProvider, type ProgressSelection } from '../stores/appStore'
+import { connectedProgressSources, useAppStore, type ProgressSelection } from '../stores/appStore'
 import { refreshSimklPlaybackCache } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
@@ -20,7 +20,6 @@ import {
   clearContinueWatchingStartupSnapshot,
   mergeContinueWatchingPresentation,
   readContinueWatchingStartupSnapshot,
-  stableListFingerprint,
   writeContinueWatchingStartupSnapshot,
   type ContinueWatchingSnapshotItem,
   type ContinueWatchingSource,
@@ -63,6 +62,28 @@ interface ContinueWatchingRowProps {
 
 type ContinueWatchingItem = ContinueWatchingSnapshotItem
 
+function continueContentFingerprint(items: ContinueWatchingItem[]): string {
+  return JSON.stringify(items.map((item) => [
+    item.id, item.mediaId, item.mediaType, item.title, item.subtitle,
+    item.poster, item.backdrop, item.season, item.episode,
+    item.progressSeconds, item.durationSeconds, item.progressPct,
+    item.imdbId, item.tmdbId, item.malId, item.anilistId,
+    item.sourceConnectionId, item.sourceItemId, item.updatedAt,
+  ]))
+}
+
+function continueEnrichmentKey(phase: 'metadata' | 'artwork', cacheKey: string, item: ContinueWatchingItem): string {
+  // These queued tasks resolve to a whole presentation item, not just shared
+  // metadata. Include source and playback state so a concurrent provider or
+  // progress refresh cannot reuse another item's captured result.
+  return JSON.stringify([
+    phase, cacheKey, item.progressSource, item.mediaType, item.id, item.mediaId,
+    item.imdbId, item.tmdbId, item.anilistId, item.malId,
+    item.sourceConnectionId, item.sourceItemId, item.season, item.episode,
+    item.title, item.updatedAt, item.progressSeconds, item.durationSeconds, item.progressPct,
+  ])
+}
+
 function normalizeResumeMediaId(mediaId: string, season?: number, episode?: number): string {
   if (season == null || episode == null) return mediaId
   const suffix = `:${season}:${episode}`
@@ -74,6 +95,39 @@ function normalizeResumeMediaId(mediaId: string, season?: number, episode?: numb
 // instead of flashing a loading skeleton and refetching from scratch each time.
 const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
 const cwRevalidatedThisSession = new Set<string>()
+const MAX_CW_SESSION_CACHE_ENTRIES = 50
+const CW_ALL_SOURCE_REFRESH_MS = 30_000
+const cwAllSourceCache = new Map<string, { expiresAt: number; items: ContinueWatchingItem[] }>()
+const cwAllSourceFlights = new Map<string, Promise<ContinueWatchingItem[]>>()
+
+function getCachedCwItems(key: string): ContinueWatchingItem[] | undefined {
+  const cached = cwItemsCache.get(key)
+  if (!cached) return undefined
+  cwItemsCache.delete(key)
+  cwItemsCache.set(key, cached)
+  return cached
+}
+
+function rememberCwItems(key: string, items: ContinueWatchingItem[]): void {
+  cwItemsCache.delete(key)
+  cwItemsCache.set(key, items)
+  while (cwItemsCache.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+    const oldest = cwItemsCache.keys().next().value
+    if (oldest === undefined) break
+    cwItemsCache.delete(oldest)
+    cwRevalidatedThisSession.delete(oldest)
+  }
+}
+
+function rememberCwRevalidation(key: string): void {
+  cwRevalidatedThisSession.delete(key)
+  cwRevalidatedThisSession.add(key)
+  while (cwRevalidatedThisSession.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+    const oldest = cwRevalidatedThisSession.values().next().value
+    if (oldest === undefined) break
+    cwRevalidatedThisSession.delete(oldest)
+  }
+}
 
 function jellyfinTicksToSeconds(value: unknown): number {
   const ticks = typeof value === 'number' ? value : Number(value)
@@ -116,7 +170,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const startupSnapshot = readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
   const cwKey = `${source}:${accountScope || 'unscoped'}:${continueWatchingLimit}`
 
-  const [items, setItems] = useState<ContinueWatchingItem[]>(() => cwItemsCache.get(cwKey) ?? startupSnapshot ?? [])
+  const [items, setItems] = useState<ContinueWatchingItem[]>(() => getCachedCwItems(cwKey) ?? startupSnapshot ?? [])
+  const [itemsCacheKey, setItemsCacheKey] = useState(cwKey)
   const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey) && !startupSnapshot)
   const [error, setError] = useState<string | null>(null)
   const [remoteRefreshRevision, setRemoteRefreshRevision] = useState(0)
@@ -143,7 +198,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const [sourceMenu, setSourceMenu] = useState<{ x: number; y: number } | null>(null)
 
   const navigate = useNavigate()
-  const watchProgress = useAppStore((s) => s.watchProgress)
+  const watchProgress = useAppStore((s) => (source === 'local' || source === 'all') && !streamSelectorData ? s.watchProgress : null)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const setContinueWatchingProgress = useAppStore((s) => s.setContinueWatchingProgress)
   const setPrimaryProgressProvider = useAppStore((s) => s.setPrimaryProgressProvider)
@@ -160,19 +215,24 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   // Watching row fits the same way the poster rows do.
   const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
   const scrollRef = useRef<HTMLDivElement>(null)
+  const currentCachedItems = getCachedCwItems(cwKey) || startupSnapshot || []
+  // On a source/account change, never expose items captured for the previous
+  // cache key while the new source is loading. Keep the old row only while its
+  // player modal is open, because returning the loading tree would unmount it.
+  const displayItems = itemsCacheKey === cwKey || streamSelectorData ? items : currentCachedItems
 
   // This row is small, already visible on Home, and is revisited frequently.
   // Do not let native lazy loading leave an empty 16:9 frame during a fast
   // vertical scroll; use the same disk/session cache as every other shelf.
   useEffect(() => {
-    void warmCachedImages(items.flatMap((item) => [item.backdrop, item.poster]))
-  }, [items])
+    void warmCachedImages(displayItems.flatMap((item) => [item.backdrop, item.poster]))
+  }, [displayItems])
 
   // Make the selected service's resume data available to poster cards outside
   // Home too. This is fed from the same cached-first list shown in this row.
   useEffect(() => {
-    setContinueWatchingProgress(items)
-  }, [items, setContinueWatchingProgress])
+    setContinueWatchingProgress(displayItems)
+  }, [displayItems, setContinueWatchingProgress])
 
   useEffect(() => {
     const clear = (event: Event) => {
@@ -217,8 +277,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     // Show the cached result for this source immediately; only fall back to the
     // loading skeleton when we have nothing cached yet. Either way we revalidate
     // in the background below and update the cache when it resolves.
-    const cached = cwItemsCache.get(cwKey) || readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
-    if (cached) { setItems(cached); setLoading(false) } else { setLoading(true) }
+    const cached = getCachedCwItems(cwKey) || readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+    if (cached) { setItems(cached); setItemsCacheKey(cwKey); setLoading(false) } else { setLoading(true) }
     setError(null)
 
     if (source !== 'local' && source !== 'all' && cached && cwRevalidatedThisSession.has(cwKey)) {
@@ -227,6 +287,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     }
 
     const loadProgress = async () => {
+      let revalidated = false
       try {
         await waitForHeroImageSettled()
         if (cancelled) return
@@ -239,11 +300,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           execute,
         })
 
-        const loadSource = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
+        const loadSourceUncached = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
           let sourceList: ContinueWatchingItem[] = []
           const providerCached = activeSource === source ? cached : readContinueWatchingStartupSnapshot(activeSource, getContinueWatchingAccountScope(activeSource), continueWatchingLimit)
         if (activeSource === 'local') {
-          const localItems = Array.from(watchProgress.values())
+          const localItems = Array.from(watchProgress?.values() ?? [])
             .filter((i) => !i.completed && i.progressSeconds > 5)
             .map((i) => {
               const pct = i.durationSeconds > 0 ? (i.progressSeconds / i.durationSeconds) * 100 : 0
@@ -321,7 +382,6 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             .map((i) => {
               const isMovie = i.type === 'movie'
               const title = isMovie ? i.movie?.title : i.show?.title
-              const year = isMovie ? i.movie?.year : i.show?.year
               const imdbId = isMovie ? i.movie?.ids?.imdb : i.show?.ids?.imdb
               const tmdbId = isMovie ? i.movie?.ids?.tmdb : i.show?.ids?.tmdb
               const season = isMovie ? undefined : i.episode?.season
@@ -444,6 +504,40 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           return sourceList.map((item) => ({ ...item, progressSource: activeSource }))
         }
 
+        const loadSource = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
+          // Local playback progress changes every few seconds. In "all"
+          // mode, reusing the other providers' short-lived results prevents
+          // each local checkpoint from triggering fresh Trakt/PMDB/MDBList/
+          // AniList requests. Auth-change events bump remoteRefreshRevision,
+          // while accountScope keeps one account's response out of another's.
+          if (source !== 'all' || activeSource === 'local') return loadSourceUncached(activeSource)
+          const account = getContinueWatchingAccountScope(activeSource) || 'unscoped'
+          const key = `${activeSource}:${account}:${continueWatchingLimit}:${remoteRefreshRevision}`
+          const cachedSource = cwAllSourceCache.get(key)
+          if (cachedSource && cachedSource.expiresAt > Date.now()) {
+            cwAllSourceCache.delete(key)
+            cwAllSourceCache.set(key, cachedSource)
+            return cachedSource.items
+          }
+          cwAllSourceCache.delete(key)
+          const pending = cwAllSourceFlights.get(key)
+          if (pending) return pending
+
+          const request = loadSourceUncached(activeSource).then((items) => {
+            cwAllSourceCache.set(key, { expiresAt: Date.now() + CW_ALL_SOURCE_REFRESH_MS, items })
+            while (cwAllSourceCache.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+              const oldest = cwAllSourceCache.keys().next().value
+              if (oldest === undefined) break
+              cwAllSourceCache.delete(oldest)
+            }
+            return items
+          }).finally(() => {
+            if (cwAllSourceFlights.get(key) === request) cwAllSourceFlights.delete(key)
+          })
+          cwAllSourceFlights.set(key, request)
+          return request
+        }
+
         if (source === 'all') {
           const results = await Promise.allSettled(connectedProgressSources(useAppStore.getState()).map(loadSource))
           const seen = new Set<string>()
@@ -452,8 +546,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             .filter((item) => {
               const episode = `:${item.season ?? ''}:${item.episode ?? ''}`
               const prefix = `${item.mediaType}:`
+              const mediaSource = item.sourceConnectionId
+                ? `server:${item.sourceConnectionId}`
+                : item.progressSource || 'local'
               const aliases = [item.imdbId && `imdb:${item.imdbId}`, item.tmdbId && `tmdb:${item.tmdbId}`,
-                item.anilistId && `anilist:${item.anilistId}`, item.malId && `mal:${item.malId}`, `media:${item.mediaId}`]
+                item.anilistId && `anilist:${item.anilistId}`, item.malId && `mal:${item.malId}`, `media:${mediaSource}:${item.mediaId}`]
                 .filter(Boolean).map((alias) => `${prefix}${alias}${episode}`)
               if (aliases.some((alias) => seen.has(alias))) return false
               aliases.forEach((alias) => seen.add(alias))
@@ -466,9 +563,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         list = mergeContinueWatchingPresentation(list, cached || [])
         markContinueWatchingSettled()
 
-        if (!cancelled && list.length > 0) {
+        if (!cancelled) {
           list = await Promise.all(
-            list.map((item) => enrichItem(`metadata:${item.id}`, async () => {
+            list.map((item) => enrichItem(continueEnrichmentKey('metadata', cwKey, item), async () => {
               if (!item.tmdbId) return item
               try {
                 if (item.mediaType === 'series') {
@@ -525,7 +622,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           // (custom art URLs, then the preferred art provider), instead of
           // whatever the sync provider (Simkl/Trakt/…) returned.
           list = await Promise.all(
-            list.map((item) => enrichItem(`art:${item.id}`, async () => {
+            list.map((item) => enrichItem(continueEnrichmentKey('artwork', cwKey, item), async () => {
               try {
                 const custom = getSearchResultCustomArt({
                   id: item.mediaId,
@@ -554,7 +651,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           // Presentation cleanup is local/profile-scoped. It deliberately
           // hides noise without mutating provider history or watchlists.
           const candidate = list.filter((i) => i.backdrop || i.poster).filter((i) => continueWatchingVisibility({
-            id: i.id, mediaId: i.mediaId, mediaType: i.mediaType, season: i.season, episode: i.episode,
+            id: i.id, mediaId: i.mediaId, mediaType: i.mediaType, imdbId: i.imdbId, tmdbId: i.tmdbId, season: i.season, episode: i.episode,
             progressSeconds: i.progressSeconds, durationSeconds: i.durationSeconds, completed: false, updatedAt: i.updatedAt,
           }).visible).slice(0, continueWatchingLimit)
           const visible = source !== 'local' && source !== 'all' && candidate.length === 0 && cached?.length ? cached : candidate
@@ -562,11 +659,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             if (visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
             else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
           }
-          const previous = cwItemsCache.get(cwKey) || cached || []
-          const identityChanged = stableListFingerprint(visible) !== stableListFingerprint(previous)
-          cwItemsCache.set(cwKey, visible)
+          const previous = getCachedCwItems(cwKey) || cached || []
+          const contentChanged = continueContentFingerprint(visible) !== continueContentFingerprint(previous)
+          rememberCwItems(cwKey, visible)
           setContinueWatchingProgress(visible)
-          if (source === 'local' || source === 'all' || identityChanged) setItems(visible)
+          if (itemsCacheKey !== cwKey || source === 'local' || source === 'all' || contentChanged) setItems(visible)
+          setItemsCacheKey(cwKey)
           streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
             mediaType: item.mediaType,
             mediaId: item.imdbId || item.mediaId,
@@ -576,12 +674,14 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             progressPct: item.progressPct,
           })))
         }
+        revalidated = !cancelled
       } catch (err: any) {
         if (!cancelled) {
           setError(err?.message || 'Failed to load Continue Watching.')
+          setItemsCacheKey(cwKey)
         }
       } finally {
-        if (source !== 'local') cwRevalidatedThisSession.add(cwKey)
+        if (source !== 'local' && source !== 'all' && revalidated) rememberCwRevalidation(cwKey)
         if (!cancelled) {
           setLoading(false)
           markContinueWatchingSettled()
@@ -591,7 +691,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, accountScope, cwKey, source === 'local' || source === 'all' ? watchProgress : null, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress, traktConnected, simklConnected, anilistConnected, pmdbConnected, mdblistConnected])
+    // itemsCacheKey is intentionally read from the request's starting render;
+    // tracking its completion update here would launch a redundant fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, accountScope, cwKey, watchProgress, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress, traktConnected, simklConnected, anilistConnected, pmdbConnected, mdblistConnected])
 
   const displayTitle = row.title
   const sourceConnections: Record<ProgressSelection, boolean> = {
@@ -679,7 +782,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     next.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   }
 
-  if (loading) {
+  if (loading || (itemsCacheKey !== cwKey && !streamSelectorData)) {
     return (
       <div className="mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
@@ -701,7 +804,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     )
   }
 
-  if (error || items.length === 0) {
+  if (((itemsCacheKey === cwKey || streamSelectorData) && error) || displayItems.length === 0) {
     return (
       <div className="mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
@@ -764,7 +867,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
         {/* ── Cinematic: Resume Spotlight layout ────────────────────── */}
-        {cinematic && items.map((item) => {
+        {cinematic && displayItems.map((item) => {
           const progressPercent = Math.min(100, Math.max(0, item.progressPct))
           const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
           const fixedFocused = fixedHome && focusedFixedItemId === item.id
@@ -793,12 +896,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               <div className="cw-card__frame relative overflow-hidden bg-surface-elevated border border-white/[0.08] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
                 {/* 16:9 backdrop */}
                 {artwork ? (
-                  <img 
+                  <img
                     src={cachedImage(artwork)}
-                    alt={item.title} 
-                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
+                    alt={item.title}
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]"
                     loading="eager"
-                    draggable={false} 
+                    draggable={false}
                   />
                 ) : (
                   <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface flex items-center justify-center">
@@ -807,7 +910,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 )}
                 {/* Dark gradient */}
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
-                
+
                 {/* Liquid Glass Play Button Overlay */}
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-300 ease-out z-20">
                   <span className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
@@ -839,7 +942,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           )
         })}
         {/* ── Default: existing landscape cards ────────────────────── */}
-        {!cinematic && items.map((item) => {
+        {!cinematic && displayItems.map((item) => {
           const progressPercent = Math.min(100, Math.max(0, item.progressPct))
           const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
           return (
@@ -855,19 +958,19 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               <div className="relative rounded-xl overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out aspect-video group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
                 {/* 16:9 backdrop */}
                 {(item.backdrop || item.poster) ? (
-                  <img 
+                  <img
                     src={cachedImage(item.backdrop || item.poster)}
-                    alt={item.title} 
-                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]" 
+                    alt={item.title}
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]"
                     loading="eager"
-                    draggable={false} 
+                    draggable={false}
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
                     <span className="text-xl font-bold text-muted/30">{item.title?.charAt(0) || '?'}</span>
                   </div>
                 )}
-                
+
                 {/* Permanent subtle dark gradient overlay */}
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
 
@@ -934,10 +1037,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           onRemove={(removedItem) => {
             // A removal is a visibility preference, never a destructive
             // provider/history mutation. A meaningful replay clears it.
-            suppressContinueWatching(continueWatchingKey({ mediaId: removedItem.mediaId, season: removedItem.season, episode: removedItem.episode }))
+            suppressContinueWatching(continueWatchingKey({ mediaId: removedItem.mediaId, mediaType: removedItem.mediaType, imdbId: removedItem.imdbId, tmdbId: removedItem.tmdbId, season: removedItem.season, episode: removedItem.episode }))
             setItems((prev) => {
               const next = prev.filter((i) => i.id !== removedItem.id)
-              cwItemsCache.set(cwKey, next)
+              rememberCwItems(cwKey, next)
               if (accountScope) {
                 if (next.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, next)
                 else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
@@ -980,9 +1083,9 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           onMarkWatched={(item) => {
             if ((item.progressSource || source) === 'local') {
               const key = item.season != null && item.episode != null ? `${item.mediaId}:${item.season}:${item.episode}` : item.mediaId
-              setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId })
+              setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId })
             }
-            suppressContinueWatching(continueWatchingKey({ mediaId: item.mediaId, season: item.season, episode: item.episode }))
+            suppressContinueWatching(continueWatchingKey({ mediaId: item.mediaId, mediaType: item.mediaType, imdbId: item.imdbId, tmdbId: item.tmdbId, season: item.season, episode: item.episode }))
             setItems((items) => items.filter((candidate) => candidate.id !== item.id)); setCwMenu(null)
           }}
         />
@@ -1088,10 +1191,14 @@ const ContinueWatchingMenu = forwardRef<
 >(({ x, y, item, source, onClose, onRemove, onGoTo, onPlay, onRestart, onMarkWatched }, ref) => {
   const [adjusted, setAdjusted] = useState({ x, y })
   const innerRef = useRef<HTMLDivElement>(null)
-  const menuRef = (ref as React.RefObject<HTMLDivElement>) || innerRef
+  const setMenuRef = useCallback((element: HTMLDivElement | null) => {
+    innerRef.current = element
+    if (typeof ref === 'function') ref(element)
+    else if (ref) ref.current = element
+  }, [ref])
 
   useLayoutEffect(() => {
-    const el = menuRef.current
+    const el = innerRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
@@ -1109,7 +1216,7 @@ const ContinueWatchingMenu = forwardRef<
   const menu = (
     <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()} onClick={onClose}>
       <div
-        ref={menuRef}
+        ref={setMenuRef}
         onClick={(e) => e.stopPropagation()}
         className="context-menu-glass fixed min-w-[240px] max-w-[280px] rounded-2xl border border-white/[0.12] overscroll-contain"
         style={{

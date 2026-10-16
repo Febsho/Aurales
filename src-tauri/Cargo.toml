@@ -1,6 +1,6 @@
 [package]
 name = "aurales-app"
-version = "0.4.8"
+version = "0.4.9"
 description = "Aurales - A modern streaming catalog app"
 authors = ["Aurales contributors"]
 license = "MIT"
@@ -24,7 +24,7 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 ureq = { version = "2.10", features = ["json"] }

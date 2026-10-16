@@ -8,7 +8,7 @@ pub struct Setting {
 }
 
 pub fn get_setting(db: &Database, key: String) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db.conn.lock().ok()?;
     conn.query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
         row.get(0)
     })
@@ -16,7 +16,10 @@ pub fn get_setting(db: &Database, key: String) -> Option<String> {
 }
 
 pub fn set_setting(db: &Database, key: String, value: String) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection lock is poisoned".to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         [&key, &value],
@@ -26,18 +29,21 @@ pub fn set_setting(db: &Database, key: String, value: String) -> Result<(), Stri
 }
 
 pub fn get_all_settings(db: &Database) -> Vec<Setting> {
-    let conn = db.conn.lock().unwrap();
-    let mut statement = conn.prepare("SELECT key, value FROM settings").unwrap();
-    statement
-        .query_map([], |row| {
-            Ok(Setting {
-                key: row.get(0)?,
-                value: row.get(1)?,
-            })
+    let Ok(conn) = db.conn.lock() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = conn.prepare("SELECT key, value FROM settings") else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok(Setting {
+            key: row.get(0)?,
+            value: row.get(1)?,
         })
-        .unwrap()
-        .filter_map(|row| row.ok())
-        .collect()
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[cfg(test)]

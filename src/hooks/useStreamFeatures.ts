@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream } from '../services/streams/preloadManager'
 import type { StreamPreloadRequest } from '../services/streams/preloadManager'
-import { canonicalStreamKey } from '../services/streams/preloadUtils'
+import { canonicalStreamKey, streamRequestFingerprint } from '../services/streams/preloadUtils'
 import { detectStreamFeatures, type StreamFeature } from '../services/streams/streamFeatures'
 
 // The badge row describes the release the user is most likely to get, i.e. the
@@ -29,6 +29,7 @@ export function useStreamFeatures(request: StreamPreloadRequest | null): StreamF
   // without an effect that resets state and forces a second pass.
   const [resolved, setResolved] = useState<{ mediaKey: string; features: StreamFeature[] } | null>(null)
   const mediaKey = request ? canonicalStreamKey(request) : null
+  const requestFingerprint = streamRequestFingerprint(request)
 
   useEffect(() => {
     if (!request || !mediaKey) return
@@ -48,7 +49,7 @@ export function useStreamFeatures(request: StreamPreloadRequest | null): StreamF
     return () => { cancelled = true }
     // Keyed on the canonical media key so switching episode/title refetches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mediaKey])
+  }, [mediaKey, requestFingerprint])
 
   return resolved?.mediaKey === mediaKey ? resolved.features : EMPTY
 }

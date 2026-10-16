@@ -11,7 +11,7 @@ interface NativeAddonMetaResponse {
   stale: boolean
 }
 
-const groups = new Map<string, { key: string; generation: number }>()
+const groups = new Map<string, { key: string; generation: number; users: number }>()
 
 function staleError(): DOMException {
   return new DOMException('Addon catalog request was superseded', 'AbortError')
@@ -19,9 +19,20 @@ function staleError(): DOMException {
 
 function begin(group: string, key: string): number {
   const current = groups.get(group)
-  const generation = current?.key === key ? current.generation : (current?.generation || 0) + 1
-  groups.set(group, { key, generation })
+  if (current?.key === key) {
+    current.users += 1
+    return current.generation
+  }
+  const generation = (current?.generation || 0) + 1
+  groups.set(group, { key, generation, users: 1 })
   return generation
+}
+
+function finish(group: string, key: string, generation: number): void {
+  const current = groups.get(group)
+  if (!current || current.key !== key || current.generation !== generation) return
+  current.users -= 1
+  if (current.users === 0) groups.delete(group)
 }
 
 function ensureCurrent(group: string, key: string, generation: number): void {
@@ -47,7 +58,13 @@ export async function loadAddonCatalogNative(
     .map(([key, value]) => ({ key, value }))
   const base = addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
   const operationKey = JSON.stringify([base, mediaType, catalogId, orderedExtra])
-  const cancelGroup = options.cancelGroup || `addon-catalog:${operationKey}`
+  // A caller group can cover several concurrent catalogs (SearchPage does
+  // this for every enabled addon). Native request generations track one key
+  // per group, so scope the native group to this catalog to prevent siblings
+  // from superseding one another.
+  const cancelGroup = options.cancelGroup
+    ? `${options.cancelGroup}:catalog:${operationKey}`
+    : `addon-catalog:${operationKey}`
   const generation = begin(cancelGroup, operationKey)
 
   try {
@@ -73,6 +90,8 @@ export async function loadAddonCatalogNative(
       throw staleError()
     }
     throw error
+  } finally {
+    finish(cancelGroup, operationKey, generation)
   }
 }
 
@@ -112,5 +131,7 @@ export async function loadAddonMetaNative(
       throw staleError()
     }
     throw error
+  } finally {
+    finish(cancelGroup, operationKey, generation)
   }
 }

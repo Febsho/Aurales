@@ -331,21 +331,21 @@ pub fn get_persisted_by_ids_batch(
 
 fn lookup_raw_metadata(conn: &rusqlite::Connection, lookup: &MetadataLookup) -> Option<String> {
     if let Some(id) = lookup.id.as_deref() {
-        if let Ok(json) = conn.query_row(
-            "SELECT raw_json FROM app_media WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        ) {
-            return Some(json);
+        if let Ok(mut statement) =
+            conn.prepare_cached("SELECT raw_json FROM app_media WHERE id = ?1")
+        {
+            if let Ok(json) = statement.query_row([id], |row| row.get(0)) {
+                return Some(json);
+            }
         }
     }
     if let Some(imdb_id) = lookup.imdb_id.as_deref().filter(|value| !value.is_empty()) {
-        if let Ok(json) = conn.query_row(
-            "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-            [imdb_id],
-            |row| row.get(0),
-        ) {
-            return Some(json);
+        if let Ok(mut statement) =
+            conn.prepare_cached("SELECT raw_json FROM app_media WHERE imdb_id = ?1")
+        {
+            if let Ok(json) = statement.query_row([imdb_id], |row| row.get(0)) {
+                return Some(json);
+            }
         }
     }
     for (column, value) in [
@@ -355,8 +355,10 @@ fn lookup_raw_metadata(conn: &rusqlite::Connection, lookup: &MetadataLookup) -> 
     ] {
         if let Some(value) = value.filter(|value| *value > 0) {
             let sql = format!("SELECT raw_json FROM app_media WHERE {column} = ?1");
-            if let Ok(json) = conn.query_row(&sql, [value], |row| row.get(0)) {
-                return Some(json);
+            if let Ok(mut statement) = conn.prepare_cached(&sql) {
+                if let Ok(json) = statement.query_row([value], |row| row.get(0)) {
+                    return Some(json);
+                }
             }
         }
     }
@@ -436,6 +438,32 @@ pub fn clear_persisted_metadata(db: &Database) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|error| error.to_string())?;
     conn.execute_batch("DELETE FROM app_episodes; DELETE FROM app_seasons; DELETE FROM addon_media_mappings; DELETE FROM app_media; DELETE FROM metadata_resolution_log;")
         .map_err(|error| error.to_string())
+}
+
+pub fn clear_persisted_anime_metadata(db: &Database) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    for table in [
+        "app_episodes",
+        "app_seasons",
+        "anime_season_mappings",
+        "anime_episode_mappings",
+        "metadata_resolution_log",
+        "addon_media_mappings",
+    ] {
+        let sql = format!(
+            "DELETE FROM {table} WHERE local_media_id IN (SELECT id FROM app_media WHERE media_type = 'anime')"
+        );
+        transaction
+            .execute(&sql, [])
+            .map_err(|error| error.to_string())?;
+    }
+    transaction
+        .execute("DELETE FROM app_media WHERE media_type = 'anime'", [])
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 pub fn save_persisted_metadata(

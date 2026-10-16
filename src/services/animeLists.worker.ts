@@ -58,6 +58,12 @@ function buildIndexes(data: AnimeMapping[]): void {
   }
 }
 
+function parseMappings(text: string): AnimeMapping[] {
+  const parsed = JSON.parse(text) as unknown
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('Anime mapping data is empty or invalid')
+  return parsed as AnimeMapping[]
+}
+
 async function readCached(): Promise<{ text: string; timestamp: number } | null> {
   try {
     const cache = await caches.open(CACHE_NAME)
@@ -88,13 +94,16 @@ async function fetchLatest(): Promise<string> {
     const response = await fetch(DATA_URL, { signal: controller.signal })
     if (!response.ok) throw new Error(`Fribb HTTP ${response.status}`)
     const text = await response.text()
+    // Validate before replacing a known-good Cache API entry. A transient
+    // proxy/error page with HTTP 200 must not poison all future lookups.
+    parseMappings(text)
     const cache = await caches.open(CACHE_NAME)
     void cache.put(DATA_URL, new Response(text, {
       headers: {
         'Content-Type': 'application/json',
         [CACHE_TIMESTAMP_HEADER]: String(Date.now()),
       },
-    }))
+    })).catch(() => undefined)
     return text
   } finally {
     clearTimeout(timer)
@@ -107,23 +116,22 @@ function ensureLoaded(): Promise<void> {
   loadPromise = (async () => {
     const cached = await readCached()
     if (cached?.text) {
-      const parsed = JSON.parse(cached.text) as AnimeMapping[]
-      if (Array.isArray(parsed)) buildIndexes(parsed)
-      if (Date.now() - cached.timestamp >= CACHE_DURATION_MS) {
+      let parsed: AnimeMapping[] | undefined
+      try { parsed = parseMappings(cached.text) } catch { /* discard corrupt cache and fetch below */ }
+      if (parsed) buildIndexes(parsed)
+      if (parsed && Date.now() - cached.timestamp >= CACHE_DURATION_MS) {
         // Stale-while-revalidate: lookups use the existing index immediately;
         // the smaller current file replaces it without delaying the caller.
         void fetchLatest().then((text) => {
-          const fresh = JSON.parse(text) as AnimeMapping[]
-          if (Array.isArray(fresh)) buildIndexes(fresh)
+          buildIndexes(parseMappings(text))
         }).catch(() => undefined)
       }
-      return
+      if (parsed) return
     }
 
     const text = await fetchLatest().catch(() => '')
     if (!text) return
-    const parsed = JSON.parse(text) as AnimeMapping[]
-    if (Array.isArray(parsed)) buildIndexes(parsed)
+    buildIndexes(parseMappings(text))
   })().finally(() => { loadPromise = null })
   return loadPromise
 }

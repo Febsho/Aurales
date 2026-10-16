@@ -62,6 +62,15 @@ export function useEdgeFade<T extends HTMLElement = HTMLDivElement>(
     const resize =
       typeof ResizeObserver !== 'undefined' ? new ResizeObserver(sync) : null
     resize?.observe(el)
+    const observedChildren = new Set<Element>()
+    const observeChildren = () => {
+      for (const child of Array.from(el.children)) {
+        if (observedChildren.has(child)) continue
+        observedChildren.add(child)
+        resize?.observe(child)
+      }
+    }
+    observeChildren()
 
     // Episodes, trailers and cast all arrive asynchronously. Observing only the
     // children present at mount misses the case that actually matters: a track
@@ -71,11 +80,15 @@ export function useEdgeFade<T extends HTMLElement = HTMLDivElement>(
       typeof MutationObserver !== 'undefined'
         ? new MutationObserver(() => {
             sync()
-            Array.from(el.children).forEach((child) => resize?.observe(child))
+            for (const child of observedChildren) {
+              if (el.contains(child)) continue
+              observedChildren.delete(child)
+              resize?.unobserve(child)
+            }
+            observeChildren()
           })
         : null
     mutation?.observe(el, { childList: true })
-    Array.from(el.children).forEach((child) => resize?.observe(child))
 
     return () => {
       el.removeEventListener('scroll', onScroll)

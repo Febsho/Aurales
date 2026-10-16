@@ -10,8 +10,8 @@ export function saveRecommendationFeedback(item: SearchResult, kind: Recommendat
   const entry: RecommendationFeedback = { mediaKey: mediaKey(item), kind, item: { id:item.id,title:item.title,type:item.type,tmdbId:item.tmdbId,genreIds:item.genreIds,year:item.year,runtime:item.runtime,originalLanguage:item.originalLanguage,isAnime:item.isAnime }, createdAt: Date.now(), genreId: kind === 'hide-genre' ? genreId : undefined }
   // Multiple hidden genres from one title are independent preferences.
   const samePreference = (value: RecommendationFeedback) => kind === 'hide-genre'
-    ? value.mediaKey === entry.mediaKey && value.kind === 'hide-genre' && value.genreId === entry.genreId
-    : value.mediaKey === entry.mediaKey && value.kind !== 'hide-genre'
+    ? mediaKey(value.item) === entry.mediaKey && value.kind === 'hide-genre' && value.genreId === entry.genreId
+    : mediaKey(value.item) === entry.mediaKey && value.kind !== 'hide-genre'
   const next = [entry, ...loadRecommendationFeedback().filter((value) => !samePreference(value))].slice(0, 500)
   try { localStorage.setItem(profileStorageKey(KEY), JSON.stringify(next)) } catch { /* best-effort preference data */ }
   enqueueSyncRecord('discovery-feedback', kind === 'hide-genre' ? `${entry.mediaKey}:genre:${genreId}` : entry.mediaKey, entry)

@@ -6,10 +6,11 @@ import type { PreloadedStream } from './preloadManager'
 interface NativeCandidateResponse {
   candidates: PreloadedStream[]
   failures: Array<{ addonId: string; addonName: string; error: string }>
+  latencies?: Array<{ addonId: string; latencyMs: number }>
   stale: boolean
 }
 
-const groups = new Map<string, { key: string; generation: number }>()
+const groups = new Map<string, { key: string; generation: number; users: number }>()
 
 function staleError(): DOMException {
   return new DOMException('Stream candidate request was superseded', 'AbortError')
@@ -17,9 +18,20 @@ function staleError(): DOMException {
 
 function begin(group: string, key: string): number {
   const current = groups.get(group)
-  const generation = current?.key === key ? current.generation : (current?.generation || 0) + 1
-  groups.set(group, { key, generation })
+  if (current?.key === key) {
+    current.users += 1
+    return current.generation
+  }
+  const generation = (current?.generation || 0) + 1
+  groups.set(group, { key, generation, users: 1 })
   return generation
+}
+
+function finish(group: string, key: string, generation: number): void {
+  const current = groups.get(group)
+  if (!current || current.key !== key || current.generation !== generation) return
+  current.users -= 1
+  if (current.users === 0) groups.delete(group)
 }
 
 function ensureCurrent(group: string, key: string, generation: number, signal?: AbortSignal): void {
@@ -32,7 +44,11 @@ export async function loadStreamCandidatesNative(
   id: string,
   addons: InstalledAddon[],
   options: { cancelGroup: string; signal?: AbortSignal; priority?: 'playback' | 'interactive' | 'visible' | 'background' },
-): Promise<{ candidates: PreloadedStream[]; failures: NativeCandidateResponse['failures'] }> {
+): Promise<{
+  candidates: PreloadedStream[]
+  failures: NativeCandidateResponse['failures']
+  latencies?: NativeCandidateResponse['latencies']
+}> {
   if (typeof window === 'undefined' || !(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
     throw new Error('Native stream candidate loading is unavailable')
   }
@@ -43,8 +59,8 @@ export async function loadStreamCandidatesNative(
   }))
   const key = `${mediaType}:${id}:${descriptors.map((addon) => `${addon.id}:${addon.url}`).join('|')}`
   const generation = begin(options.cancelGroup, key)
-  ensureCurrent(options.cancelGroup, key, generation, options.signal)
   try {
+    ensureCurrent(options.cancelGroup, key, generation, options.signal)
     const response = await invoke<NativeCandidateResponse>('load_stream_candidates', {
       request: {
         mediaType,
@@ -58,10 +74,16 @@ export async function loadStreamCandidatesNative(
     })
     if (response.stale) throw staleError()
     ensureCurrent(options.cancelGroup, key, generation, options.signal)
-    return { candidates: response.candidates as Array<StreamResult & { addonId: string; addonName: string }>, failures: response.failures }
+    return {
+      candidates: response.candidates as Array<StreamResult & { addonId: string; addonName: string }>,
+      failures: response.failures,
+      latencies: response.latencies,
+    }
   } catch (error) {
     const message = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
     if ((error instanceof DOMException && error.name === 'AbortError') || /request was (superseded|cancelled)/i.test(message)) throw staleError()
     throw error
+  } finally {
+    finish(options.cancelGroup, key, generation)
   }
 }

@@ -36,16 +36,6 @@ export function setAnimeApiEnabled(enabled: boolean): void {
   localStorage.setItem(ENABLED_KEY, String(enabled))
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(url, { signal: controller.signal })
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 async function animeApiGet<T>(path: string): Promise<T | null> {
   if (mockMode) return null
   if (!isAnimeApiEnabled()) return null
@@ -54,10 +44,17 @@ async function animeApiGet<T>(path: string): Promise<T | null> {
   const url = `${baseUrl}${path}`
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     try {
-      const res = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS)
-      if (res.status === 404) return null
+      // Keep the abort deadline active until the response body is consumed.
+      const res = await fetch(url, { signal: controller.signal })
+      if (res.status === 404) {
+        await res.body?.cancel()
+        return null
+      }
       if (res.status === 429) {
+        await res.body?.cancel()
         if (attempt < MAX_RETRIES) {
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)))
           continue
@@ -66,6 +63,7 @@ async function animeApiGet<T>(path: string): Promise<T | null> {
         return null
       }
       if (!res.ok) {
+        await res.body?.cancel()
         console.warn(`[animeApi] HTTP ${res.status} for ${path}`)
         return null
       }
@@ -77,6 +75,8 @@ async function animeApiGet<T>(path: string): Promise<T | null> {
       }
       console.warn(`[animeApi] request failed: ${path}`, e)
       return null
+    } finally {
+      clearTimeout(timer)
     }
   }
   return null

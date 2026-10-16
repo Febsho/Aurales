@@ -23,7 +23,6 @@ function ageText(person: TmdbPersonDetails): string | null {
 
 export default function PersonPage() {
   const { id } = useParams()
-  const navigate = useNavigate()
   const [person, setPerson] = useState<TmdbPersonDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

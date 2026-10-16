@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { DiscoverConfig, SearchResult } from '../types'
+import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
@@ -29,7 +29,7 @@ import { berlinDaySeed, getBerlinDateKey, getNextBerlinMidnight } from '../servi
 import { DISCOVERY_ALGORITHM_VERSION, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
 import { getActiveProfileId } from '../services/profiles'
 import { getServerCatalogItems, listServerCatalogs } from '../services/serverIntegrations'
-import { dedupeMediaItems } from '../services/mediaPresentation'
+import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 import { getLocalWatchlist, subscribeLocalWatchlist } from '../services/localWatchlist'
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
@@ -52,7 +52,6 @@ const GENRE_MAP_ANIME: Record<number, string> = {
   9648: 'Mystery', 10765: 'Sci-Fi & Fantasy', 10768: 'War & Politics',
 }
 
-// eslint-disable-next-line react-refresh/only-export-components
 export const SERVICE_PROVIDER_MAP: Record<string, { ids: number[]; name: string }> = {
   "Netflix": { ids: [8], name: "Netflix" },
   "Disney+": { ids: [337], name: "Disney+" },
@@ -106,6 +105,7 @@ const HENTAI_EXCLUDE_KEYWORDS = [{ id: 293054, name: 'hentai' }, { id: 6126, nam
 // Impressions recorded this session — once per day/tab/mode, so revisiting Discover
 // doesn't re-penalize the shown titles and reshuffle the recommendations every time
 const IMPRESSIONS_RECORDED = new Set<string>()
+const MAX_DISCOVER_SESSION_KEYS = 500
 // Keep anime out of the Movies/Series tabs — it lives in the Anime tab only
 const ANIME_EXCLUDE_KEYWORDS = [{ id: 210024, name: 'anime' }]
 
@@ -121,6 +121,16 @@ function matchesDiscoverTab(entry: SearchResult, tab: DiscoverTab): boolean {
   return entry.type === 'series' && !isAnimeLike(entry)
 }
 const FORCED_DISCOVERY_REFRESHES = new Set<string>()
+
+function rememberDiscoverSessionKey(set: Set<string>, key: string): void {
+  set.delete(key)
+  set.add(key)
+  while (set.size > MAX_DISCOVER_SESSION_KEYS) {
+    const oldest = set.values().next().value
+    if (oldest === undefined) break
+    set.delete(oldest)
+  }
+}
 
 function makeConfig(
   contentType: 'movie' | 'series',
@@ -160,7 +170,7 @@ function makeConfig(
   // Fold the user's Discover preferences into every row query so exclusions and
   // thresholds are enforced at fetch time (candidatePassesPrefs is the safety net)
   const prefs = getDiscoverPrefs()
-  
+
   // Audience mode adjustments
   if (prefs.audienceMode === 'grown-up') {
     // Exclude Kids (10762) and Family (10751)
@@ -172,7 +182,7 @@ function makeConfig(
 
   const excludeIds = excludeGenreIds(prefs)
   if (excludeIds.length) config.excludeGenres = [...new Set([...config.excludeGenres, ...excludeIds.map(String)])]
-  
+
   const onlyIds = onlyGenreIds(prefs)
   if (onlyIds.length) config.includeGenres = [...new Set([...config.includeGenres, ...onlyIds.map(String)])]
 
@@ -184,7 +194,7 @@ function makeConfig(
   if (prefs.minVoteCount != null) config.voteCountMin = Math.max(config.voteCountMin ?? 0, prefs.minVoteCount)
   if (prefs.yearFrom != null) config.releaseDateFrom = `${prefs.yearFrom}-01-01`
   if (prefs.yearTo != null) config.releaseDateTo = `${prefs.yearTo}-12-31`
-  
+
   if (prefs.runtimeMin != null) config.runtimeMin = prefs.runtimeMin
   if (prefs.runtimeMax != null) config.runtimeMax = prefs.runtimeMax
 
@@ -246,22 +256,29 @@ function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchR
     if (!enabled) return
 
     let cancelled = false
+    let staleRefreshStarted = false
     const forceKey = `${rowId}:${refreshNonce}`
     const forceRefresh = refreshNonce > 0 && !FORCED_DISCOVERY_REFRESHES.has(forceKey)
-    if (forceRefresh) FORCED_DISCOVERY_REFRESHES.add(forceKey)
+    if (forceRefresh) rememberDiscoverSessionKey(FORCED_DISCOVERY_REFRESHES, forceKey)
     discoverTmdbWithCache(config, rowId, forceRefresh, (fresh) => {
-      import('../services/metadata/metadataResolver').then(({ enrichSearchResultsWithAppMetadata }) => enrichSearchResultsWithAppMetadata(fresh)).then((enriched) => { if (!cancelled) setCachedRow(rowId, enriched.map(applySearchResultArt)) }).catch(() => undefined)
-      })
+      if (cancelled) return
+      staleRefreshStarted = true
+      import('../services/metadata/metadataResolver')
+        .then(({ enrichSearchResultsWithAppMetadata }) => enrichSearchResultsWithAppMetadata(fresh))
+        .then((enriched) => { if (!cancelled) setCachedRow(rowId, enriched.map(applySearchResultArt)) })
+        .catch(() => { if (!cancelled) setCachedRow(rowId, fresh.map(applySearchResultArt)) })
+    })
       .then(async (results) => {
+        if (cancelled) return
         if (results.length === 0 && items.length > 0) return
         const rawItems = results.length > 0 ? results : fallback
         const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
         const enriched = await enrichSearchResultsWithAppMetadata(rawItems)
         const finalItems = enriched.map(applySearchResultArt)
-        if (!cancelled && (finalItems.length > 0 || items.length === 0)) setCachedRow(rowId, finalItems)
+        if (!cancelled && !staleRefreshStarted && (finalItems.length > 0 || items.length === 0)) setCachedRow(rowId, finalItems)
       })
       .catch(async () => {
-        if (items.length > 0) return
+        if (cancelled || items.length > 0) return
         const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
         const enriched = await enrichSearchResultsWithAppMetadata(fallback)
         const finalItems = enriched.map(applySearchResultArt)
@@ -300,6 +317,26 @@ function recommendationCandidate(item: SearchResult, source: RecommendationCandi
   return { item, source, voteCount:item.voteCount, popularity:item.popularity, runtimeMinutes:item.runtime, releaseDate:item.releaseDate, ...overrides }
 }
 
+function discoveryProgressSignature(progress: Map<string, WatchProgress>, rankingNow: number): string {
+  const tasteProgress: unknown[][] = []
+  const tasteItems: unknown[][] = []
+  const watchedSeeds: unknown[][] = []
+  for (const item of progress.values()) {
+    tasteProgress.push([item.id, item.mediaId, item.tmdbId, item.imdbId, item.completed])
+    if (item.tmdbId != null && (item.completed || item.progressSeconds > 120)) {
+      watchedSeeds.push([item.mediaId || `tmdb-${item.tmdbId}`, item.title || '', item.mediaType === 'movie' ? 'movie' : 'series', item.tmdbId, item.imdbId, item.poster, item.backdrop, item.malId, item.anilistId])
+    }
+    const abandoned = Boolean(item.updatedAt && Date.parse(item.updatedAt) < rankingNow - 14 * 86400_000 && item.durationSeconds > 0 && item.progressSeconds / item.durationSeconds >= .08)
+    if (item.completed || abandoned) {
+      tasteItems.push([item.completed ? 1 : 0, abandoned ? 1 : 0, item.mediaType === 'movie' ? 'movie' : 'series', item.mediaId, item.tmdbId, item.imdbId, item.title || ''])
+    }
+  }
+  // Zustand's watchProgress map is replaced immutably while preserving its
+  // insertion order. Sorting here made each progress update pay O(n log n)
+  // plus repeated JSON serialization in the comparator.
+  return JSON.stringify([tasteProgress, tasteItems, watchedSeeds])
+}
+
 export default function DiscoverPage() {
   const navigate = useNavigate()
   const tab = useDiscoverStore((s) => s.tab)
@@ -318,7 +355,6 @@ export default function DiscoverPage() {
   const minRating = useAppStore((s) => s.discoveryMinRating)
   const includeAdult = useAppStore((s) => s.discoveryIncludeAdult)
   const recentlyViewed = useAppStore((s) => s.recentlyWatched)
-  const watchProgress = useAppStore((s) => s.watchProgress)
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
@@ -378,6 +414,17 @@ export default function DiscoverPage() {
   // is identical on every visit within a day (a source of visit-to-visit reshuffling)
   const [berlinDateKey, setBerlinDateKey] = useState(() => getBerlinDateKey())
   const rankingNow = Date.parse(`${berlinDateKey}T00:00:00.000Z`)
+  const watchProgress = useAppStore((state) => state.watchProgress)
+  const progressSignature = useMemo(
+    () => discoveryProgressSignature(watchProgress, rankingNow),
+    [watchProgress, rankingNow],
+  )
+  const progressSignals = useMemo(() => {
+    const [tasteProgress, tasteItems, watchedSeeds] = JSON.parse(progressSignature) as [string, string, string]
+    return { tasteProgress, tasteItems, watchedSeeds }
+  }, [progressSignature])
+  const watchProgressRef = useRef(watchProgress)
+  watchProgressRef.current = watchProgress
   const [starterGenres,setStarterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
   const [heroIndex,setHeroIndex]=useState(0)
   const [heroLogoError,setHeroLogoError]=useState(false)
@@ -431,7 +478,9 @@ export default function DiscoverPage() {
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const mood = useMemo(() => {
     const pool = tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS
-    return pool[berlinDaySeed() % pool.length]
+    // Use the same Berlin day that drives the snapshot key. This keeps the
+    // mood stable across hosts whose local timezone differs from the product day.
+    return pool[berlinDaySeed(new Date(`${berlinDateKey}T12:00:00.000Z`)) % pool.length]
   }, [tab, berlinDateKey])
 
   const animeOverrides = tab === 'anime' ? {
@@ -531,11 +580,14 @@ export default function DiscoverPage() {
   // Titles the user actually watched — local playback progress + connected watch
   // history. "Because You Watched" must seed from these, NOT from merely-opened items.
   const watchedForSeeds = useMemo<SearchResult[]>(() => {
-    const fromProgress: SearchResult[] = Array.from(watchProgress.values())
+    const fromProgress: SearchResult[] = Array.from(watchProgressRef.current.values())
       .filter((p) => p.tmdbId != null && (p.completed || p.progressSeconds > 120))
       .map((p): SearchResult => ({ id: p.mediaId || `tmdb-${p.tmdbId}`, title: p.title || '', type: p.mediaType === 'movie' ? 'movie' : 'series', provider: 'progress', tmdbId: p.tmdbId, imdbId: p.imdbId, poster: p.poster, backdrop: p.backdrop, malId: p.malId, anilistId: p.anilistId }))
     return [...fromProgress, ...connectedActivity.items]
-  }, [watchProgress, connectedActivity.items])
+    // This signature intentionally gates ref reads: seconds-only checkpoints
+    // keep the same seed identities and must not restart metadata requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progressSignals.watchedSeeds, connectedActivity.items])
 
   useEffect(() => {
     if (hasDailySnapshot) return
@@ -583,7 +635,7 @@ export default function DiscoverPage() {
       // AniList watched anime → taste/Discovery. Include anything the user engaged
       // with (progress > 0 or completed); enrichment resolves tmdb ids downstream.
       if(anilistResult.status==='fulfilled')for(const entry of anilistResult.value){if(entry.status==='PLANNING'||(entry.progress<=0&&entry.status!=='COMPLETED'))continue;const mapped={id:`anilist-${entry.mediaId}`,title:entry.title,type:'series' as const,year:entry.seasonYear,provider:'anilist',malId:entry.idMal,anilistId:entry.mediaId,isAnime:true,poster:entry.poster,backdrop:entry.backdrop};items.push(mapped);if((entry.repeat||0)>0)rewatches.push(mapped)}
-      const unique=[...new Map(items.map((item)=>[`${item.type}:${item.tmdbId||item.imdbId||item.malId||item.anilistId||item.id}`,item])).values()].slice(0,150)
+      const unique=[...new Map(items.map((item)=>[mediaIdentity(item),item])).values()].slice(0,150)
       const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
       const enriched=await enrichSearchResultsWithAppMetadata(unique)
       if(cancelled)return
@@ -593,21 +645,26 @@ export default function DiscoverPage() {
   },[traktConnected,simklConnected,stremioAuthKey,anilistConnected,hasDailySnapshot])
 
   const starterTasteItems=useMemo<SearchResult[]>(()=>starterGenres.map((genreId)=>({id:`taste-genre-${genreId}`,title:genreMap[genreId]||`Genre ${genreId}`,type:contentType,provider:'preference',genreIds:[genreId]})),[starterGenres,genreMap,contentType])
+  // The signature gates this ref read so time-only updates keep the same ranking input.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tasteProgress = useMemo(() => Array.from(watchProgressRef.current.values()), [progressSignals.tasteProgress])
   const progressTaste = useMemo(() => {
     const completed = new Map<string, SearchResult>()
     const abandoned = new Map<string, SearchResult>()
-    for (const progress of watchProgress.values()) {
+    for (const progress of watchProgressRef.current.values()) {
       const type = progress.mediaType === 'movie' ? 'movie' : 'series'
       const match = recentlyViewed.find((item) => item.type === type && (item.id === progress.mediaId || (progress.tmdbId != null && String(item.tmdbId) === String(progress.tmdbId)) || (progress.imdbId && item.imdbId === progress.imdbId)))
       const item: SearchResult = match || { id: progress.mediaId, title: progress.title || '', type, provider: 'progress', tmdbId: progress.tmdbId, imdbId: progress.imdbId }
-      const key = `${type}:${progress.tmdbId || progress.imdbId || progress.mediaId}`
+      const key = mediaIdentity({ id: progress.mediaId, type, provider: 'progress', tmdbId: progress.tmdbId, imdbId: progress.imdbId })
       if (progress.completed) completed.set(key, item)
       else if (progress.updatedAt && Date.parse(progress.updatedAt) < rankingNow - 14 * 86400_000 && progress.durationSeconds > 0 && progress.progressSeconds / progress.durationSeconds >= .08) abandoned.set(key, item)
     }
     for (const key of completed.keys()) abandoned.delete(key)
     return { completedItems: [...completed.values()], abandonedItems: [...abandoned.values()] }
-  }, [watchProgress, recentlyViewed, rankingNow])
-  const activity = useMemo(() => ({ progress: [...Array.from(watchProgress.values()),...connectedActivity.progress], recent: [...starterTasteItems,...progressTaste.completedItems,...connectedActivity.items], ratings:connectedActivity.ratings,completedItems:[...progressTaste.completedItems,...connectedActivity.items,...feedback.filter((entry)=>entry.kind==='already-seen').map((entry):SearchResult=>({...entry.item,provider:'taste-feedback'}))],abandonedItems:progressTaste.abandonedItems,watchlist:[...localWatchlist,...connectedActivity.watchlist],rewatches:connectedActivity.rewatches,bingeItems:connectedActivity.bingeItems,tasteMetadata:[...watchedTasteMetadata,...localWatchlist.filter((item)=>item.runtime).map((item)=>({item,runtimeMinutes:item.runtime}))] }), [watchProgress, connectedActivity,starterTasteItems,localWatchlist,watchedTasteMetadata,progressTaste,feedback])
+    // The signature contains the completion/abandonment projection used below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progressSignals.tasteItems, recentlyViewed])
+  const activity = useMemo(() => ({ progress: [...tasteProgress,...connectedActivity.progress], recent: [...starterTasteItems,...progressTaste.completedItems,...connectedActivity.items], ratings:connectedActivity.ratings,completedItems:[...progressTaste.completedItems,...connectedActivity.items,...feedback.filter((entry)=>entry.kind==='already-seen').map((entry):SearchResult=>({...entry.item,provider:'taste-feedback'}))],abandonedItems:progressTaste.abandonedItems,watchlist:[...localWatchlist,...connectedActivity.watchlist],rewatches:connectedActivity.rewatches,bingeItems:connectedActivity.bingeItems,tasteMetadata:[...watchedTasteMetadata,...localWatchlist.filter((item)=>item.runtime).map((item)=>({item,runtimeMinutes:item.runtime}))] }), [tasteProgress, connectedActivity,starterTasteItems,localWatchlist,watchedTasteMetadata,progressTaste,feedback])
   const tasteProfile = useMemo(() => buildTasteProfile(activity), [activity])
   const candidates = useMemo<RecommendationCandidate[]>(() => [
     ...forYou.map((item) => recommendationCandidate(item,'tmdb-discover')),
@@ -626,7 +683,7 @@ export default function DiscoverPage() {
   const liveRanked = useMemo(() => {
     const weights = prefsWeights(prefs)
     const ranked = rankCandidates(filteredCandidates, tasteProfile, activity, feedback, mode, rankingNow, impressions, weights)
-    
+
     if (prefs.sortOrder === 'popularity.desc') {
       return [...ranked].sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
     } else if (prefs.sortOrder === 'vote_average.desc') {
@@ -721,7 +778,7 @@ export default function DiscoverPage() {
   useEffect(() => {
     const key = `${berlinDateKey}:${tab}:${mode}`
     if (!ranked.length || IMPRESSIONS_RECORDED.has(key)) return
-    IMPRESSIONS_RECORDED.add(key)
+    rememberDiscoverSessionKey(IMPRESSIONS_RECORDED, key)
     recordRecommendationImpressions(ranked.slice(0,40).map((entry)=>entry.item))
   }, [ranked, tab, mode, berlinDateKey])
 

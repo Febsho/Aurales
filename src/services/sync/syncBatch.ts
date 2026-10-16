@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { SyncRecord } from './syncQueue'
 
+const SYNC_BATCH_TIMEOUT_MS = 30_000
+
 export interface SyncBatchInput {
   endpoint: string
   accessToken: string
@@ -48,7 +50,7 @@ export async function runSyncBatch(
           ...input,
           priority: 'interactive',
           cancelGroup: 'aurales-sync:account',
-          timeoutMs: 30_000,
+          timeoutMs: SYNC_BATCH_TIMEOUT_MS,
         },
       })
       if (response.stale) throw new DOMException('Sync request was superseded', 'AbortError')
@@ -59,18 +61,27 @@ export async function runSyncBatch(
     }
   }
 
-  const response = await fetcher(`${input.endpoint.replace(/\/$/, '')}/v1/sync`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${input.accessToken}` },
-    body: JSON.stringify({
-      schemaVersion: input.schemaVersion,
-      deviceId: input.deviceId,
-      deviceName: input.deviceName,
-      cursor: input.cursor,
-      records: input.records,
-    }),
-  })
-  if (!response.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${response.status})`)
-  const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
-  return { cursor: body.cursor, records: body.records || [] }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort(new DOMException('Sync request timed out', 'TimeoutError'))
+  }, SYNC_BATCH_TIMEOUT_MS)
+  try {
+    const response = await fetcher(`${input.endpoint.replace(/\/$/, '')}/v1/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${input.accessToken}` },
+      body: JSON.stringify({
+        schemaVersion: input.schemaVersion,
+        deviceId: input.deviceId,
+        deviceName: input.deviceName,
+        cursor: input.cursor,
+        records: input.records,
+      }),
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${response.status})`)
+    const body = await response.json() as { cursor?: string; records?: SyncRecord[] }
+    return { cursor: body.cursor, records: body.records || [] }
+  } finally {
+    clearTimeout(timeout)
+  }
 }

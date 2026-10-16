@@ -11,6 +11,12 @@ pub struct CacheEntry {
     pub updated_at: String,
 }
 
+#[derive(Deserialize)]
+pub struct CacheEntryDelete {
+    pub key: String,
+    pub value: String,
+}
+
 pub fn entry_set(
     db: &Database,
     key: String,
@@ -96,6 +102,37 @@ pub fn entry_get_many(db: &Database, keys: Vec<String>) -> Vec<CacheEntry> {
         Err(_) => return vec![],
     };
     rows.filter_map(Result::ok).collect()
+}
+
+pub fn entry_delete(db: &Database, key: String, expected_value: String) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM cache_entries WHERE key = ?1 AND value = ?2",
+        rusqlite::params![key, expected_value],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+pub fn entry_delete_many(db: &Database, entries: Vec<CacheEntryDelete>) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let conn = db.conn.lock().map_err(|error| error.to_string())?;
+    // Two bind parameters per entry; stay below SQLite's common 999-variable limit.
+    for batch in entries.chunks(400) {
+        let placeholders = std::iter::repeat("(?, ?)")
+            .take(batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM cache_entries WHERE (key, value) IN ({placeholders})");
+        let parameters = batch
+            .iter()
+            .flat_map(|entry| [entry.key.as_str(), entry.value.as_str()]);
+        conn.execute(&sql, rusqlite::params_from_iter(parameters))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn clear_category(db: &Database, category: String) -> Result<u64, String> {

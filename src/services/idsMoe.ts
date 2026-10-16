@@ -6,8 +6,19 @@ const API_KEY = 'ids_HUUATSvhnnYAfCO0LatQIFAyOyApHB0i7UJJVrKdEVk'
 const CACHE_TTL = 14 * 24 * 60 * 60 // 14 days
 const REQUEST_TIMEOUT_MS = 4_000
 const FAILURE_RETRY_MS = 60_000
+const MAX_FAILED_KEYS = 500
 const pendingRequests = new Map<string, Promise<IdsMoeResult | null>>()
 const failedAt = new Map<string, number>()
+
+function rememberFailure(key: string): void {
+  failedAt.delete(key)
+  failedAt.set(key, Date.now())
+  while (failedAt.size > MAX_FAILED_KEYS) {
+    const oldest = failedAt.keys().next().value
+    if (!oldest) break
+    failedAt.delete(oldest)
+  }
+}
 
 interface IdsMoeResult {
   title?: string
@@ -44,7 +55,9 @@ export interface ResolvedAnimeIds {
 type Platform = 'mal' | 'anilist' | 'imdb' | 'tmdb' | 'trakt' | 'simkl' | 'kitsu' | 'anidb'
 
 async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoeResult | null> {
-  const cacheKey = `ids_moe:${platform}:${id}`
+  // v2 avoids legacy 14-day cached nulls written by older builds after HTTP
+  // failures were incorrectly returned as successful empty mappings.
+  const cacheKey = `ids_moe:v2:${platform}:${id}`
   const lastFailure = failedAt.get(cacheKey)
   if (lastFailure && Date.now() - lastFailure < FAILURE_RETRY_MS) return null
   const pending = pendingRequests.get(cacheKey)
@@ -55,18 +68,32 @@ async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoe
       const result = await cachedFetch<IdsMoeResult | null>(cacheKey, async () => {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-      const res = await fetch(`${API_BASE}/ids/${id}?p=${platform}`, {
-        headers: { 'Authorization': `Bearer ${API_KEY}` },
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout))
-      if (!res.ok) return null
-      return await res.json() as IdsMoeResult
+      try {
+        const res = await fetch(`${API_BASE}/ids/${id}?p=${platform}`, {
+          headers: { 'Authorization': `Bearer ${API_KEY}` },
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          await res.body?.cancel()
+          throw new Error(`IDs.moe returned HTTP ${res.status}`)
+        }
+        const data = await res.json() as IdsMoeResult | null
+        if (!data) throw new Error('IDs.moe returned no mapping')
+        const hasResolvedId = [
+          data.myanimelist, data.anilist, data.anidb, data.kitsu, data.imdb,
+          data.themoviedb, data.trakt, data.simkl, data.livechart,
+        ].some((value) => value != null && value !== '')
+        if (!hasResolvedId) throw new Error('IDs.moe returned no resolved IDs')
+        return data
+      } finally {
+        clearTimeout(timeout)
+      }
       }, { category: CACHE_CATEGORIES.ANIME_MAPPING, ttlSeconds: CACHE_TTL })
       if (result) failedAt.delete(cacheKey)
-      else failedAt.set(cacheKey, Date.now())
+      else rememberFailure(cacheKey)
       return result
     } catch (_) {
-      failedAt.set(cacheKey, Date.now())
+      rememberFailure(cacheKey)
       return null
     }
   })().finally(() => pendingRequests.delete(cacheKey))

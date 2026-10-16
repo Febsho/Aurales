@@ -1,4 +1,5 @@
 import { useAppStore } from '../stores/appStore'
+import { getActiveProfileId, profileProviderCacheKey } from './profiles'
 import { hasMdblistOAuth } from './mdblist'
 import {
   forceRefreshProviderWatched,
@@ -24,9 +25,9 @@ const FREQ_MS: Record<string, number | undefined> = {
 }
 
 const PROVIDERS: SyncProvider[] = ['trakt', 'simkl', 'pmdb', 'mdblist', 'anilist']
-const syncing = new Map<SyncProvider, Promise<void>>()
-const lastRunAt = new Map<SyncProvider, number>()
-const lastRecoveryAt = new Map<SyncProvider, number>()
+const syncing = new Map<string, Promise<void>>()
+const lastRunAt = new Map<string, number>()
+const lastRecoveryAt = new Map<string, number>()
 let schedulerTimer: ReturnType<typeof setInterval> | null = null
 let unsubscribe: (() => void) | null = null
 let recoveryHandler: (() => void) | null = null
@@ -54,7 +55,10 @@ function providerFrequency(provider: SyncProvider): string {
 }
 
 export async function syncProviderNow(provider: SyncProvider): Promise<void> {
-  const pending = syncing.get(provider)
+  const profileId = getActiveProfileId()
+  const runKey = providerSyncKey(provider, profileId)
+  const scheduleKey = providerScheduleKey(provider, profileId)
+  const pending = syncing.get(runKey)
   if (pending) return pending
   const task = (async () => {
     const store = useAppStore.getState()
@@ -66,6 +70,7 @@ export async function syncProviderNow(provider: SyncProvider): Promise<void> {
       clearAniListProgressCaches()
       await getAniListContinueWatching().catch((e) => console.warn('[ProviderSync] anilist continue warm failed:', e))
       const keys = await getAniListWatchedTitleKeys()
+      if (providerSyncKey(provider) !== runKey) return
       setWatchedProviderSnapshot('anilist', keys, store.watchedCheckmarkSources as WatchedSource[])
       return
     }
@@ -78,17 +83,28 @@ export async function syncProviderNow(provider: SyncProvider): Promise<void> {
 
     await forceRefreshProviderWatched(provider)
 
+    // Avoid writing an old account's completion time into a newly active profile.
+    if (providerSyncKey(provider) !== runKey) return
+
     const stamp = new Date().toLocaleString()
     if (provider === 'pmdb') store.setPmdBLastSyncTime(stamp)
     if (provider === 'mdblist') store.setMdblistLastSyncTime(stamp)
   })().catch((e) => {
     console.warn(`[ProviderSync] ${provider} sync failed:`, e)
   }).finally(() => {
-    syncing.delete(provider)
-    lastRunAt.set(provider, Date.now())
+    syncing.delete(runKey)
+    lastRunAt.set(scheduleKey, Date.now())
   })
-  syncing.set(provider, task)
+  syncing.set(runKey, task)
   return task
+}
+
+function providerSyncKey(provider: SyncProvider, profileId = getActiveProfileId()): string {
+  return profileProviderCacheKey(`provider-sync:${provider}`, provider, profileId)
+}
+
+function providerScheduleKey(provider: SyncProvider, profileId = getActiveProfileId()): string {
+  return `${profileId}:${provider}`
 }
 
 function appCanSync(): boolean {
@@ -101,21 +117,22 @@ function runDueProviders(recovery = false): void {
   const now = Date.now()
   for (const provider of PROVIDERS) {
     if (!providerConnected(provider)) continue
+    const key = providerScheduleKey(provider)
     // SIMKL's sync guide forbids unconditional background polling. Its v2
     // connection is refreshed by the explicit sync button and active app
     // lifecycle events below, where the activity endpoint cheaply gates work.
     if (provider === 'simkl' && !recovery) continue
     const frequency = FREQ_MS[providerFrequency(provider)]
     if (!frequency) continue
-    const last = lastRunAt.get(provider) ?? now
-    if (!lastRunAt.has(provider)) lastRunAt.set(provider, now)
+    const last = lastRunAt.get(key) ?? now
+    if (!lastRunAt.has(key)) lastRunAt.set(key, now)
     const minimumInterval = provider === 'simkl' ? Math.max(frequency, 15 * 60_000) : frequency
     if (now - last < minimumInterval) continue
-    if (recovery && now - (lastRecoveryAt.get(provider) || 0) < 30_000) continue
-    if (recovery) lastRecoveryAt.set(provider, now)
+    if (recovery && now - (lastRecoveryAt.get(key) || 0) < 30_000) continue
+    if (recovery) lastRecoveryAt.set(key, now)
     // Stamp before dispatch so repeated focus/online events coalesce while the
     // shared in-flight promise is active.
-    lastRunAt.set(provider, now)
+    lastRunAt.set(key, now)
     void syncProviderNow(provider)
   }
 }
@@ -123,7 +140,7 @@ function runDueProviders(recovery = false): void {
 export function startProviderSyncScheduler(): void {
   stopProviderSyncScheduler()
   const now = Date.now()
-  for (const provider of PROVIDERS) if (providerConnected(provider)) lastRunAt.set(provider, now)
+  for (const provider of PROVIDERS) if (providerConnected(provider)) lastRunAt.set(providerScheduleKey(provider), now)
   schedulerTimer = setInterval(() => runDueProviders(false), 30_000)
   recoveryHandler = () => runDueProviders(true)
   if (typeof window !== 'undefined') {
@@ -138,7 +155,10 @@ export function startProviderSyncScheduler(): void {
     if (next !== prev) {
       prev = next
       const changedAt = Date.now()
-      for (const provider of PROVIDERS) if (providerConnected(provider) && !lastRunAt.has(provider)) lastRunAt.set(provider, changedAt)
+      for (const provider of PROVIDERS) {
+        const key = providerScheduleKey(provider)
+        if (providerConnected(provider) && !lastRunAt.has(key)) lastRunAt.set(key, changedAt)
+      }
     }
   })
 }
@@ -146,6 +166,7 @@ export function startProviderSyncScheduler(): void {
 function snapshot(): string {
   const s = useAppStore.getState()
   return [
+    getActiveProfileId(),
     s.traktSyncFrequency, s.traktConnected,
     s.simklSyncFrequency, s.simklConnected,
     s.pmdbSyncFrequency, !!s.pmdbApiKey,

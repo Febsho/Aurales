@@ -14,44 +14,50 @@ interface JikanEpisodesPage {
   }
 }
 
-const episodePageRequests = new Map<number, Promise<JikanEpisode[]>>()
+const episodePageRequests = new Map<string, Promise<JikanEpisode[]>>()
 
 export async function getJikanEpisodeRating(malId: string | number | undefined, episodeNumber: number | undefined): Promise<number | null> {
   const animeId = Number(malId)
   const episode = Number(episodeNumber)
   if (!Number.isFinite(animeId) || animeId <= 0 || !Number.isFinite(episode) || episode <= 0) return null
 
-  const episodes = await getJikanEpisodes(animeId)
+  const page = Math.ceil(episode / 100)
+  const episodes = await getJikanEpisodes(animeId, page)
   const match = episodes.find((item) => item.mal_id === episode)
   const score = Number(match?.score)
   return Number.isFinite(score) && score > 0 ? score : null
 }
 
-async function getJikanEpisodes(malId: number): Promise<JikanEpisode[]> {
-  const pending = episodePageRequests.get(malId)
+async function getJikanEpisodes(malId: number, page: number): Promise<JikanEpisode[]> {
+  const requestKey = `${malId}:${page}`
+  const pending = episodePageRequests.get(requestKey)
   if (pending) return pending
 
   const request = cachedFetch(
-    `jikan:anime:${malId}:episodes`,
-    () => fetchAllEpisodePages(malId),
+    `jikan:anime:${malId}:episodes:page:${page}:v2`,
+    () => fetchEpisodePage(malId, page),
     {
       category: CACHE_CATEGORIES.ANIME_MAPPING,
       ttlSeconds: CACHE_TTLS.ANIME_MAPPING_AIRING,
     },
-  ).finally(() => episodePageRequests.delete(malId))
-  episodePageRequests.set(malId, request)
+  ).finally(() => episodePageRequests.delete(requestKey))
+  episodePageRequests.set(requestKey, request)
   return request
 }
 
-async function fetchAllEpisodePages(malId: number): Promise<JikanEpisode[]> {
-  const episodes: JikanEpisode[] = []
-  for (let page = 1; page <= 20; page++) {
-    const url = `https://api.jikan.moe/v4/anime/${malId}/episodes?page=${page}`
-    const res = await fetch(url)
-    if (!res.ok) break
+async function fetchEpisodePage(malId: number, page: number): Promise<JikanEpisode[]> {
+  const url = `https://api.jikan.moe/v4/anime/${malId}/episodes?page=${page}`
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) {
+      await res.body?.cancel()
+      return []
+    }
     const data = await res.json() as JikanEpisodesPage
-    episodes.push(...(data.data ?? []))
-    if (!data.pagination?.has_next_page) break
+    return data.data ?? []
+  } finally {
+    clearTimeout(timeout)
   }
-  return episodes
 }

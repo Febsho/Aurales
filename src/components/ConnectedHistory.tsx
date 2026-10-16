@@ -25,26 +25,41 @@ function formatMinutesAsDays(minutes: number) {
 }
 
 function localDateKey(value: string | number | Date) {
-  const date = new Date(value)
+  let date: Date
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split('-').map(Number)
+    date = new Date(year, month - 1, day)
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return ''
+  } else {
+    date = new Date(value)
+  }
+  if (!Number.isFinite(date.getTime())) return ''
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
+function shiftLocalDays(date: Date, days: number) {
+  const shifted = new Date(date)
+  shifted.setDate(shifted.getDate() + days)
+  return shifted
+}
+
 function streaks(items: ConnectedHistoryItem[]) {
-  const dates = [...new Set(items.flatMap((item) => item.watchedDates?.length ? item.watchedDates : item.watchedAt ? [item.watchedAt] : []).map(localDateKey))].sort()
+  const dates = [...new Set(items.flatMap((item) => item.watchedDates?.length ? item.watchedDates : item.watchedAt ? [item.watchedAt] : []).map(localDateKey).filter(Boolean))].sort()
   let longest = 0
   let running = 0
   let previous = ''
   for (const date of dates) {
-    const expected = previous ? localDateKey(new Date(`${previous}T12:00:00`).getTime() + 86_400_000) : ''
+    const expected = previous ? localDateKey(shiftLocalDays(new Date(`${previous}T12:00:00`), 1)) : ''
     running = previous && date === expected ? running + 1 : 1
     longest = Math.max(longest, running)
     previous = date
   }
   const dateSet = new Set(dates)
   let cursor = new Date()
-  if (!dateSet.has(localDateKey(cursor)) && dateSet.has(localDateKey(Date.now() - 86_400_000))) cursor = new Date(Date.now() - 86_400_000)
+  const yesterday = shiftLocalDays(cursor, -1)
+  if (!dateSet.has(localDateKey(cursor)) && dateSet.has(localDateKey(yesterday))) cursor = yesterday
   let current = 0
-  while (dateSet.has(localDateKey(cursor))) { current += 1; cursor = new Date(cursor.getTime() - 86_400_000) }
+  while (dateSet.has(localDateKey(cursor))) { current += 1; cursor = shiftLocalDays(cursor, -1) }
   return { current, longest }
 }
 
@@ -62,7 +77,9 @@ export default function ConnectedHistory() {
   const stremioConnected = Boolean(getStremioAuth()?.authKey)
   const connected = useMemo(() => ([traktConnected && 'trakt', simklConnected && 'simkl', anilistConnected && 'anilist', pmdbConnected && 'pmdb', mdblistConnected && 'mdblist', stremioConnected && 'stremio'].filter(Boolean) as ConnectedHistorySource[]), [traktConnected, simklConnected, anilistConnected, pmdbConnected, mdblistConnected, stremioConnected])
   const [selected, setSelected] = useState<ConnectedHistorySource[]>(readSelection)
+  const selectedKey = useMemo(() => selected.join('|'), [selected])
   const [items, setItems] = useState<ConnectedHistoryItem[]>([])
+  const [itemsSelectionKey, setItemsSelectionKey] = useState('')
   const [errors, setErrors] = useState<Partial<Record<ConnectedHistorySource, string>>>({})
   const [counts, setCounts] = useState<Partial<Record<ConnectedHistorySource, number>>>({})
   const [loading, setLoading] = useState(false)
@@ -84,48 +101,69 @@ export default function ConnectedHistory() {
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(selected)) }, [selected])
 
   useEffect(() => {
-    if (!selected.length) { setItems([]); setErrors({}); return }
+    if (!selected.length) {
+      setLoading(false)
+      setItems([])
+      setItemsSelectionKey('')
+      setErrors({})
+      setCounts({})
+      return
+    }
     let cancelled = false
     setLoading(true)
     setItems([])
+    setItemsSelectionKey('')
+    setCounts({})
     setRuntimeProgress({ completed: 0, total: 0 })
     loadConnectedHistory(selected, refreshToken > 0).then((result) => {
       if (cancelled) return
-      setItems(result.items); setErrors(result.errors); setCounts(result.sourceCounts)
+      setItems(result.items); setItemsSelectionKey(selectedKey); setErrors(result.errors); setCounts(result.sourceCounts)
     }).catch((error) => { if (!cancelled) setErrors({ [selected[0]]: error instanceof Error ? error.message : 'Could not load history' }) }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [selected, refreshToken])
+  }, [selected, selectedKey, refreshToken])
 
+  const normalizedQuery = query.trim().toLowerCase()
   const filtered = useMemo(() => items.filter((item) => {
     if (media !== 'all' && item.mediaType !== media) return false
-    return !query.trim() || item.title.toLowerCase().includes(query.trim().toLowerCase())
-  }), [items, media, query])
+    return !normalizedQuery || item.title.toLowerCase().includes(normalizedQuery)
+  }), [items, media, normalizedQuery])
   const statsItems = useMemo(() => items.filter((item) => media === 'all' || item.mediaType === media), [items, media])
   const visibleItems = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
-  const visibleKey = visibleItems.map((item) => item.id).join('|')
-  const runtimeKey = items.map((item) => `${item.id}:${item.watchedCount}`).join('|')
-  const overlaps = items.filter((item) => item.sources.length > 1).length
+  const visibleKey = useMemo(() => visibleItems.map((item) => item.id).join('|'), [visibleItems])
+  const overlaps = useMemo(() => items.filter((item) => item.sources.length > 1).length, [items])
 
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [query, media, selected])
 
   useEffect(() => {
+    // A previous source selection can still be visible for one render while
+    // its replacement request starts. Never enrich or persist that stale set
+    // under the newly selected sources.
+    if (itemsSelectionKey !== selectedKey) { setEnrichingPosters(false); return }
     const missing = visibleItems.filter((item) => !item.poster || !item.title)
-    if (!missing.length) return
+    if (!missing.length) { setEnrichingPosters(false); return }
     let cancelled = false
     setEnrichingPosters(true)
     enrichConnectedHistoryItems(missing).then((enriched) => {
       if (cancelled) return
       const updates = new Map(enriched.map((item) => [item.id, item]))
       setItems((current) => {
+        if (cancelled) return current
         const next = current.map((item) => { const update = updates.get(item.id); return update ? { ...item, ...update, runtimeMinutes: item.runtimeMinutes || update.runtimeMinutes, genres: item.genres?.length ? item.genres : update.genres } : item })
         void persistConnectedHistorySnapshot(selected, next)
         return next
       })
     }).finally(() => { if (!cancelled) setEnrichingPosters(false) })
-    return () => { cancelled = true }
-  }, [visibleKey])
+    return () => {
+      cancelled = true
+      setEnrichingPosters(false)
+    }
+  // visibleKey is the item snapshot identity; results are merged by item ID,
+  // so poster/runtime object updates should not cancel and restart this work.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleKey, selected, selectedKey, itemsSelectionKey])
 
   useEffect(() => {
+    if (itemsSelectionKey !== selectedKey) return
     if (!items.length || items.every((item) => item.runtimeMinutes != null || !item.tmdbId)) return
     let cancelled = false
     const updates = new Map<string, ConnectedHistoryItem>()
@@ -141,6 +179,7 @@ export default function ConnectedHistory() {
       if (cancelled) return
       const updates = new Map(enriched.map((item) => [item.id, item]))
       setItems((current) => {
+        if (cancelled) return current
         const next = current.map((item) => {
           const update = updates.get(item.id)
           return update ? { ...item, runtimeMinutes: update.runtimeMinutes, genres: update.genres?.length ? update.genres : item.genres } : item
@@ -150,27 +189,56 @@ export default function ConnectedHistory() {
       })
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [runtimeKey])
+  // Source selection identity changes only when a new fetched history set is
+  // ready. Runtime and poster enrichments update display fields without
+  // rebuilding a full-history signature or restarting this bounded work.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, selectedKey, itemsSelectionKey])
 
-  const moviePlays = statsItems.filter((item) => item.mediaType === 'movie').reduce((sum, item) => sum + item.watchedCount, 0)
-  const episodePlays = statsItems.filter((item) => item.mediaType !== 'movie').reduce((sum, item) => sum + item.watchedCount, 0)
-  const mediaCounts = (['movie', 'series', 'anime'] as ConnectedHistoryMediaType[]).map((type) => ({ type, count: statsItems.filter((item) => item.mediaType === type).length }))
-  const maxMediaCount = Math.max(1, ...mediaCounts.map((entry) => entry.count))
-  const monthly = [...statsItems.reduce((map, item) => {
-    const month = item.watchedAt?.slice(0, 7)
-    if (month) map.set(month, (map.get(month) || 0) + 1)
-    return map
-  }, new Map<string, number>())].sort(([left], [right]) => left.localeCompare(right)).slice(-12)
-  const maxMonth = Math.max(1, ...monthly.map(([, count]) => count))
-  const estimatedMinutes = statsItems.reduce((sum, item) => sum + (item.runtimeMinutes || 0), 0)
-  const runtimeEligible = statsItems.filter((item) => item.tmdbId).length
-  const runtimeCovered = statsItems.filter((item) => item.runtimeMinutes != null).length
-  const streak = streaks(statsItems)
-  const genreTotals = [...statsItems.reduce((map, item) => {
-    if (!item.runtimeMinutes) return map
-    ;(item.genres || []).forEach((genre) => map.set(genre, (map.get(genre) || 0) + item.runtimeMinutes!))
-    return map
-  }, new Map<string, number>())].map(([genre, minutes]) => ({ genre, minutes })).sort((left, right) => right.minutes - left.minutes).slice(0, 8)
+  const historyStats = useMemo(() => {
+    const counts = { movie: 0, series: 0, anime: 0 }
+    const months = new Map<string, number>()
+    const genres = new Map<string, number>()
+    let moviePlays = 0
+    let episodePlays = 0
+    let estimatedMinutes = 0
+    let runtimeEligible = 0
+    let runtimeCovered = 0
+    for (const item of statsItems) {
+      counts[item.mediaType] += 1
+      if (item.mediaType === 'movie') moviePlays += item.watchedCount
+      else episodePlays += item.watchedCount
+      const month = item.watchedAt?.slice(0, 7)
+      if (month) months.set(month, (months.get(month) || 0) + 1)
+      estimatedMinutes += item.runtimeMinutes || 0
+      if (item.tmdbId) runtimeEligible += 1
+      if (item.runtimeMinutes != null) runtimeCovered += 1
+      if (item.runtimeMinutes) {
+        for (const genre of item.genres || []) genres.set(genre, (genres.get(genre) || 0) + item.runtimeMinutes)
+      }
+    }
+    const mediaCounts = (['movie', 'series', 'anime'] as ConnectedHistoryMediaType[])
+      .map((type) => ({ type, count: counts[type] }))
+    const monthly = [...months].sort(([left], [right]) => left.localeCompare(right)).slice(-12)
+    const genreTotals = [...genres]
+      .map(([genre, minutes]) => ({ genre, minutes }))
+      .sort((left, right) => right.minutes - left.minutes)
+      .slice(0, 8)
+    return {
+      moviePlays,
+      episodePlays,
+      mediaCounts,
+      maxMediaCount: Math.max(1, ...mediaCounts.map((entry) => entry.count)),
+      monthly,
+      maxMonth: Math.max(1, ...monthly.map(([, count]) => count)),
+      estimatedMinutes,
+      runtimeEligible,
+      runtimeCovered,
+      streak: streaks(statsItems),
+      genreTotals,
+    }
+  }, [statsItems])
+  const { moviePlays, episodePlays, mediaCounts, maxMediaCount, monthly, maxMonth, estimatedMinutes, runtimeEligible, runtimeCovered, streak, genreTotals } = historyStats
 
   const toggleSource = (source: ConnectedHistorySource) => setSelected((current) => current.includes(source) ? current.filter((item) => item !== source) : [...current, source])
   const openItem = (item: ConnectedHistoryItem) => {

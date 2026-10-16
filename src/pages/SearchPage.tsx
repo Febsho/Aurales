@@ -10,6 +10,7 @@ import { getAddonCatalog } from '../services/addons'
 import { searchEngines, type SearchEngineId } from '../services/searchEngines'
 import { cancelRequestGroup } from '../services/network/requestCoordinator'
 import { searchServerCatalogs } from '../services/serverIntegrations'
+import { getProfileSetting, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
 
 const SEARCH_HISTORY_KEY = 'orynt_search_history'
 const MAX_HISTORY = 10
@@ -25,15 +26,24 @@ const STANDALONE_FALLBACK_ENGINES = {
 
 function loadSearchHistory(): string[] {
   try {
-    const raw = localStorage.getItem(SEARCH_HISTORY_KEY)
-    return raw ? JSON.parse(raw) : []
+    const raw = getProfileSetting(SEARCH_HISTORY_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string')
+      : []
   } catch (_) {
     return []
   }
 }
 
 function saveSearchHistory(history: string[]) {
-  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)))
+  try {
+    setProfileSetting(SEARCH_HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)))
+  } catch (_) {
+    // Search history is optional; a full or disabled WebView storage area
+    // must not reject the completed search before its loading state is reset.
+  }
 }
 
 function addToSearchHistory(query: string) {
@@ -54,7 +64,9 @@ function removeFromSearchHistory(query: string) {
 }
 
 function normalizeTitle(value: string): string {
-  return value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim()
+  // Preserve non-Latin titles and queries. ASCII-only filtering turned CJK
+  // names into empty strings, so every provider result failed relevance checks.
+  return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
 function baseTitle(value: string): string {
@@ -96,26 +108,33 @@ function animeFamilyTitle(value: string, query?: string): string {
   return title || baseTitle(value)
 }
 
-function dedupeKey(item: SearchResult): string {
-  const ids = [
-    item.imdbId ? `imdb:${item.imdbId}` : '',
-    item.tmdbId ? `tmdb:${String(item.tmdbId).replace('tmdb-', '')}` : '',
-    item.tvdbId ? `tvdb:${String(item.tvdbId).replace('tvdb-', '')}` : '',
-    item.anilistId ? `anilist:${item.anilistId}` : '',
-    item.malId ? `mal:${item.malId}` : '',
-  ].filter(Boolean)
-  return ids[0] || `${item.type}:${baseTitle(item.title)}`
+function externalMediaIds(candidate: SearchResult): Record<'imdb' | 'tmdb' | 'tvdb' | 'anilist' | 'mal', string | undefined> {
+  return {
+    imdb: (candidate.imdbId || (/^tt\d+$/i.test(candidate.id) ? candidate.id : undefined))?.trim().toLowerCase().replace(/^imdb[-:]/, ''),
+    tmdb: candidate.tmdbId == null
+      ? candidate.id.match(/^tmdb[-:](\d+)$/i)?.[1]
+      : String(candidate.tmdbId).replace(/^tmdb[-:]/i, ''),
+    tvdb: candidate.tvdbId == null
+      ? candidate.id.match(/^tvdb[-:](\d+)$/i)?.[1]
+      : String(candidate.tvdbId).replace(/^tvdb[-:]/i, ''),
+    anilist: candidate.anilistId == null ? undefined : String(candidate.anilistId).replace(/^anilist[-:]/i, ''),
+    mal: candidate.malId == null
+      ? candidate.id.match(/^mal[-:](\d+)$/i)?.[1]
+      : String(candidate.malId).replace(/^mal[-:]/i, ''),
+  }
 }
 
 function relevanceScore(item: SearchResult, query: string): number {
   const title = normalizeTitle(item.title)
   const needle = normalizeTitle(query)
   if (!needle) return 0
+  const compactTitle = title.replace(/\s+/g, '')
+  const compactNeedle = needle.replace(/\s+/g, '')
   let score = 0
-  if (title === needle) score += 1000
-  else if (title.startsWith(`${needle} `)) score += 700
+  if (title === needle || compactTitle === compactNeedle) score += 1000
+  else if (title.startsWith(`${needle} `) || compactTitle.startsWith(compactNeedle)) score += 700
   else if (title.split(' ').includes(needle)) score += 500
-  else if (title.includes(needle)) score += 300
+  else if (title.includes(needle) || compactTitle.includes(compactNeedle)) score += 300
   const words = needle.split(' ').filter((word) => word.length >= 2)
   const titleWords = title.split(' ')
   const matchedWords = words.filter((word) => titleWords.some((titleWord) => titleWord === word || titleWord.startsWith(word)))
@@ -127,33 +146,46 @@ function relevanceScore(item: SearchResult, query: string): number {
 }
 
 function rankResults(items: SearchResult[], query: string): SearchResult[] {
-  const seen = new Set<string>()
   const needle = normalizeTitle(query)
   const queryWords = needle.split(' ').filter((word) => word.length >= 2)
-  return items
+  const ranked = items
     .map((item) => ({ item, score: relevanceScore(item, query) }))
     .filter(({ item, score }) => {
       const title = normalizeTitle(item.title)
+      const compactTitle = title.replace(/\s+/g, '')
+      const compactNeedle = needle.replace(/\s+/g, '')
       const strongTextMatch = title.includes(needle)
-        || queryWords.every((word) => title.split(' ').some((titleWord) => titleWord === word || titleWord.startsWith(word)))
+        || compactTitle.includes(compactNeedle)
+        || queryWords.every((word) => title.split(' ').some((titleWord) => titleWord === word || titleWord.startsWith(word))
+          || compactTitle.includes(word.replace(/\s+/g, '')))
       return score >= 180 && strongTextMatch
     })
     .sort((a, b) => b.score - a.score || (b.item.rating || 0) - (a.item.rating || 0))
     .map(({ item }) => item)
-    .filter((item) => {
-      const keys: string[] = []
-      const base = baseTitle(item.title)
-      keys.push(`${item.type}:${base}`)
-      keys.push(dedupeKey(item))
-      if (item.year) keys.push(`${item.type}:${base}:${item.year}`)
-      if (item.id.startsWith('tvdb-') || item.id.startsWith('tmdb-')) keys.push(item.id)
-      if (item.imdbId) keys.push(`imdb:${item.imdbId}`)
-      if (item.tmdbId) keys.push(`tmdb:${item.tmdbId}`)
-      if (item.tvdbId) keys.push(`tvdb:${String(item.tvdbId).replace('tvdb-', '')}`)
-      if (keys.some((k) => seen.has(k))) return false
-      keys.forEach((k) => seen.add(k))
-      return true
+  const unique: SearchResult[] = []
+  for (const item of ranked) {
+    const ids = externalMediaIds(item)
+    const duplicate = unique.some((existing) => {
+      if (existing.type !== item.type) return false
+      const existingIds = externalMediaIds(existing)
+      const sharedIds = (Object.keys(ids) as Array<keyof typeof ids>)
+        .filter((key) => ids[key] && existingIds[key])
+      // Do not let a title or a different provider ID override a known ID
+      // conflict. Results with the same external ID still merge across sources.
+      if (sharedIds.some((key) => ids[key] !== existingIds[key])) return false
+      if (sharedIds.length > 0) return true
+
+      if (item.provider.trim().toLowerCase() === existing.provider.trim().toLowerCase()
+        && item.id.trim().toLowerCase() === existing.id.trim().toLowerCase()) return true
+      const sameTitle = baseTitle(item.title) === baseTitle(existing.title)
+      const itemYear = item.year == null ? undefined : Number(item.year)
+      const existingYear = existing.year == null ? undefined : Number(existing.year)
+      const yearConflict = Number.isFinite(itemYear) && Number.isFinite(existingYear) && itemYear !== existingYear
+      return sameTitle && !yearConflict
     })
+    if (!duplicate) unique.push(item)
+  }
+  return unique
 }
 
 function isAnime(item: SearchResult): boolean {
@@ -166,19 +198,28 @@ function isAnime(item: SearchResult): boolean {
 }
 
 function dedupeAnimeResults(items: SearchResult[], query: string): SearchResult[] {
-  const seen = new Set<string>()
   const output: SearchResult[] = []
   for (const item of items) {
     const family = animeFamilyTitle(item.title, query)
-    const keys = [
-      item.type === 'series' ? `${item.type}:anime-family:${family}` : `${item.type}:anime-title:${baseTitle(item.title)}`,
-      item.tvdbId ? `${item.type}:anime-tvdb:${String(item.tvdbId).replace('tvdb-', '')}` : '',
-      item.tmdbId ? `${item.type}:anime-tmdb:${String(item.tmdbId).replace('tmdb-', '')}` : '',
-      item.imdbId ? `${item.type}:anime-imdb:${item.imdbId}` : '',
-      item.poster ? `${item.type}:anime-poster:${normalizePoster(item.poster)}` : '',
-    ].filter(Boolean)
-    if (keys.some((key) => seen.has(key))) continue
-    keys.forEach((key) => seen.add(key))
+    const ids = externalMediaIds(item)
+    const hasIds = Object.values(ids).some(Boolean)
+    const duplicate = output.some((existing) => {
+      if (existing.type !== item.type) return false
+      const existingIds = externalMediaIds(existing)
+      const sharedIds = (Object.keys(ids) as Array<keyof typeof ids>)
+        .filter((key) => ids[key] && existingIds[key])
+      // A disagreement in any shared ID namespace means these are distinct
+      // works, even if a provider reused the title or poster.
+      if (sharedIds.some((key) => ids[key] !== existingIds[key])) return false
+      if (sharedIds.length > 0) return true
+
+      const yearsConflict = existing.year != null && item.year != null && existing.year !== item.year
+      if (!yearsConflict && family && family === animeFamilyTitle(existing.title, query)) return true
+      const existingHasIds = Object.values(existingIds).some(Boolean)
+      return !hasIds && !existingHasIds && Boolean(item.poster && existing.poster
+        && normalizePoster(item.poster) === normalizePoster(existing.poster))
+    })
+    if (duplicate) continue
     output.push(item)
   }
   return output
@@ -208,6 +249,12 @@ export default function SearchPage() {
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const requestIdRef = useRef(0)
   const activeRequestGroupRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const refreshHistory = () => setSearchHistory(loadSearchHistory())
+    window.addEventListener(PROFILE_CHANGED_EVENT, refreshHistory)
+    return () => window.removeEventListener(PROFILE_CHANGED_EVENT, refreshHistory)
+  }, [])
 
   const movies = useMemo(() => results.filter((item) => item.type === 'movie' && !isAnime(item)).slice(0, 24), [results])
   const series = useMemo(() => results.filter((item) => item.type === 'series' && !isAnime(item)).slice(0, 24), [results])
@@ -340,6 +387,10 @@ export default function SearchPage() {
     const timer = setTimeout(() => executeSearch(query), 300)
     return () => {
       clearTimeout(timer)
+      // Invalidate post-search enrichment too; it is not part of the
+      // coordinator's cancellable network group and may otherwise continue
+      // after this page unmounts or the query changes.
+      requestIdRef.current += 1
       if (activeRequestGroupRef.current) cancelRequestGroup(activeRequestGroupRef.current)
     }
   }, [query, executeSearch])

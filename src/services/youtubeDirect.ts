@@ -123,13 +123,25 @@ async function fetchAndroidMuxed(videoId: string): Promise<DirectStream | null> 
 }
 
 const streamCache = new Map<string, Promise<DirectStream | null>>()
+const MAX_DIRECT_STREAMS = 64
+
+function rememberDirectStream(videoId: string, promise: Promise<DirectStream | null>): void {
+  streamCache.delete(videoId)
+  streamCache.set(videoId, promise)
+  while (streamCache.size > MAX_DIRECT_STREAMS) {
+    const oldest = streamCache.keys().next().value
+    if (oldest === undefined) break
+    streamCache.delete(oldest)
+  }
+}
 
 export function getDirectYoutubeStream(videoId: string): Promise<DirectStream | null> {
   const cached = streamCache.get(videoId)
   if (cached) {
+    rememberDirectStream(videoId, cached)
     return cached.then((stream) => {
       if (stream && stream.expiresAt > Date.now() + 60_000) return stream
-      streamCache.delete(videoId)
+      if (streamCache.get(videoId) === cached) streamCache.delete(videoId)
       return getDirectYoutubeStream(videoId)
     })
   }
@@ -143,9 +155,11 @@ export function getDirectYoutubeStream(videoId: string): Promise<DirectStream | 
     return android
   })()
 
-  streamCache.set(videoId, promise)
+  rememberDirectStream(videoId, promise)
   promise.then((stream) => {
-    if (!stream) streamCache.delete(videoId)
-  }).catch(() => streamCache.delete(videoId))
+    if (!stream && streamCache.get(videoId) === promise) streamCache.delete(videoId)
+  }).catch(() => {
+    if (streamCache.get(videoId) === promise) streamCache.delete(videoId)
+  })
   return promise
 }

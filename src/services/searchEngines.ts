@@ -16,6 +16,15 @@ export interface SearchEngine {
 
 const CINEMETA_URL = 'https://v3-cinemeta.strem.io'
 
+function credentialFingerprint(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
 async function cinemetaSearch(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
   if (!type) {
     const [movies, series] = await Promise.all([cinemetaSearch(query, 'movie', context), cinemetaSearch(query, 'series', context)])
@@ -57,7 +66,10 @@ async function traktSearch(query: string, type?: 'movie' | 'series', context?: {
   }, {
     label: 'Trakt',
     kind: 'metadata',
-    dedupeKey: `search:${traktType}:${query.trim().toLowerCase()}`,
+    // Trakt's client ID is sent in a header, so coordinatedJson cannot include
+    // it in its URL-based request identity. Separate concurrent requests when
+    // the configured ID changes without retaining the credential itself.
+    dedupeKey: `search:${credentialFingerprint(clientId)}:${traktType}:${query.trim().toLowerCase()}`,
     priority: 'interactive',
     cancelGroup: context?.cancelGroup,
     timeoutMs: 10_000,
@@ -85,10 +97,12 @@ async function traktSearch(query: string, type?: 'movie' | 'series', context?: {
 }
 
 async function mdblistSearch(query: string, context?: { cancelGroup?: string }): Promise<SearchResult[]> {
-  const data = await coordinatedJson<{ search?: Record<string, unknown>[] }>(`https://mdblist.com/api/?apikey=${localStorage.getItem('mdblist_api_key') || ''}&s=${encodeURIComponent(query)}`, {}, {
+  const apiKey = localStorage.getItem('mdblist_api_key') || ''
+  const params = new URLSearchParams({ apikey: apiKey, s: query })
+  const data = await coordinatedJson<{ search?: Record<string, unknown>[] }>(`https://mdblist.com/api/?${params}`, {}, {
     label: 'MDBList',
     kind: 'metadata',
-    dedupeKey: `search:${query.trim().toLowerCase()}`,
+    dedupeKey: `search:${credentialFingerprint(apiKey)}:${query.trim().toLowerCase()}`,
     priority: 'interactive',
     cancelGroup: context?.cancelGroup,
     timeoutMs: 10_000,

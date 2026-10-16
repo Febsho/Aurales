@@ -39,6 +39,7 @@ interface OriginState {
   failures: number
   consecutiveFailures: number
   cooldownUntil: number
+  rateLimitedUntil: number
   latencyTotal: number
 }
 
@@ -63,6 +64,19 @@ const PRIORITY_SCORE: Record<RequestPriority, number> = {
 
 const FAILURE_COOLDOWN_MS = 2 * 60 * 1000
 const MAX_RETRY_WAIT_MS = 10_000
+const MAX_RATE_LIMIT_MS = 24 * 60 * 60 * 1000
+const MAX_TRACKED_ORIGINS = 128
+// Active fan-out is bounded separately, but stale searches and large addon
+// libraries can still enqueue thousands of unique requests. Bound retained
+// promises and closures as well as active network work.
+const MAX_QUEUED_REQUESTS = 256
+// Per-origin limits alone do not bound work when many addons use distinct
+// hosts. Keep the app-wide network fan-out finite while metadata retains its
+// stricter four-request pool.
+const MAX_ACTIVE_REQUESTS = 8
+// Browser timers clamp delays above the signed 32-bit range (sometimes to 1ms).
+// Re-check long cooldowns in bounded intervals instead of creating a hot loop.
+const MAX_TIMER_DELAY_MS = 2_147_483_647
 const UNGROUPED_CONSUMER = '__request_coordinator_ungrouped__'
 
 function abortError(message = 'Request cancelled'): DOMException {
@@ -78,16 +92,37 @@ function normalizedOrigin(value: string): string {
 }
 
 function isAbort(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
+  return Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
 }
 
 function retryAfterMs(response: Response): number {
   const raw = response.headers.get('Retry-After')
   if (!raw) return 0
   const seconds = Number(raw)
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  if (Number.isFinite(seconds)) return Math.min(MAX_RATE_LIMIT_MS, Math.max(0, seconds * 1000))
   const timestamp = Date.parse(raw)
-  return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : 0
+  return Number.isFinite(timestamp)
+    ? Math.min(MAX_RATE_LIMIT_MS, Math.max(0, timestamp - Date.now()))
+    : 0
+}
+
+function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason || abortError())
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason || abortError())
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 class HttpStatusError extends Error {
@@ -103,6 +138,7 @@ class HttpStatusError extends Error {
 
 class RequestCoordinator {
   private sequence = 0
+  private generation = 0
   private active = 0
   private metadataActive = 0
   private playbackActive = false
@@ -137,14 +173,36 @@ class RequestCoordinator {
     const normalized = { ...options, origin: normalizedOrigin(options.origin) }
     const requestKey = `${normalized.origin}|${normalized.dedupeKey}`
     const existing = this.requests.get(requestKey) as QueueEntry<T> | undefined
-    if (existing) {
+    if (existing && !existing.controller.signal.aborted) {
       this.diagnostics.deduplicated += 1
       existing.groups.add(normalized.cancelGroup || UNGROUPED_CONSUMER)
       if (PRIORITY_SCORE[normalized.priority] > PRIORITY_SCORE[existing.options.priority]) {
         existing.options.priority = normalized.priority
         this.sortQueue()
+        this.pump()
       }
       return this.consumerPromise(existing.promise, normalized.cancelGroup)
+    }
+    // The last consumer may have cancelled a started request moments ago.
+    // Do not attach a new caller to that already-aborted promise.
+    if (existing && this.requests.get(requestKey) === existing) this.requests.delete(requestKey)
+
+    if (this.queue.length >= MAX_QUEUED_REQUESTS) {
+      const lowestPriority = this.queue[this.queue.length - 1]
+      if (!lowestPriority || PRIORITY_SCORE[normalized.priority] <= PRIORITY_SCORE[lowestPriority.options.priority]) {
+        this.diagnostics.cancelled += 1
+        return Promise.reject(abortError('Network request queue is full'))
+      }
+      // Queue order is priority-first and FIFO within each priority. Remove
+      // the oldest request at the lowest priority so playback and current
+      // interactive work can displace stale background speculation.
+      const lowestScore = PRIORITY_SCORE[lowestPriority.options.priority]
+      const lowestPriorityIndex = this.queue.findIndex((entry) => PRIORITY_SCORE[entry.options.priority] === lowestScore)
+      const [displaced] = this.queue.splice(lowestPriorityIndex, 1)
+      if (!displaced) return Promise.reject(abortError('Network request queue is full'))
+      this.deleteEntry(displaced)
+      this.diagnostics.cancelled += 1
+      displaced.reject(abortError('Network request displaced by higher-priority work'))
     }
 
     let resolve!: (value: T) => void
@@ -204,8 +262,12 @@ class RequestCoordinator {
     this.diagnostics.cacheMisses += 1
   }
 
-  recordRateLimited(): void {
+  recordRateLimited(origin: string, retryAfter: number): void {
     this.diagnostics.rateLimited += 1
+    if (retryAfter <= 0) return
+    const state = this.originStates.get(normalizedOrigin(origin))
+    if (state) state.rateLimitedUntil = Math.max(state.rateLimitedUntil, Date.now() + retryAfter)
+    this.pump()
   }
 
   snapshot(): RequestDiagnostics {
@@ -219,14 +281,22 @@ class RequestCoordinator {
         calls: state.calls,
         failures: state.failures,
         consecutiveFailures: state.consecutiveFailures,
-        cooldownUntil: state.cooldownUntil || undefined,
+        cooldownUntil: Math.max(state.cooldownUntil, state.rateLimitedUntil) || undefined,
         averageLatencyMs: state.calls ? Math.round(state.latencyTotal / state.calls) : 0,
       })),
     }
   }
 
   resetForTests(): void {
-    for (const entry of this.requests.values()) entry.controller.abort()
+    this.generation += 1
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer)
+      this.wakeTimer = null
+    }
+    for (const entry of this.requests.values()) {
+      entry.controller.abort()
+      if (!entry.started) entry.reject(abortError('Request coordinator reset'))
+    }
     this.queue = []
     this.requests.clear()
     this.groupCancellations.clear()
@@ -290,22 +360,33 @@ class RequestCoordinator {
       clearTimeout(this.wakeTimer)
       this.wakeTimer = null
     }
-    while (true) {
+    while (this.active < MAX_ACTIVE_REQUESTS) {
       const now = Date.now()
       const index = this.queue.findIndex((entry) => {
         if (entry.options.priority === 'background' && this.backgroundPaused()) return false
         if (entry.options.kind === 'metadata' && this.metadataActive >= 4) return false
         const state = this.originStates.get(entry.options.origin)
+        if (state && state.rateLimitedUntil > now) return false
         if (state && state.cooldownUntil > now && entry.options.priority !== 'playback') return false
         return (this.originActive.get(entry.options.origin) || 0) < this.originLimit(entry)
       })
       if (index === -1) {
         const nextCooldown = this.queue
-          .map((entry) => this.originStates.get(entry.options.origin)?.cooldownUntil || 0)
+          .map((entry) => {
+            const state = this.originStates.get(entry.options.origin)
+            if (!state) return 0
+            return Math.max(
+              state.rateLimitedUntil,
+              entry.options.priority === 'playback' ? 0 : state.cooldownUntil,
+            )
+          })
           .filter((value) => value > now)
           .sort((a, b) => a - b)[0]
         if (nextCooldown) {
-          this.wakeTimer = setTimeout(() => this.pump(), Math.max(1, nextCooldown - now))
+          this.wakeTimer = setTimeout(
+            () => this.pump(),
+            Math.min(MAX_TIMER_DELAY_MS, Math.max(1, nextCooldown - now)),
+          )
         }
         return
       }
@@ -315,6 +396,7 @@ class RequestCoordinator {
   }
 
   private start(entry: QueueEntry<unknown>): void {
+    const generation = this.generation
     entry.started = true
     this.active += 1
     if (entry.options.kind === 'metadata') this.metadataActive += 1
@@ -325,30 +407,50 @@ class RequestCoordinator {
       failures: 0,
       consecutiveFailures: 0,
       cooldownUntil: 0,
+      rateLimitedUntil: 0,
       latencyTotal: 0,
     }
     state.label = entry.options.label
     state.calls += 1
+    // Map insertion order is used as an LRU order when old, idle origins are
+    // pruned. Active origins keep their rate-limit and cooldown state.
+    this.originStates.delete(entry.options.origin)
     this.originStates.set(entry.options.origin, state)
     this.diagnostics.networkCalls += 1
     const startedAt = performance.now()
+    let timedOut = false
     const timeout = setTimeout(
-      () => entry.controller.abort(abortError('Request timed out')),
+      () => {
+        timedOut = true
+        entry.controller.abort(abortError('Request timed out'))
+      },
       entry.options.timeoutMs ?? 15_000,
     )
+    let abortListener: (() => void) | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      abortListener = () => reject(entry.controller.signal.reason || abortError())
+      if (entry.controller.signal.aborted) abortListener()
+      else entry.controller.signal.addEventListener('abort', abortListener, { once: true })
+    })
 
-    entry.execute(entry.controller.signal)
+    // AbortSignal is advisory: native bridges and custom request functions may
+    // ignore it. Race the operation so cancellation/deadlines still release
+    // coordinator slots and reject consumers even when the underlying call
+    // cannot be interrupted.
+    Promise.race([Promise.resolve().then(() => entry.execute(entry.controller.signal)), aborted])
       .then((value) => {
         state.consecutiveFailures = 0
         state.cooldownUntil = 0
         entry.resolve(value)
       })
       .catch((error) => {
-        if (!isAbort(error)) {
+        // Timeouts abort fetch too, but unlike user cancellation they are
+        // provider failures and must contribute to the origin cooldown.
+        if (!isAbort(error) || timedOut) {
           state.failures += 1
           state.consecutiveFailures += 1
           if (error instanceof HttpStatusError && error.status === 429 && error.retryAfter > 0) {
-            state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + error.retryAfter)
+            state.rateLimitedUntil = Math.max(state.rateLimitedUntil, Date.now() + error.retryAfter)
           }
           if (state.consecutiveFailures >= 3) state.cooldownUntil = Date.now() + FAILURE_COOLDOWN_MS
         }
@@ -356,6 +458,9 @@ class RequestCoordinator {
       })
       .finally(() => {
         clearTimeout(timeout)
+        if (abortListener) entry.controller.signal.removeEventListener('abort', abortListener)
+        this.deleteEntry(entry)
+        if (generation !== this.generation) return
         const latency = Math.max(0, Math.round(performance.now() - startedAt))
         state.latencyTotal += latency
         this.diagnostics.recentLatencyMs.push(latency)
@@ -363,13 +468,25 @@ class RequestCoordinator {
         this.active -= 1
         if (entry.options.kind === 'metadata') this.metadataActive -= 1
         this.originActive.set(entry.options.origin, Math.max(0, (this.originActive.get(entry.options.origin) || 1) - 1))
-        this.deleteEntry(entry)
+        this.pruneOriginStates()
         this.pump()
       })
   }
 
+  private pruneOriginStates(): void {
+    if (this.originStates.size <= MAX_TRACKED_ORIGINS) return
+    const queuedOrigins = new Set(this.queue.map((entry) => entry.options.origin))
+    for (const origin of this.originStates.keys()) {
+      if (this.originStates.size <= MAX_TRACKED_ORIGINS) break
+      if ((this.originActive.get(origin) || 0) > 0) continue
+      if (queuedOrigins.has(origin)) continue
+      this.originStates.delete(origin)
+    }
+  }
+
   private deleteEntry(entry: QueueEntry<unknown>): void {
-    this.requests.delete(`${entry.options.origin}|${entry.options.dedupeKey}`)
+    const key = `${entry.options.origin}|${entry.options.dedupeKey}`
+    if (this.requests.get(key) === entry) this.requests.delete(key)
   }
 }
 
@@ -405,22 +522,17 @@ export async function coordinatedJson<T>(
         const response = await fetch(url, { ...init, signal })
         if (response.ok) return await response.json() as T
         const waitMs = response.status === 429 ? retryAfterMs(response) : 0
-        if (response.status === 429) requestCoordinator.recordRateLimited()
+        await response.body?.cancel().catch(() => undefined)
+        if (response.status === 429) requestCoordinator.recordRateLimited(origin, waitMs)
         const retryable = response.status === 429 || response.status >= 500
         if (!retryable || attempt + 1 >= maxAttempts) throw new HttpStatusError(response.status, waitMs)
         const delay = waitMs || 250 + Math.round(Math.random() * 250)
         if (delay > MAX_RETRY_WAIT_MS) throw new HttpStatusError(response.status, delay)
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(resolve, delay)
-          signal.addEventListener('abort', () => {
-            clearTimeout(timer)
-            reject(signal.reason || abortError())
-          }, { once: true })
-        })
+        await waitForRetry(delay, signal)
       } catch (error) {
         lastError = error
         if (isAbort(error) || error instanceof HttpStatusError || attempt + 1 >= maxAttempts) throw error
-        await new Promise((resolve) => setTimeout(resolve, 250 + Math.round(Math.random() * 250)))
+        await waitForRetry(250 + Math.round(Math.random() * 250), signal)
       }
     }
     throw lastError

@@ -18,12 +18,17 @@ const MAX_ITEMS_PER_RANKING = 40
 // when WebView's per-origin quota is full.
 const resilientDiscoveryStorage = {
   getItem: (name: string) => {
-    const value = localStorage.getItem(name)
-    if (value && value.length > MAX_DISCOVERY_STORAGE_BYTES) {
-      localStorage.removeItem(name)
+    try {
+      const value = localStorage.getItem(name)
+      if (value && value.length > MAX_DISCOVERY_STORAGE_BYTES) {
+        try { localStorage.removeItem(name) } catch { /* startup data is optional */ }
+        return null
+      }
+      return value
+    } catch (error) {
+      console.warn('[Discover] Startup snapshot could not be read', error)
       return null
     }
-    return value
   },
   setItem: (name: string, value: string) => {
     try {
@@ -31,7 +36,7 @@ const resilientDiscoveryStorage = {
     } catch (error) {
       // Remove the oversized legacy snapshot first. Persistence is optional;
       // the live Zustand state and SQLite-backed catalogs keep working.
-      localStorage.removeItem(name)
+      try { localStorage.removeItem(name) } catch { /* storage may be disabled */ }
       try {
         localStorage.setItem(name, value)
       } catch {
@@ -39,7 +44,11 @@ const resilientDiscoveryStorage = {
       }
     }
   },
-  removeItem: (name: string) => localStorage.removeItem(name),
+  removeItem: (name: string) => {
+    try { localStorage.removeItem(name) } catch (error) {
+      console.warn('[Discover] Startup snapshot could not be removed', error)
+    }
+  },
 }
 
 function compactRankedSnapshots(snapshots: Record<string, RankedRecommendation[]>) {
@@ -96,10 +105,18 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   setRankedSnapshot: (key, ranked, metadata) =>
     set((state) => {
       const previous = state.rankedSnapshots[key]
-      if (previous && catalogContentFingerprint(previous.map((entry) => entry.item)) === catalogContentFingerprint(ranked.map((entry) => entry.item))) return state
+      const sameRanking = Boolean(previous
+        && catalogContentFingerprint(previous.map((entry) => entry.item)) === catalogContentFingerprint(ranked.map((entry) => entry.item)))
+      const previousMeta = state.dailySnapshotMeta[key]
+      const sameMetadata = !metadata || Boolean(previousMeta
+        && previousMeta.dateKey === metadata.dateKey
+        && previousMeta.generatedAt === metadata.generatedAt
+        && previousMeta.profileFingerprint === metadata.profileFingerprint
+        && previousMeta.algorithmVersion === metadata.algorithmVersion)
+      if (sameRanking && sameMetadata) return state
       return {
-        rankedSnapshots: { ...state.rankedSnapshots, [key]: ranked },
-        dailySnapshotMeta: metadata ? { ...state.dailySnapshotMeta, [key]: metadata } : state.dailySnapshotMeta,
+        rankedSnapshots: sameRanking ? state.rankedSnapshots : { ...state.rankedSnapshots, [key]: ranked },
+        dailySnapshotMeta: metadata && !sameMetadata ? { ...state.dailySnapshotMeta, [key]: metadata } : state.dailySnapshotMeta,
       }
     }),
   clearCache: () => set({ cachedRows: {}, rankedSnapshots: {}, dailySnapshotMeta: {} }),

@@ -17,15 +17,43 @@ export const RECOMMENDATION_WEIGHTS = {
 
 const GENRES: Record<number, string> = { 28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',18:'Drama',10751:'Family',14:'Fantasy',36:'History',27:'Horror',10402:'Music',9648:'Mystery',10749:'Romance',878:'Sci-Fi',10770:'TV Movie',53:'Thriller',10752:'War',37:'Western',10759:'Action & Adventure',10762:'Kids',10763:'News',10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics' }
 
+const KEYWORD_STOPWORDS = new Set((
+  'about above after again against all also am an and any are as at back be because been before being below between both but by can could did do does doing down during each few for from further had has have having he her here hers herself him himself his how i if in into is it its itself just more most my myself no nor not of off on once only or other our ours ourselves out over own same she should so some such than that the their theirs them themselves then there these they this those through to too under until up very was we were what when where which while who whom why will with would you your yours yourself yourselves ' +
+  'aber als am an auch auf aus bei bin bis bist das dass dem den der des die doch durch ein eine einem einen einer eines er es für gegen gewesen hat hatte haben hier ich im in ist jede jeder jedes mit muss nach nicht noch nun oder sein seine sich sie sind so über um und uns unser unter vom von vor war waren was weg weil weiter welche wenn werde werden wie wieder wir wo zu zum zur'
+).split(/\s+/))
+
+function extractKeywords(text: string | undefined): Set<string> {
+  if (!text) return new Set()
+  const normalized = text.slice(0, 1400).normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase()
+  const tokens = normalized.match(/[\p{L}\p{N}]{4,}/gu) || []
+  return new Set(tokens.filter((token) => !KEYWORD_STOPWORDS.has(token)))
+}
+
 export function mediaKey(item: Pick<SearchResult, 'id' | 'type' | 'tmdbId' | 'imdbId'>): string {
-  if (item.tmdbId != null) return `${item.type}:tmdb:${item.tmdbId}`
-  if (item.imdbId) return `${item.type}:imdb:${item.imdbId}`
+  const tmdbId = normalizedTmdbId(item.tmdbId)
+  if (tmdbId) return `${item.type}:tmdb:${tmdbId}`
+  const imdbId = normalizedImdbId(item.imdbId)
+  if (imdbId) return `${item.type}:imdb:${imdbId}`
   return `${item.type}:local:${item.id}`
+}
+
+function normalizedTmdbId(value: string | number | null | undefined): string {
+  return value == null ? '' : String(value).trim().replace(/^tmdb[-:]/i, '')
+}
+
+function normalizedImdbId(value: string | undefined): string {
+  return value?.trim().replace(/^imdb[-:]/i, '').toLowerCase() || ''
+}
+
+function feedbackMediaKey(feedback: RecommendationFeedback): string {
+  // Recompute from the stored item so feedback saved before ID normalization
+  // continues to apply after an app update.
+  return mediaKey(feedback.item)
 }
 
 export function buildTasteProfile(activity: DiscoveryActivity, now = Date.now()): TasteProfile {
   const genreWeights: Record<number, number> = {}
-  const decadeWeights: Record<string, number> = {}, languageWeights:Record<string,number>={}, countryWeights:Record<string,number>={}, personWeights:Record<string,number>={}
+  const decadeWeights: Record<string, number> = {}, languageWeights:Record<string,number>={}, countryWeights:Record<string,number>={}, personWeights:Record<string,number>={}, keywordWeights:Record<string,number>={}
   let movieWeight = 0, seriesWeight = 0, animeWeight = 0
   let runtimeWeight = 0, runtimeTotal = 0
   const metadata = new Map<string, NonNullable<DiscoveryActivity['tasteMetadata']>[number]>()
@@ -38,6 +66,9 @@ export function buildTasteProfile(activity: DiscoveryActivity, now = Date.now())
   const metadataFor = (item: SearchResult) => metadata.get(mediaKey(item)) || metadata.get(item.id) || (item.tmdbId != null ? metadata.get(String(item.tmdbId)) : undefined) || (item.imdbId ? metadata.get(item.imdbId) : undefined)
   const add = (item: SearchResult, weight: number) => {
     const detail = metadataFor(item)
+    const keywords = extractKeywords(`${item.title} ${item.overview || ''}`)
+    const keywordWeight = keywords.size ? weight / Math.sqrt(keywords.size) : 0
+    keywords.forEach((keyword) => { keywordWeights[keyword] = (keywordWeights[keyword] || 0) + keywordWeight })
     item.genreIds?.forEach((id) => { genreWeights[id] = (genreWeights[id] || 0) + weight })
     if (item.year) { const decade = `${Math.floor(item.year / 10) * 10}s`; decadeWeights[decade] = (decadeWeights[decade] || 0) + weight }
     if(item.originalLanguage)languageWeights[item.originalLanguage]=(languageWeights[item.originalLanguage]||0)+weight
@@ -65,9 +96,32 @@ export function buildTasteProfile(activity: DiscoveryActivity, now = Date.now())
   activity.bingeItems?.forEach((item)=>add(item,4))
   // Partial playback is an active session until the caller has evidence that
   // it was abandoned. Completion and abandonment are title-level signals.
-  if (!activity.completedItems) activity.progress.filter((progress) => progress.completed).forEach((progress) => {
-    const item = activity.recent.find((entry) => entry.id === progress.mediaId || (progress.tmdbId != null && String(entry.tmdbId) === String(progress.tmdbId)) || (progress.imdbId && entry.imdbId === progress.imdbId))
-    if (item) add(item, RECOMMENDATION_WEIGHTS.completed)
+  const completedSignalKeys = new Set((activity.completedItems || []).map(mediaKey))
+  const recentById = new Map<string, { item: SearchResult; index: number }>()
+  const recentByTmdbId = new Map<string, { item: SearchResult; index: number }>()
+  const recentByImdbId = new Map<string, { item: SearchResult; index: number }>()
+  activity.recent.forEach((item, index) => {
+    // Keep the first occurrence, matching Array.find()'s existing behavior.
+    if (!recentById.has(item.id)) recentById.set(item.id, { item, index })
+    const tmdbId = normalizedTmdbId(item.tmdbId)
+    const imdbId = normalizedImdbId(item.imdbId)
+    if (tmdbId && !recentByTmdbId.has(tmdbId)) recentByTmdbId.set(tmdbId, { item, index })
+    if (imdbId && !recentByImdbId.has(imdbId)) recentByImdbId.set(imdbId, { item, index })
+  })
+  activity.progress.filter((progress) => progress.completed).forEach((progress) => {
+    const tmdbId = normalizedTmdbId(progress.tmdbId)
+    const imdbId = normalizedImdbId(progress.imdbId)
+    const matches = [
+      recentById.get(progress.mediaId),
+      tmdbId ? recentByTmdbId.get(tmdbId) : undefined,
+      imdbId ? recentByImdbId.get(imdbId) : undefined,
+    ].filter((match): match is { item: SearchResult; index: number } => match != null)
+    const item = matches.reduce((first, match) => match.index < first.index ? match : first, matches[0]!)?.item
+    if (!item) return
+    const key = mediaKey(item)
+    if (completedSignalKeys.has(key)) return
+    completedSignalKeys.add(key)
+    add(item, RECOMMENDATION_WEIGHTS.completed)
   })
   const activityCount = activity.recent.length + activity.progress.length + (activity.completedItems?.length || 0) + (activity.abandonedItems?.length || 0)
   const signals:TasteSignal[] = Object.entries(genreWeights).sort((a,b) => b[1]-a[1]).slice(0, 6).map(([id, weight]) => ({ kind: 'genre' as const, value: GENRES[Number(id)] || `Genre ${id}`, weight, evidenceCount: Math.max(1, Math.round(Math.abs(weight) / 2)) }))
@@ -78,12 +132,18 @@ export function buildTasteProfile(activity: DiscoveryActivity, now = Date.now())
   Object.entries(personWeights).sort((a,b)=>b[1]-a[1]).slice(0,3).forEach(([value, weight]) => signals.push({kind:'person',value,weight,evidenceCount:Math.max(1,Math.round(Math.abs(weight)/2))}))
   const preferredRuntimeMinutes = runtimeWeight ? Math.round(runtimeTotal / runtimeWeight) : undefined
   if (preferredRuntimeMinutes) signals.push({kind:'runtime',value:`Around ${preferredRuntimeMinutes} min`,weight:runtimeWeight,evidenceCount:Math.max(1,Math.round(runtimeWeight/2))})
-  return { signals, genreWeights, decadeWeights, languageWeights, countryWeights, personWeights, preferredRuntimeMinutes, movieWeight, seriesWeight, animeWeight, activityCount, confidence: activityCount < 3 ? 'low' : activityCount < 12 ? 'medium' : 'high', generatedAt: now }
+  return { signals, genreWeights, decadeWeights, languageWeights, countryWeights, personWeights, keywordWeights, preferredRuntimeMinutes, movieWeight, seriesWeight, animeWeight, activityCount, confidence: activityCount < 3 ? 'low' : activityCount < 12 ? 'medium' : 'high', generatedAt: now }
 }
 
 function watchedKeys(activity: DiscoveryActivity): Set<string> {
   const keys = new Set<string>()
-  activity.progress.filter((p) => p.completed).forEach((p) => { keys.add(String(p.mediaId)); if (p.tmdbId) keys.add(String(p.tmdbId)); if (p.imdbId) keys.add(p.imdbId) })
+  activity.progress.filter((p) => p.completed).forEach((p) => {
+    keys.add(String(p.mediaId).trim())
+    const tmdbId = normalizedTmdbId(p.tmdbId)
+    const imdbId = normalizedImdbId(p.imdbId)
+    if (tmdbId) keys.add(tmdbId)
+    if (imdbId) keys.add(imdbId)
+  })
   return keys
 }
 
@@ -107,9 +167,18 @@ export interface RankingWeightOverrides {
 
 export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}, weights: RankingWeightOverrides = {}): RankedRecommendation[] {
   const completed = watchedKeys(activity)
-  const rewatchKeys=new Set((activity.rewatches||[]).flatMap((item)=>[item.id,String(item.tmdbId||''),item.imdbId||'']).filter(Boolean))
+  const rewatchKeys=new Set((activity.rewatches||[]).flatMap((item)=>[item.id,normalizedTmdbId(item.tmdbId),normalizedImdbId(item.imdbId)]).filter(Boolean))
   const feedbackMap = new Map<string, RecommendationFeedback>()
-  feedback.forEach((entry) => { if (entry.kind !== 'hide-genre' && !feedbackMap.has(entry.mediaKey)) feedbackMap.set(entry.mediaKey, entry) })
+  feedback.forEach((entry) => { const key = feedbackMediaKey(entry); if (entry.kind !== 'hide-genre' && !feedbackMap.has(key)) feedbackMap.set(key, entry) })
+  const relatedFeedbackByGenre = new Map<number, Array<{ index: number; kind: RecommendationFeedback['kind']; mediaKey: string }>>()
+  feedback.forEach((entry, index) => {
+    if (entry.kind !== 'more-like-this' && entry.kind !== 'less-like-this' && entry.kind !== 'not-interested') return
+    for (const genreId of new Set(entry.item.genreIds || [])) {
+      const entries = relatedFeedbackByGenre.get(genreId) || []
+      entries.push({ index, kind: entry.kind, mediaKey: feedbackMediaKey(entry) })
+      relatedFeedbackByGenre.set(genreId, entries)
+    }
+  })
   const hiddenGenres = new Set(feedback.filter((entry) => entry.kind === 'hide-genre').flatMap((entry) => entry.genreId == null ? entry.item.genreIds || [] : [entry.genreId]))
   // User weight nudges scale a dimension: -1 → suppress (×0), 0 → preset (×1), +1 → ×2
   const wGenre = 1 + (weights.genre || 0)
@@ -126,14 +195,19 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const key = mediaKey(item)
     const itemFeedback = feedbackMap.get(key)
     const genreAffinity = (item.genreIds || []).reduce((sum, id) => sum + (profile.genreWeights[id] || 0), 0)
+    const itemKeywords = extractKeywords(`${item.title} ${item.overview || ''}`)
+    const keywordAffinity = [...itemKeywords].reduce((sum, keyword) => sum + (profile.keywordWeights[keyword] || 0), 0)
+      / Math.max(2, profile.activityCount)
+      / Math.sqrt(Math.max(1, itemKeywords.size))
+    const keywordScore = Math.max(-10, Math.min(10, keywordAffinity * 32)) * wKeyword
     const formatAffinity=item.type==='movie'?profile.movieWeight:profile.seriesWeight
     const languageAffinity=item.originalLanguage?(profile.languageWeights[item.originalLanguage]||0):0
     const countryAffinity=(item.originCountry||[]).reduce((sum,country)=>sum+(profile.countryWeights[country]||0),0)
     const peopleAffinity = [...(candidate.cast || []), ...(candidate.directors || [])].reduce((sum, person) => sum + (profile.personWeights[person.trim()] || 0), 0)
-    
+
     // Genre preference
-    const preference = Math.min(28, (genreAffinity * RECOMMENDATION_WEIGHTS.genreAffinity + formatAffinity + countryAffinity) / Math.max(2, profile.activityCount)) * wGenre
-    
+    const preference = Math.min(28, (genreAffinity * RECOMMENDATION_WEIGHTS.genreAffinity + formatAffinity + countryAffinity) / Math.max(2, profile.activityCount)) * wGenre + keywordScore
+
     // Decade/Era affinity
     const decade = item.year ? `${Math.floor(item.year / 10) * 10}s` : null
     const decadeAffinity = decade ? (profile.decadeWeights[decade] || 0) : 0
@@ -161,15 +235,21 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
       : 0
     const ignoredPenalty = -Math.min(6, Math.max(0, (impressions[key] || 0) - 2) * .75)
     const exploration = (profile.activityCount < 3 || genreAffinity === 0 ? RECOMMENDATION_WEIGHTS.exploration : 0) + ignoredPenalty
-    const watched = completed.has(item.id) || completed.has(String(item.tmdbId || '')) || Boolean(item.imdbId && completed.has(item.imdbId))
-    const rewatchSuitable=rewatchKeys.has(item.id)||rewatchKeys.has(String(item.tmdbId||''))||Boolean(item.imdbId&&rewatchKeys.has(item.imdbId))
+    const tmdbId = normalizedTmdbId(item.tmdbId)
+    const imdbId = normalizedImdbId(item.imdbId)
+    const watched = completed.has(item.id) || Boolean(tmdbId && completed.has(tmdbId)) || Boolean(imdbId && completed.has(imdbId))
+    const rewatchSuitable=rewatchKeys.has(item.id)||Boolean(tmdbId&&rewatchKeys.has(tmdbId))||Boolean(imdbId&&rewatchKeys.has(imdbId))
     const explicitFeedback = itemFeedback ? (itemFeedback.kind === 'more-like-this' ? RECOMMENDATION_WEIGHTS.explicitPositive : itemFeedback.kind === 'already-seen' ? -45 : itemFeedback.kind === 'less-like-this' ? -22 : RECOMMENDATION_WEIGHTS.explicitNegative) : 0
-    const relatedFeedback = feedback.reduce((sum, entry) => {
-      if (entry.mediaKey === key || !entry.item.genreIds?.some((id) => item.genreIds?.includes(id))) return sum
-      if (entry.kind === 'more-like-this') return sum + 6
-      if (entry.kind === 'less-like-this' || entry.kind === 'not-interested') return sum - 5
-      return sum
-    }, 0)
+    const relatedFeedbackIndices = new Set<number>()
+    let relatedFeedback = 0
+    for (const genreId of new Set(item.genreIds || [])) {
+      for (const entry of relatedFeedbackByGenre.get(genreId) || []) {
+        if (entry.mediaKey === key) continue
+        if (relatedFeedbackIndices.has(entry.index)) continue
+        relatedFeedbackIndices.add(entry.index)
+        relatedFeedback += entry.kind === 'more-like-this' ? 6 : -5
+      }
+    }
     const genreHidden = (item.genreIds || []).some((id) => hiddenGenres.has(id))
     const feedbackPenalty = explicitFeedback + relatedFeedback + (genreHidden ? RECOMMENDATION_WEIGHTS.explicitNegative : 0)
     let modeBonus = 0
@@ -187,8 +267,9 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     if (candidate.source === 'tmdb-director' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`From ${candidate.seedTitle}, a creator in your recent watches`,strength:11})
     const matchingPerson = [...(candidate.cast || []), ...(candidate.directors || [])].sort((a,b) => (profile.personWeights[b.trim()] || 0) - (profile.personWeights[a.trim()] || 0))[0]
     if (matchingPerson && profile.personWeights[matchingPerson.trim()] > 0) reasons.push({code:'person-affinity',label:`Featuring ${matchingPerson}, from titles you enjoy`,strength:peopleScore})
-    const strongestGenre = (item.genreIds || []).sort((a,b) => (profile.genreWeights[b] || 0) - (profile.genreWeights[a] || 0))[0]
+    const strongestGenre = [...(item.genreIds || [])].sort((a,b) => (profile.genreWeights[b] || 0) - (profile.genreWeights[a] || 0))[0]
     if (strongestGenre && profile.genreWeights[strongestGenre]) reasons.push({ code:'genre-affinity', label:`Matches your interest in ${GENRES[strongestGenre] || 'similar stories'}`, strength: preference })
+    if (keywordScore >= 2) reasons.push({ code:'keyword-affinity', label:'Matches themes in titles you enjoy', strength: keywordScore })
     if (quality >= 5) reasons.push({ code:'quality', label:'Highly rated by viewers', strength: quality })
     if (hiddenGem) reasons.push({ code:'hidden-gem', label:'A highly rated title that is easy to miss', strength: 8 })
     if (quick && mode === 'quick-watch') reasons.push({ code:'quick-watch', label:'Fits a shorter watch session', strength: 8 })
@@ -245,7 +326,10 @@ export function applyRecommendationFeedback(snapshot: RankedRecommendation[], fe
   feedback.forEach((entry) => {
     if (entry.kind === 'hide-genre') {
       ;(entry.genreId == null ? entry.item.genreIds || [] : [entry.genreId]).forEach((id) => hiddenGenres.add(id))
-    } else if (!latest.has(entry.mediaKey)) latest.set(entry.mediaKey, entry)
+    } else {
+      const key = feedbackMediaKey(entry)
+      if (!latest.has(key)) latest.set(key, entry)
+    }
   })
   return snapshot
     .filter((entry) => {
@@ -253,10 +337,13 @@ export function applyRecommendationFeedback(snapshot: RankedRecommendation[], fe
       return feedbackEntry?.kind !== 'hide' && feedbackEntry?.kind !== 'not-interested' && feedbackEntry?.kind !== 'already-seen' && !(entry.item.genreIds || []).some((id) => hiddenGenres.has(id))
     })
     .map((entry) => {
-      const own = latest.get(mediaKey(entry.item))
+      const key = mediaKey(entry.item)
+      const own = latest.get(key)
       const related = feedback.reduce((sum, value) => {
-        if (value.mediaKey === mediaKey(entry.item) || !value.item.genreIds?.some((id) => entry.item.genreIds?.includes(id))) return sum
-        return value.kind === 'more-like-this' ? sum + 6 : value.kind === 'less-like-this' ? sum - 5 : 0
+        if (feedbackMediaKey(value) === key || !value.item.genreIds?.some((id) => entry.item.genreIds?.includes(id))) return sum
+        if (value.kind === 'more-like-this') return sum + 6
+        if (value.kind === 'less-like-this') return sum - 5
+        return sum
       }, 0)
       const ownDelta = own?.kind === 'more-like-this' ? RECOMMENDATION_WEIGHTS.explicitPositive : own?.kind === 'less-like-this' ? -22 : 0
       const delta = ownDelta + related

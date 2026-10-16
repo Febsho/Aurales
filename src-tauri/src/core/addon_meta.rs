@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::time::Duration;
 
 const AURALES_USER_AGENT: &str = "Aurales/0.3";
+const MAX_ADDON_JSON_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ADDON_ERROR_BYTES: u64 = 4 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,23 +93,26 @@ fn fetch_meta(url: &str, timeout: Duration, retry_once: bool) -> Result<Value, S
 
 fn fetch_meta_once(url: &str, timeout: Duration) -> Result<Value, (String, bool)> {
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    agent
+    let response = agent
         .get(url)
         .set("Accept", "application/json")
         .set("User-Agent", AURALES_USER_AGENT)
         .call()
         .map_err(|error| match error {
             ureq::Error::Status(status, response) => {
-                let body = response.into_string().unwrap_or_default();
+                let body =
+                    crate::core::request::read_error_body_bounded(response, MAX_ADDON_ERROR_BYTES);
                 (
                     format!("HTTP {status}: {body}"),
                     status == 429 || status >= 500,
                 )
             }
             other => (other.to_string(), true),
-        })?
-        .into_json()
-        .map_err(|error| (format!("Invalid JSON response: {error}"), true))
+        })?;
+    crate::core::request::read_json_bounded(response, MAX_ADDON_JSON_BYTES).map_err(|error| {
+        let retryable = !error.starts_with("Response exceeds the ");
+        (error, retryable)
+    })
 }
 
 fn parse_meta_response(response: Value) -> Result<Value, String> {

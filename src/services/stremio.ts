@@ -2,6 +2,17 @@ import type { StremioAddonManifest } from '../types'
 import type { InstalledAddon } from './addons'
 
 const STREMIO_API = 'https://api.strem.io/api'
+const STREMIO_REQUEST_TIMEOUT_MS = 15_000
+
+async function withRequestTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new DOMException('Stremio request timed out', 'TimeoutError')), STREMIO_REQUEST_TIMEOUT_MS)
+  try {
+    return await run(controller.signal)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 interface StremioLoginResult {
   authKey: string
@@ -55,34 +66,40 @@ function normalizeTransportUrl(url: string): string {
 }
 
 export async function stremioLogin(email: string, password: string): Promise<StremioLoginResult> {
-  const res = await fetch(`${STREMIO_API}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'Login', email, password }),
+  return withRequestTimeout(async (signal) => {
+    const res = await fetch(`${STREMIO_API}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'Login', email, password }),
+      signal,
+    })
+    const data = await parseStremioResponse(res, 'Stremio login failed')
+    const result = data.result as StremioLoginResult | undefined
+    if (!result?.authKey) throw new Error('No auth key returned')
+    return result
   })
-  const data = await parseStremioResponse(res, 'Stremio login failed')
-  const result = data.result as StremioLoginResult | undefined
-  if (!result?.authKey) throw new Error('No auth key returned')
-  return result
 }
 
 export async function getStremioAddons(authKey: string): Promise<InstalledAddon[]> {
-  const res = await fetch(`${STREMIO_API}/addonCollectionGet`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'AddonCollectionGet', authKey }),
-  })
-  const data = await parseStremioResponse(res, 'Failed to fetch addons')
+  return withRequestTimeout(async (signal) => {
+    const res = await fetch(`${STREMIO_API}/addonCollectionGet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'AddonCollectionGet', authKey }),
+      signal,
+    })
+    const data = await parseStremioResponse(res, 'Failed to fetch addons')
 
-  const result = data.result as { addons?: StremioAddonCollectionItem[] } | undefined
-  const addons: StremioAddonCollectionItem[] = result?.addons || []
-  return addons
-    .filter((a) => a.manifest && a.transportUrl)
-    .map((a) => ({
-      manifest: a.manifest,
-      url: normalizeTransportUrl(a.transportUrl),
-      enabled: true,
-    }))
+    const result = data.result as { addons?: StremioAddonCollectionItem[] } | undefined
+    const addons: StremioAddonCollectionItem[] = result?.addons || []
+    return addons
+      .filter((a) => a.manifest && a.transportUrl)
+      .map((a) => ({
+        manifest: a.manifest,
+        url: normalizeTransportUrl(a.transportUrl),
+        enabled: true,
+      }))
+  })
 }
 
 export interface StremioLibraryEntry {
@@ -159,6 +176,7 @@ function unpackDatastoreItem(value: unknown): StremioDatastoreItem | null {
 async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string[]> {
   const serialized = entry.watchedField
   if (!serialized || entry.type !== 'series' || !entry.imdbId) return []
+  const imdbId = entry.imdbId
   const components = serialized.split(':')
   if (components.length < 3) return []
   const encoded = components.pop() || ''
@@ -167,27 +185,29 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
   const fallback = parseEpisodeId(anchorId).season != null ? [anchorId] : []
 
   try {
-    const response = await fetch(`https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(entry.imdbId)}.json`)
-    if (!response.ok) return fallback
-    const payload = await response.json() as { meta?: { videos?: StremioMetaVideo[] } }
-    const videos = (payload.meta?.videos || [])
-      .filter((video) => video?.id)
-      .sort((left, right) => (left.season ?? -1) - (right.season ?? -1)
-        || (left.episode ?? -1) - (right.episode ?? -1)
-        || String(left.released || '').localeCompare(String(right.released || '')))
-    const anchorIndex = videos.findIndex((video) => video.id === anchorId)
-    if (anchorIndex < 0 || !Number.isFinite(anchorLength) || typeof DecompressionStream === 'undefined') return fallback
+    return await withRequestTimeout(async (signal) => {
+      const response = await fetch(`https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(imdbId)}.json`, { signal })
+      if (!response.ok) return fallback
+      const payload = await response.json() as { meta?: { videos?: StremioMetaVideo[] } }
+      const videos = (payload.meta?.videos || [])
+        .filter((video) => video?.id)
+        .sort((left, right) => (left.season ?? -1) - (right.season ?? -1)
+          || (left.episode ?? -1) - (right.episode ?? -1)
+          || String(left.released || '').localeCompare(String(right.released || '')))
+      const anchorIndex = videos.findIndex((video) => video.id === anchorId)
+      if (anchorIndex < 0 || !Number.isFinite(anchorLength) || typeof DecompressionStream === 'undefined') return fallback
 
-    const compressed = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
-    const inflated = new Uint8Array(await new Response(
-      new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate')),
-    ).arrayBuffer())
-    const offset = anchorLength - anchorIndex - 1
-    return videos.flatMap((video, index) => {
-      const previousIndex = index + offset
-      if (previousIndex < 0) return []
-      const byte = inflated[Math.floor(previousIndex / 8)]
-      return byte != null && ((byte >> (previousIndex % 8)) & 1) === 1 ? [video.id] : []
+      const compressed = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
+      const inflated = new Uint8Array(await new Response(
+        new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate')),
+      ).arrayBuffer())
+      const offset = anchorLength - anchorIndex - 1
+      return videos.flatMap((video, index) => {
+        const previousIndex = index + offset
+        if (previousIndex < 0) return []
+        const byte = inflated[Math.floor(previousIndex / 8)]
+        return byte != null && ((byte >> (previousIndex % 8)) & 1) === 1 ? [video.id] : []
+      })
     })
   } catch {
     return fallback
@@ -199,13 +219,16 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
  * playback state, so we can surface genuinely-watched titles for Discover seeding.
  */
 export async function getStremioLibrary(authKey: string, resolveEpisodeHistory = false): Promise<StremioLibraryEntry[]> {
-  const res = await fetch(`${STREMIO_API}/datastoreGet`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'DatastoreGet', authKey, collection: 'libraryItem', all: true }),
+  const items = await withRequestTimeout(async (signal) => {
+    const res = await fetch(`${STREMIO_API}/datastoreGet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'DatastoreGet', authKey, collection: 'libraryItem', all: true }),
+      signal,
+    })
+    const data = await parseStremioResponse(res, 'Failed to fetch Stremio library')
+    return ((data.result as unknown[] | undefined) || []).map(unpackDatastoreItem).filter((item): item is StremioDatastoreItem => item !== null)
   })
-  const data = await parseStremioResponse(res, 'Failed to fetch Stremio library')
-  const items = ((data.result as unknown[] | undefined) || []).map(unpackDatastoreItem).filter((item): item is StremioDatastoreItem => item !== null)
 
   const entries = items
     .map((item): StremioLibraryEntry | null => {
@@ -220,6 +243,7 @@ export async function getStremioLibrary(authKey: string, resolveEpisodeHistory =
       const watchedCount = Math.max(0, Number(state.timesWatched) || 0)
       const timeOffsetMs = Math.max(0, Number(state.timeOffset) || 0)
       const durationMs = Math.max(0, Number(state.duration) || 0)
+      const flaggedWatched = Number(state.flaggedWatched) > 0
       return {
         id: baseId,
         imdbId,
@@ -227,7 +251,7 @@ export async function getStremioLibrary(authKey: string, resolveEpisodeHistory =
         title: item.name,
         poster: item.poster,
         year: Number.isFinite(Number(item.year)) ? Number(item.year) : undefined,
-        watched: watchedCount > 0,
+        watched: watchedCount > 0 || flaggedWatched,
         lastWatched: state.lastWatched,
         season,
         episode,
@@ -242,9 +266,15 @@ export async function getStremioLibrary(authKey: string, resolveEpisodeHistory =
     .filter((entry): entry is StremioLibraryEntry => entry !== null)
 
   if (resolveEpisodeHistory) {
-    await Promise.all(entries.map(async (entry) => {
-      if (entry.type === 'series' && entry.watched) entry.watchedEpisodeIds = await decodeWatchedEpisodes(entry)
-    }))
+    const watchedSeries = entries.filter((entry) => entry.type === 'series' && entry.watched)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < watchedSeries.length) {
+        const entry = watchedSeries[cursor++]
+        entry.watchedEpisodeIds = await decodeWatchedEpisodes(entry)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, watchedSeries.length) }, worker))
   }
   return entries
 }

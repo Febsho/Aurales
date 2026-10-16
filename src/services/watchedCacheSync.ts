@@ -3,24 +3,50 @@ import { cachedFetch, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { getWatchedMovies, getWatchedShows, type TraktWatchedItem } from './trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from './simkl/history'
-import { getSyncedSimklItems } from './simkl/sync'
+import { getSimklSyncedSnapshot } from './simkl/sync'
 import type { SimklWatchlistItem } from './simkl/types'
 import { getPMDBWatched } from './pmdb'
 import { getMdblistWatched } from './mdblist'
 import type { WatchedSource } from './watchedStatus'
+import { getActiveProfileId, profileProviderCacheKey } from './profiles'
 
-const providerSnapshots = new Map<WatchedSource, WatchedKey[]>()
+const providerSnapshots = new Map<string, WatchedKey[]>()
+
+function snapshotKey(source: WatchedSource, profileId = getActiveProfileId()): string {
+  return source === 'local'
+    ? `${source}:profile:${profileId}`
+    : profileProviderCacheKey(`watched-snapshot:${source}`, source, profileId)
+}
+
+function providerCacheKey(source: SyncableWatchedSource, profileId = getActiveProfileId()): string {
+  const versionedKey = source === 'simkl' ? 'watched:simkl:v2' : `watched:${source}`
+  return profileProviderCacheKey(versionedKey, source, profileId)
+}
 
 function rebuildFromSnapshots(sources: WatchedSource[]): void {
   const keys = new Set<WatchedKey>()
   for (const source of sources) {
-    for (const key of providerSnapshots.get(source) || []) keys.add(key)
+    for (const key of providerSnapshots.get(snapshotKey(source)) || []) keys.add(key)
   }
   useWatchedCacheStore.getState().setWatchedKeys(keys)
 }
 
+function storeProviderSnapshot(source: WatchedSource, profileId: string, key: string, values: WatchedKey[]): void {
+  // An older request may finish after the user switched profiles/accounts.
+  // Never let that stale response evict the current account's snapshot.
+  if (getActiveProfileId() !== profileId || snapshotKey(source, profileId) !== key) return
+  if (source !== 'local') {
+    const prefix = `watched-snapshot:${source}:profile:${profileId}:account:`
+    for (const existing of providerSnapshots.keys()) {
+      if (existing.startsWith(prefix) && existing !== key) providerSnapshots.delete(existing)
+    }
+  }
+  providerSnapshots.set(key, values)
+}
+
 export function setWatchedProviderSnapshot(source: WatchedSource, keys: WatchedKey[], activeSources: WatchedSource[]): void {
-  providerSnapshots.set(source, keys)
+  const profileId = getActiveProfileId()
+  storeProviderSnapshot(source, profileId, snapshotKey(source, profileId), keys)
   rebuildFromSnapshots(activeSources)
 }
 
@@ -41,9 +67,14 @@ function extractTraktKeys(movies: TraktWatchedItem[], shows: TraktWatchedItem[])
   return keys
 }
 
-function extractSimklKeys(items: { imdbId?: string; tmdbId?: number | string; tvdbId?: number | string; malId?: number | string }[]): WatchedKey[] {
+function extractSimklKeys(items: { status?: string; type?: string; watchedEpisodes?: { episode?: number }[]; watchedEpisodesCount?: number; totalEpisodesCount?: number; imdbId?: string; tmdbId?: number | string; tvdbId?: number | string; malId?: number | string }[]): WatchedKey[] {
   const keys: WatchedKey[] = []
   for (const item of items) {
+    const fullyWatched = item.status === 'completed'
+      || ((item.type === 'show' || item.type === 'anime')
+        && (item.totalEpisodesCount ?? 0) > 0
+        && (item.watchedEpisodesCount ?? item.watchedEpisodes?.length ?? 0) >= (item.totalEpisodesCount ?? 0))
+    if (!fullyWatched) continue
     if (item.imdbId) keys.push(makeWatchedKey('imdb', item.imdbId))
     if (item.tmdbId) keys.push(makeWatchedKey('tmdb', item.tmdbId))
     if (item.tvdbId) keys.push(makeWatchedKey('tvdb', item.tvdbId))
@@ -73,14 +104,12 @@ function extractMdblistKeys(items: { imdb_id?: string; tmdb_id?: number; tvdb_id
 export type SyncableWatchedSource = 'trakt' | 'simkl' | 'pmdb' | 'mdblist'
 
 interface ProviderFetcher {
-  key: string
   fetch: () => Promise<unknown>
   extract: (data: any) => WatchedKey[]
 }
 
 const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
   trakt: {
-    key: 'watched:trakt',
     fetch: async () => {
       const [movies, shows] = await Promise.all([getWatchedMovies(), getWatchedShows()])
       return { movies, shows }
@@ -88,64 +117,72 @@ const PROVIDER_FETCHERS: Record<SyncableWatchedSource, ProviderFetcher> = {
     extract: (data) => extractTraktKeys(data.movies, data.shows),
   },
   simkl: {
-    key: 'watched:simkl:v2',
     fetch: async () => {
       // `syncSimkl` has already activity-gated and merged the v2 delta.
       // Reuse that snapshot instead of immediately doing two full pulls.
-      const synced = await getSyncedSimklItems()
-      if (synced.length) return { items: synced }
+      const synced = await getSimklSyncedSnapshot()
+      if (synced !== null) return { items: synced }
       const [movies, episodes] = await Promise.all([getSimklWatchedMovies(true), getSimklWatchedEpisodes(true)])
       return { items: [...movies, ...episodes] as SimklWatchlistItem[] }
     },
     extract: (data) => extractSimklKeys(data.items),
   },
   pmdb: {
-    key: 'watched:pmdb',
     fetch: async () => ({ items: await getPMDBWatched() }),
     extract: (data) => extractPmdbKeys(data.items),
   },
   mdblist: {
-    key: 'watched:mdblist',
     fetch: async () => ({ items: await getMdblistWatched() }),
     extract: (data) => extractMdblistKeys(data.items),
   },
 }
 
-const providerRefreshes = new Map<SyncableWatchedSource, Promise<void>>()
+const providerRefreshes = new Map<string, Promise<void>>()
 
 /**
  * Bypass the cache TTL for a single provider: fetch fresh data and overwrite
  * its cache entry. Used by the per-provider background sync scheduler.
  */
 export async function forceRefreshProviderWatched(source: SyncableWatchedSource): Promise<void> {
-  const pending = providerRefreshes.get(source)
+  const profileId = getActiveProfileId()
+  // Capture the account scope before starting network work. Recomputing it
+  // after await can label an old account's response with a newly connected
+  // account's key when credentials change without changing the profile.
+  const targetSnapshotKey = snapshotKey(source, profileId)
+  const refreshKey = targetSnapshotKey
+  const pending = providerRefreshes.get(refreshKey)
   if (pending) return pending
   const def = PROVIDER_FETCHERS[source]
+  const cacheKey = providerCacheKey(source, profileId)
   const refresh = (async () => {
     const fresh = await def.fetch()
-    await cacheSet(def.key, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
-    providerSnapshots.set(source, def.extract(fresh))
+    void cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+    storeProviderSnapshot(source, profileId, targetSnapshotKey, def.extract(fresh))
     const { useAppStore } = await import('../stores/appStore')
-    rebuildFromSnapshots(useAppStore.getState().watchedCheckmarkSources as WatchedSource[])
-  })().finally(() => providerRefreshes.delete(source))
-  providerRefreshes.set(source, refresh)
+    if (getActiveProfileId() === profileId && snapshotKey(source, profileId) === targetSnapshotKey) {
+      rebuildFromSnapshots(useAppStore.getState().watchedCheckmarkSources as WatchedSource[])
+    }
+  })().finally(() => providerRefreshes.delete(refreshKey))
+  providerRefreshes.set(refreshKey, refresh)
   return refresh
 }
 
 async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]> {
   const allKeys: WatchedKey[] = []
+  const profileId = getActiveProfileId()
 
   const tasks = sources
     .filter((s): s is SyncableWatchedSource => s !== 'local' && s in PROVIDER_FETCHERS)
     .map(async (source) => {
       try {
+        const targetSnapshotKey = snapshotKey(source, profileId)
         const def = PROVIDER_FETCHERS[source]
-        const data = await cachedFetch(def.key, def.fetch, {
+        const data = await cachedFetch(providerCacheKey(source, profileId), def.fetch, {
           category: CACHE_CATEGORIES.WATCHED_STATUS,
           ttlSeconds: CACHE_TTLS.WATCHED_STATUS,
         })
         const keys = def.extract(data)
-        providerSnapshots.set(source, keys)
+        storeProviderSnapshot(source, profileId, targetSnapshotKey, keys)
         return keys
       } catch (e) {
         console.warn(`[WatchedCache] failed to fetch ${source}:`, e)
@@ -157,9 +194,10 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
   if (sources.includes('anilist')) {
     tasks.push((async () => {
       try {
+        const targetSnapshotKey = snapshotKey('anilist', profileId)
         const { getAniListWatchedTitleKeys } = await import('./anilist')
         const keys = await getAniListWatchedTitleKeys()
-        providerSnapshots.set('anilist', keys)
+        storeProviderSnapshot('anilist', profileId, targetSnapshotKey, keys)
         return keys
       } catch (e) {
         console.warn('[WatchedCache] failed to fetch anilist:', e)
@@ -174,15 +212,21 @@ async function fetchProviderKeys(sources: WatchedSource[]): Promise<WatchedKey[]
 }
 
 export async function refreshWatchedCache(sources: WatchedSource[]): Promise<void> {
+  const profileId = getActiveProfileId()
   const store = useWatchedCacheStore.getState()
   store.setLoading(true)
+  // Drop snapshots for providers/accounts that are no longer active before
+  // waiting on the next network response. In particular, a newly logged-in
+  // account must not keep showing the previous account's watched checkmarks
+  // while its first snapshot is loading.
+  rebuildFromSnapshots(sources)
   try {
     await fetchProviderKeys(sources)
-    rebuildFromSnapshots(sources)
+    if (getActiveProfileId() === profileId) rebuildFromSnapshots(sources)
   } catch (e) {
     console.warn('[WatchedCache] refresh failed:', e)
   } finally {
-    store.setLoading(false)
+    if (getActiveProfileId() === profileId) useWatchedCacheStore.getState().setLoading(false)
   }
 }
 

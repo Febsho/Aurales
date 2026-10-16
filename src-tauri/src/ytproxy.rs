@@ -6,9 +6,11 @@
 // from.
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
 static PROXY_PORT: OnceLock<u16> = OnceLock::new();
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -43,6 +45,15 @@ pub fn agent() -> &'static ureq::Agent {
                     .collect();
                 Ok(if filtered.is_empty() { addrs } else { filtered })
             })
+            // Each upstream operation is a bounded chunk/probe. Fail a stalled
+            // origin quickly so its blocking worker cannot remain occupied.
+            .timeout(Duration::from_secs(30))
+            .timeout_connect(std::time::Duration::from_secs(8))
+            .timeout_read(std::time::Duration::from_secs(30))
+            .timeout_write(std::time::Duration::from_secs(8))
+            // The loopback proxy accepts a URL from its caller. Never follow a
+            // validated googlevideo URL to an arbitrary redirect target.
+            .redirects(0)
             .build()
     })
 }
@@ -51,6 +62,13 @@ pub fn agent() -> &'static ureq::Agent {
 // the media element bounded 1MB slices; it re-requests the next slice itself.
 const CHUNK_BYTES: u64 = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_CLIENT_CONNECTIONS: usize = 16;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+static CLIENT_CONNECTIONS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn connection_slots() -> Arc<Semaphore> {
+    Arc::clone(CLIENT_CONNECTIONS.get_or_init(|| Arc::new(Semaphore::new(MAX_CLIENT_CONNECTIONS))))
+}
 
 pub async fn ensure_started() -> Result<u16, String> {
     if let Some(port) = PROXY_PORT.get() {
@@ -70,11 +88,21 @@ pub async fn ensure_started() -> Result<u16, String> {
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
-                Ok((stream, _)) => {
-                    tokio::spawn(async move {
-                        let _ = handle_connection(stream).await;
-                    });
-                }
+                Ok((mut stream, _)) => match connection_slots().try_acquire_owned() {
+                    Ok(permit) => {
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            let _ = handle_connection(stream).await;
+                        });
+                    }
+                    Err(_) => {
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(250),
+                            write_simple(&mut stream, "503 Service Unavailable"),
+                        )
+                        .await;
+                    }
+                },
                 Err(_) => break,
             }
         }
@@ -85,11 +113,15 @@ pub async fn ensure_started() -> Result<u16, String> {
 async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
     let mut buffer = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
+    let header_deadline = tokio::time::Instant::now() + HEADER_READ_TIMEOUT;
     while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
         if buffer.len() > MAX_REQUEST_BYTES {
             return write_simple(&mut stream, "431 Request Header Fields Too Large").await;
         }
-        let read = stream.read(&mut chunk).await?;
+        let read = match tokio::time::timeout_at(header_deadline, stream.read(&mut chunk)).await {
+            Ok(result) => result?,
+            Err(_) => return write_simple(&mut stream, "408 Request Timeout").await,
+        };
         if read == 0 {
             return Ok(());
         }
@@ -117,6 +149,9 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
     if !is_allowed_upstream(&upstream) {
         return write_simple(&mut stream, "403 Forbidden").await;
     }
+    if !is_safe_mime_type(&mime) {
+        return write_simple(&mut stream, "400 Bad Request").await;
+    }
     // Some formats come without contentLength; discover the total size with a
     // one-byte probe (cached per URL) so Content-Range stays accurate.
     let clen = if clen > 0 {
@@ -140,7 +175,7 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
     let end = requested_end
         .unwrap_or(u64::MAX)
         .min(clen - 1)
-        .min(start + CHUNK_BYTES - 1);
+        .min(start.saturating_add(CHUNK_BYTES - 1));
 
     let upstream_for_fetch = upstream.clone();
     let body = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
@@ -149,9 +184,28 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
             .set("Range", &format!("bytes={start}-{end}"))
             .call()
             .map_err(|e| format!("upstream request failed: {e}"))?;
-        let mut bytes = Vec::with_capacity((end - start + 1) as usize);
-        std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)
+        if response.status() != 206 {
+            return Err("upstream did not honor the bounded byte range".to_string());
+        }
+        let (response_start, response_end, response_total) = response
+            .header("Content-Range")
+            .and_then(parse_content_range)
+            .ok_or_else(|| "upstream returned an invalid Content-Range".to_string())?;
+        if response_start != start
+            || response_end < response_start
+            || response_end > end
+            || response_total != clen
+        {
+            return Err("upstream returned a mismatched Content-Range".to_string());
+        }
+        let expected_bytes = response_end - response_start + 1;
+        let mut bytes = Vec::with_capacity(expected_bytes as usize);
+        let mut bounded_reader = std::io::Read::take(response.into_reader(), expected_bytes + 1);
+        std::io::Read::read_to_end(&mut bounded_reader, &mut bytes)
             .map_err(|e| format!("upstream read failed: {e}"))?;
+        if bytes.len() as u64 != expected_bytes {
+            return Err("upstream body length did not match Content-Range".to_string());
+        }
         Ok(bytes)
     })
     .await
@@ -166,7 +220,7 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
         }
     };
 
-    let actual_end = start + body.len().saturating_sub(1) as u64;
+    let actual_end = start.saturating_add(body.len().saturating_sub(1) as u64);
     let head = format!(
         "HTTP/1.1 206 Partial Content\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{actual_end}/{clen}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len(),
@@ -178,6 +232,7 @@ async fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
 
 static CLEN_CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
     OnceLock::new();
+const MAX_CACHED_LENGTHS: usize = 128;
 
 async fn resolve_total_length(upstream: &str) -> Option<u64> {
     let cache = CLEN_CACHE.get_or_init(Default::default);
@@ -187,26 +242,60 @@ async fn resolve_total_length(upstream: &str) -> Option<u64> {
     let url = upstream.to_string();
     let total = tokio::task::spawn_blocking(move || -> Option<u64> {
         let response = agent().get(&url).set("Range", "bytes=0-0").call().ok()?;
-        // Content-Range: bytes 0-0/TOTAL
-        let content_range = response.header("Content-Range")?;
-        content_range.rsplit('/').next()?.trim().parse().ok()
+        if response.status() != 206 {
+            return None;
+        }
+        let (start, end, total) = parse_content_range(response.header("Content-Range")?)?;
+        (start == 0 && end == 0 && total > 0).then_some(total)
     })
     .await
     .ok()
     .flatten()?;
     if let Ok(mut map) = cache.lock() {
+        if map.len() >= MAX_CACHED_LENGTHS && !map.contains_key(upstream) {
+            if let Some(eviction_key) = map.keys().next().cloned() {
+                map.remove(&eviction_key);
+            }
+        }
         map.insert(upstream.to_string(), total);
     }
     Some(total)
 }
 
 fn is_allowed_upstream(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
+    let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };
-    let host = rest.split(['/', '?']).next().unwrap_or_default();
-    let host = host.split(':').next().unwrap_or_default();
-    host.ends_with(".googlevideo.com")
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.port_or_known_default() == Some(443)
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && host.to_ascii_lowercase().ends_with(".googlevideo.com")
+}
+
+fn is_safe_mime_type(mime: &str) -> bool {
+    let Some((kind, subtype)) = mime.split_once('/') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && mime.len() <= 128
+        && mime
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'+' | b'.'))
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let value = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse().ok()?;
+    let end = end.parse().ok()?;
+    let total = total.parse().ok()?;
+    (end >= start && total > end).then_some((start, end, total))
 }
 
 fn parse_range(header: Option<&str>, clen: u64) -> (u64, Option<u64>) {

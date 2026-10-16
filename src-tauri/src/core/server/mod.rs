@@ -12,6 +12,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 const KEYRING_SERVICE: &str = "com.aurales.app.server";
@@ -175,19 +176,21 @@ struct StoredSecret {
 }
 
 pub fn list_connections(db: &Database) -> Result<Vec<ServerConnection>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id,kind,name,server_url,username,auth_mode,base_directory,enabled,status,last_error,server_name,user_name,last_tested_at,last_refreshed_at FROM server_connections ORDER BY name COLLATE NOCASE")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], connection_from_row)
-        .map_err(|e| e.to_string())?;
-    Ok(rows
-        .filter_map(Result::ok)
-        .map(|mut item| {
-            item.has_secret = load_secret(&item.id).ok().flatten().is_some();
-            item
-        })
-        .collect())
+    let mut connections = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id,kind,name,server_url,username,auth_mode,base_directory,enabled,status,last_error,server_name,user_name,last_tested_at,last_refreshed_at FROM server_connections ORDER BY name COLLATE NOCASE")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], connection_from_row)
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok).collect::<Vec<_>>()
+    };
+    // Credential vault access can block on the OS keychain; do it after
+    // releasing SQLite so unrelated catalog and playback calls keep moving.
+    for item in &mut connections {
+        item.has_secret = load_secret(&item.id).ok().flatten().is_some();
+    }
+    Ok(connections)
 }
 
 pub fn save_connection(
@@ -360,7 +363,7 @@ pub fn refresh_catalog(db: &Database, id: &str) -> Result<RefreshResult, String>
         touched += 1;
     }
     let removed = if scan.complete {
-        let ids: Vec<&str> = scan
+        let ids: HashSet<&str> = scan
             .items
             .iter()
             .map(|v| v.source_item_id.as_str())
@@ -372,7 +375,7 @@ pub fn refresh_catalog(db: &Database, id: &str) -> Result<RefreshResult, String>
             .query_map([id], |row| row.get(0))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
-            .filter(|v: &String| !ids.contains(&v.as_str()))
+            .filter(|v: &String| !ids.contains(v.as_str()))
             .collect();
         drop(stmt);
         for stale_id in &stale {
@@ -442,33 +445,47 @@ pub fn catalog_items(
     catalog_id: &str,
     max_items: Option<usize>,
 ) -> Result<Vec<ServerCatalogItem>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    // Resolve the connection and secret before acquiring SQLite for the item
+    // query. get_connection also locks the database, so calling it while the
+    // query guard is held would deadlock on the non-reentrant mutex.
+    let kind = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind FROM server_connections WHERE id=?1",
+            [connection_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    let secret = load_secret(connection_id)?.unwrap_or_default();
     let order_by = match catalog_id {
         "recently-added" => "json_extract(raw_json, '$.DateCreated') DESC",
         "continue-watching" => "json_extract(raw_json, '$.UserData.LastPlayedDate') DESC",
         _ => "title COLLATE NOCASE",
     };
     let sql = format!(
-        "SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND instr(catalog_ids_json, ?2)>0 ORDER BY {order_by} LIMIT ?3"
+        "SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND EXISTS (SELECT 1 FROM json_each(server_catalog_items.catalog_ids_json) AS catalog WHERE catalog.value=?2) ORDER BY {order_by} LIMIT ?3"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let catalog_token = serde_json::to_string(catalog_id).map_err(|e| e.to_string())?;
     let limit = max_items.unwrap_or(usize::MAX).min(i64::MAX as usize) as i64;
-    let rows = stmt
-        .query_map(
-            params![connection_id, catalog_token, limit],
-            catalog_item_from_row,
-        )
-        .map_err(|e| e.to_string())?;
-    let secret = load_secret(connection_id)?.unwrap_or_default();
-    let kind = get_connection(db, connection_id)?
-        .map(|v| v.kind)
-        .unwrap_or_default();
-    let mut items: Vec<_> = rows
-        .filter_map(Result::ok)
-        .filter(|item| item.catalog_ids.iter().any(|id| id == catalog_id))
+    let items = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![connection_id, catalog_id, limit],
+                catalog_item_from_row,
+            )
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok)
+            .filter(|item| item.catalog_ids.iter().any(|id| id == catalog_id))
+            .collect::<Vec<_>>()
+    };
+    let mut items = items
+        .into_iter()
         .map(|item| authenticate_catalog_artwork(item, &kind, &secret))
-        .collect();
+        .collect::<Vec<_>>();
     if catalog_id == "recently-added" {
         items.sort_by(|a, b| {
             b.raw
@@ -499,13 +516,13 @@ pub fn search_catalogs(db: &Database, query: &str) -> Result<Vec<ServerCatalogIt
     let connections = list_connections(db)?;
     let mut result = Vec::new();
     for connection in connections.into_iter().filter(|v| v.enabled) {
+        let secret = load_secret(&connection.id)?.unwrap_or_default();
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt=conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND lower(title) LIKE ?2 ORDER BY title COLLATE NOCASE LIMIT 100").map_err(|e|e.to_string())?;
         let pattern = format!("%{needle}%");
         let rows = stmt
             .query_map(params![connection.id, pattern], catalog_item_from_row)
             .map_err(|e| e.to_string())?;
-        let secret = load_secret(&connection.id)?.unwrap_or_default();
         result.extend(
             rows.filter_map(Result::ok)
                 .map(|item| authenticate_catalog_artwork(item, &connection.kind, &secret)),
@@ -688,6 +705,12 @@ fn normalize_request(request: &mut SaveServerConnectionRequest) -> Result<(), St
         .map_err(|_| "A valid HTTP(S) server URL is required".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Server URL must use HTTP or HTTPS".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "Do not include credentials in the server URL; use the authentication fields instead"
+                .into(),
+        );
     }
     request.base_directory = request
         .base_directory

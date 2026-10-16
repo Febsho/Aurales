@@ -19,6 +19,7 @@ interface AnimeMapping {
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
 const FAILURE_RETRY_MS = 60 * 1000
 const ANIME_LIST_FETCH_TIMEOUT_MS = 8_000
+const WORKER_REQUEST_TIMEOUT_MS = 15_000
 const DATA_URL =
   'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-mini.json'
 const PERSISTENT_CACHE = 'aurales-anime-lists-v2'
@@ -49,8 +50,19 @@ interface NativeAnimeResolutionResponse {
 let mappingWorker: Worker | null = null
 let mappingWorkerFailed = false
 let nextWorkerRequestId = 1
-const workerRequests = new Map<number, { resolve: (value: unknown) => void }>()
+const workerRequests = new Map<number, { resolve: (value: unknown) => void; timeout: ReturnType<typeof setTimeout> }>()
 const workerLookupCache = new Map<string, Promise<AnimeMapping[] | null>>()
+
+function failMappingWorker(): void {
+  mappingWorkerFailed = true
+  mappingWorker?.terminate()
+  mappingWorker = null
+  for (const request of workerRequests.values()) {
+    clearTimeout(request.timeout)
+    request.resolve(null)
+  }
+  workerRequests.clear()
+}
 
 function getMappingWorker(): Worker | null {
   if (mappingWorkerFailed || typeof Worker === 'undefined') return null
@@ -61,15 +73,10 @@ function getMappingWorker(): Worker | null {
       const pending = workerRequests.get(event.data.id)
       if (!pending) return
       workerRequests.delete(event.data.id)
+      clearTimeout(pending.timeout)
       pending.resolve(event.data.result)
     }
-    mappingWorker.onerror = () => {
-      mappingWorkerFailed = true
-      mappingWorker?.terminate()
-      mappingWorker = null
-      for (const request of workerRequests.values()) request.resolve(null)
-      workerRequests.clear()
-    }
+    mappingWorker.onerror = failMappingWorker
     return mappingWorker
   } catch (_) {
     mappingWorkerFailed = true
@@ -82,8 +89,13 @@ function workerRequest<T>(message: Record<string, unknown>): Promise<T | null> |
   if (!worker) return null
   const id = nextWorkerRequestId++
   return new Promise<T | null>((resolve) => {
-    workerRequests.set(id, { resolve: (value) => resolve(value as T | null) })
-    worker.postMessage({ ...message, id })
+    const timeout = setTimeout(() => failMappingWorker(), WORKER_REQUEST_TIMEOUT_MS)
+    workerRequests.set(id, { resolve: (value) => resolve(value as T | null), timeout })
+    try {
+      worker.postMessage({ ...message, id })
+    } catch {
+      failMappingWorker()
+    }
   })
 }
 
@@ -118,8 +130,14 @@ async function workerLookup(platform: WorkerLookupPlatform, key: string | number
   if (cached) return cached
   const request = workerRequest<AnimeMapping[]>({ type: 'lookup', platform, key: String(key) })
   if (!request) return null
-  workerLookupCache.set(cacheKey, request)
-  return request
+  // Keep only in-flight lookups. The worker index already makes repeats cheap;
+  // retaining every resolved key grows without bound and can keep stale empty
+  // results after the worker refreshes its mapping file.
+  const tracked = request.finally(() => {
+    if (workerLookupCache.get(cacheKey) === tracked) workerLookupCache.delete(cacheKey)
+  })
+  workerLookupCache.set(cacheKey, tracked)
+  return tracked
 }
 
 function extractTmdbId(val: unknown, contentType?: 'movie' | 'series'): number | undefined {
@@ -369,7 +387,7 @@ async function readPersistentCache(): Promise<{ data: AnimeMapping[]; timestamp:
     if (!response) return null
     const data = await response.json() as AnimeMapping[]
     const timestamp = Number(response.headers.get(CACHE_TIMESTAMP_HEADER)) || 0
-    return Array.isArray(data) ? { data, timestamp } : null
+    return Array.isArray(data) && data.length > 0 ? { data, timestamp } : null
   } catch (_) {
     return null
   }
@@ -410,9 +428,16 @@ export function loadAnimeLists(): Promise<AnimeMapping[]> {
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), ANIME_LIST_FETCH_TIMEOUT_MS)
-      const response = await fetch(DATA_URL, { signal: controller.signal }).finally(() => clearTimeout(timeout))
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const data: AnimeMapping[] = await response.json()
+      let data: AnimeMapping[]
+      try {
+        const response = await fetch(DATA_URL, { signal: controller.signal })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const parsed = await response.json() as unknown
+        if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('Anime mapping response is empty or invalid')
+        data = parsed as AnimeMapping[]
+      } finally {
+        clearTimeout(timeout)
+      }
       cachedData = data
       cacheTimestamp = Date.now()
       lastFetchFailureAt = 0
@@ -475,7 +500,7 @@ export async function lookupByAniListId(anilistId: number): Promise<AnimeMapping
   const native = await nativeLookup('anilist', anilistId)
   if (native !== null) return native
   const workerResult = await workerLookup('anilist', anilistId)
-  if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
+  if (workerResult !== null || (typeof Worker !== 'undefined' && !mappingWorkerFailed)) return workerResult ?? []
   await loadAnimeLists()
   return indexByAnilist.get(anilistId) ?? []
 }
@@ -484,7 +509,7 @@ export async function lookupByMalId(malId: number): Promise<AnimeMapping[]> {
   const native = await nativeLookup('mal', malId)
   if (native !== null) return native
   const workerResult = await workerLookup('mal', malId)
-  if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
+  if (workerResult !== null || (typeof Worker !== 'undefined' && !mappingWorkerFailed)) return workerResult ?? []
   await loadAnimeLists()
   return indexByMal.get(malId) ?? []
 }
@@ -495,7 +520,7 @@ export async function lookupByTvdbId(tvdbId: number | string): Promise<AnimeMapp
   const native = await nativeLookup('tvdb', num)
   if (native !== null) return native
   const workerResult = await workerLookup('tvdb', num)
-  if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
+  if (workerResult !== null || (typeof Worker !== 'undefined' && !mappingWorkerFailed)) return workerResult ?? []
   await loadAnimeLists()
   return isNaN(num) ? [] : (indexByTvdb.get(num) ?? [])
 }
@@ -506,7 +531,7 @@ export async function lookupByTmdbId(tmdbId: number | string): Promise<AnimeMapp
   const native = await nativeLookup('tmdb', num)
   if (native !== null) return native
   const workerResult = await workerLookup('tmdb', num)
-  if (workerResult !== null || typeof Worker !== 'undefined') return workerResult ?? []
+  if (workerResult !== null || (typeof Worker !== 'undefined' && !mappingWorkerFailed)) return workerResult ?? []
   await loadAnimeLists()
   return isNaN(num) ? [] : (indexByTmdb.get(num) ?? [])
 }
@@ -515,7 +540,7 @@ export async function lookupByImdbId(imdbId: string): Promise<AnimeMapping | und
   const native = await nativeLookup('imdb', imdbId)
   if (native !== null) return native[0]
   const workerResult = await workerLookup('imdb', imdbId)
-  if (workerResult !== null || typeof Worker !== 'undefined') return workerResult?.[0]
+  if (workerResult !== null || (typeof Worker !== 'undefined' && !mappingWorkerFailed)) return workerResult?.[0]
   await loadAnimeLists()
   return indexByImdb.get(imdbId)
 }

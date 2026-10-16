@@ -1,16 +1,21 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useState, useEffect, useCallback } from 'react'
+import { isTauri } from '@tauri-apps/api/core'
+import type { Window as TauriWindow } from '@tauri-apps/api/window'
 
 // getCurrentWindow() throws outside the Tauri runtime (plain-browser preview),
 // which would take the whole app down with it — render no chrome instead.
 function useAppWindow() {
-  return useMemo(() => {
-    try {
-      return getCurrentWindow()
-    } catch (_) {
-      return null
-    }
+  const [appWindow, setAppWindow] = useState<TauriWindow | null>(null)
+  useEffect(() => {
+    if (!isTauri()) return
+    let cancelled = false
+    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      if (cancelled) return
+      try { setAppWindow(getCurrentWindow()) } catch (_) { /* browser preview or unavailable window */ }
+    }).catch(() => {})
+    return () => { cancelled = true }
   }, [])
+  return appWindow
 }
 
 export default function TitleBar() {
