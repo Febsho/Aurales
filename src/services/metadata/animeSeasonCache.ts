@@ -4,15 +4,16 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 
 // Separate from the detail shell: resolved TVDB seasons stay useful when the
 // shell is enriched later, and make return visits and season changes instant.
-const memory = new Map<string, SeasonDetails>()
+const memory = new Map<string, { season: SeasonDetails; expiresAt: number }>()
 const pending = new Map<string, Promise<SeasonDetails | null>>()
 const MAX_MEMORY_SEASONS = 120
+const SEASON_CACHE_TTL_MS = CACHE_TTLS.ANIME_MAPPING_FINISHED * 1000
 let seasonGeneration = 0
 let seasonCacheClearBarrier: Promise<unknown> | undefined
 
-function rememberSeason(key: string, season: SeasonDetails): void {
+function rememberSeason(key: string, season: SeasonDetails, expiresAt = Date.now() + SEASON_CACHE_TTL_MS): void {
   memory.delete(key)
-  memory.set(key, season)
+  memory.set(key, { season, expiresAt })
   while (memory.size > MAX_MEMORY_SEASONS) {
     const oldest = memory.keys().next().value
     if (!oldest) break
@@ -32,12 +33,19 @@ export async function getCachedAnimeSeason(key: string): Promise<SeasonDetails |
   }
   const hot = memory.get(key)
   if (hot) {
-    rememberSeason(key, hot)
-    return hot
+    if (hot.expiresAt > Date.now()) {
+      rememberSeason(key, hot.season, hot.expiresAt)
+      return hot.season
+    }
+    memory.delete(key)
   }
   const cached = await cacheGet<SeasonDetails>(key)
-  if (!cached?.data) return null
-  rememberSeason(key, cached.data)
+  // Expired disk entries are stale data, not a cache hit. Returning them here
+  // bypassed the network loader entirely and made the declared 14-day TTL
+  // ineffective for this cache path.
+  if (!cached?.data || cached.stale) return null
+  const expiresAt = Date.now() + Math.max(0, SEASON_CACHE_TTL_MS - cached.age)
+  rememberSeason(key, cached.data, expiresAt)
   return cached.data
 }
 
