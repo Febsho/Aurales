@@ -5,6 +5,7 @@ import { withRequestTimeout } from '../network/timeout'
 const TRAKT_API = 'https://api.trakt.tv'
 const LS_ACCOUNT = 'trakt_account'
 const BUILTIN_TRAKT_CLIENT_ID = '3649670f0821f9da74ec71ac83ec7b37c71397d22aaa3c44997bb46477262010'
+const MAX_TRAKT_RESPONSE_BYTES = 16 * 1024 * 1024
 const refreshPending = new Map<string, Promise<TraktTokens | null>>()
 let authGeneration = 0
 
@@ -19,11 +20,35 @@ function parseJson(raw: string): any {
   try { return JSON.parse(raw) } catch (_) { return raw }
 }
 
+async function readTraktResponse(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_TRAKT_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Trakt response exceeded the 16 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
 async function traktRequest(url: string, options: RequestInit = {}): Promise<TraktHttpResult> {
   if (!isTauri()) {
     return withRequestTimeout(15_000, async (signal) => {
       const response = await fetch(url, { ...options, signal })
-      return { status: response.status, data: parseJson(await response.text()) }
+      return { status: response.status, data: parseJson(await readTraktResponse(response)) }
     }, 'Trakt request timed out', options.signal ?? undefined)
   }
 

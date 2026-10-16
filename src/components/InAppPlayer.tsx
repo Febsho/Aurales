@@ -67,6 +67,32 @@ interface PreparedSubtitle {
   forced: boolean
 }
 
+const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
+
+async function readSubtitleText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Subtitle response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_SUBTITLE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Subtitle exceeded the 10 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
 function srtToVtt(input: string): string {
   const normalized = input.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
@@ -100,7 +126,7 @@ async function fetchSubtitleText(url: string, signal?: AbortSignal): Promise<str
   }, 15_000)
   try {
     const response = await fetch(url, { signal: controller.signal })
-    if (response.ok) return await response.text()
+    if (response.ok) return await readSubtitleText(response)
   } catch (_) { /* use the native HTTP fallback below */ }
   finally {
     window.clearTimeout(timeout)
