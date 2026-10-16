@@ -230,12 +230,13 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
       const response = await fetch(`https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(imdbId)}.json`, { signal })
       if (!response.ok) return fallback
       const payload = await readStremioJson<{ meta?: { videos?: StremioMetaVideo[] } }>(response, MAX_CINEMETA_RESPONSE_BYTES)
-      const videos = (payload.meta?.videos || [])
+      const rawVideos = payload.meta?.videos || []
+      if (!Array.isArray(rawVideos) || rawVideos.length > MAX_CINEMETA_SERIES_VIDEOS) return fallback
+      const videos = rawVideos
         .filter((video) => video?.id)
         .sort((left, right) => (left.season ?? -1) - (right.season ?? -1)
           || (left.episode ?? -1) - (right.episode ?? -1)
           || String(left.released || '').localeCompare(String(right.released || '')))
-      if (videos.length > MAX_CINEMETA_SERIES_VIDEOS) return fallback
       const anchorIndex = videos.findIndex((video) => video.id === anchorId)
       if (anchorIndex < 0 || !Number.isFinite(anchorLength) || typeof DecompressionStream === 'undefined') return fallback
 
