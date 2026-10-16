@@ -197,12 +197,13 @@ export async function cacheSet(key: string, value: unknown, options: CacheOption
 }
 
 export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, CacheResult<T>>> {
-  if (keys.length === 0) return new Map()
+  const uniqueKeys = [...new Set(keys)]
+  if (uniqueKeys.length === 0) return new Map()
   const generationsAtReadStart = new Map(categoryGenerations)
   const map = new Map<string, CacheResult<T>>()
   const missingKeys: string[] = []
   const memoryReads = new Map<string, { category: string; generation: number }>()
-  for (const key of keys) {
+  for (const key of uniqueKeys) {
     const memory = sessionCache.get(key)
     if (!memory) {
       missingKeys.push(key)
