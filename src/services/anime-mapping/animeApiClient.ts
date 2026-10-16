@@ -7,7 +7,7 @@ const ENABLED_KEY = 'animeapi_enabled'
 const REQUEST_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 2
 const RETRY_DELAY_MS = 1_000
-const MAX_ANIME_API_RESPONSE_BYTES = 64 * 1024 * 1024
+const MAX_ANIME_API_RESPONSE_BYTES = 4 * 1024 * 1024
 
 let mockMode = false
 
