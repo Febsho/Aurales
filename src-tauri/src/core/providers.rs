@@ -34,6 +34,9 @@ fn read_ureq_error(provider: &str, error: ureq::Error) -> String {
 
 static SIMKL_CALLBACK_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+// Both OAuth providers bind the same localhost redirect port.
+static OAUTH_CALLBACK_PORT_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static SIMKL_CALLBACK_CANCEL: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
     std::sync::Mutex::new(None);
 
@@ -45,6 +48,7 @@ impl Drop for SimklCallbackGuard {
             *cancel = None;
         }
         SIMKL_CALLBACK_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        OAUTH_CALLBACK_PORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -83,6 +87,7 @@ impl Drop for AnilistCallbackGuard {
             *cancel = None;
         }
         ANILIST_CALLBACK_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        OAUTH_CALLBACK_PORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -121,6 +126,17 @@ pub async fn begin_anilist_callback(
     ),
     String,
 > {
+    if OAUTH_CALLBACK_PORT_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("Another provider authorization is already waiting for a browser callback.".to_string());
+    }
     if ANILIST_CALLBACK_ACTIVE
         .compare_exchange(
             false,
@@ -130,6 +146,7 @@ pub async fn begin_anilist_callback(
         )
         .is_err()
     {
+        OAUTH_CALLBACK_PORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         return Err("AniList authorization is already waiting for a browser callback. Finish the open AniList tab or wait a moment before trying again.".to_string());
     }
     // Own the reservation before the fallible bind. If binding fails or this
@@ -154,6 +171,17 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
+    if OAUTH_CALLBACK_PORT_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("Another provider authorization is already waiting for a browser callback.".to_string());
+    }
     if SIMKL_CALLBACK_ACTIVE
         .compare_exchange(
             false,
@@ -163,6 +191,7 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         )
         .is_err()
     {
+        OAUTH_CALLBACK_PORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         return Err("Simkl authorization is already waiting for a browser callback. Finish the open Simkl tab or wait a moment before trying again.".to_string());
     }
     let _guard = SimklCallbackGuard;
