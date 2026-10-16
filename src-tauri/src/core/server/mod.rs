@@ -725,6 +725,9 @@ fn normalize_request(request: &mut SaveServerConnectionRequest) -> Result<(), St
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Server URL must use HTTP or HTTPS".into());
     }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("Server URL must not include a query string or fragment".into());
+    }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(
             "Do not include credentials in the server URL; use the authentication fields instead"
@@ -919,5 +922,25 @@ mod tests {
             enabled: true,
         };
         assert!(normalize_request(&mut r).is_err());
+    }
+    #[test]
+    fn refuses_server_urls_with_query_or_fragment() {
+        for server_url in [
+            "https://media.example?token=x",
+            "https://media.example/#player",
+        ] {
+            let mut request = SaveServerConnectionRequest {
+                id: None,
+                kind: "jellyfin".into(),
+                name: "Home".into(),
+                server_url: server_url.into(),
+                username: None,
+                secret: None,
+                auth_mode: "token".into(),
+                base_directory: None,
+                enabled: true,
+            };
+            assert!(normalize_request(&mut request).is_err());
+        }
     }
 }
