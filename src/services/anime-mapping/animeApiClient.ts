@@ -1,4 +1,5 @@
 import type { AnimeApiEntry } from './types'
+import { readBoundedResponseJson } from '../network/boundedResponse'
 
 const DEFAULT_BASE_URL = 'https://animeapi.my.id'
 const SETTINGS_KEY = 'animeapi_base_url'
@@ -6,6 +7,7 @@ const ENABLED_KEY = 'animeapi_enabled'
 const REQUEST_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 2
 const RETRY_DELAY_MS = 1_000
+const MAX_ANIME_API_RESPONSE_BYTES = 64 * 1024 * 1024
 
 let mockMode = false
 
@@ -67,7 +69,7 @@ async function animeApiGet<T>(path: string): Promise<T | null> {
         console.warn(`[animeApi] HTTP ${res.status} for ${path}`)
         return null
       }
-      return await res.json() as T
+      return await readBoundedResponseJson<T>(res, MAX_ANIME_API_RESPONSE_BYTES, 'Anime API response')
     } catch (e) {
       if (attempt < MAX_RETRIES && e instanceof Error && e.name !== 'AbortError') {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))

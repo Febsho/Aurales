@@ -5,6 +5,7 @@ import type { SearchResult } from '../types'
 import { mediaIdentity } from './mediaPresentation'
 import { rotateProviderCredentialScope } from './cache/homeStartupSnapshot'
 import { withRequestTimeout } from './network/timeout'
+import { readBoundedResponseJson, readBoundedResponseText } from './network/boundedResponse'
 
 export interface MdblistRating {
   source: string
@@ -25,6 +26,7 @@ interface RatingRequest {
 }
 
 const BASE_URL = 'https://api.mdblist.com'
+const MAX_MDBLIST_RESPONSE_BYTES = 16 * 1024 * 1024
 const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
 const BUILTIN_MDBLIST_CLIENT_ID = '1QZNjkmxhfpFEWOsOmAmkphArnbfoKeWlmbJZMOC'
 const MDBLIST_CLIENT_ID = import.meta.env.VITE_MDBLIST_CLIENT_ID || BUILTIN_MDBLIST_CLIENT_ID
@@ -494,15 +496,14 @@ async function mdblistFetch<T>(
     if (!res.ok) {
       let message = `MDBList ${method} ${path} failed (${res.status})`
       try {
-        const data = await res.json()
+        const text = await readBoundedResponseText(res, MAX_MDBLIST_RESPONSE_BYTES, 'MDBList response')
+        const data = JSON.parse(text)
         message = String((data as any)?.detail || (data as any)?.error || message)
-      } catch (_) {
-        try { message = await res.text() || message } catch (_) { /* ignore */ }
-      }
+      } catch (_) { /* retain bounded generic error */ }
       throw new Error(message)
     }
     if (res.status === 204) return undefined as T
-    return res.json() as Promise<T>
+    return readBoundedResponseJson<T>(res, MAX_MDBLIST_RESPONSE_BYTES, 'MDBList response')
   }))
 }
 

@@ -4,6 +4,9 @@ import EncryptedVaultSettings from './EncryptedVaultSettings'
 import { OUTBOX_CHANGED_EVENT, getOutboxError } from '../../services/sync/outbox'
 import { lockSyncVault, unlockSyncVault } from '../../services/sync/encryptedVault'
 import { deleteSyncPassword, saveSyncPassword } from '../../services/sync/secureLogin'
+import { readBoundedResponseJson } from '../../services/network/boundedResponse'
+
+const MAX_SYNC_AUTH_RESPONSE_BYTES = 256 * 1024
 
 function Row({ icon, title, detail, onClick }: { icon: string; title: string; detail: string; onClick: () => void }) { return <button type="button" onClick={onClick} className="flex w-full items-center gap-4 px-5 py-4 text-left transition hover:bg-white/[.07]"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white/[.08] text-xl text-white">{icon}</span><span><span className="block font-semibold text-white">{title}</span><span className="mt-1 block text-xs text-white/45">{detail}</span></span></button> }
 
@@ -17,7 +20,7 @@ async function requestSyncAuth(action: 'register' | 'login', email: string, pass
       body: JSON.stringify({ email, password }),
       signal: controller.signal,
     })
-    const result = await response.json() as { accessToken?: string; error?: string }
+    const result = await readBoundedResponseJson<{ accessToken?: string; error?: string }>(response, MAX_SYNC_AUTH_RESPONSE_BYTES, 'Sync authentication response')
     if (!response.ok || !result.accessToken) throw new Error(result.error || 'Authentication failed')
     return result
   } finally {

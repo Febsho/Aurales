@@ -8,11 +8,13 @@
 import { getStoredSimklToken, getSimklClientId, getSimklAuthGeneration, isSimklMockMode, refreshSimklToken } from './auth'
 import type { SimklApiItem, SimklMapping } from './types'
 import { logEvent } from '../diagnostics'
+import { readBoundedResponseJson } from '../network/boundedResponse'
 
 const BASE = 'https://api.simkl.com'
 const MOCK_DELAY_MS = 200
 const MAX_RATE_LIMIT_WAIT_MS = 60_000
 const DEFAULT_RATE_LIMIT_WAIT_MS = 5_000
+const MAX_SIMKL_API_RESPONSE_BYTES = 16 * 1024 * 1024
 
 function createRequestTimeout(timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
   if (typeof AbortSignal.timeout === 'function') {
@@ -146,7 +148,7 @@ export async function simklRequest<T = unknown>(
     // Success
     if (res.status === 200 || res.status === 201) {
       try {
-        const data = await res.json() as { error?: string }
+        const data = await readBoundedResponseJson<{ error?: string }>(res, MAX_SIMKL_API_RESPONSE_BYTES, 'Simkl API response')
         assertConnectionCurrent()
         if (data?.error === 'premium_only') throw new SimklError('Simkl Custom Lists require a PRO or VIP account.', 'premium_only', res.status)
         return data as T

@@ -19,6 +19,7 @@ import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpiso
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import { withRequestTimeout } from '../services/network/timeout'
+import { readBoundedResponseText } from '../services/network/boundedResponse'
 import {
   play as wtPlay,
   pause as wtPause,
@@ -179,7 +180,7 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
           signal,
         })
         if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
-        return response.text()
+        return readBoundedResponseText(response, 16 * 1024 * 1024, 'OpenRouter response')
       }, 'Subtitle translation request timed out')
     }
 
