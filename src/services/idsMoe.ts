@@ -71,7 +71,7 @@ async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoe
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
       try {
-        const res = await fetch(`${API_BASE}/ids/${id}?p=${platform}`, {
+        const res = await fetch(`${API_BASE}/ids/${encodeURIComponent(String(id))}?p=${platform}`, {
           headers: { 'Authorization': `Bearer ${API_KEY}` },
           signal: controller.signal,
         })
