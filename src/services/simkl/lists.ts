@@ -7,10 +7,13 @@ import { getSimklClientId, getStoredSimklAccount, isSimklMockMode } from './auth
 import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
 import { withRequestTimeout } from '../network/timeout'
+import { readBoundedResponseJson } from '../network/boundedResponse'
 import type { SimklWatchlistItem, SimklApiItem, SimklCustomList, SimklMediaType, SimklWatchStatus } from './types'
 import type { SearchResult } from '../../types'
 import { profileProviderCacheKey } from '../profiles'
 import { getBerlinDateKey } from '../discovery/berlinDate'
+
+const MAX_SIMKL_DATA_FILE_RESPONSE_BYTES = 64 * 1024 * 1024
 
 // ─── Fetch lists ───────────────────────────────────────────────────────────────
 
@@ -330,7 +333,7 @@ async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
           signal,
         })
         if (!res.ok) return []
-        const data = await res.json()
+        const data = await readBoundedResponseJson<unknown>(res, MAX_SIMKL_DATA_FILE_RESPONSE_BYTES, 'Simkl data file response')
         return Array.isArray(data) ? data : []
       }, 'Simkl data request timed out')
     },
