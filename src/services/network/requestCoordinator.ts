@@ -67,6 +67,7 @@ const MAX_RETRY_WAIT_MS = 10_000
 const MAX_RATE_LIMIT_MS = 24 * 60 * 60 * 1000
 const MAX_TRACKED_ORIGINS = 128
 const MAX_JSON_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_ADDON_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
 // Active fan-out is bounded separately, but stale searches and large addon
 // libraries can still enqueue thousands of unique requests. Bound retained
 // promises and closures as well as active network work.
@@ -126,7 +127,7 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-async function readJsonBounded<T>(response: Response): Promise<T> {
+async function readJsonBounded<T>(response: Response, maxBytes: number): Promise<T> {
   const reader = response.body?.getReader()
   if (!reader) throw new Error('JSON response has no readable body')
   const chunks: Uint8Array[] = []
@@ -135,9 +136,9 @@ async function readJsonBounded<T>(response: Response): Promise<T> {
     const { done, value } = await reader.read()
     if (done) break
     size += value.byteLength
-    if (size > MAX_JSON_RESPONSE_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel().catch(() => undefined)
-      throw new Error('JSON response exceeded the 16 MiB limit')
+      throw new Error(`JSON response exceeded the ${maxBytes / (1024 * 1024)} MiB limit`)
     }
     chunks.push(value)
   }
@@ -545,7 +546,10 @@ export async function coordinatedJson<T>(
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const response = await fetch(url, { ...init, signal })
-        if (response.ok) return await readJsonBounded<T>(response)
+        if (response.ok) {
+          const maxResponseBytes = options.kind === 'addon' ? MAX_ADDON_JSON_RESPONSE_BYTES : MAX_JSON_RESPONSE_BYTES
+          return await readJsonBounded<T>(response, maxResponseBytes)
+        }
         const waitMs = response.status === 429 ? retryAfterMs(response) : 0
         await response.body?.cancel().catch(() => undefined)
         if (response.status === 429) requestCoordinator.recordRateLimited(origin, waitMs)
