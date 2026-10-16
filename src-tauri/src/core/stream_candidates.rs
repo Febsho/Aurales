@@ -355,7 +355,10 @@ fn addon_stream_url(addon_url: &str, media_type: &str, id: &str) -> Result<Strin
     // The path already contains percent-encoded IDs; Url::set_path would
     // escape those percent signs again and turn `%3A` into `%253A`.
     let prefix = &url[..url::Position::BeforePath];
-    let query = url.query().map(|query| format!("?{query}")).unwrap_or_default();
+    let query = url
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
     Ok(format!("{prefix}{endpoint}{query}"))
 }
 

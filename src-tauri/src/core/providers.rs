@@ -135,7 +135,9 @@ pub async fn begin_anilist_callback(
         )
         .is_err()
     {
-        return Err("Another provider authorization is already waiting for a browser callback.".to_string());
+        return Err(
+            "Another provider authorization is already waiting for a browser callback.".to_string(),
+        );
     }
     if ANILIST_CALLBACK_ACTIVE
         .compare_exchange(
@@ -180,7 +182,9 @@ pub async fn wait_for_simkl_callback() -> Result<String, String> {
         )
         .is_err()
     {
-        return Err("Another provider authorization is already waiting for a browser callback.".to_string());
+        return Err(
+            "Another provider authorization is already waiting for a browser callback.".to_string(),
+        );
     }
     if SIMKL_CALLBACK_ACTIVE
         .compare_exchange(
