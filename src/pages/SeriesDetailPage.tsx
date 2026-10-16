@@ -3,6 +3,7 @@ import { useParams, useLocation } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
 import { matchingEpisode } from '../services/metadata/episodeIdentity'
 import { compareTimestampsNewestFirst } from '../services/timestamps'
+import { readBoundedResponseJson } from '../services/network/boundedResponse'
 import { cachedImage, retryImageFromSource } from '../services/imageCache'
 import type { ShowDetails, SeasonDetails, WatchProgress } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
@@ -2792,7 +2793,7 @@ export default function SeriesDetailPage() {
       withRequestTimeout(8_000, async (signal) => {
         const response = await fetch(url, { signal })
         if (!response.ok) throw new Error(`OMDb request failed (${response.status})`)
-        return response.json()
+        return readBoundedResponseJson<Record<string, any>>(response, 1024 * 1024, 'OMDb season response')
       }, 'OMDb episode request timed out')
         .then(omdbData => {
           if (cancelled) return

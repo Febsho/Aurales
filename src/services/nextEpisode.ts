@@ -1,4 +1,7 @@
 import { getTmdbApiKey } from './apiKeys'
+import { readBoundedResponseJson } from './network/boundedResponse'
+
+const MAX_NEXT_EPISODE_RESPONSE_BYTES = 512 * 1024
 
 export interface NextEpInfo {
   season: number
@@ -21,7 +24,7 @@ export async function fetchNextEpisodeFromTmdb(tmdbId: number, season: number, e
         await res.body?.cancel()
         return null
       }
-      const data = await res.json()
+      const data = await readBoundedResponseJson<Record<string, any>>(res, MAX_NEXT_EPISODE_RESPONSE_BYTES, 'TMDB episode response')
       if (!data.name) return null
       return {
         season: s,

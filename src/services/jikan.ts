@@ -1,5 +1,8 @@
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { cachedFetch } from './cache/sqliteCache'
+import { readBoundedResponseJson } from './network/boundedResponse'
+
+const MAX_JIKAN_EPISODE_PAGE_BYTES = 2 * 1024 * 1024
 
 interface JikanEpisode {
   mal_id?: number
@@ -55,7 +58,7 @@ async function fetchEpisodePage(malId: number, page: number): Promise<JikanEpiso
       await res.body?.cancel()
       return []
     }
-    const data = await res.json() as JikanEpisodesPage
+    const data = await readBoundedResponseJson<JikanEpisodesPage>(res, MAX_JIKAN_EPISODE_PAGE_BYTES, 'Jikan episode response')
     return data.data ?? []
   } finally {
     clearTimeout(timeout)

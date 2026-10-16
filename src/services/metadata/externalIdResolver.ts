@@ -2,7 +2,10 @@ import { resolveAnimeIds } from '../animeLists'
 import { resolveImdbId, tmdbFindByExternalId } from '../metadataEnrich'
 import { getTmdbApiKey } from '../apiKeys'
 import { getTvdbIdFromTmdb } from '../tmdb'
+import { readBoundedResponseJson } from '../network/boundedResponse'
 import type { AddonMediaInput, MediaKind, ResolvedExternalIds } from './types'
+
+const MAX_TMDB_ID_LOOKUP_RESPONSE_BYTES = 1024 * 1024
 
 async function searchTmdbByTitle(title: string, year: number | undefined, kind: MediaKind): Promise<{ tmdbId?: number; imdbId?: string } | null> {
   const apiKey = getTmdbApiKey()
@@ -18,7 +21,7 @@ async function searchTmdbByTitle(title: string, year: number | undefined, kind: 
       await res.body?.cancel()
       return null
     }
-    const data = await res.json() as { results?: { id: number; title?: string; name?: string; release_date?: string; first_air_date?: string }[] }
+    const data = await readBoundedResponseJson<{ results?: { id: number; title?: string; name?: string; release_date?: string; first_air_date?: string }[] }>(res, MAX_TMDB_ID_LOOKUP_RESPONSE_BYTES, 'TMDB ID lookup response')
     const results = data.results || []
     if (results.length === 0) return null
     const best = results[0]

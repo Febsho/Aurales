@@ -1,5 +1,6 @@
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES } from './cache/constants'
+import { readBoundedResponseJson } from './network/boundedResponse'
 
 const API_BASE = 'https://api.ids.moe'
 const API_KEY = 'ids_HUUATSvhnnYAfCO0LatQIFAyOyApHB0i7UJJVrKdEVk'
@@ -7,6 +8,7 @@ const CACHE_TTL = 14 * 24 * 60 * 60 // 14 days
 const REQUEST_TIMEOUT_MS = 4_000
 const FAILURE_RETRY_MS = 60_000
 const MAX_FAILED_KEYS = 500
+const MAX_IDS_MOE_RESPONSE_BYTES = 1024 * 1024
 const pendingRequests = new Map<string, Promise<IdsMoeResult | null>>()
 const failedAt = new Map<string, number>()
 
@@ -77,7 +79,7 @@ async function fetchIds(id: string | number, platform: Platform): Promise<IdsMoe
           await res.body?.cancel()
           throw new Error(`IDs.moe returned HTTP ${res.status}`)
         }
-        const data = await res.json() as IdsMoeResult | null
+        const data = await readBoundedResponseJson<IdsMoeResult | null>(res, MAX_IDS_MOE_RESPONSE_BYTES, 'IDs.moe response')
         if (!data) throw new Error('IDs.moe returned no mapping')
         const hasResolvedId = [
           data.myanimelist, data.anilist, data.anidb, data.kitsu, data.imdb,

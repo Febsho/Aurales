@@ -10,6 +10,7 @@ import { setRequestPlaybackActive } from '../services/network/requestCoordinator
 import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { getTmdbApiKey } from '../services/apiKeys'
 import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
+import { readBoundedResponseJson } from '../services/network/boundedResponse'
 import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
@@ -369,7 +370,7 @@ async function fetchCurrentItemMeta(
     try {
       return await withRequestTimeout(8_000, async (signal) => {
         const res = await fetch(`https://api.themoviedb.org/3${path}?api_key=${apiKey}`, { signal })
-        return res.ok ? await res.json() : null
+        return res.ok ? await readBoundedResponseJson<Record<string, any>>(res, 1024 * 1024, 'TMDB player metadata response') : null
       }, 'TMDB player metadata request timed out')
     } catch (_) {
       return null

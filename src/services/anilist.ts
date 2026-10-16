@@ -4,10 +4,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { resolveAnimeIds, mapAniListEpisodeToTvdb } from './animeLists'
 import { getTmdbApiKey } from './apiKeys'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
+import { readBoundedResponseJson } from './network/boundedResponse'
 import type { TvdbEpisodeMappingInput } from './anime-mapping'
 
 const API_URL = 'https://graphql.anilist.co'
 const ANILIST_HTTP_TIMEOUT_MS = 15_000
+const MAX_ANILIST_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_ANILIST_TMDB_RESPONSE_BYTES = 1024 * 1024
 const TOKEN_KEY = 'anilist_token'
 const ACCOUNT_KEY = 'anilist_account'
 
@@ -54,7 +57,7 @@ async function fetchAniListJson(url: string, init: RequestInit): Promise<{ respo
   const timeout = setTimeout(() => controller.abort(new DOMException('AniList request timed out', 'TimeoutError')), ANILIST_HTTP_TIMEOUT_MS)
   try {
     const response = await fetch(url, { ...init, signal: controller.signal })
-    const data = await response.json().catch(() => null)
+    const data = await readBoundedResponseJson<any>(response, MAX_ANILIST_RESPONSE_BYTES, 'AniList response').catch(() => null)
     return { response, data }
   } finally {
     clearTimeout(timeout)
@@ -956,7 +959,7 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
           try {
             const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${tmdbApiKey}`, { signal: controller.signal })
             if (res.ok) {
-              const tmdbData = await res.json()
+              const tmdbData = await readBoundedResponseJson<Record<string, any>>(res, MAX_ANILIST_TMDB_RESPONSE_BYTES, 'TMDB response')
               if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
               if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
             }

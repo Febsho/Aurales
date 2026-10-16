@@ -2,9 +2,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { getTmdbApiKey } from './apiKeys'
 import { cacheGet, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { readBoundedResponseJson } from './network/boundedResponse'
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 const TRAILER_METADATA_TIMEOUT_MS = 8_000
+const MAX_TRAILER_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
 export const TRAILERIO_MANIFEST_URL = 'https://trailerio.cc/manifest.json'
 const TRAILERIO_BASE_URL = new URL('.', TRAILERIO_MANIFEST_URL).toString().replace(/\/$/, '')
 
@@ -93,7 +95,7 @@ async function fetchTrailerMetadata<T>(url: string): Promise<{ response: Respons
   const timeout = window.setTimeout(() => controller.abort(new DOMException('Trailer metadata request timed out', 'TimeoutError')), TRAILER_METADATA_TIMEOUT_MS)
   try {
     const response = await fetch(url, { signal: controller.signal })
-    const data = response.ok ? await response.json().catch(() => null) as T | null : null
+    const data = response.ok ? await readBoundedResponseJson<T>(response, MAX_TRAILER_METADATA_RESPONSE_BYTES, 'Trailer metadata response').catch(() => null) : null
     return { response, data }
   } finally {
     window.clearTimeout(timeout)

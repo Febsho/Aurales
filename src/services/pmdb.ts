@@ -11,8 +11,10 @@ import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
 import { requestCoordinator } from './network/requestCoordinator'
 import { withRequestTimeout } from './network/timeout'
+import { readBoundedResponseJson } from './network/boundedResponse'
 
 const BASE_URL = 'https://publicmetadb.com/api/external'
+const MAX_TMDB_FIND_RESPONSE_BYTES = 1024 * 1024
 
 // ── Low-level proxy ───────────────────────────────────────────────────────────
 
@@ -265,7 +267,7 @@ export async function lookupTmdbId(
             `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=imdb_id`,
             { signal },
           )
-          return res.ok ? res.json() : null
+          return res.ok ? readBoundedResponseJson<Record<string, any>>(res, MAX_TMDB_FIND_RESPONSE_BYTES, 'TMDB find response') : null
         }, 'TMDB ID lookup timed out')
         if (data) {
           const movies: { id: number }[] = data.movie_results || []
@@ -289,7 +291,7 @@ export async function lookupTmdbId(
             `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=tvdb_id`,
             { signal },
           )
-          return res.ok ? res.json() : null
+          return res.ok ? readBoundedResponseJson<Record<string, any>>(res, MAX_TMDB_FIND_RESPONSE_BYTES, 'TMDB find response') : null
         }, 'TMDB ID lookup timed out')
         if (data) {
           const shows: { id: number }[] = data.tv_results || []
