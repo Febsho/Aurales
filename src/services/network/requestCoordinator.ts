@@ -66,6 +66,7 @@ const FAILURE_COOLDOWN_MS = 2 * 60 * 1000
 const MAX_RETRY_WAIT_MS = 10_000
 const MAX_RATE_LIMIT_MS = 24 * 60 * 60 * 1000
 const MAX_TRACKED_ORIGINS = 128
+const MAX_JSON_RESPONSE_BYTES = 16 * 1024 * 1024
 // Active fan-out is bounded separately, but stale searches and large addon
 // libraries can still enqueue thousands of unique requests. Bound retained
 // promises and closures as well as active network work.
@@ -123,6 +124,30 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
     }, delayMs)
     signal.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+async function readJsonBounded<T>(response: Response): Promise<T> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('JSON response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_JSON_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('JSON response exceeded the 16 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return JSON.parse(new TextDecoder().decode(bytes)) as T
 }
 
 class HttpStatusError extends Error {
@@ -520,7 +545,7 @@ export async function coordinatedJson<T>(
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const response = await fetch(url, { ...init, signal })
-        if (response.ok) return await response.json() as T
+        if (response.ok) return await readJsonBounded<T>(response)
         const waitMs = response.status === 429 ? retryAfterMs(response) : 0
         await response.body?.cancel().catch(() => undefined)
         if (response.status === 429) requestCoordinator.recordRateLimited(origin, waitMs)
