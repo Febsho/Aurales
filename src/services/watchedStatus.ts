@@ -35,6 +35,11 @@ export interface WatchedLookupItem {
 }
 
 interface TraktCacheData { movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
+interface TraktDataIndex {
+  movieIds: Map<string, TraktWatchedItem[]>
+  showIds: Map<string, TraktWatchedItem[]>
+  order: Map<TraktWatchedItem, number>
+}
 interface SimklCacheData { items: SimklWatchlistItem[] }
 interface PmdbCacheData { items: PMDBWatchedItem[] }
 interface MdblistCacheData { items: MdblistWatchedItem[] }
@@ -176,12 +181,15 @@ export async function batchIsWatchedFromProviders(
     providerSources.includes('pmdb') ? getPmdbCache().catch(() => null) : null,
     providerSources.includes('mdblist') ? getMdblistCache().catch(() => null) : null,
   ])
+  const traktIndex = traktData && Array.isArray(traktData.movies) && Array.isArray(traktData.shows)
+    ? buildTraktDataIndex(traktData)
+    : undefined
 
   const checkItem = async (item: WatchedLookupItem) => {
     if (providerSources.includes('trakt')) {
       const hasValidTraktData = traktData && Array.isArray(traktData.movies) && Array.isArray(traktData.shows)
       const watched = hasValidTraktData
-        ? await isTraktWatchedWithData(item, traktData).catch(() => false)
+        ? await isTraktWatchedWithData(item, traktData, traktIndex).catch(() => false)
         : await isTraktWatched(item)
       if (watched) { result.add(toKey(item)); return }
     }
@@ -403,12 +411,86 @@ async function fetchShowProgress(showId: string | number): Promise<{ number: num
   }))
 }
 
-async function isTraktWatchedWithData(item: WatchedLookupItem, data: TraktCacheData): Promise<boolean> {
+function traktIdKeys(ids?: Record<string, unknown>): string[] {
+  if (!ids) return []
+  const keys: string[] = []
+  const numericKey = (provider: string, value: unknown) => {
+    const normalized = Number(String(value ?? '').replace(new RegExp(`^${provider}[-:]`, 'i'), ''))
+    if (Number.isFinite(normalized) && normalized !== 0) keys.push(`${provider}:${normalized}`)
+  }
+  if (ids.trakt != null) numericKey('trakt', ids.trakt)
+  if (ids.tmdb != null) numericKey('tmdb', ids.tmdb)
+  if (ids.tvdb != null) numericKey('tvdb', ids.tvdb)
+  if (typeof ids.imdb === 'string' && ids.imdb) keys.push(`imdb:${ids.imdb.toLowerCase()}`)
+  return keys
+}
+
+function traktItemKeys(item: WatchedLookupItem): string[] {
+  const keys: string[] = []
+  const numericKey = (provider: string, value: string | number | undefined) => {
+    if (value == null) return
+    const normalized = Number(String(value).replace(new RegExp(`^${provider}[-:]`, 'i'), ''))
+    if (Number.isFinite(normalized) && normalized !== 0) keys.push(`${provider}:${normalized}`)
+  }
+  numericKey('trakt', item.traktId)
+  numericKey('tmdb', item.tmdbId)
+  numericKey('tvdb', item.tvdbId)
+  if (item.imdbId) keys.push(`imdb:${item.imdbId.toLowerCase()}`)
+  return keys
+}
+
+function buildTraktDataIndex(data: TraktCacheData): TraktDataIndex {
+  const movieIds = new Map<string, TraktWatchedItem[]>()
+  const showIds = new Map<string, TraktWatchedItem[]>()
+  const order = new Map<TraktWatchedItem, number>()
+  const addEntries = (entries: TraktWatchedItem[], index: Map<string, TraktWatchedItem[]>) => {
+    entries.forEach((entry, position) => {
+      order.set(entry, position)
+      const ids = entry.movie?.ids || entry.show?.ids
+      for (const key of traktIdKeys(ids)) {
+        const candidates = index.get(key)
+        if (candidates) candidates.push(entry)
+        else index.set(key, [entry])
+      }
+    })
+  }
+  addEntries(data.movies, movieIds)
+  addEntries(data.shows, showIds)
+  return { movieIds, showIds, order }
+}
+
+function firstTraktMatch(
+  item: WatchedLookupItem,
+  index: Map<string, TraktWatchedItem[]>,
+  order: Map<TraktWatchedItem, number>,
+  idsForEntry: (entry: TraktWatchedItem) => Record<string, unknown> | undefined,
+): TraktWatchedItem | undefined {
+  const candidates = new Set<TraktWatchedItem>()
+  for (const key of traktItemKeys(item)) {
+    for (const entry of index.get(key) || []) candidates.add(entry)
+  }
+  let match: TraktWatchedItem | undefined
+  let matchOrder = Number.POSITIVE_INFINITY
+  for (const entry of candidates) {
+    const position = order.get(entry) ?? Number.POSITIVE_INFINITY
+    if (position < matchOrder && matchesIds(item, idsForEntry(entry))) {
+      match = entry
+      matchOrder = position
+    }
+  }
+  return match
+}
+
+async function isTraktWatchedWithData(item: WatchedLookupItem, data: TraktCacheData, index?: TraktDataIndex): Promise<boolean> {
   if (item.type === 'movie') {
-    return data.movies.some((entry) => matchesIds(item, entry.movie?.ids))
+    return index
+      ? Boolean(firstTraktMatch(item, index.movieIds, index.order, (entry) => entry.movie?.ids))
+      : data.movies.some((entry) => matchesIds(item, entry.movie?.ids))
   }
 
-  const matchedEntry = data.shows.find((entry) => matchesIds(item, entry.show?.ids))
+  const matchedEntry = index
+    ? firstTraktMatch(item, index.showIds, index.order, (entry) => entry.show?.ids)
+    : data.shows.find((entry) => matchesIds(item, entry.show?.ids))
   if (!matchedEntry) return false
 
   // Show-level completion: all available episodes are watched
@@ -493,7 +575,9 @@ async function isTraktWatchedWithData(item: WatchedLookupItem, data: TraktCacheD
           const mappedTraktId = apiMapping.trakt.id
           const mappedSeason = apiMapping.trakt.seasonNumber ?? item.season
           const mappedEpisode = apiMapping.trakt.episodeNumber ?? item.episode
-          const altEntry = data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
+          const altEntry = index
+            ? index.showIds.get(`trakt:${Number(mappedTraktId)}`)?.[0]
+            : data.shows.find((entry) => entry.show?.ids?.trakt === mappedTraktId)
           let altSeasons = altEntry?.seasons
           if (altEntry && (!altSeasons || altSeasons.length === 0)) {
             const altShowId = altEntry.show?.ids?.imdb || altEntry.show?.ids?.trakt || altEntry.show?.ids?.tmdb
