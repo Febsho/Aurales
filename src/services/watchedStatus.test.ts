@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-const storage = vi.hoisted(() => {
+vi.hoisted(() => {
   const values = new Map<string, string>()
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
