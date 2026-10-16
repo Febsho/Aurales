@@ -12,6 +12,7 @@ interface NativeAddonMetaResponse {
 }
 
 const groups = new Map<string, { key: string; generation: number; users: number }>()
+let nextGeneration = 0
 
 function staleError(): DOMException {
   return new DOMException('Addon catalog request was superseded', 'AbortError')
@@ -23,7 +24,9 @@ function begin(group: string, key: string): number {
     current.users += 1
     return current.generation
   }
-  const generation = (current?.generation || 0) + 1
+  // Keep ids monotonic after cleanup so an older response cannot become
+  // current again after navigating away and back to the same catalog.
+  const generation = ++nextGeneration
   groups.set(group, { key, generation, users: 1 })
   return generation
 }

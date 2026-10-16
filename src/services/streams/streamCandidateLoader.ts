@@ -11,6 +11,7 @@ interface NativeCandidateResponse {
 }
 
 const groups = new Map<string, { key: string; generation: number; users: number }>()
+let nextGeneration = 0
 
 function staleError(): DOMException {
   return new DOMException('Stream candidate request was superseded', 'AbortError')
@@ -22,7 +23,9 @@ function begin(group: string, key: string): number {
     current.users += 1
     return current.generation
   }
-  const generation = (current?.generation || 0) + 1
+  // Keep generations monotonic after a group is removed. Resetting to 1 lets
+  // a delayed request pass the stale check after an A → B → A navigation.
+  const generation = ++nextGeneration
   groups.set(group, { key, generation, users: 1 })
   return generation
 }

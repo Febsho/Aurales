@@ -12,6 +12,7 @@ interface NativeAnimeSeasonResponse {
 }
 
 const groups = new Map<string, { key: string; generation: number; users: number }>()
+let nextGeneration = 0
 
 function staleError(): DOMException {
   return new DOMException('Anime season request was superseded', 'AbortError')
@@ -23,7 +24,9 @@ function begin(group: string, key: string): number {
     current.users += 1
     return current.generation
   }
-  const generation = (current?.generation || 0) + 1
+  // Do not reuse a generation after cleanup: late season responses from an
+  // earlier A → B → A navigation must still be rejected.
+  const generation = ++nextGeneration
   groups.set(group, { key, generation, users: 1 })
   return generation
 }

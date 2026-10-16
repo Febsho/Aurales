@@ -14,6 +14,7 @@ interface NativeRankResponse {
 }
 
 const navigationGroups = new Map<string, { key: string; generation: number; users: number }>()
+let nextNavigationGeneration = 0
 
 function operationKey(streams: SmartStream[], context: SmartScoreContext): string {
   // A cancellation group represents one exact ranking request. Include every
@@ -51,7 +52,9 @@ function begin(group: string, key: string): number {
     current.users += 1
     return current.generation
   }
-  const generation = (current?.generation || 0) + 1
+  // A monotonically increasing id prevents an old ranking from becoming
+  // current again if navigation returns to the same input after group cleanup.
+  const generation = ++nextNavigationGeneration
   navigationGroups.set(group, { key, generation, users: 1 })
   return generation
 }
