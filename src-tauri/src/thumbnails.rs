@@ -16,6 +16,8 @@ const DEFAULT_ROWS: u32 = 10;
 const DEFAULT_QUALITY: u32 = 75;
 const DEFAULT_MAX_FFMPEG_WORKERS: u32 = 2;
 const MAX_PREFETCH_SPRITE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_THUMBNAIL_FRAMES: u32 = 10_000;
+const MAX_THUMBNAIL_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 const SPRITE_PREFETCH_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PREFETCHED_SPRITES: usize = 2;
 const MAX_FFMPEG_STDERR_BYTES: usize = 64 * 1024;
@@ -876,8 +878,8 @@ fn thumbnail_config(request: &ThumbnailStartRequest) -> ThumbnailJobConfig {
         .filter(|value| value.is_finite() && *value > 0.0);
     let max_count = duration
         .map(|duration| ((duration / interval as f64).floor() as u32).saturating_add(1))
-        .unwrap_or(10_000)
-        .min(10_000);
+        .unwrap_or(MAX_THUMBNAIL_FRAMES)
+        .min(MAX_THUMBNAIL_FRAMES);
     ThumbnailJobConfig {
         interval,
         width: request
@@ -920,7 +922,8 @@ fn scan_generated_indices(frame_dir: &Path) -> HashSet<u32> {
 
 fn parse_frame_index(path: &Path) -> Option<u32> {
     let stem = path.file_stem()?.to_str()?;
-    stem.strip_prefix("frame_")?.parse().ok()
+    let index = stem.strip_prefix("frame_")?.parse::<u32>().ok()?;
+    (index < MAX_THUMBNAIL_FRAMES).then_some(index)
 }
 
 fn enqueue_index(
@@ -2003,7 +2006,15 @@ fn image_is_near_black(path: &Path, width: u32, height: u32) -> Option<bool> {
 
 fn read_metadata(cache_dir: &Path) -> Option<ThumbnailMetadata> {
     let path = cache_dir.join("metadata.json");
-    let text = fs::read_to_string(path).ok()?;
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_THUMBNAIL_METADATA_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_THUMBNAIL_METADATA_BYTES {
+        return None;
+    }
     serde_json::from_str(&text).ok()
 }
 
