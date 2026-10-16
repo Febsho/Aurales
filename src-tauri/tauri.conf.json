@@ -45,7 +45,6 @@
     "targets": ["msi", "nsis"],
     "externalBin": ["binaries/mpv", "binaries/yt-dlp"],
     "resources": {
-      "binaries/ffmpeg.exe": "",
       "binaries/*.dll": "",
       "resources/mpv-scripts/*": "mpv-scripts/",
       "resources/mpv-script-opts/*": "mpv-script-opts/"
