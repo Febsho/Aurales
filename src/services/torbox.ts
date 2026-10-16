@@ -1,12 +1,14 @@
 import type { StreamResult } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import { getPlayableDirectUrl } from './streams/playableUrl'
+import { readBoundedResponseText } from './network/boundedResponse'
 
 const API_BASE = 'https://api.torbox.app/v1/api'
 const TOKEN_KEY = 'torbox_api_token'
 const CACHE_TTL_MS = 60 * 60 * 1000
 const RESOLVED_URL_TTL_MS = 50 * 60 * 1000
 const MAX_TORBOX_CACHE_ENTRIES = 500
+const MAX_TORBOX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 interface TorBoxResponse<T> {
   success: boolean
@@ -119,7 +121,7 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
       })
       responseStatus = response.status
       responseOk = response.ok
-      responseBody = await response.text()
+      responseBody = await readBoundedResponseText(response, MAX_TORBOX_RESPONSE_BYTES, 'TorBox response')
     } finally {
       if (timeout != null) window.clearTimeout(timeout)
     }

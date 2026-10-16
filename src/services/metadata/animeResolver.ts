@@ -8,6 +8,9 @@ import { resolveSeasonTitles } from './animeTitleResolver'
 import type { AddonMediaInput, AnimeTitleLanguage, AnimeTitlePreference, AppMediaItem, AppSeason, ResolvedExternalIds } from './types'
 import { anilistRequest } from '../anilist'
 import { withRequestTimeout } from '../network/timeout'
+import { readBoundedResponseJson } from '../network/boundedResponse'
+
+const MAX_ANIME_METADATA_RESPONSE_BYTES = 2 * 1024 * 1024
 
 interface AnimeSourceMetadata {
   titles?: { english?: string; romaji?: string; native?: string }
@@ -33,7 +36,7 @@ async function fetchSelectedAnimeMetadata(source: string, ids: ResolvedExternalI
   if (source === 'mal' && ids.malId) {
     const media = await withRequestTimeout(8_000, async (signal) => {
       const response = await fetch(`https://api.jikan.moe/v4/anime/${ids.malId}/full`, { signal })
-      return response.ok ? ((await response.json()) as any)?.data : null
+      return response.ok ? (await readBoundedResponseJson<any>(response, MAX_ANIME_METADATA_RESPONSE_BYTES, 'Jikan response'))?.data : null
     }).catch(() => null)
     if (!media) return null
     const titles = Array.isArray(media.titles) ? media.titles : []
@@ -45,7 +48,7 @@ async function fetchSelectedAnimeMetadata(source: string, ids: ResolvedExternalI
     if (!mapped?.kitsuId) return null
     const attrs = await withRequestTimeout(8_000, async (signal) => {
       const response = await fetch(`https://kitsu.io/api/edge/anime/${mapped.kitsuId}`, { signal })
-      return response.ok ? ((await response.json()) as any)?.data?.attributes : null
+      return response.ok ? (await readBoundedResponseJson<any>(response, MAX_ANIME_METADATA_RESPONSE_BYTES, 'Kitsu response'))?.data?.attributes : null
     }).catch(() => null)
     if (!attrs) return null
     return { titles: { english: attrs.titles?.en || attrs.titles?.en_us, romaji: attrs.titles?.en_jp || attrs.canonicalTitle, native: attrs.titles?.ja_jp }, overview: cleanOverview(attrs.synopsis || attrs.description), poster: attrs.posterImage?.original || attrs.posterImage?.large, backdrop: attrs.coverImage?.original || attrs.coverImage?.large, rating: attrs.averageRating ? Number(attrs.averageRating) / 10 : undefined, year: attrs.startDate ? Number(String(attrs.startDate).slice(0, 4)) : undefined }

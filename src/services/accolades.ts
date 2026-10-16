@@ -1,7 +1,9 @@
 import { getOmdbApiKey } from './apiKeys'
+import { readBoundedResponseJson } from './network/boundedResponse'
 
 const CACHE_PREFIX = 'aurales_accolade_v1:'
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const MAX_OMDB_ACCOLADE_RESPONSE_BYTES = 1024 * 1024
 
 interface CachedAccolade {
   label: string | null
@@ -201,7 +203,7 @@ export async function fetchTitleAccolade(
   try {
     const response = await fetch(`https://www.omdbapi.com/?${params}`, { signal: controller.signal })
     if (!response.ok) throw new Error(`OMDb accolade request failed (${response.status})`)
-    data = await response.json() as OmdbTitleResponse
+    data = await readBoundedResponseJson<OmdbTitleResponse>(response, MAX_OMDB_ACCOLADE_RESPONSE_BYTES, 'OMDb response')
   } finally {
     window.clearTimeout(timeout)
     signal?.removeEventListener('abort', abortFromCaller)
