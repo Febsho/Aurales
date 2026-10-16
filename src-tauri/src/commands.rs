@@ -730,6 +730,7 @@ pub fn launch_mpv(
     if let Some(s) = start_time {
         args.push(format!("--start={}", s));
     }
+    args.push("--".to_string());
     args.push(url);
 
     let shell = app.shell();
@@ -1043,6 +1044,7 @@ pub fn launch_minimal_mpv(
     if let Some(value) = start_time.filter(|value| *value > 0.0) {
         args.push(format!("--start={}", value));
     }
+    args.push("--".to_string());
     args.push(url);
 
     player_debug_log(format!(
@@ -2028,6 +2030,7 @@ fn launch_mpv_with_window(
         }
     }
 
+    args.push("--".to_string());
     args.push(url);
 
     let mut child = Command::new(&mpv)
