@@ -107,7 +107,7 @@ function queueInitialSnapshot(): void {
   }
 }
 /** Applies known durable record types without emitting a new outbox mutation. */
-export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
+export async function applyRemoteRecords(records: SyncRecord[]): Promise<boolean> {
   // A cursor is committed only after this function succeeds. Never silently
   // advance past encrypted settings that this session cannot restore: a later
   // unlock would otherwise start after the only copy of those records.
@@ -260,10 +260,11 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
   // Do not let the next sync snapshot a partially restored vault. In
   // particular, a follow-up batch can queue a fresh encrypted copy as soon as
   // the initial pull returns; that copy must include the completed restore.
-  if (activeVaultRestored) window.location.reload()
-  else if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
+  if (activeVaultRestored) activeChanged = true
+  if (activeChanged || profilesChanged) window.dispatchEvent(new CustomEvent('aurales:profile-changed', { detail: { profileId: getActiveProfileId() } }))
+  return activeVaultRestored
 }
-async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: number; downloaded: number }> {
+async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: number; downloaded: number; activeVaultRestored: boolean }> {
   await outboxReady()
   const config = getSyncConfig()
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
@@ -287,15 +288,19 @@ async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: numbe
     setSyncConfig({ lastError: error instanceof Error ? error.message : String(error) })
     throw error
   }
-  await applyRemoteRecords(body.records || [])
+  const activeVaultRestored = await applyRemoteRecords(body.records || [])
   removeOutboxRecords(outbox)
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
-  return { uploaded: outbox.length, downloaded: body.records?.length || 0 }
+  return { uploaded: outbox.length, downloaded: body.records?.length || 0, activeVaultRestored }
 }
 
 /** Serialize batches so auto-sync and explicit Push/Pull cannot race cursors. */
 export function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
-  return withSyncBatchLock(() => syncNowUnlocked(fetcher))
+  return withSyncBatchLock(async () => {
+    const result = await syncNowUnlocked(fetcher)
+    if (result.activeVaultRestored) window.location.reload()
+    return { uploaded: result.uploaded, downloaded: result.downloaded }
+  })
 }
 
 /** Explicit Push rebuilds the durable snapshot for every profile, including
@@ -309,12 +314,14 @@ async function uploadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded:
   const missingDeletion = pendingDeletions.find((deletion) => !queuedRecordIds.has(`${deletion.id}:profile:${deletion.id}`))
   if (missingDeletion) throw new Error('A profile deletion could not fit in the sync queue. It will remain pending for the next upload.')
   let uploaded = 0; let downloaded = 0
+  let activeVaultRestored = false
   const drain = async () => {
-    let result: { uploaded: number; downloaded: number }
+    let result: { uploaded: number; downloaded: number; activeVaultRestored: boolean }
     do {
       const cursorBefore = getSyncConfig().cursor
       result = await syncNowUnlocked(fetcher)
       uploaded += result.uploaded; downloaded += result.downloaded
+      activeVaultRestored ||= result.activeVaultRestored
       // A sync response can be full even when every local outbox entry was
       // acknowledged. Keep advancing its cursor so large remote libraries do
       // not remain partially downloaded until the next manual sync.
@@ -331,6 +338,7 @@ async function uploadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded:
     for (const profile of getProfiles()) { await queueEncryptedVault(profile.id); await drain() }
   }
   if (pendingDeletions.length) clearPendingProfileDeletions(pendingDeletions)
+  if (activeVaultRestored) window.location.reload()
   return { uploaded, downloaded }
 }
 
@@ -344,6 +352,7 @@ async function downloadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ downloa
   const config = getSyncConfig()
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
   let cursor = '0'; let downloaded = 0
+  let activeVaultRestored = false
   do {
     let body: { cursor?: string; records?: SyncRecord[] }
     try {
@@ -353,12 +362,14 @@ async function downloadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ downloa
       throw error
     }
     const records = body.records || []
-    await applyRemoteRecords(records); downloaded += records.length
+    activeVaultRestored ||= await applyRemoteRecords(records)
+    downloaded += records.length
     const nextCursor = body.cursor || cursor
     if (records.length < SYNC_PAGE_SIZE || nextCursor === cursor) { cursor = nextCursor; break }
     cursor = nextCursor
   } while (true)
   setSyncConfig({ cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
+  if (activeVaultRestored) window.location.reload()
   return { downloaded }
 }
 
