@@ -614,7 +614,7 @@ export function summarizeViewingActivity(range: '7d' | '30d' | '12m' | 'all' = '
     topTitles: [...titleMap.values()].sort((a, b) => b.seconds - a.seconds).slice(0, 8),
     topGenres: [...genreMap].map(([genre, seconds]) => ({ genre, seconds })).sort((a, b) => b.seconds - a.seconds).slice(0, 6),
     recent: recentRecords,
-    containsEstimates: (range === 'all' && state.archive.containsEstimates) || records.some((record) => record.estimated),
+    containsEstimates: (range === 'all' && archivedMedia.some((record) => record.estimated)) || records.some((record) => record.estimated),
     trackingStartedAt: state.trackingStartedAt,
   }
 }
