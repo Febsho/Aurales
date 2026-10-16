@@ -280,7 +280,10 @@ fn parse_multistatus(xml: &str) -> Result<Vec<Resource>, String> {
             }
             Ok(Event::Text(e)) => {
                 if let Some(r) = current.as_mut() {
-                    let text = e.unescape().map_err(|e| e.to_string())?.into_owned();
+                    let decoded = e.decode().map_err(|e| e.to_string())?;
+                    let text = quick_xml::escape::unescape(&decoded)
+                        .map_err(|e| e.to_string())?
+                        .into_owned();
                     match field.as_str() {
                         "href" => r.href = text,
                         "getcontenttype" => r.content_type = Some(text),

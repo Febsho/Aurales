@@ -37,7 +37,7 @@ libloading = "0.8"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 regex = "1"
 url = "2"
-quick-xml = "0.37"
+quick-xml = "0.41"
 base64 = "0.22"
 # Provider artwork often arrives at 3K/4K even when rendered as a 144px card.
 # Keep cache responses display-safe so decoded WebKit surfaces stay bounded.
