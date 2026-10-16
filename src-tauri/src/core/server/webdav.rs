@@ -12,6 +12,8 @@ use std::io::Read;
 use std::sync::OnceLock;
 
 const MAX_PROPFIND_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SCAN_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_SCAN_RESOURCE_COUNT: usize = 100_000;
 static EPISODE_RE: OnceLock<Regex> = OnceLock::new();
 static MOVIE_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -44,6 +46,11 @@ pub fn scan(
             Ok(v) => v,
             Err(_) => recursive_propfind(&url, username, secret)?,
         };
+    if resources.len() > MAX_SCAN_RESOURCE_COUNT {
+        return Err(format!(
+            "WebDAV scan exceeded the {MAX_SCAN_RESOURCE_COUNT} resource limit"
+        ));
+    }
     let mut items = Vec::new();
     let mut shows = HashMap::<String, ServerCatalogItem>::new();
     for mut resource in resources {
@@ -208,6 +215,8 @@ fn recursive_propfind(root: &str, username: &str, password: &str) -> Result<Vec<
     let mut queue = VecDeque::from([root.to_string()]);
     let mut visited = HashSet::new();
     let mut files = Vec::new();
+    let mut total_response_bytes = 0_usize;
+    let mut total_resources = 0_usize;
     while let Some(url) = queue.pop_front() {
         if !visited.insert(url.clone()) {
             continue;
@@ -216,7 +225,18 @@ fn recursive_propfind(root: &str, username: &str, password: &str) -> Result<Vec<
             return Err("WebDAV directory traversal exceeded 10,000 folders".into());
         }
         let xml = propfind(&url, username, password, "1")?;
-        for mut resource in parse_multistatus(&xml)? {
+        total_response_bytes = total_response_bytes.saturating_add(xml.len());
+        if total_response_bytes > MAX_SCAN_RESPONSE_BYTES {
+            return Err("WebDAV scan exceeded the 256 MiB response limit".into());
+        }
+        let resources = parse_multistatus(&xml)?;
+        total_resources = total_resources.saturating_add(resources.len());
+        if total_resources > MAX_SCAN_RESOURCE_COUNT {
+            return Err(format!(
+                "WebDAV scan exceeded the {MAX_SCAN_RESOURCE_COUNT} resource limit"
+            ));
+        }
+        for mut resource in resources {
             let Some(absolute) = absolute_href(&url, &resource.href) else {
                 continue;
             };
