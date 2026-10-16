@@ -45,24 +45,6 @@ import { HomeEditRowContext } from '../components/home/HomeEditRowContext'
 
 const HomeEditList = lazy(() => import('../components/home/HomeEditList'))
 
-const SIMKL_LIST_SOURCES = [
-  { id: 'watchlist',          label: 'Simkl — Plan to Watch (All)',       type: 'poster' },
-  { id: 'watching',           label: 'Simkl — Currently Watching (All)',  type: 'landscape' },
-  { id: 'completed',          label: 'Simkl — Completed (All)',           type: 'poster' },
-  { id: 'history',            label: 'Simkl — Watch History',             type: 'landscape' },
-  { id: 'movies-watchlist',   label: 'Simkl — Movies Watchlist',          type: 'poster' },
-  { id: 'movies-watching',    label: 'Simkl — Movies Watching',           type: 'landscape' },
-  { id: 'movies-completed',   label: 'Simkl — Movies Completed',          type: 'poster' },
-  { id: 'shows-watchlist',    label: 'Simkl — Shows Watchlist',           type: 'poster' },
-  { id: 'shows-watching',     label: 'Simkl — Shows Watching',            type: 'landscape' },
-  { id: 'shows-completed',    label: 'Simkl — Shows Completed',           type: 'poster' },
-  { id: 'anime-watchlist',    label: 'Simkl — Anime Watchlist',           type: 'poster' },
-  { id: 'anime-watching',     label: 'Simkl — Anime Watching',            type: 'landscape' },
-  { id: 'anime-completed',    label: 'Simkl — Anime Completed',           type: 'poster' },
-  { id: 'on-hold',            label: 'Simkl — On Hold',                   type: 'poster' },
-  { id: 'dropped',            label: 'Simkl — Dropped',                   type: 'poster' },
-] as const
-
 function getRowDisplayTitle(row: HomeRowConfig): string {
   let title = row.title.trim().replace(/\s*\(\d+\)\s*$/, '')
 
@@ -89,18 +71,6 @@ function cacheKeyForHomeRow(row: HomeRowConfig, addons: ReturnType<typeof useApp
     ? addons.find((addon) => addon.enabled && addon.manifest.id === row.addonId)?.url || row.addonUrl
     : row.addonUrl
   return homeRowCacheKey(row, resolvedAddonUrl)
-}
-
-function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; options?: string[] }[] | undefined): Record<string, string> | undefined {
-  const required = (extra || []).filter((item) => item.isRequired)
-  if (required.length === 0) return undefined
-
-  const defaults = required.reduce<Record<string, string>>((acc, item) => {
-    const value = item.options?.[0]
-    if (value) acc[item.name] = value
-    return acc
-  }, {})
-  return Object.keys(defaults).length ? defaults : undefined
 }
 
 // Keep raw provider/HTTP errors in the console; show people a readable message.
@@ -773,71 +743,6 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
   return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} />
 }
 
-// ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
-function UnconfiguredShelf({
-  row,
-  onConfigure,
-  onRemove,
-  headerLeftControls,
-}: {
-  row: HomeRowConfig
-  onConfigure: (row: HomeRowConfig) => void
-  onRemove: (id: string) => void
-  headerLeftControls?: React.ReactNode
-}) {
-  return (
-    <div className="px-6 mb-8 select-none">
-      <div className="flex items-center gap-2.5 mb-3">
-        {headerLeftControls}
-        <h2 className="text-lg font-semibold text-white/60">{getRowDisplayTitle(row)}</h2>
-      </div>
-      <div className="px-6">
-        <div
-          onClick={() => onConfigure(row)}
-          className="w-full max-w-4xl border border-dashed border-white/10 hover:border-accent/40 bg-white/[0.01] hover:bg-white/[0.03] rounded-2xl p-6 flex items-center justify-between transition-all duration-200 cursor-pointer group"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-white/60 group-hover:text-accent transition-colors">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div className="text-left">
-              <span className="block text-sm font-bold text-white/60 group-hover:text-white transition-colors">Unconfigured Shelf</span>
-              <span className="block text-xs text-white/60 mt-0.5">Click to choose a content source for this row.</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onConfigure(row)
-              }}
-              className="text-xs font-semibold text-accent bg-accent/10 hover:bg-accent/20 px-3.5 py-2 rounded-xl border border-accent/10 transition-colors cursor-pointer"
-            >
-              Configure
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                if (confirm(`Delete shelf "${row.title}"?`)) {
-                  onRemove(row.id)
-                }
-              }}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
-              title="Delete Shelf"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Staggered row renderer ─────────────────────────────────────────────────
 
 function buildRowElement(row: HomeRowConfig): React.ReactNode {
@@ -969,15 +874,6 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
 }
 
 // ── Main Home Page Component ────────────────────────────────────────────────
-const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
-  { value: 'poster', label: 'Poster Carousel' },
-  { value: 'ranked', label: 'Ranked Posters' },
-  { value: 'feature', label: 'Feature Posters' },
-  { value: 'landscape', label: 'Landscape Carousel' },
-  { value: 'list', label: 'Compact List' },
-  { value: 'continue', label: 'Continue Watching' },
-];
-
 export default function HomePage() {
   const homeRootRef = useRef<HTMLDivElement>(null)
   // Do not subscribe Home to the entire app store. Playback progress, player

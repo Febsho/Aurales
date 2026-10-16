@@ -89,8 +89,6 @@ function mdblistRetryAfterMs(response: Response): number {
   return 10_000
 }
 
-type MdblistMediaType = 'movie' | 'show'
-
 export interface MdblistUser {
   user_id?: number
   username?: string

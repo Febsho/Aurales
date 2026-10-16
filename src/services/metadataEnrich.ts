@@ -277,7 +277,7 @@ export async function enrichMovieDetails(movie: MovieDetails): Promise<MovieDeta
       providerData = await fetchFromTmdbMovie(movie)
     }
 
-    let result = providerData ? mergeMovieDetails(movie, providerData) : { ...movie }
+    const result = providerData ? mergeMovieDetails(movie, providerData) : { ...movie }
 
     if (!result.imdbId) {
       result.imdbId = await resolveImdbId(
@@ -373,7 +373,7 @@ export async function enrichShowDetails(show: ShowDetails, isAnime?: boolean): P
 
     console.log('[enrich] provider result:', providerData ? { seasons: providerData.seasons.length, cast: providerData.cast.length, title: providerData.title } : 'null')
 
-    let result = providerData ? mergeShowDetails(show, providerData) : { ...show }
+    const result = providerData ? mergeShowDetails(show, providerData) : { ...show }
 
     if (!result.imdbId) {
       result.imdbId = await resolveImdbId(

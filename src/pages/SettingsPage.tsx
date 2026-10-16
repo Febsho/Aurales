@@ -6,23 +6,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
-import {
   getDeviceCode,
   pollForToken,
   cancelDeviceAuth,
@@ -31,7 +14,6 @@ import {
 } from '../services/trakt/auth'
 import {
   initiateSimklLogin,
-  completeSimklLogin,
   waitForSimklOauthCallback,
   disconnectSimkl,
   getSimklConnectionStatus,
@@ -847,105 +829,6 @@ function ArtworkSettingsSection() {
   )
 }
 
-interface PriorityItemProps {
-  id: string
-  label: string
-  connected: boolean
-}
-
-function SortablePriorityItem({ id, label, connected }: PriorityItemProps) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id })
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  }
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex items-center justify-between p-3 bg-white/[0.02] border border-white/[0.06] rounded-xl"
-    >
-      <div className="flex items-center gap-3">
-        <button
-          {...attributes}
-          {...listeners}
-          className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/5 cursor-grab text-white/60 hover:text-white transition-colors"
-          type="button"
-          aria-label={`Drag ${label}`}
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.4" viewBox="0 0 24 24">
-            <path d="M4 8h16M4 16h16" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <span className="text-sm font-semibold text-white">{label}</span>
-      </div>
-      <div>
-        <span className={`text-meta font-bold px-2 py-1 rounded-full uppercase tracking-wider ${
-          connected ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-white/5 text-white/50 border border-white/5'
-        }`}>
-          {connected ? 'Connected' : 'Not Connected'}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-function ResumePriorityList() {
-  const store = useAppStore()
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-
-    const oldIndex = store.resumePriorityOrder.indexOf(active.id as any)
-    const newIndex = store.resumePriorityOrder.indexOf(over.id as any)
-    const nextOrder = arrayMove(store.resumePriorityOrder, oldIndex, newIndex)
-    store.setResumePriorityOrder(nextOrder)
-  }
-
-  const serviceLabels: Record<string, string> = {
-    local: 'Local fallback',
-    simkl: 'Simkl',
-    trakt: 'Trakt',
-    pmdb: 'PMDB',
-    mdblist: 'MDBList',
-  }
-
-  const isServiceConnected = (id: string) => {
-    if (id === 'local') return false
-    if (id === 'simkl') return store.simklConnected
-    if (id === 'trakt') return store.traktConnected
-    if (id === 'pmdb') return !!store.pmdbApiKey
-    if (id === 'mdblist') return !!store.mdblistApiKey || hasMdblistOAuth()
-    return false
-  }
-
-  return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={store.resumePriorityOrder} strategy={verticalListSortingStrategy}>
-        <div className="space-y-2 max-w-md">
-          {store.resumePriorityOrder.map((id) => (
-            <SortablePriorityItem
-              key={id}
-              id={id}
-              label={serviceLabels[id] || id}
-              connected={isServiceConnected(id)}
-            />
-          ))}
-        </div>
-      </SortableContext>
-    </DndContext>
-  )
-}
-
 const AUDIENCE_OPTIONS = [
   { mode: 'auto', title: 'AUTO', subtitle: 'Infer from taste' },
   { mode: 'grown-up', title: 'GROWN-UP', subtitle: 'Block kids networks' },
@@ -1026,8 +909,6 @@ export default function SettingsPage() {
     : simklError
   const [simklLastSync, setSimklLastSync] = useState(getLastSimklSyncTime)
   const [simklAuthStarted, setSimklAuthStarted] = useState(false)
-  const [simklCode, setSimklCode] = useState('')
-  const [simklVerificationUrl, setSimklVerificationUrl] = useState('')
   const simklAuthRunRef = useRef(0)
   const simklPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simklTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1055,7 +936,7 @@ export default function SettingsPage() {
   const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
   const mdblistAuthRunRef = useRef(0)
   const mdblistApiKeyAtFocusRef = useRef(store.mdblistApiKey)
-  const [mdblistClientIdInput, setMdblistClientIdInput] = useState(getMdblistClientId)
+  const [mdblistClientIdInput] = useState(getMdblistClientId)
   const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
@@ -1771,23 +1652,6 @@ export default function SettingsPage() {
     simklPollRef.current = null
     simklTimeoutRef.current = null
     setSimklAuthStarted(false)
-    setSimklCode('')
-    setSimklVerificationUrl('')
-    setSimklError('')
-    setSimklLoading(false)
-  }
-
-  const finishSimklPinAuth = async (code: string) => {
-    const account = await completeSimklLogin(code)
-    if (simklPollRef.current) clearInterval(simklPollRef.current)
-    if (simklTimeoutRef.current) clearTimeout(simklTimeoutRef.current)
-    simklPollRef.current = null
-    simklTimeoutRef.current = null
-    store.setSimklConnected(true)
-    store.setSimklAccount(account)
-    setSimklAuthStarted(false)
-    setSimklCode('')
-    setSimklVerificationUrl('')
     setSimklError('')
     setSimklLoading(false)
   }
@@ -1813,23 +1677,6 @@ export default function SettingsPage() {
       setSimklError(`Simkl connection failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       if (authRun === simklAuthRunRef.current) setSimklLoading(false)
-    }
-  }
-
-  const handleSimklCodeSubmit = async () => {
-    const code = simklCode.trim()
-    if (!code) {
-      setSimklError('Paste the Simkl authorization code first.')
-      return
-    }
-    setSimklLoading(true)
-    setSimklError('')
-    try {
-      await finishSimklPinAuth(code)
-    } catch (e) {
-      setSimklError(`Connection failed: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      if (!simklPollRef.current) setSimklLoading(false)
     }
   }
 

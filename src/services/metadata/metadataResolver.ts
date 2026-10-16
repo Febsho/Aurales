@@ -402,8 +402,7 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
     }
     return item
   })()
-  let task: Promise<AppMediaItem>
-  task = work.finally(() => {
+  const task = work.finally(() => {
     if (pending.get(key) === task) pending.delete(key)
   })
   pending.set(key, task)

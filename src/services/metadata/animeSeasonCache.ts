@@ -50,8 +50,7 @@ export async function getOrLoadAnimeSeason(key: string, load: () => Promise<Seas
   if (cached) return cached
   const pendingAfterRead = pending.get(key)
   if (pendingAfterRead) return pendingAfterRead
-  let request: Promise<SeasonDetails | null>
-  request = load().then(async (season) => {
+  const request = load().then(async (season) => {
     if (generation !== seasonGeneration) {
       if (pending.get(key) === request) pending.delete(key)
       return getOrLoadAnimeSeason(key, load)
