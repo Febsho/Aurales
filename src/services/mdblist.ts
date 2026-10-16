@@ -27,6 +27,8 @@ interface RatingRequest {
 
 const BASE_URL = 'https://api.mdblist.com'
 const MAX_MDBLIST_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_MDBLIST_OAUTH_RESPONSE_BYTES = 1024 * 1024
+const MAX_MDBLIST_PUBLIC_LIST_HTML_BYTES = 2 * 1024 * 1024
 const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
 const BUILTIN_MDBLIST_CLIENT_ID = '1QZNjkmxhfpFEWOsOmAmkphArnbfoKeWlmbJZMOC'
 const MDBLIST_CLIENT_ID = import.meta.env.VITE_MDBLIST_CLIENT_ID || BUILTIN_MDBLIST_CLIENT_ID
@@ -254,7 +256,7 @@ async function postMdblistOAuthForm(path: string, params: Record<string, string>
       body: new URLSearchParams(params),
       signal,
     })
-    const data = await res.json().catch(() => null)
+    const data = await readBoundedResponseJson<any>(res, MAX_MDBLIST_OAUTH_RESPONSE_BYTES, 'MDBList OAuth response').catch(() => null)
     if (!res.ok) {
       const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${res.status})`
       const err = new Error(String(message)) as Error & { code?: string; status?: number }
@@ -692,7 +694,7 @@ async function searchMdblistPublicListsFallback(query: string): Promise<MdblistL
   const url = `https://mdblist.com/toplists/?public_list_name=${encodeURIComponent(query)}`
   const html = await withRequestTimeout(10_000, async (signal) => {
     const res = await fetch(url, { signal })
-    return res.ok ? res.text() : ''
+    return res.ok ? readBoundedResponseText(res, MAX_MDBLIST_PUBLIC_LIST_HTML_BYTES, 'MDBList public list response') : ''
   }, 'MDBList public list request timed out')
   if (!html) return []
 
