@@ -25,6 +25,8 @@ let lastServerUrl = ''
 let connectionPromise: Promise<void> | null = null
 let rejectConnection: ((reason: Error) => void) | null = null
 let sourceResolveController: AbortController | null = null
+const MAX_WATCH_TOGETHER_MESSAGE_CHARS = 1024 * 1024
+const MAX_WATCH_TOGETHER_DEBUG_DATA_CHARS = 8 * 1024
 
 // Live playback position reported by whichever player component is active.
 // The room's stored playback state only changes on discrete events (play,
@@ -75,7 +77,18 @@ function getStore() {
 }
 
 function logDebug(direction: 'in' | 'out', event: string, data?: any) {
-  getStore().addDebugLog({ timestamp: Date.now(), direction, event, data })
+  let boundedData = data
+  if (data !== undefined) {
+    try {
+      const serialized = JSON.stringify(data)
+      if (serialized.length > MAX_WATCH_TOGETHER_DEBUG_DATA_CHARS) {
+        boundedData = { truncated: true, preview: serialized.slice(0, MAX_WATCH_TOGETHER_DEBUG_DATA_CHARS) }
+      }
+    } catch (_) {
+      boundedData = { unavailable: 'Debug payload could not be serialized' }
+    }
+  }
+  getStore().addDebugLog({ timestamp: Date.now(), direction, event, data: boundedData })
 }
 
 // ── Connection ──────────────────────────────────────────────────────────────
@@ -160,12 +173,20 @@ function connectToServer(serverUrl: string): Promise<void> {
 
     socket.onmessage = (event) => {
       if (ws !== socket) return
+      if (typeof event.data !== 'string') {
+        logDebug('in', 'INVALID_MESSAGE', { reason: 'non-text websocket frame' })
+        return
+      }
+      if (event.data.length > MAX_WATCH_TOGETHER_MESSAGE_CHARS) {
+        logDebug('in', 'MESSAGE_TOO_LARGE', { characters: event.data.length })
+        return
+      }
       try {
         const msg: ServerMessage = JSON.parse(event.data)
         logDebug('in', msg.type, msg)
         handleServerMessage(msg)
       } catch (_) {
-        logDebug('in', 'PARSE_ERROR', { raw: event.data })
+        logDebug('in', 'PARSE_ERROR', { characters: event.data.length, preview: event.data.slice(0, 512) })
       }
     }
 
