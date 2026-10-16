@@ -11,15 +11,44 @@ import { getActiveProfileId, profileProviderCacheKey, profileStorageKey } from '
 
 const EXACT_EPISODE_PREFIX = 'simkl_episode_state_v1:'
 const EXACT_EPISODE_TTL_MS = 10 * 60 * 1000
+const EXACT_EPISODE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000
 const SIMKL_PENDING_EPISODES_KEY = 'simkl_pending_episode_marks_v1'
 const SIMKL_PENDING_TTL_MS = 24 * 60 * 60 * 1000
+let lastExactEpisodeCleanupAt = 0
 
 function profileEpisodeStateKey(localId: string, season: number, episode: number): string {
   return profileStorageKey(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`, getActiveProfileId())
 }
 
+function cleanupExpiredEpisodeStates(): void {
+  const now = Date.now()
+  if (now - lastExactEpisodeCleanupAt < EXACT_EPISODE_CLEANUP_INTERVAL_MS) return
+  lastExactEpisodeCleanupAt = now
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith(EXACT_EPISODE_PREFIX)) continue
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(key) || 'null')
+        if (!parsed || typeof parsed !== 'object') {
+          localStorage.removeItem(key)
+          continue
+        }
+        const state = parsed as { watched?: unknown; updatedAt?: unknown }
+        if (typeof state.watched !== 'boolean' || typeof state.updatedAt !== 'number'
+          || !Number.isFinite(state.updatedAt) || now - state.updatedAt > EXACT_EPISODE_TTL_MS) {
+          localStorage.removeItem(key)
+        }
+      } catch (_) {
+        localStorage.removeItem(key)
+      }
+    }
+  } catch (_) { /* episode state remains best-effort when storage is unavailable */ }
+}
+
 export function getSimklEpisodeExactState(localId: string, season: number, episode: number): boolean | undefined {
   try {
+    cleanupExpiredEpisodeStates()
     const key = profileEpisodeStateKey(localId, season, episode)
     const raw = localStorage.getItem(key)
     if (!raw) return undefined
