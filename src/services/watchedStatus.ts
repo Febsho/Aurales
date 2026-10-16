@@ -42,6 +42,7 @@ interface TraktDataIndex {
 }
 interface SimklCacheData { items: SimklWatchlistItem[] }
 interface PmdbCacheData { items: PMDBWatchedItem[] }
+type PmdbDataIndex = Map<number, PMDBWatchedItem[]>
 interface MdblistCacheData { items: MdblistWatchedItem[] }
 
 export function searchResultToLookup(item: SearchResult): WatchedLookupItem {
@@ -184,6 +185,7 @@ export async function batchIsWatchedFromProviders(
   const traktIndex = traktData && Array.isArray(traktData.movies) && Array.isArray(traktData.shows)
     ? buildTraktDataIndex(traktData)
     : undefined
+  const pmdbIndex = pmdbData && Array.isArray(pmdbData.items) ? buildPmdbDataIndex(pmdbData) : undefined
 
   const checkItem = async (item: WatchedLookupItem) => {
     if (providerSources.includes('trakt')) {
@@ -197,7 +199,7 @@ export async function batchIsWatchedFromProviders(
       if (await isSimklWatched(item, simklData ?? undefined)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('pmdb')) {
-      if (await isPmdbWatched(item, pmdbData ?? undefined)) { result.add(toKey(item)); return }
+      if (await isPmdbWatched(item, pmdbData ?? undefined, pmdbIndex)) { result.add(toKey(item)); return }
     }
     if (providerSources.includes('mdblist')) {
       if (await isMdblistWatched(item, mdblistData ?? undefined)) { result.add(toKey(item)); return }
@@ -806,7 +808,25 @@ async function resolveTmdbIdForLookup(item: WatchedLookupItem): Promise<number |
   return request
 }
 
-async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheData): Promise<boolean> {
+function normalizedTmdbNumber(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined
+  const parsed = Number(String(value).replace(/^tmdb[-:]/i, ''))
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function buildPmdbDataIndex(data: PmdbCacheData): PmdbDataIndex {
+  const index: PmdbDataIndex = new Map()
+  for (const entry of data.items) {
+    const tmdbId = normalizedTmdbNumber(entry.tmdb_id)
+    if (tmdbId == null) continue
+    const entries = index.get(tmdbId)
+    if (entries) entries.push(entry)
+    else index.set(tmdbId, [entry])
+  }
+  return index
+}
+
+async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheData, index?: PmdbDataIndex): Promise<boolean> {
   try {
     let item = rawItem
     if (item.tmdbId == null) {
@@ -815,6 +835,11 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
       item = { ...item, tmdbId: resolved }
     }
     const data = cachedData ?? await getPmdbCache()
+    const itemsForTmdb = (tmdbId: unknown) => {
+      if (!index) return data.items.filter((entry) => sameNumber(tmdbId, entry.tmdb_id))
+      const normalized = normalizedTmdbNumber(tmdbId)
+      return normalized == null ? [] : index.get(normalized) || []
+    }
 
     // For anime, try resolving the correct TMDB ID + season/episode via anime-mapping API
     if (item.isAnime && item.tvdbId != null && item.season != null && item.episode != null) {
@@ -831,7 +856,7 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
             const mappedTmdbId = apiMapping.tmdb.id
             const mappedSeason = apiMapping.tmdb.seasonNumber ?? item.season
             const mappedEpisode = apiMapping.tmdb.episodeNumber ?? item.episode
-            const found = data.items.some((entry) =>
+            const found = itemsForTmdb(mappedTmdbId).some((entry) =>
               entry.media_type === 'tv' &&
               sameNumber(mappedTmdbId, entry.tmdb_id) &&
               entry.season === mappedSeason &&
@@ -849,18 +874,17 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
         const { getTmdbAiredEpisodes } = await import('./tmdb')
         const airedEpisodes = await getTmdbAiredEpisodes(item.tmdbId)
         if (airedEpisodes.length > 0) {
-          const watched = new Set(data.items
-            .filter((entry) => entry.media_type === 'tv' && sameNumber(entry.tmdb_id, item.tmdbId) && entry.season != null && entry.episode != null)
+          const watched = new Set(itemsForTmdb(item.tmdbId)
+            .filter((entry) => entry.media_type === 'tv' && entry.season != null && entry.episode != null)
             .map((entry) => `${entry.season}:${entry.episode}`))
           return airedEpisodes.every((episode) => watched.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
         }
       } catch (_) { /* fall through */ }
     }
 
-    return data.items.some((entry) => {
+    return itemsForTmdb(item.tmdbId).some((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'tv') return false
-      if (!sameNumber(item.tmdbId, entry.tmdb_id)) return false
       if (item.type === 'movie') return true
       // Show-level completion: count all watched episodes across all seasons vs TMDB total
       if (item.season == null) return false // handled above
@@ -869,10 +893,9 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
         if (item.isAnime && item.appSeasonEpCounts) {
           const range = seasonAbsoluteRange(item)
           if (range) {
-            const watched = new Set(data.items
+            const watched = new Set(itemsForTmdb(item.tmdbId)
               .filter((watchedItem) =>
                 watchedItem.media_type === 'tv' &&
-                sameNumber(watchedItem.tmdb_id, item.tmdbId) &&
                 Number(watchedItem.season) === 1 &&
                 watchedItem.episode != null &&
                 Number(watchedItem.episode) >= range.start &&
@@ -883,8 +906,8 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
             if (watched.size >= item.seasonEpisodeCount) return true
           }
         }
-        const watched = new Set(data.items
-          .filter((watchedItem) => watchedItem.media_type === 'tv' && sameNumber(watchedItem.tmdb_id, item.tmdbId) && Number(watchedItem.season) === Number(item.season))
+        const watched = new Set(itemsForTmdb(item.tmdbId)
+          .filter((watchedItem) => watchedItem.media_type === 'tv' && Number(watchedItem.season) === Number(item.season))
           .map((watchedItem) => Number(watchedItem.episode))
           .filter((episode): episode is number => episode != null))
         return watched.size >= item.seasonEpisodeCount
