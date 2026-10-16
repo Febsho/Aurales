@@ -218,8 +218,9 @@ pub fn run() {
             }
 
             let app_dir = app.path().app_data_dir()?;
+            thumbnails::cleanup_thumbnail_cache(&app_dir);
 
-            let database = Database::new(app_dir)?;
+            let database = Database::new(app_dir.clone())?;
             app.manage(database);
             app.manage(core::detail_page::DetailPageCoordinator::default());
 

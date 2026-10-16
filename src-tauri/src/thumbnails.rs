@@ -18,6 +18,8 @@ const DEFAULT_MAX_FFMPEG_WORKERS: u32 = 2;
 const MAX_PREFETCH_SPRITE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_THUMBNAIL_FRAMES: u32 = 10_000;
 const MAX_THUMBNAIL_METADATA_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_THUMBNAIL_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_THUMBNAIL_CACHE_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const SPRITE_PREFETCH_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PREFETCHED_SPRITES: usize = 2;
 const MAX_FFMPEG_STDERR_BYTES: usize = 64 * 1024;
@@ -2085,6 +2087,96 @@ fn thumbnail_cache_dir(app: &tauri::AppHandle, cache_key: &str) -> Result<PathBu
         .app_data_dir()
         .map_err(|e| format!("resolve app data dir: {e}"))?;
     Ok(app_dir.join("ThumbnailCache").join(cache_key))
+}
+
+/// Keep generated thumbnails from growing indefinitely across media items.
+/// This runs at startup, so no cache request is in progress while the initial
+/// inventory is collected. Recheck active jobs immediately before evicting.
+pub fn cleanup_thumbnail_cache(app_dir: &Path) {
+    let root = app_dir.join("ThumbnailCache");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    let mut caches = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        let Some(cache_key) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let (bytes, newest) = thumbnail_cache_usage(&path, 0);
+        caches.push((path, cache_key, bytes, newest));
+    }
+
+    let mut total_bytes = caches
+        .iter()
+        .fold(0u64, |total, cache| total.saturating_add(cache.2));
+    caches.sort_by_key(|cache| cache.3);
+    for (path, cache_key, bytes, newest) in caches {
+        let too_old = now.duration_since(newest).unwrap_or_default() > MAX_THUMBNAIL_CACHE_AGE;
+        if !too_old && total_bytes <= MAX_THUMBNAIL_CACHE_BYTES {
+            continue;
+        }
+        if thumbnail_cache_key_is_active(&cache_key) {
+            continue;
+        }
+        if fs::remove_dir_all(&path).is_ok() {
+            total_bytes = total_bytes.saturating_sub(bytes);
+        }
+    }
+}
+
+fn thumbnail_cache_usage(path: &Path, depth: u8) -> (u64, SystemTime) {
+    if depth >= 4 {
+        return (0, SystemTime::UNIX_EPOCH);
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, SystemTime::UNIX_EPOCH);
+    };
+    let mut total = 0u64;
+    let mut newest = SystemTime::UNIX_EPOCH;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            let (bytes, modified) = thumbnail_cache_usage(&entry.path(), depth + 1);
+            total = total.saturating_add(bytes);
+            newest = newest.max(modified);
+        } else if kind.is_file() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            total = total.saturating_add(metadata.len());
+            newest = newest.max(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH));
+        }
+    }
+    (total, newest)
+}
+
+fn thumbnail_cache_key_is_active(cache_key: &str) -> bool {
+    let Ok(jobs) = active_jobs().lock() else {
+        return true;
+    };
+    let active_job = jobs.keys().any(|key| {
+        key.split_once(":interval-")
+            .is_some_and(|(key, _)| key == cache_key)
+    });
+    drop(jobs);
+    if active_job {
+        return true;
+    }
+    let Ok(generations) = background_generations().lock() else {
+        return true;
+    };
+    generations.contains(cache_key)
 }
 
 fn validate_request(request: &ThumbnailStartRequest) -> Result<(), String> {
