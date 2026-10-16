@@ -4,8 +4,12 @@ import type { InstalledAddon } from './addons'
 const STREMIO_API = 'https://api.strem.io/api'
 const STREMIO_REQUEST_TIMEOUT_MS = 15_000
 const MAX_STREMIO_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_CINEMETA_RESPONSE_BYTES = 4 * 1024 * 1024
+const MAX_CINEMETA_SERIES_VIDEOS = 50_000
+const MAX_STREMIO_WATCHED_FIELD_ENCODED_CHARS = 256 * 1024
+const MAX_STREMIO_WATCHED_FIELD_DECOMPRESSED_BYTES = 128 * 1024
 
-async function readStremioText(response: Response): Promise<string> {
+async function readStremioText(response: Response, maxBytes = MAX_STREMIO_RESPONSE_BYTES): Promise<string> {
   const reader = response.body?.getReader()
   if (!reader) return ''
   const chunks: Uint8Array[] = []
@@ -14,9 +18,9 @@ async function readStremioText(response: Response): Promise<string> {
     const { done, value } = await reader.read()
     if (done) break
     size += value.byteLength
-    if (size > MAX_STREMIO_RESPONSE_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel().catch(() => undefined)
-      throw new Error('Stremio response exceeded the 16 MiB limit')
+      throw new Error(`Stremio response exceeded the ${maxBytes}-byte limit`)
     }
     chunks.push(value)
   }
@@ -29,8 +33,8 @@ async function readStremioText(response: Response): Promise<string> {
   return new TextDecoder().decode(bytes)
 }
 
-async function readStremioJson<T>(response: Response): Promise<T> {
-  return JSON.parse(await readStremioText(response)) as T
+async function readStremioJson<T>(response: Response, maxBytes = MAX_STREMIO_RESPONSE_BYTES): Promise<T> {
+  return JSON.parse(await readStremioText(response, maxBytes)) as T
 }
 
 async function withRequestTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -79,7 +83,7 @@ async function parseStremioResponse(res: Response, fallbackMessage: string): Pro
   try {
     data = await readStremioJson<Record<string, unknown>>(res)
   } catch (error) {
-    if (error instanceof Error && error.message.includes('exceeded the 16 MiB limit')) throw error
+    if (error instanceof Error && error.message.includes('Stremio response exceeded the')) throw error
     // keep fallback below
   }
 
@@ -213,24 +217,49 @@ async function decodeWatchedEpisodes(entry: StremioLibraryEntry): Promise<string
   const anchorLength = Number(components.pop())
   const anchorId = components.join(':')
   const fallback = parseEpisodeId(anchorId).season != null ? [anchorId] : []
+  if (encoded.length > MAX_STREMIO_WATCHED_FIELD_ENCODED_CHARS
+    || !Number.isSafeInteger(anchorLength)
+    || anchorLength < 0
+    || anchorLength > MAX_STREMIO_WATCHED_FIELD_DECOMPRESSED_BYTES * 8) return fallback
 
   try {
     return await withRequestTimeout(async (signal) => {
       const response = await fetch(`https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(imdbId)}.json`, { signal })
       if (!response.ok) return fallback
-      const payload = await readStremioJson<{ meta?: { videos?: StremioMetaVideo[] } }>(response)
+      const payload = await readStremioJson<{ meta?: { videos?: StremioMetaVideo[] } }>(response, MAX_CINEMETA_RESPONSE_BYTES)
       const videos = (payload.meta?.videos || [])
         .filter((video) => video?.id)
         .sort((left, right) => (left.season ?? -1) - (right.season ?? -1)
           || (left.episode ?? -1) - (right.episode ?? -1)
           || String(left.released || '').localeCompare(String(right.released || '')))
+      if (videos.length > MAX_CINEMETA_SERIES_VIDEOS) return fallback
       const anchorIndex = videos.findIndex((video) => video.id === anchorId)
       if (anchorIndex < 0 || !Number.isFinite(anchorLength) || typeof DecompressionStream === 'undefined') return fallback
 
       const compressed = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
-      const inflated = new Uint8Array(await new Response(
-        new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate')),
-      ).arrayBuffer())
+      const reader = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate')).getReader()
+      const chunks: Uint8Array[] = []
+      let size = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          size += value.byteLength
+          if (size > MAX_STREMIO_WATCHED_FIELD_DECOMPRESSED_BYTES) {
+            await reader.cancel().catch(() => undefined)
+            throw new Error('Stremio watched bitfield exceeds its decompressed size limit')
+          }
+          chunks.push(value)
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      const inflated = new Uint8Array(size)
+      let byteOffset = 0
+      for (const chunk of chunks) {
+        inflated.set(chunk, byteOffset)
+        byteOffset += chunk.byteLength
+      }
       const offset = anchorLength - anchorIndex - 1
       return videos.flatMap((video, index) => {
         const previousIndex = index + offset
