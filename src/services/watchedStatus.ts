@@ -926,36 +926,37 @@ async function isPmdbWatched(rawItem: WatchedLookupItem, cachedData?: PmdbCacheD
       } catch (_) { /* fall through */ }
     }
 
+    if (item.type === 'series' && item.season != null && item.episode == null) {
+      if (!item.seasonEpisodeCount) return false
+      if (item.isAnime && item.appSeasonEpCounts) {
+        const range = seasonAbsoluteRange(item)
+        if (range) {
+          const watchedAbsoluteEpisodes = new Set(itemsForTmdb(item.tmdbId)
+            .filter((watchedItem) =>
+              watchedItem.media_type === 'tv' &&
+              Number(watchedItem.season) === 1 &&
+              watchedItem.episode != null &&
+              Number(watchedItem.episode) >= range.start &&
+              Number(watchedItem.episode) <= range.end
+            )
+            .map((watchedItem) => Number(watchedItem.episode))
+            .filter((episode): episode is number => episode != null))
+          if (watchedAbsoluteEpisodes.size >= item.seasonEpisodeCount) return true
+        }
+      }
+      const watchedSeasonEpisodes = new Set(itemsForTmdb(item.tmdbId)
+        .filter((watchedItem) => watchedItem.media_type === 'tv' && Number(watchedItem.season) === Number(item.season))
+        .map((watchedItem) => Number(watchedItem.episode))
+        .filter((episode): episode is number => episode != null))
+      return watchedSeasonEpisodes.size >= item.seasonEpisodeCount
+    }
+
     return itemsForTmdb(item.tmdbId).some((entry) => {
       if (item.type === 'movie' && entry.media_type !== 'movie') return false
       if (item.type === 'series' && entry.media_type !== 'tv') return false
       if (item.type === 'movie') return true
       // Show-level completion: count all watched episodes across all seasons vs TMDB total
       if (item.season == null) return false // handled above
-      if (item.episode == null) {
-        if (!item.seasonEpisodeCount) return false
-        if (item.isAnime && item.appSeasonEpCounts) {
-          const range = seasonAbsoluteRange(item)
-          if (range) {
-            const watched = new Set(itemsForTmdb(item.tmdbId)
-              .filter((watchedItem) =>
-                watchedItem.media_type === 'tv' &&
-                Number(watchedItem.season) === 1 &&
-                watchedItem.episode != null &&
-                Number(watchedItem.episode) >= range.start &&
-                Number(watchedItem.episode) <= range.end
-              )
-              .map((watchedItem) => Number(watchedItem.episode))
-              .filter((episode): episode is number => episode != null))
-            if (watched.size >= item.seasonEpisodeCount) return true
-          }
-        }
-        const watched = new Set(itemsForTmdb(item.tmdbId)
-          .filter((watchedItem) => watchedItem.media_type === 'tv' && Number(watchedItem.season) === Number(item.season))
-          .map((watchedItem) => Number(watchedItem.episode))
-          .filter((episode): episode is number => episode != null))
-        return watched.size >= item.seasonEpisodeCount
-      }
       return (
         (Number(entry.season) === Number(item.season) && Number(entry.episode) === Number(item.episode)) ||
         (item.isAnime && item.absoluteEpisode != null && Number(entry.season) === 1 && Number(entry.episode) === Number(item.absoluteEpisode))
