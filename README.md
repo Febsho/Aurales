@@ -694,6 +694,34 @@ Install dependencies:
 npm ci
 ```
 
+The desktop build also needs platform media binaries. On Windows, install
+[7-Zip](https://www.7-zip.org/) and run the setup script from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-binaries.ps1
+```
+
+On Linux, run the setup script from a terminal. It downloads `yt-dlp`, checks
+for `mpv`, `libmpv`, and `ffmpeg`, and offers to install missing packages using
+the detected system package manager:
+
+```bash
+./scripts/setup-binaries.sh
+```
+
+The Linux Tauri build uses the Linux-specific configuration. Windows uses the
+default configuration:
+
+```bash
+# Windows
+npm run tauri dev
+npm run tauri build
+
+# Linux
+npm run tauri dev -- --config src-tauri/tauri.linux.conf.json
+npm run tauri build -- --config src-tauri/tauri.linux.conf.json
+```
+
 Run the frontend:
 
 ```bash
@@ -704,7 +732,6 @@ Build:
 
 ```bash
 npm run build
-npm run tauri build
 ```
 
 Run tests:
