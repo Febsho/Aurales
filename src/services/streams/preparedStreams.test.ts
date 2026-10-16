@@ -5,7 +5,7 @@ const requestMock = vi.fn()
 const probeMock = vi.fn()
 
 vi.mock('./preloadManager', () => ({
-  streamPreloadManager: { request: (...args: unknown[]) => requestMock(...args) },
+  streamPreloadManager: { request: (...args: unknown[]) => requestMock(...args), configurationKey: () => 'test-config' },
   StreamPreloadPriority: { PLAYBACK: 100, DETAILS_OPEN: 90, CONTINUE_CURRENT: 80, CONTINUE_NEXT_EPISODE: 70, IDLE_PREDICTION: 10 },
 }))
 vi.mock('./streamProbe', () => ({
@@ -14,6 +14,7 @@ vi.mock('./streamProbe', () => ({
 vi.mock('./reliabilityHistory', () => ({
   loadReliabilityHistory: () => ({}),
   getReliability: () => ({ success: 0, preferred: 0, failedStart: 0, unstable: 0, reportedBad: 0 }),
+  reliabilityHistoryRevision: () => 0,
   streamFingerprint: (stream: { url?: string }) => stream.url || 'fp',
 }))
 vi.mock('../../stores/appStore', () => ({

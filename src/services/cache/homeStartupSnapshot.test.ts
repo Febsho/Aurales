@@ -50,7 +50,8 @@ describe('Home startup snapshots', () => {
   it('caps snapshots at fifteen items and ignores malformed storage', () => {
     writeHeroStartupSnapshot(heroRow(), Array.from({ length: 20 }, (_, index) => heroItem(String(index))))
     expect(readHeroStartupSnapshot(heroRow())).toHaveLength(15)
-    values.set('aurales_home_startup_snapshots_v1', '{broken')
+    const snapshotKey = [...values.keys()].find((key) => key.startsWith('aurales_home_startup_snapshots_v1:profile:'))!
+    values.set(snapshotKey, '{broken')
     expect(readHeroStartupSnapshot(heroRow())).toBeNull()
   })
 

@@ -26,14 +26,14 @@ describe('coarse sync batch', () => {
 
   it('keeps injected/browser fetching as the compatibility path', async () => {
     vi.stubGlobal('window', {})
-    const fetcher = vi.fn(async () => ({ ok: true, json: async () => ({ cursor: '5', records: [] }) })) as unknown as typeof fetch
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ cursor: '5', records: [] }), { status: 200 }))
     await expect(runSyncBatch(input, fetcher)).resolves.toEqual({ cursor: '5', records: [] })
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect(invokeMock).not.toHaveBeenCalled()
   })
 
   it('uses the compatibility transport for an older binary without sync_batch', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ cursor: '5', records: [] }) })) as unknown as typeof fetch
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ cursor: '5', records: [] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
     invokeMock.mockRejectedValue(new Error('Command sync_batch not found'))

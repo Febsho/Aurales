@@ -4,33 +4,34 @@ import type { WatchProgress } from '../types'
 
 describe('viewing activity', () => {
   beforeEach(() => {
-    const values = new Map<string, string>()
-    vi.stubGlobal('localStorage', {
-      getItem: (key: string) => values.get(key) || null,
-      setItem: (key: string, value: string) => values.set(key, value),
-    })
+    const preserved = new Map(['aurales_profiles_v1', 'aurales_active_profile_v1']
+      .map((key) => [key, localStorage.getItem(key)] as const))
+    localStorage.clear()
+    for (const [key, value] of preserved) if (value != null) localStorage.setItem(key, value)
     vi.stubGlobal('window', { dispatchEvent: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() })
   })
 
   it('counts normal playback deltas and ignores large seeks', () => {
+    const sampledAt = Date.now() - 20_000
     const base = { mediaKey: 'movie-a', title: 'Movie A', mediaType: 'movie' as const, genres: ['Drama'], positionSeconds: 10, durationSeconds: 100, playing: true, completed: false }
-    recordPlaybackSample({ ...base, sampledAt: 1_700_000_000_000 })
-    recordPlaybackSample({ ...base, positionSeconds: 20, sampledAt: 1_700_000_010_000 })
-    recordPlaybackSample({ ...base, positionSeconds: 90, sampledAt: 1_700_000_012_000 })
+    recordPlaybackSample({ ...base, sampledAt })
+    recordPlaybackSample({ ...base, positionSeconds: 20, sampledAt: sampledAt + 10_000 })
+    recordPlaybackSample({ ...base, positionSeconds: 90, sampledAt: sampledAt + 12_000 })
     const summary = summarizeViewingActivity('all')
     expect(summary.totalSeconds).toBe(10)
     expect(summary.mediaSeconds.movie).toBe(10)
     expect(summary.topTitles[0]).toMatchObject({ title: 'Movie A', seconds: 10 })
     expect(summary.topGenres).toContainEqual({ genre: 'Drama', seconds: 10 })
     expect(summary.recent[0]).toMatchObject({ title: 'Movie A', seconds: 10 })
-    expect(summarizeViewingActivity('12m').totalSeconds).toBe(0)
+    expect(summarizeViewingActivity('12m').totalSeconds).toBe(10)
   })
 
   it('counts a completion once', () => {
+    const sampledAt = Date.now() - 20_000
     const base = { mediaKey: 'episode-a', title: 'Series A', mediaType: 'series' as const, season: 1, episode: 2, durationSeconds: 100, playing: true }
-    recordPlaybackSample({ ...base, positionSeconds: 80, completed: false, sampledAt: 1_700_100_000_000 })
-    recordPlaybackSample({ ...base, positionSeconds: 90, completed: true, sampledAt: 1_700_100_010_000 })
-    recordPlaybackSample({ ...base, positionSeconds: 95, completed: true, sampledAt: 1_700_100_015_000 })
+    recordPlaybackSample({ ...base, positionSeconds: 80, completed: false, sampledAt })
+    recordPlaybackSample({ ...base, positionSeconds: 90, completed: true, sampledAt: sampledAt + 10_000 })
+    recordPlaybackSample({ ...base, positionSeconds: 95, completed: true, sampledAt: sampledAt + 15_000 })
     const summary = summarizeViewingActivity('all')
     expect(summary.completions).toBe(1)
     expect(summary.recent).toHaveLength(1)
@@ -48,9 +49,10 @@ describe('viewing activity', () => {
   })
 
   it('does not keep non-animation titles in the anime category', () => {
+    const sampledAt = Date.now() - 20_000
     const base = { mediaKey: 'silo', title: 'Silo', mediaType: 'anime' as const, genres: ['Drama', 'Sci-Fi & Fantasy'], season: 1, episode: 1, positionSeconds: 10, durationSeconds: 100, playing: true, completed: false }
-    recordPlaybackSample({ ...base, sampledAt: 1_700_200_000_000 })
-    recordPlaybackSample({ ...base, positionSeconds: 20, sampledAt: 1_700_200_010_000 })
+    recordPlaybackSample({ ...base, sampledAt })
+    recordPlaybackSample({ ...base, positionSeconds: 20, sampledAt: sampledAt + 10_000 })
     expect(summarizeViewingActivity('all', 'anime').totalSeconds).toBe(0)
     expect(summarizeViewingActivity('all', 'series').totalSeconds).toBe(10)
   })

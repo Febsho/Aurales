@@ -26,7 +26,7 @@ describe('native addon catalog loader', () => {
         mediaType: 'series',
         catalogId: 'top now',
         extra: [{ key: 'search', value: 'A/B' }, { key: 'skip', value: '20' }],
-        cancelGroup: 'search',
+        cancelGroup: expect.stringContaining('search:catalog:'),
         priority: 'interactive',
       }),
     })
@@ -38,7 +38,7 @@ describe('native addon catalog loader', () => {
       .rejects.toMatchObject({ name: 'AbortError' })
   })
 
-  it('prevents rapid A to B to C navigation from accepting older results', async () => {
+  it('keeps concurrent sibling catalogs independent', async () => {
     const resolvers: Array<(value: unknown) => void> = []
     invokeMock.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)))
     const a = loadAddonCatalogNative('https://addon.example', 'series', 'a', undefined, { cancelGroup: 'catalog-page' })
@@ -48,8 +48,8 @@ describe('native addon catalog loader', () => {
     await expect(c).resolves.toEqual([{ id: 'c' }])
     resolvers[0]({ metas: [{ id: 'a' }], stale: false })
     resolvers[1]({ metas: [{ id: 'b' }], stale: false })
-    await expect(a).rejects.toMatchObject({ name: 'AbortError' })
-    await expect(b).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(a).resolves.toEqual([{ id: 'a' }])
+    await expect(b).resolves.toEqual([{ id: 'b' }])
   })
 
   it('loads complete addon detail metadata through one coarse request', async () => {
@@ -77,14 +77,14 @@ describe('native addon catalog loader', () => {
     await expect(b).resolves.toEqual({ id: 'b' })
   })
 
-  it('treats a superseded native failure as cancellation instead of starting legacy fallback', async () => {
+  it('keeps failures isolated between concurrent sibling catalogs', async () => {
     let rejectOld!: (error: Error) => void
     invokeMock.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
     const old = loadAddonCatalogNative('https://addon.example', 'series', 'a', undefined, { cancelGroup: 'failure-test' })
     invokeMock.mockResolvedValueOnce({ metas: [{ id: 'b' }], stale: false })
     await loadAddonCatalogNative('https://addon.example', 'series', 'b', undefined, { cancelGroup: 'failure-test' })
     rejectOld(new Error('network failure'))
-    await expect(old).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(old).rejects.toThrow('network failure')
   })
 
 })
