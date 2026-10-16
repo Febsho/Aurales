@@ -25,7 +25,7 @@ const SAFE_RELEASE_VERSION = /^[0-9][A-Za-z0-9.+-]{0,63}$/
  * `flatpak update com.aurales.app` can never discover a newer release.
  */
 export function getFlatpakInstallCommand(version: string): string | null {
-  if (!SAFE_RELEASE_VERSION.test(version)) return null
+  if (/\s/.test(version) || !SAFE_RELEASE_VERSION.test(version)) return null
   return `flatpak install --reinstall ~/Downloads/Aurales_${version}_amd64.flatpak`
 }
 
