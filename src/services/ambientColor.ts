@@ -15,6 +15,7 @@
  */
 
 const SAMPLE_SIZE = 8
+const IMAGE_DECODE_TIMEOUT_MS = 8_000
 /** Ceiling on how colourful the ambient tint may become. */
 const MAX_SATURATION = 0.5
 /** Fixed lightness: guarantees the tint is always darker than any text on it. */
@@ -126,14 +127,23 @@ function decode(url: string, signal?: AbortSignal): Promise<AmbientColor | null>
     if (signal?.aborted) return resolve(null)
     const image = new Image()
     image.crossOrigin = 'anonymous'
+    let settled = false
+    let abortHandler: (() => void) | null = null
+    let timeout: number | null = null
     const done = (value: AmbientColor | null) => {
+      if (settled) return
+      settled = true
+      if (timeout !== null) window.clearTimeout(timeout)
       image.onload = null
       image.onerror = null
+      if (abortHandler) signal?.removeEventListener('abort', abortHandler)
       resolve(value)
     }
     image.onload = () => done(signal?.aborted ? null : extractAmbientColor(image))
     image.onerror = () => done(null)
-    signal?.addEventListener('abort', () => done(null), { once: true })
+    abortHandler = () => done(null)
+    signal?.addEventListener('abort', abortHandler, { once: true })
+    timeout = window.setTimeout(() => done(null), IMAGE_DECODE_TIMEOUT_MS)
     image.src = url
   })
 }

@@ -4,7 +4,8 @@ import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
-import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
+import { addonServerScope } from './cache/homeRowCacheKeys'
+import { cancelRequestGroup, coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 import { recoverArtworkSource } from './imageCache'
 import { loadAddonCatalogNative, loadAddonMetaNative, nativeAddonCatalogAvailable } from './addonCatalogLoader'
 
@@ -42,7 +43,7 @@ function addonSupportsResource(manifest: StremioAddonManifest, resourceName: str
 }
 
 export async function loadAddonManifest(url: string): Promise<StremioAddonManifest> {
-  const manifestUrl = url.endsWith('/manifest.json') ? url : `${url.replace(/\/$/, '')}/manifest.json`
+  const manifestUrl = addonEndpoint(url, '/manifest.json')
   return coordinatedJson<StremioAddonManifest>(manifestUrl, {}, {
     label: addonLabel(url),
     kind: 'addon',
@@ -70,7 +71,30 @@ export function getAddonById(addonId: string): InstalledAddon | undefined {
 }
 
 function baseUrl(addonUrl: string): string {
-  return addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
+  try {
+    const url = new URL(addonUrl)
+    url.hash = ''
+    url.pathname = url.pathname.replace(/\/manifest\.json$/i, '').replace(/\/$/, '')
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return addonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '')
+  }
+}
+
+function addonEndpoint(addonUrl: string, path: string): string {
+  const url = new URL(baseUrl(addonUrl))
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/${path.replace(/^\/+/, '')}`
+  return url.toString()
+}
+
+function addonAssetUrl(rawUrl: string, addonUrl: string): string {
+  const base = new URL(baseUrl(addonUrl))
+  const inheritedSearch = base.search
+  base.search = ''
+  base.pathname = `${base.pathname.replace(/\/$/, '')}/`
+  const resolved = new URL(rawUrl, base)
+  if (resolved.origin === base.origin && !resolved.search && inheritedSearch) resolved.search = inheritedSearch
+  return resolved.toString()
 }
 
 function addonLabel(addonUrl: string): string {
@@ -84,7 +108,7 @@ function appManagedMetadataEnabled(): boolean {
 }
 
 export function getAddonConfigureUrl(addonUrl: string): string {
-  return `${baseUrl(addonUrl)}/configure`
+  return addonEndpoint(addonUrl, '/configure')
 }
 
 function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined {
@@ -96,7 +120,7 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
   if (/^https?:\/\//i.test(trimmed)) return recoverArtworkSource(trimmed)
   if (trimmed.startsWith('/')) {
     try {
-      return new URL(trimmed, `${baseUrl(addonUrl)}/`).toString()
+      return addonAssetUrl(trimmed, addonUrl)
     } catch (_) {
       return undefined
     }
@@ -105,7 +129,8 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
 }
 
 function firstString(...values: unknown[]): string | undefined {
-  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  const match = values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  return match?.trim()
 }
 
 function parseYear(meta: Record<string, unknown>): number | undefined {
@@ -136,17 +161,28 @@ function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: s
   const background = normalizeImageUrl(meta.background, addonUrl)
   const banner = normalizeImageUrl(meta.banner, addonUrl)
   const logo = normalizeImageUrl(meta.logo, addonUrl)
+  const declaredType = firstString(meta.type)?.toLowerCase()
+  const mediaType = declaredType === 'movie'
+    ? 'movie'
+    : declaredType === 'series' || declaredType === 'show' || declaredType === 'tv'
+      ? 'series'
+      : type === 'series' ? 'series' : 'movie'
+  const parsedRating = typeof meta.imdbRating === 'number'
+    ? meta.imdbRating
+    : typeof meta.imdbRating === 'string' && meta.imdbRating.trim() !== ''
+      ? Number(meta.imdbRating)
+      : Number.NaN
 
   return {
     id: String(meta.id || ''),
     title: firstString(meta.name, meta.title) || 'Unknown',
-    type: (firstString(meta.type) || type) as 'movie' | 'series',
+    type: mediaType,
     year: parseYear(meta),
     poster,
     backdrop: background || banner || (poster ? undefined : logo),
     logo,
     overview: firstString(meta.description, meta.overview),
-    rating: meta.imdbRating ? parseFloat(String(meta.imdbRating)) : undefined,
+    rating: Number.isFinite(parsedRating) && parsedRating >= 0 && parsedRating <= 10 ? parsedRating : undefined,
     imdbId: getImdbId(meta),
     tmdbId: getIdValue(meta, 'tmdb', 'tmdb_id', 'tmdbId'),
     tvdbId: getIdValue(meta, 'tvdb', 'tvdb_id', 'tvdbId'),
@@ -189,7 +225,7 @@ async function fetchAddonCatalog(
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error
         console.warn('[addons] Native catalog load failed, using compatibility path:', error)
-        data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
+        data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(addonEndpoint(addonUrl, path), {}, {
           label: addonLabel(addonUrl),
           kind: 'addon',
           dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
@@ -200,7 +236,7 @@ async function fetchAddonCatalog(
         })
       }
     } else {
-      data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${baseUrl(addonUrl)}${path}`, {}, {
+      data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(addonEndpoint(addonUrl, path), {}, {
         label: addonLabel(addonUrl),
         kind: 'addon',
         dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
@@ -210,7 +246,9 @@ async function fetchAddonCatalog(
         retry: 'interactive-once',
       })
     }
-    const raw = ((data.metas || []) as Record<string, unknown>[]).filter((m) => m.id)
+    const raw = ((data.metas || []) as unknown[]).filter((meta): meta is Record<string, unknown> => (
+      meta !== null && typeof meta === 'object' && !Array.isArray(meta) && Boolean((meta as Record<string, unknown>).id)
+    ))
     const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
     // Catalogs are previews. Resolving every result here used to turn one
     // addon request into dozens of metadata/artwork calls before first paint.
@@ -235,10 +273,10 @@ export async function getAddonCatalog(
     scope: 'catalog',
     id: catalogId,
     mediaType: type,
-    provider: addonId || addonUrl,
-    source: addonUrl,
+    provider: addonId || 'unknown',
+    source: addonServerScope(addonUrl),
     filters: { extra: extra || {}, appManagedMetadata: appManagedMetadataEnabled() },
-    version: 2,
+    version: 3,
   })
   return cachedFetch(key, (cacheContext) => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId, {
     ...requestContext,
@@ -256,7 +294,7 @@ export async function getAddonStreams(
   id: string
 ): Promise<StreamResult[]> {
   try {
-    const data = await coordinatedJson<{ streams?: StreamResult[] }>(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, {}, {
+    const data = await coordinatedJson<{ streams?: StreamResult[] }>(addonEndpoint(addonUrl, `/stream/${type}/${encodeURIComponent(id)}.json`), {}, {
       label: addonLabel(addonUrl),
       kind: 'addon',
       dedupeKey: `stream:${type}:${id}`,
@@ -283,20 +321,25 @@ export async function fetchAddonStreamsStrict(
   priority: RequestPriority = 'playback',
 ): Promise<StreamResult[]> {
   const group = signal ? `stream:${type}:${id}:${Math.random().toString(36).slice(2)}` : undefined
-  if (signal && group) {
-    signal.addEventListener('abort', () => {
-      import('./network/requestCoordinator').then(({ cancelRequestGroup }) => cancelRequestGroup(group))
-    }, { once: true })
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new DOMException('Request cancelled', 'AbortError')
   }
-  const data = await coordinatedJson<{ streams?: unknown }>(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`, {}, {
-    label: addonLabel(addonUrl),
-    kind: 'addon',
-    dedupeKey: `stream:${type}:${id}`,
-    priority,
-    cancelGroup: group,
-    timeoutMs: 8_000,
-    retry: priority === 'background' ? 'none' : 'interactive-once',
-  })
+  const cancel = () => { if (group) cancelRequestGroup(group) }
+  signal?.addEventListener('abort', cancel, { once: true })
+  let data: { streams?: unknown }
+  try {
+    data = await coordinatedJson<{ streams?: unknown }>(addonEndpoint(addonUrl, `/stream/${type}/${encodeURIComponent(id)}.json`), {}, {
+      label: addonLabel(addonUrl),
+      kind: 'addon',
+      dedupeKey: `stream:${type}:${id}`,
+      priority,
+      cancelGroup: group,
+      timeoutMs: 8_000,
+      retry: priority === 'background' ? 'none' : 'interactive-once',
+    })
+  } finally {
+    signal?.removeEventListener('abort', cancel)
+  }
   if (data.streams != null && !Array.isArray(data.streams)) throw new Error('Malformed streams response')
   return ((data.streams || []) as unknown[]).filter((stream): stream is StreamResult => Boolean(
     stream && typeof stream === 'object' &&
@@ -310,8 +353,7 @@ export async function getAddonMeta(
   id: string
 ): Promise<Record<string, unknown> | null> {
   try {
-    const source = baseUrl(addonUrl)
-    const key = `addon-meta:v1:${source}:${type}:${id}`
+    const key = `addon-meta:v2:${addonServerScope(addonUrl)}:${type}:${id}`
     return await cachedFetch<Record<string, unknown>>(key, async () => {
       if (nativeAddonCatalogAvailable()) {
         try {
@@ -321,7 +363,7 @@ export async function getAddonMeta(
           console.warn('[addons] Native metadata load failed, using compatibility path:', error)
         }
       }
-      const data = await coordinatedJson<{ meta?: Record<string, unknown> }>(`${source}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, {}, {
+      const data = await coordinatedJson<{ meta?: Record<string, unknown> }>(addonEndpoint(addonUrl, `/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`), {}, {
         label: addonLabel(addonUrl),
         kind: 'addon',
         dedupeKey: `meta:${type}:${id}`,
@@ -343,9 +385,10 @@ export async function getAddonMeta(
 export async function getAddonSubtitles(
   addonUrl: string,
   type: string,
-  id: string
+  id: string,
+  priority: RequestPriority = 'playback',
 ): Promise<SubtitleResult[]> {
-  const url = `${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`
+  const url = addonEndpoint(addonUrl, `/subtitles/${type}/${encodeURIComponent(id)}.json`)
   const normalize = (tracks: unknown[]): SubtitleResult[] => tracks
     .filter((track): track is Record<string, unknown> => Boolean(track) && typeof track === 'object')
     .flatMap((track, index): SubtitleResult[] => {
@@ -356,7 +399,7 @@ export async function getAddonSubtitles(
       try {
         return [{
           id: String(track.id || `addon-sub-${index}`),
-          url: new URL(rawUrl, `${baseUrl(addonUrl)}/`).toString(),
+          url: addonAssetUrl(rawUrl, addonUrl),
           lang,
           label,
         }]
@@ -365,14 +408,15 @@ export async function getAddonSubtitles(
       }
     })
   try {
-    return await cachedFetch<SubtitleResult[]>(`addon-subtitle:v1:${baseUrl(addonUrl)}:${type}:${id}`, async () => {
+    return await cachedFetch<SubtitleResult[]>(`addon-subtitle:v2:${addonServerScope(addonUrl)}:${type}:${id}`, async (context) => {
+      const requestPriority = context?.background ? 'background' : priority
       const data = await coordinatedJson<{ subtitles?: unknown[] }>(url, {}, {
         label: addonLabel(addonUrl),
         kind: 'addon',
         dedupeKey: `subtitles:${type}:${id}`,
-        priority: 'playback',
+        priority: requestPriority,
         timeoutMs: 8_000,
-        retry: 'interactive-once',
+        retry: requestPriority === 'background' ? 'none' : 'interactive-once',
       })
       return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
     }, {

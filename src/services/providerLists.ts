@@ -1,7 +1,7 @@
 import type { HomeRowConfig, SearchResult } from '../types'
 import { getAniListList, getStoredAniListAccount } from './anilist'
 import { getCollection, getWatchlist } from './trakt/sync'
-import { getListItems as getTraktListItems, getPublicListItems as getTraktPublicListItems, searchTraktPopularLists } from './trakt/lists'
+import { getListItems as getTraktListItems, getPublicListItems as getTraktPublicListItems, getUserLists, searchTraktPopularLists } from './trakt/lists'
 import {
   getPMDBListItems,
   getPMDBLists,
@@ -58,7 +58,7 @@ export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType'
   const key = providerListCacheKey(row)
   if (forceRefresh) {
     const fresh = await loadProviderListItems(row)
-    if (fresh.length) await cacheSet(key, fresh, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+    if (fresh.length) void cacheSet(key, fresh, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
     return fresh
   }
   return cachedFetch<SearchResult[]>(key, () => loadProviderListItems(row), {
@@ -110,7 +110,7 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         execute: async () => {
           const enriched = await canonicalizeCatalogItemsWithTvdb(canonicalDeduplicated, { preservePictures: false })
           if (enriched.length) {
-            await cacheSet(key, enriched, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+            void cacheSet(key, enriched, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
           }
           return enriched
         },
@@ -132,7 +132,7 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         const enriched = await enrichSearchResultsWithAppMetadata(items)
         const canonical = await canonicalizeCatalogItemsWithTvdb(enriched)
         if (canonical.length) {
-          await cacheSet(key, canonical, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+          void cacheSet(key, canonical, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
         }
         return canonical
       },
@@ -154,7 +154,7 @@ export async function canonicalizeCatalogItemsWithTvdb(
       const item = items[index]
       if (item.type !== 'series') continue
 
-      let tvdbId = item.tvdbId ? Number(String(item.tvdbId).replace('tvdb-', '')) || undefined : undefined
+      let tvdbId = item.tvdbId ? Number(String(item.tvdbId).replace(/^tvdb[-:]/i, '')) || undefined : undefined
       let resolvedTmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
       if (!tvdbId && (item.anilistId || item.malId)) {
         const anime = await resolveAnimeIds({
@@ -208,12 +208,12 @@ export async function canonicalizeCatalogItemsWithTvdb(
   const seen = new Set<string>()
   return results.filter((item) => {
     if (item.tvdbId) {
-      const key = `tvdb:${String(item.tvdbId).replace('tvdb-', '')}`
+      const key = `tvdb:${String(item.tvdbId).replace(/^tvdb[-:]/i, '')}`
       if (seen.has(key)) return false
       seen.add(key)
     }
     if (item.tmdbId) {
-      const key = `tmdb:${String(item.tmdbId).replace('tmdb-', '')}`
+      const key = `tmdb:${String(item.tmdbId).replace(/^tmdb[-:]/i, '')}`
       if (seen.has(key)) return false
       seen.add(key)
     }
@@ -223,7 +223,6 @@ export async function canonicalizeCatalogItemsWithTvdb(
 
 export async function getAvailableTraktListSources(): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
   try {
-    const { getUserLists } = await import('./trakt/lists')
     const lists = await getUserLists()
     return [
       ...TRAKT_LIST_SOURCES,
@@ -299,8 +298,23 @@ async function getPmdbProviderList(id: string): Promise<SearchResult[]> {
   const raw = id.startsWith('list:')
     ? await getPMDBListItems(id.slice(5))
     : await getPMDBWatchlistItems()
-  const items = await Promise.all(raw.map(pmdbItemToSearchResult))
+  // PMDB lists can contain hundreds of items, and each TMDB detail lookup
+  // starts several requests. Bound concurrency to avoid flooding the API and
+  // starving visible-page requests while preserving list order.
+  const items = await mapLimit(raw, 4, pmdbItemToSearchResult)
   return items.filter((item): item is SearchResult => item !== null)
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await mapper(items[index])
+    }
+  }))
+  return results
 }
 
 async function getMdblistProviderList(id: string): Promise<SearchResult[]> {

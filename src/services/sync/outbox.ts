@@ -41,18 +41,36 @@ type OutboxEntry = { record: SyncRecord; bytes: number }
 const records = new Map<string, OutboxEntry>()
 let totalBytes = 0
 let persistTimer: ReturnType<typeof setTimeout> | undefined
+let persistChain: Promise<void> = Promise.resolve()
+let outboxVersion = 0
 let lastPersistError: string | undefined
+let hydrationComplete = false
+let persistRequestedDuringHydration = false
+// A failed read must never be treated as an empty queue: the next write would
+// otherwise overwrite records that are still safely stored in IndexedDB.
+let storageReadSucceeded = false
 /** A refused or evicted record is a standing condition, so it is tracked apart from a transient write failure. */
 let lastCapacityWarning: string | undefined
 
 /**
- * Serialised size, which is what both the storage layer and the request body
- * are measured in. Vault ciphertext is base64, so for the records that actually
- * approach the limits this equals the UTF-8 byte count exactly; a title with
- * non-ASCII characters is undercounted slightly, which the headroom absorbs.
+ * UTF-8 serialized size, matching the request body's actual byte limit even
+ * when profile values contain multibyte characters.
  */
 function measure(record: SyncRecord): number {
-  try { return JSON.stringify(record).length } catch { return Number.MAX_SAFE_INTEGER }
+  try { return new TextEncoder().encode(JSON.stringify(record)).byteLength } catch { return Number.MAX_SAFE_INTEGER }
+}
+
+function isSyncRecord(value: unknown): value is SyncRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Partial<SyncRecord>
+  return typeof record.recordId === 'string' && record.recordId.length > 0
+    && typeof record.profileId === 'string' && record.profileId.length > 0
+    && ['profile', 'progress', 'watchlist', 'discovery-feedback', 'playback-memory', 'profile-preferences', 'encrypted-vault'].includes(record.type as string)
+    && typeof record.updatedAt === 'string'
+    && typeof record.deviceId === 'string' && record.deviceId.length > 0
+    && typeof record.version === 'number' && Number.isFinite(record.version)
+    && typeof record.schemaVersion === 'number' && Number.isFinite(record.schemaVersion)
+    && (record.revision == null || (typeof record.revision === 'number' && Number.isFinite(record.revision)))
 }
 
 function openOutboxDb(): Promise<IDBDatabase> {
@@ -63,20 +81,34 @@ function openOutboxDb(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error || new Error('Could not open sync outbox storage'))
   })
 }
-async function readStoredOutbox(): Promise<SyncRecord[] | undefined> {
+async function readStoredOutbox(): Promise<unknown> {
   const db = await openOutboxDb()
-  return new Promise((resolve, reject) => { const request = db.transaction(OUTBOX_STORE, 'readonly').objectStore(OUTBOX_STORE).get(OUTBOX_RECORD_KEY); request.onsuccess = () => { db.close(); resolve(request.result as SyncRecord[] | undefined) }; request.onerror = () => { db.close(); reject(request.error) } })
+  return new Promise((resolve, reject) => { const request = db.transaction(OUTBOX_STORE, 'readonly').objectStore(OUTBOX_STORE).get(OUTBOX_RECORD_KEY); request.onsuccess = () => { db.close(); resolve(request.result) }; request.onerror = () => { db.close(); reject(request.error) } })
 }
 async function writeStoredOutbox(value: SyncRecord[]): Promise<void> {
   const db = await openOutboxDb()
-  await new Promise<void>((resolve, reject) => { const transaction = db.transaction(OUTBOX_STORE, 'readwrite'); transaction.objectStore(OUTBOX_STORE).put(value, OUTBOX_RECORD_KEY); transaction.oncomplete = () => { db.close(); resolve() }; transaction.onerror = () => { db.close(); reject(transaction.error) } })
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(OUTBOX_STORE, 'readwrite')
+    transaction.objectStore(OUTBOX_STORE).put(value, OUTBOX_RECORD_KEY)
+    let settled = false
+    const finish = (error?: DOMException | null) => {
+      if (settled) return
+      settled = true
+      db.close()
+      if (error) reject(error)
+      else resolve()
+    }
+    transaction.oncomplete = () => finish()
+    transaction.onerror = () => finish(transaction.error || new DOMException('Outbox transaction failed', 'UnknownError'))
+    transaction.onabort = () => finish(transaction.error || new DOMException('Outbox transaction was aborted', 'AbortError'))
+  })
 }
 
 /** Reads the pre-IndexedDB queue and frees the localStorage it was occupying. */
 function readLegacyOutbox(): SyncRecord[] {
   try {
     const value = JSON.parse(localStorage.getItem(LEGACY_OUTBOX_KEY) || '[]')
-    return Array.isArray(value) ? value as SyncRecord[] : []
+    return Array.isArray(value) ? value.filter(isSyncRecord) : []
   } catch { return [] }
 }
 
@@ -89,10 +121,19 @@ function notifyChanged(): void {
  * once rather than rewriting the whole queue on every enqueue.
  */
 function schedulePersist(): void {
+  // Do not write a partial in-memory queue while IndexedDB is still loading;
+  // that write could replace durable records before they are merged.
+  if (!hydrationComplete) {
+    persistRequestedDuringHydration = true
+    return
+  }
+  if (!storageReadSucceeded) return
   if (persistTimer) clearTimeout(persistTimer)
   persistTimer = setTimeout(() => {
     persistTimer = undefined
-    void writeStoredOutbox(getOutboxRecords())
+    // Serialize transactions. Without this, a slower older write can finish
+    // after a newer snapshot and resurrect records that were already removed.
+    persistChain = persistChain.catch(() => undefined).then(() => writeStoredOutbox(getOutboxRecords()))
       .then(() => { lastPersistError = undefined })
       .catch((error) => {
         // Never rethrow: a storage failure must not abort the sync that is
@@ -108,32 +149,97 @@ let hydration: Promise<void> | undefined
 export function loadOutbox(): Promise<void> {
   if (hydration) return hydration
   hydration = (async () => {
-    let stored: SyncRecord[] | undefined
-    try { stored = await readStoredOutbox() } catch (error) { console.error('[sync] could not read the stored outbox', error) }
-    const legacy = readLegacyOutbox()
-    for (const record of [...(stored || []), ...legacy]) {
-      if (!record?.recordId) continue
-      const previous = records.get(record.recordId)
-      if (previous) totalBytes -= previous.bytes
-      const bytes = measure(record)
-      records.set(record.recordId, { record, bytes })
-      totalBytes += bytes
+    try {
+      let storedValue: unknown
+      try {
+        storedValue = await readStoredOutbox()
+        storageReadSucceeded = true
+      } catch (error) {
+        lastPersistError = error instanceof Error ? error.message : String(error)
+        console.error('[sync] could not read the stored outbox', error)
+      }
+      const legacy = readLegacyOutbox()
+      const stored = Array.isArray(storedValue) ? storedValue.filter(isSyncRecord) : []
+      let changed = storedValue !== undefined && (!Array.isArray(storedValue) || stored.length !== storedValue.length)
+      for (const record of [...stored, ...legacy]) {
+        const bytes = measure(record)
+        if (bytes > MAX_RECORD_BYTES) {
+          lastCapacityWarning = `A ${Math.round(bytes / 1_000_000)} MB ${record.type} change was too large to sync and was removed from the queue.`
+          changed = true
+          continue
+        }
+        const previous = records.get(record.recordId)
+        if (previous) {
+          const previousAt = Date.parse(previous.record.updatedAt)
+          const incomingAt = Date.parse(record.updatedAt)
+          // New edits can enter the synchronous in-memory queue before the
+          // IndexedDB read finishes. Preserve that value over a stale snapshot.
+          if (!Number.isFinite(incomingAt) || (Number.isFinite(previousAt) && previousAt >= incomingAt)) continue
+          totalBytes -= previous.bytes
+          changed = true
+        }
+        records.set(record.recordId, { record, bytes })
+        totalBytes += bytes
+      }
+      const beforeCapacityEviction = records.size
+      evictOverflow()
+      changed ||= records.size !== beforeCapacityEviction
+      if (legacy.length && storageReadSucceeded) {
+        // Migrate before clearing, so a failed write cannot lose queued changes.
+        try { await writeStoredOutbox(getOutboxRecords()) } catch (error) { console.error('[sync] could not migrate the outbox', error); notifyChanged(); return }
+      }
+      // Reclaim the localStorage the old queue held, whether or not it had
+      // entries. This is what unsticks an app already over the WebView quota.
+      if (storageReadSucceeded) {
+        try { localStorage.removeItem(LEGACY_OUTBOX_KEY) } catch { /* nothing further to reclaim */ }
+      }
+      notifyChanged()
+      if (changed) schedulePersist()
+    } finally {
+      hydrationComplete = true
+      if (persistRequestedDuringHydration) {
+        persistRequestedDuringHydration = false
+        schedulePersist()
+      }
     }
-    evictOverflow()
-    if (legacy.length) {
-      // Migrate before clearing, so a failed write cannot lose queued changes.
-      try { await writeStoredOutbox(getOutboxRecords()) } catch (error) { console.error('[sync] could not migrate the outbox', error); notifyChanged(); return }
-    }
-    // Reclaim the localStorage the old queue held, whether or not it had
-    // entries. This is what unsticks an app already over the WebView quota.
-    try { localStorage.removeItem(LEGACY_OUTBOX_KEY) } catch { /* nothing further to reclaim */ }
-    notifyChanged()
   })()
   return hydration
 }
 
 /** Resolves once the queue has been read back from storage. */
 export const outboxReady = (): Promise<void> => loadOutbox()
+
+/** Forces the current in-memory queue to IndexedDB before a page reload. */
+export async function flushOutbox(): Promise<void> {
+  await outboxReady()
+  if (!storageReadSucceeded) {
+    throw new Error(lastPersistError || 'Could not read the sync outbox; refusing to overwrite stored records.')
+  }
+  for (;;) {
+    if (persistTimer) {
+      clearTimeout(persistTimer)
+      persistTimer = undefined
+    }
+    const version = outboxVersion
+    const snapshot = getOutboxRecords()
+    const write = persistChain
+      .catch(() => undefined)
+      .then(() => writeStoredOutbox(snapshot))
+    persistChain = write
+    try {
+      await write
+      lastPersistError = undefined
+    } catch (error) {
+      lastPersistError = error instanceof Error ? error.message : String(error)
+      throw error
+    }
+    // Enqueues/removals can race this write, including when their debounce
+    // timer fires before the transaction completes. Compare the actual state
+    // version as well as the timer so this resolves only after the latest
+    // snapshot is durable.
+    if (version === outboxVersion && !persistTimer) return
+  }
+}
 
 export function getOutboxRecords(): SyncRecord[] { return [...records.values()].map((entry) => entry.record) }
 export function getOutboxBytes(): number { return totalBytes }
@@ -155,22 +261,39 @@ function evictOverflow(): void {
  * to ever be uploaded, in which case it is not queued.
  */
 export function putOutboxRecord(record: SyncRecord): boolean {
-  const bytes = measure(record)
-  if (bytes > MAX_RECORD_BYTES) {
-    lastCapacityWarning = `A ${Math.round(bytes / 1_000_000)} MB ${record.type} change is larger than the sync service accepts and was not queued.`
-    console.error('[sync] refusing to queue an unsendable record', record.recordId, bytes)
-    notifyChanged()
-    return false
+  return putOutboxRecords([record])[0] ?? false
+}
+
+/** Queues a related group with one persistence pass and one change event. */
+export function putOutboxRecords(batch: SyncRecord[]): boolean[] {
+  if (batch.length === 0) return []
+  let changed = false
+  let rejected = false
+  const accepted = batch.map((record) => {
+    const bytes = measure(record)
+    if (bytes > MAX_RECORD_BYTES) {
+      lastCapacityWarning = `A ${Math.round(bytes / 1_000_000)} MB ${record.type} change is larger than the sync service accepts and was not queued.`
+      console.error('[sync] refusing to queue an unsendable record', record.recordId, bytes)
+      rejected = true
+      return false
+    }
+    const previous = records.get(record.recordId)
+    if (previous) totalBytes -= previous.bytes
+    records.delete(record.recordId)
+    records.set(record.recordId, { record, bytes })
+    totalBytes += bytes
+    changed = true
+    return true
+  })
+  if (changed) {
+    outboxVersion += 1
+    evictOverflow()
+    schedulePersist()
   }
-  const previous = records.get(record.recordId)
-  if (previous) totalBytes -= previous.bytes
-  records.delete(record.recordId)
-  records.set(record.recordId, { record, bytes })
-  totalBytes += bytes
-  evictOverflow()
-  schedulePersist()
-  notifyChanged()
-  return true
+  if (changed || rejected) {
+    notifyChanged()
+  }
+  return accepted
 }
 
 /**
@@ -191,16 +314,26 @@ export function takeOutboxBatch(maxRecords = MAX_BATCH_RECORDS, maxBytes = MAX_B
   return batch
 }
 
-export function removeOutboxRecords(recordIds: Set<string>): void {
+export function removeOutboxRecords(recordsToRemove: SyncRecord[] | Set<string>): void {
+  const expectedRecords = Array.isArray(recordsToRemove)
+    ? new Map<string, SyncRecord>(recordsToRemove.map((record) => [record.recordId, record] as const))
+    : undefined
+  const recordIds: string[] = expectedRecords
+    ? [...expectedRecords.keys()]
+    : [...(recordsToRemove as Set<string>)]
   let removed = false
   for (const recordId of recordIds) {
     const entry = records.get(recordId)
     if (!entry) continue
+    // A newer edit can replace this key while its older snapshot is in flight.
+    // Acknowledge only the exact object sent; keep any replacement queued.
+    if (expectedRecords && entry.record !== expectedRecords.get(recordId)) continue
     totalBytes -= entry.bytes
     records.delete(recordId)
     removed = true
   }
   if (!removed) return
+  outboxVersion += 1
   schedulePersist()
   notifyChanged()
 }

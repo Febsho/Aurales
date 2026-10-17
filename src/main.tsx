@@ -5,6 +5,8 @@ import App from './App'
 import { ToastProvider } from './components/ui/Toast'
 import './index.css'
 import { markPerformance, performanceSnapshot } from './services/performanceMetrics'
+import { useAppStore } from './stores/appStore'
+import { configureImageCache } from './services/imageCache'
 
 markPerformance('bootstrap-start')
 
@@ -17,6 +19,12 @@ const ArtworkDebugOverlay = lazy(() => import('./components/ArtworkDebugOverlay'
 if (navigator.userAgent.includes('Linux')) {
   document.documentElement.dataset.platform = 'linux'
 }
+
+// The Rust image cache starts with defaults on every process launch. Apply the
+// persisted device settings before React mounts any artwork components, or a
+// fresh session silently uses the default size/retention until Settings opens.
+const imageCacheSettings = useAppStore.getState()
+const configureImageCacheBeforeMount = configureImageCache(imageCacheSettings.imageCacheSizeMb, imageCacheSettings.imageKeepDays)
 
 if (import.meta.hot) {
   import.meta.hot.on('vite:beforeUpdate', async () => {
@@ -34,19 +42,29 @@ if (!import.meta.env.DEV) {
   })
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <BrowserRouter>
-      <ToastProvider>
-        <App />
-        <Suspense fallback={null}>
-          <ContextMenu />
-          {import.meta.env.DEV && <ArtworkDebugOverlay />}
-        </Suspense>
-      </ToastProvider>
-    </BrowserRouter>
-  </StrictMode>,
-)
+function mountApp(): void {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <BrowserRouter>
+        <ToastProvider>
+          <App />
+          <Suspense fallback={null}>
+            <ContextMenu />
+            {import.meta.env.DEV && <ArtworkDebugOverlay />}
+          </Suspense>
+        </ToastProvider>
+      </BrowserRouter>
+    </StrictMode>,
+  )
+}
+
+// Keep the first native artwork request behind the cache configuration IPC,
+// but never leave the entire window blank if native IPC stalls during startup.
+const IMAGE_CACHE_STARTUP_DEADLINE_MS = 1500
+const imageCacheStartupDeadline = new Promise<void>((resolve) => {
+  window.setTimeout(resolve, IMAGE_CACHE_STARTUP_DEADLINE_MS)
+})
+void Promise.race([configureImageCacheBeforeMount, imageCacheStartupDeadline]).then(mountApp, mountApp)
 
 if (import.meta.env.DEV) {
   Object.assign(window, { auralesPerformance: performanceSnapshot })

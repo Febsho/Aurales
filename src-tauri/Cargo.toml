@@ -1,11 +1,11 @@
 [package]
 name = "aurales-app"
-version = "0.4.8"
+version = "0.4.9"
 description = "Aurales - A modern streaming catalog app"
 authors = ["Aurales contributors"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 default-run = "aurales-app"
 
 [lib]
@@ -24,7 +24,7 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 ureq = { version = "2.10", features = ["json"] }
@@ -37,7 +37,7 @@ libloading = "0.8"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 regex = "1"
 url = "2"
-quick-xml = "0.37"
+quick-xml = "0.41"
 base64 = "0.22"
 # Provider artwork often arrives at 3K/4K even when rendered as a 144px card.
 # Keep cache responses display-safe so decoded WebKit surfaces stay bounded.

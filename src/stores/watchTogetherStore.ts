@@ -32,6 +32,11 @@ function lsSet<T>(key: string, value: T): void {
   }
 }
 
+function loadSyncInterval(): number {
+  const value = Number(lsGet<unknown>('syncInterval', 1))
+  return Number.isFinite(value) && value >= 0.5 && value <= 15 ? value : 1
+}
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 interface DebugLogEntry {
@@ -134,6 +139,8 @@ export interface WatchTogetherState {
 // ── Store ───────────────────────────────────────────────────────────────────
 
 const MAX_DEBUG_LOG = 200
+const MAX_ROOM_CHAT_MESSAGES = 500
+const MAX_ROOM_ERRORS = 50
 
 export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   // Room
@@ -165,11 +172,15 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   showChat: lsGet('showChat', true),
   autoCopyInvite: lsGet('autoCopyInvite', true),
   driftThreshold: lsGet('driftThreshold', 1),
-  syncInterval: lsGet('syncInterval', 1),
+  syncInterval: loadSyncInterval(),
   allowGuestDifferentStream: lsGet('allowGuestDifferentStream', false),
 
   // Actions
-  setCurrentRoom: (room) => set({ currentRoom: room }),
+  setCurrentRoom: (room) => set({
+    currentRoom: room
+      ? { ...room, chat: room.chat.slice(-MAX_ROOM_CHAT_MESSAGES) }
+      : null,
+  }),
   setCurrentUserId: (id) => set({ currentUserId: id }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setRoomPanelOpen: (open) => set({ roomPanelOpen: open }),
@@ -249,7 +260,7 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   setIsHost: (host) => set({ isHost: host }),
 
   addError: (error) =>
-    set((s) => ({ errors: [...s.errors, error] })),
+    set((s) => ({ errors: [...s.errors, error].slice(-MAX_ROOM_ERRORS) })),
   clearErrors: () => set({ errors: [] }),
 
   addDebugLog: (entry) =>
@@ -289,7 +300,7 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
     set({ driftThreshold: val })
   },
   setSyncInterval: (val) => {
-    const interval = Math.max(0.5, val)
+    const interval = Number.isFinite(val) ? Math.min(15, Math.max(0.5, val)) : 1
     lsSet('syncInterval', interval)
     set({ syncInterval: interval })
   },
@@ -324,10 +335,11 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   addChatMessage: (message) =>
     set((s) => {
       if (!s.currentRoom) return s
+      const chat = [...s.currentRoom.chat, message]
       return {
         currentRoom: {
           ...s.currentRoom,
-          chat: [...s.currentRoom.chat, message],
+          chat: chat.length > MAX_ROOM_CHAT_MESSAGES ? chat.slice(-MAX_ROOM_CHAT_MESSAGES) : chat,
         },
       }
     }),

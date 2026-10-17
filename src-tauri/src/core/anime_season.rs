@@ -5,10 +5,12 @@ use crate::core::detail_page::{
 use crate::db::Database;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::io::Read;
 use std::time::Duration;
 
 const TVDB_BASE_URL: &str = "https://api4.thetvdb.com/v4";
 const SEASON_CACHE_TTL_SECONDS: i64 = 24 * 60 * 60;
+const MAX_TVDB_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,14 +104,30 @@ fn cache_entry_expired(expires_at: Option<&str>) -> bool {
 }
 
 fn tvdb_get(agent: &ureq::Agent, path: &str, token: &str) -> Result<Value, String> {
-    agent
+    let response = agent
         .get(&format!("{TVDB_BASE_URL}{path}"))
         .set("Authorization", &format!("Bearer {token}"))
         .set("Accept-Language", "eng")
         .call()
-        .map_err(|error| format!("TVDB season request failed: {error}"))?
-        .into_json()
-        .map_err(|error| format!("Failed to parse TVDB season response: {error}"))
+        .map_err(|error| format!("TVDB season request failed: {error}"))?;
+    parse_tvdb_response(response, "season")
+}
+
+fn parse_tvdb_response(response: ureq::Response, label: &str) -> Result<Value, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_TVDB_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read TVDB {label} response: {error}"))?;
+    if bytes.len() as u64 > MAX_TVDB_RESPONSE_BYTES {
+        return Err(format!(
+            "TVDB {label} response exceeded the {} MiB limit",
+            MAX_TVDB_RESPONSE_BYTES / (1024 * 1024)
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Failed to parse TVDB {label} response: {error}"))
 }
 
 fn has_japanese_text(value: Option<&Value>) -> bool {
@@ -126,13 +144,12 @@ fn fetch_tvdb_season(tvdb_id: &str, season_number: i64, api_key: &str) -> Result
         return Err("TVDB API key is required".into());
     }
     let agent = ureq::builder().timeout(Duration::from_secs(12)).build();
-    let login = agent
+    let login_response = agent
         .post(&format!("{TVDB_BASE_URL}/login"))
         .set("Content-Type", "application/json")
         .send_json(serde_json::json!({"apikey": api_key}))
-        .map_err(|error| format!("TVDB login failed: {error}"))?
-        .into_json::<Value>()
-        .map_err(|error| format!("Failed to parse TVDB login response: {error}"))?;
+        .map_err(|error| format!("TVDB login failed: {error}"))?;
+    let login = parse_tvdb_response(login_response, "login")?;
     let token = login
         .pointer("/data/token")
         .and_then(Value::as_str)

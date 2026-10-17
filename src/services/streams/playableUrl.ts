@@ -23,16 +23,22 @@ function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim())
 }
 
-export function getPlayableStreamUrl(stream: StreamResult): string | null {
-  if (stream.url && isHttpUrl(stream.url) && !isBlockedAppUrl(stream.url)) {
+export function getPlayableDirectUrl(stream: StreamResult): string | null {
+  if (typeof stream.url === 'string' && stream.url && isHttpUrl(stream.url) && !isBlockedAppUrl(stream.url)) {
     return stream.url
   }
 
-  if (stream.externalUrl && isHttpUrl(stream.externalUrl) && !isBlockedAppUrl(stream.externalUrl)) {
+  if (typeof stream.externalUrl === 'string' && stream.externalUrl && isHttpUrl(stream.externalUrl) && !isBlockedAppUrl(stream.externalUrl)) {
     return stream.externalUrl
   }
+  return null
+}
 
-  if (stream.ytId) {
+export function getPlayableStreamUrl(stream: StreamResult): string | null {
+  const direct = getPlayableDirectUrl(stream)
+  if (direct) return direct
+
+  if (typeof stream.ytId === 'string' && stream.ytId.trim()) {
     return `https://www.youtube.com/watch?v=${stream.ytId}`
   }
   return null

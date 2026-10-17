@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { SearchResult } from '../types'
+import { getProfileSetting, setProfileSetting } from '../services/profiles'
 
 // Canonical genres shown in the panel, each mapped to the TMDB genre ids that
 // represent it across the movie AND tv namespaces (they differ — e.g. movie
@@ -119,7 +120,7 @@ function normalizePrefs(value: unknown): DiscoverPrefs {
 
 function loadPrefs(): DiscoverPrefs {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+    const raw = JSON.parse(getProfileSetting(STORAGE_KEY) || 'null')
     return normalizePrefs(raw)
   } catch { return DEFAULT_DISCOVER_PREFS }
 }
@@ -134,10 +135,10 @@ export const useDiscoverPrefsStore = create<DiscoverPrefsStore>((set) => ({
   prefs: loadPrefs(),
   setPrefs: (patch) => set((state) => {
     const prefs = { ...state.prefs, ...patch }
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)) } catch { /* keep live preferences when storage is full */ }
+    try { setProfileSetting(STORAGE_KEY, JSON.stringify(prefs)) } catch { /* keep live preferences when storage is full */ }
     return { prefs }
   }),
-  resetPrefs: () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_DISCOVER_PREFS)) } catch { /* keep live preferences */ } set({ prefs: DEFAULT_DISCOVER_PREFS }) },
+  resetPrefs: () => { try { setProfileSetting(STORAGE_KEY, JSON.stringify(DEFAULT_DISCOVER_PREFS)) } catch { /* keep live preferences */ } set({ prefs: DEFAULT_DISCOVER_PREFS }) },
 }))
 
 /** Read prefs outside React (e.g. inside makeConfig during render). */

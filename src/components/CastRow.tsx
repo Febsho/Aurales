@@ -1,5 +1,5 @@
 import useEdgeFade from '../hooks/useEdgeFade'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { CastMember, CrewMember } from '../types'
 import { searchTmdbPeople } from '../services/tmdb'
@@ -15,11 +15,15 @@ interface CastRowProps {
 
 export default function CastRow({ cast, crew }: CastRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const personOpenRequestRef = useRef(0)
   useEdgeFade(scrollRef)
   const [showModal, setShowModal] = useState(false)
   const navigate = useNavigate()
 
+  useEffect(() => () => { personOpenRequestRef.current += 1 }, [])
+
   const openPerson: OpenPerson = async ({ id, personProvider, name }) => {
+    const requestId = ++personOpenRequestRef.current
     if (personProvider === 'tmdb' && isTmdbPersonId(id)) {
       navigate(`/person/${id}`)
       return
@@ -28,6 +32,7 @@ export default function CastRow({ cast, crew }: CastRowProps) {
     // TVDB and addon people IDs are not valid TMDB IDs. Resolve anime cast by
     // name so their profile cards remain usable instead of linking to a 404.
     const matches = await searchTmdbPeople(name)
+    if (requestId !== personOpenRequestRef.current) return
     const normalizedName = name.trim().toLocaleLowerCase()
     const match = matches.find((person) => person.name.trim().toLocaleLowerCase() === normalizedName) || matches[0]
     if (match) navigate(`/person/${match.id}`)

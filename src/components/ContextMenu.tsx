@@ -10,6 +10,33 @@ import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { hasMdblistOAuth, markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
 
+/** Run bulk provider mutations without opening one request per episode at once.
+ * Stop adding work after the first failure, but wait for already-started writes. */
+async function runEpisodeActionsWithConcurrency<T>(
+  items: T[],
+  action: (item: T) => Promise<unknown>,
+  concurrency = 4,
+): Promise<void> {
+  let cursor = 0
+  let failed = false
+  let firstError: unknown
+  const worker = async () => {
+    while (!failed && cursor < items.length) {
+      const item = items[cursor++]
+      try {
+        await action(item)
+      } catch (error) {
+        if (!failed) {
+          failed = true
+          firstError = error
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  if (failed) throw firstError
+}
+
 const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
   local: { label: 'Local', color: '#a3a3a3' },
   trakt: { label: 'Trakt', color: '#ef4444' },
@@ -36,7 +63,10 @@ export default function ContextMenu() {
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const mdblistConnected = !!mdblistApiKey || hasMdblistOAuth()
   const watchProgress = useAppStore((s) => s.watchProgress)
+  const watchProgressRef = useRef(watchProgress)
+  watchProgressRef.current = watchProgress
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
+  const setWatchProgressBatch = useAppStore((s) => s.setWatchProgressBatch)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
 
   useEffect(() => {
@@ -168,7 +198,7 @@ export default function ContextMenu() {
     const loadId = ++providerLoadIdRef.current
     const states: ProviderWatchState[] = []
 
-    const localWatched = checkLocalWatched(item, target, watchProgress)
+    const localWatched = checkLocalWatched(item, target, watchProgressRef.current)
     states.push({ provider: 'local', connected: true, watched: localWatched, loading: false })
 
     if (traktConnected) {
@@ -219,7 +249,7 @@ export default function ContextMenu() {
         applyResult('anilist', watched)
       })
     }
-  }, [target, traktConnected, simklConnected, pmdbConnected, mdblistConnected, anilistConnected, watchProgress])
+  }, [target, traktConnected, simklConnected, pmdbConnected, mdblistConnected, anilistConnected])
 
   useEffect(() => {
     if (!open || !target || !enrichedItem) {
@@ -228,6 +258,14 @@ export default function ContextMenu() {
     }
     loadProviderStates(enrichedItem)
   }, [open, target, enrichedItem, loadProviderStates])
+
+  useEffect(() => {
+    if (!open || !target || !enrichedItem) return
+    const watched = checkLocalWatched(enrichedItem, target, watchProgress)
+    setProviderStates((previous) => previous.map((state) =>
+      state.provider === 'local' ? { ...state, watched, loading: false } : state
+    ))
+  }, [open, target, enrichedItem, watchProgress])
 
   const handleToggleProvider = useCallback(async (provider: ProviderKey) => {
     if (!target) return
@@ -240,7 +278,7 @@ export default function ContextMenu() {
 
     try {
       if (provider === 'local') {
-        await toggleLocalWatched(enrichedTarget, newWatched, watchProgress, setWatchProgress, removeWatchProgress)
+        await toggleLocalWatched(enrichedTarget, newWatched, setWatchProgress, setWatchProgressBatch, removeWatchProgress)
       } else if (provider === 'trakt') {
         await toggleTraktWatched(enrichedTarget, newWatched)
       } else if (provider === 'simkl') {
@@ -260,7 +298,7 @@ export default function ContextMenu() {
       setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, loading: false } : s))
       toast('error', `Failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
-  }, [target, enrichedItem, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast])
+  }, [target, enrichedItem, providerStates, setWatchProgress, setWatchProgressBatch, removeWatchProgress, toast])
 
   const handleMarkAllProviders = useCallback(async (watched: boolean) => {
     if (!target) return
@@ -273,7 +311,7 @@ export default function ContextMenu() {
       connectedProviders.map(async (s) => {
         if (s.watched === watched) return
         if (s.provider === 'local') {
-          await toggleLocalWatched(enrichedTarget, watched, watchProgress, setWatchProgress, removeWatchProgress)
+          await toggleLocalWatched(enrichedTarget, watched, setWatchProgress, setWatchProgressBatch, removeWatchProgress)
         } else if (s.provider === 'trakt') {
           await toggleTraktWatched(enrichedTarget, watched)
         } else if (s.provider === 'simkl') {
@@ -305,7 +343,7 @@ export default function ContextMenu() {
     if (failed > 0) toast('warning', `${failed} provider(s) failed`)
     else toast('success', `${watched ? 'Marked' : 'Unmarked'} on all providers`)
     close()
-  }, [target, enrichedItem, providerStates, watchProgress, setWatchProgress, removeWatchProgress, toast, close])
+  }, [target, enrichedItem, providerStates, setWatchProgress, setWatchProgressBatch, removeWatchProgress, toast, close])
 
   const handleGoToDetail = useCallback(() => {
     if (!target) return
@@ -494,8 +532,7 @@ function seasonEpToAbsolute(season: number, episode: number, seasonCounts?: { se
   if (!seasonCounts?.length) return null
   let absolute = 0
   for (const s of seasonCounts) {
-    if (s.season >= season) break
-    absolute += s.count
+    if (s.season < season) absolute += s.count
   }
   return absolute + episode
 }
@@ -519,7 +556,7 @@ function appEpisodeForTarget(season: number, episode: number): { season: number;
 
 function numericId(value: unknown): number | undefined {
   if (value == null) return undefined
-  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)-/i, ''))
+  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)[-:]/i, ''))
   return Number.isFinite(num) && num > 0 ? num : undefined
 }
 
@@ -652,7 +689,7 @@ async function resolvePmdbEpisodeForTarget(
       if (mapped) tmdbId = mapped.tmdbId
     }
     if (!tmdbId && item.tvdbId) {
-      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace('tvdb-', ''), preferred).catch(() => null)
+      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace(/^tvdb[-:]/i, ''), preferred).catch(() => null)
       if (mapped) tmdbId = mapped.tmdbId
     }
   }
@@ -836,11 +873,19 @@ async function checkAniListWatched(
 async function toggleLocalWatched(
   target: NonNullable<ReturnType<typeof useContextMenu.getState>['target']>,
   watched: boolean,
-  watchProgress: Map<string, import('../types').WatchProgress>,
   setWatchProgress: (id: string, progress: import('../types').WatchProgress) => void,
+  setWatchProgressBatch: (updates: Array<{ id: string; progress: import('../types').WatchProgress }>) => void,
   removeWatchProgress: (mediaIds: string[], season?: number, episode?: number) => void,
 ) {
   const item = target.item
+  const mediaIds = [
+    item.id,
+    item.imdbId,
+    item.tmdbId != null ? String(item.tmdbId) : undefined,
+    item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+    item.malId != null ? `mal-${item.malId}` : undefined,
+    item.anilistId != null ? `anilist-${item.anilistId}` : undefined,
+  ].filter(Boolean) as string[]
   if (target.kind === 'episode') {
     const key = `${item.id}:${target.seasonNumber}:${target.episode.episodeNumber}`
     if (watched) {
@@ -849,28 +894,27 @@ async function toggleLocalWatched(
         season: target.seasonNumber, episode: target.episode.episodeNumber,
         progressSeconds: 0, durationSeconds: 1, completed: true,
         title: target.episode.name, updatedAt: new Date().toISOString(),
-        imdbId: item.imdbId, tmdbId: item.tmdbId as string | undefined,
+        imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId,
       })
     } else {
-      removeWatchProgress([item.id], target.seasonNumber, target.episode.episodeNumber)
+      removeWatchProgress(mediaIds, target.seasonNumber, target.episode.episodeNumber)
     }
   } else if (target.kind === 'season') {
-    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
     if (watched) {
-      for (let ep = 1; ep <= target.episodeCount; ep++) {
-        const key = `${item.id}:${target.seasonNumber}:${ep}`
-        setWatchProgress(key, {
+      const episodeCount = Number.isFinite(target.episodeCount) ? Math.max(0, Math.floor(target.episodeCount)) : 0
+      setWatchProgressBatch(Array.from({ length: episodeCount }, (_, index) => {
+        const episode = index + 1
+        const key = `${item.id}:${target.seasonNumber}:${episode}`
+        return { id: key, progress: {
           id: key, mediaType: 'series', mediaId: item.id,
-          season: target.seasonNumber, episode: ep,
+          season: target.seasonNumber, episode,
           progressSeconds: 0, durationSeconds: 1, completed: true,
           updatedAt: new Date().toISOString(),
-          imdbId: item.imdbId, tmdbId: item.tmdbId as string | undefined,
-        })
-      }
+          imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId,
+        } }
+      }))
     } else {
-      for (let ep = 1; ep <= target.episodeCount; ep++) {
-        removeWatchProgress(ids, target.seasonNumber, ep)
-      }
+      removeWatchProgress(mediaIds, target.seasonNumber)
     }
   } else {
     if (watched) {
@@ -879,10 +923,10 @@ async function toggleLocalWatched(
         progressSeconds: 0, durationSeconds: 1, completed: true,
         title: item.title, poster: item.poster,
         updatedAt: new Date().toISOString(),
-        imdbId: item.imdbId, tmdbId: item.tmdbId as string | undefined,
+        imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId,
       })
     } else {
-      removeWatchProgress([item.id, item.imdbId].filter(Boolean) as string[])
+      removeWatchProgress(mediaIds)
     }
   }
 }
@@ -934,8 +978,8 @@ async function toggleSimklWatched(
   watched: boolean,
 ) {
   const item = target.item
-  const tmdbId = item.tmdbId != null ? Number(String(item.tmdbId).replace('tmdb-', '')) : undefined
-  const tvdbId = item.tvdbId != null ? Number(String(item.tvdbId).replace('tvdb-', '')) : undefined
+  const tmdbId = item.tmdbId != null ? Number(String(item.tmdbId).replace(/^tmdb[-:]/i, '')) : undefined
+  const tvdbId = item.tvdbId != null ? Number(String(item.tvdbId).replace(/^tvdb[-:]/i, '')) : undefined
   const anime = isAnimeItem(item)
   const mediaRef = {
     localId: item.id,
@@ -1023,7 +1067,7 @@ async function togglePmdbWatched(
       if (mapped) tmdbId = mapped.tmdbId
     }
     if (!tmdbId && item.tvdbId) {
-      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace('tvdb-', ''), preferred).catch(() => null)
+      const mapped = await lookupTmdbId('tvdb', String(item.tvdbId).replace(/^tvdb[-:]/i, ''), preferred).catch(() => null)
       if (mapped) tmdbId = mapped.tmdbId
     }
   }
@@ -1041,33 +1085,48 @@ async function togglePmdbWatched(
         await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, target.episode.episodeNumber)
       }
     } else {
-      await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+      const removeTargets = [{ tmdbId: providerEpisode.tmdbId || tmdbId, season: providerEpisode.season, episode: providerEpisode.episode }]
       if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== target.episode.episodeNumber) {
-        await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, target.episode.episodeNumber)
+        removeTargets.push({ tmdbId: providerEpisode.tmdbId || tmdbId, season: target.seasonNumber, episode: target.episode.episodeNumber })
       }
+      const { removePMDBWatchedBatch } = await import('../services/pmdb')
+      await removePMDBWatchedBatch(removeTargets)
     }
   } else if (target.kind === 'season') {
-    for (let ep = 1; ep <= target.episodeCount; ep++) {
+    const episodeNumbers = Array.from({ length: Math.max(0, Math.floor(target.episodeCount)) }, (_, index) => index + 1)
+    if (!watched) {
+      const removeTargets: Array<{ tmdbId: number; season: number; episode: number }> = []
+      await runEpisodeActionsWithConcurrency(episodeNumbers, async (ep) => {
+        const pseudoTarget = { ...target, kind: 'episode' as const, episode: { ...({} as import('../types').EpisodeDetails), episodeNumber: ep, seasonNumber: target.seasonNumber, id: `${item.id}:${target.seasonNumber}:${ep}`, name: '' } }
+        const providerEpisode = await resolvePmdbEpisodeForTarget(item, pseudoTarget)
+        const providerTmdbId = providerEpisode.tmdbId || tmdbId
+        removeTargets.push({ tmdbId: providerTmdbId, season: providerEpisode.season, episode: providerEpisode.episode })
+        if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
+          removeTargets.push({ tmdbId: providerTmdbId, season: target.seasonNumber, episode: ep })
+        }
+      })
+      const { removePMDBWatchedBatch } = await import('../services/pmdb')
+      await removePMDBWatchedBatch(removeTargets)
+      return
+    }
+    const removeTargets: Array<{ tmdbId: number; season: number; episode: number }> = []
+    await runEpisodeActionsWithConcurrency(episodeNumbers, async (ep) => {
       const pseudoTarget = { ...target, kind: 'episode' as const, episode: { ...({} as import('../types').EpisodeDetails), episodeNumber: ep, seasonNumber: target.seasonNumber, id: `${item.id}:${target.seasonNumber}:${ep}`, name: '' } }
       const providerEpisode = await resolvePmdbEpisodeForTarget(item, pseudoTarget)
-      if (watched) {
-        await scrobblePMDB(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
-        if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
-          await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, ep)
-        }
-      } else {
-        await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
-        if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
-          await removePMDBWatched(providerEpisode.tmdbId || tmdbId, 'tv', target.seasonNumber, ep)
-        }
+      await scrobblePMDB(providerEpisode.tmdbId || tmdbId, 'tv', providerEpisode.season, providerEpisode.episode)
+      if (providerEpisode.season !== target.seasonNumber || providerEpisode.episode !== ep) {
+        removeTargets.push({ tmdbId: providerEpisode.tmdbId || tmdbId, season: target.seasonNumber, episode: ep })
       }
-    }
+    })
+    const { removePMDBWatchedBatch } = await import('../services/pmdb')
+    await removePMDBWatchedBatch(removeTargets)
   } else {
-    if (watched) await scrobblePMDB(tmdbId, 'tv')
+    if (watched) throw new Error('PMDB marks TV episodes individually. Choose a season or episode to mark watched.')
     else {
-      const watchedItems = await import('../services/pmdb').then((m) => m.getPMDBWatched())
+      const watchedItems = await import('../services/pmdb').then((m) => m.getPMDBWatched({ strict: true }))
       const showItems = watchedItems.filter((entry) => entry.tmdb_id === tmdbId && entry.media_type === 'tv' && entry.season != null && entry.episode != null)
-      await Promise.all(showItems.map((entry) => removePMDBWatched(tmdbId, 'tv', entry.season, entry.episode)))
+      const { removePMDBWatchedRecords } = await import('../services/pmdb')
+      await removePMDBWatchedRecords(showItems.map((entry) => entry.id))
     }
   }
 }
@@ -1088,9 +1147,10 @@ async function toggleMdblistWatched(
   } else if (target.kind === 'episode') {
     await write(tmdbId, 'series', target.seasonNumber, target.episode.episodeNumber, imdbId, tvdbId)
   } else if (target.kind === 'season') {
-    await Promise.all(Array.from({ length: target.episodeCount }, (_, index) =>
-      write(tmdbId, 'series', target.seasonNumber, index + 1, imdbId, tvdbId)
-    ))
+    const episodeNumbers = Array.from({ length: Math.max(0, Math.floor(target.episodeCount)) }, (_, index) => index + 1)
+    await runEpisodeActionsWithConcurrency(episodeNumbers, (episode) =>
+      write(tmdbId, 'series', target.seasonNumber, episode, imdbId, tvdbId)
+    )
   } else {
     await write(tmdbId, 'series', undefined, undefined, imdbId, tvdbId)
   }

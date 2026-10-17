@@ -1,5 +1,57 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
+use std::time::Duration;
+
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_TEXT_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_PROXY_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES: u64 = 8 * 1024;
+
+fn read_body_bounded(response: ureq::Response, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Failed to read response: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("Response exceeds the {max_bytes}-byte limit"));
+    }
+    Ok(bytes)
+}
+
+fn read_text_bounded(response: ureq::Response, max_bytes: u64) -> Result<String, String> {
+    let bytes = read_body_bounded(response, max_bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(crate) fn read_json_bounded(
+    response: ureq::Response,
+    max_bytes: u64,
+) -> Result<serde_json::Value, String> {
+    let bytes = read_body_bounded(response, max_bytes)?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("Invalid JSON response: {error}"))
+}
+
+pub(crate) fn read_error_body_bounded(response: ureq::Response, max_bytes: u64) -> String {
+    let mut bytes = Vec::new();
+    if response
+        .into_reader()
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return String::new();
+    }
+    let truncated = bytes.len() as u64 > max_bytes;
+    bytes.truncate(max_bytes.min(usize::MAX as u64) as usize);
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        body.push_str("…[truncated]");
+    }
+    body
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct ProxyResponse {
@@ -22,10 +74,12 @@ pub struct StreamProbeResponse {
 }
 
 pub fn validate_http_url(url: &str) -> Result<(), String> {
-    if url.starts_with("https://") || url.starts_with("http://") {
+    let parsed =
+        url::Url::parse(url).map_err(|_| "Only valid HTTP(S) URLs are supported.".to_string())?;
+    if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some() {
         Ok(())
     } else {
-        Err("Only HTTP(S) subtitle URLs are supported.".to_string())
+        Err("Only valid HTTP(S) URLs are supported.".to_string())
     }
 }
 
@@ -53,7 +107,8 @@ pub fn request_text(
         "DELETE" => ureq::delete(&url),
         "PATCH" => ureq::patch(&url),
         _ => unreachable!("normalize_http_method restricts the request verb"),
-    };
+    }
+    .timeout(DEFAULT_HTTP_TIMEOUT);
     for (key, value) in &headers {
         request = request.set(key, value);
     }
@@ -64,27 +119,24 @@ pub fn request_text(
     }
     .map_err(|error| {
         if let ureq::Error::Status(code, response) = error {
-            let body = response.into_string().unwrap_or_default();
+            let body = read_error_body_bounded(response, MAX_ERROR_BODY_BYTES);
             format!("{code}:{body}")
         } else {
             format!("HTTP request failed: {error}")
         }
     })?;
-    response
-        .into_string()
-        .map_err(|error| format!("Failed to read response: {error}"))
+    read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
 }
 
 pub fn get_text(url: String) -> Result<String, String> {
     let response = ureq::get(&url)
+        .timeout(DEFAULT_HTTP_TIMEOUT)
         .set("Accept", "application/json, text/plain, */*")
         .set("Accept-Language", "en-US,en;q=0.9")
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
+        .set("User-Agent", concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/", env!("CARGO_PKG_VERSION"), " Safari/537.36"))
         .call()
         .map_err(|error| format!("HTTP request failed: {error}"))?;
-    response
-        .into_string()
-        .map_err(|error| format!("Failed to read response: {error}"))
+    read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
 }
 
 /// Performs the established bounded range request used to warm direct streams.
@@ -95,13 +147,13 @@ pub fn probe_stream(url: String, timeout_ms: Option<u64>) -> Result<StreamProbeR
     const SAMPLE_BYTES: u64 = 256 * 1024;
     let agent = ureq::builder()
         .timeout(std::time::Duration::from_millis(
-            timeout_ms.unwrap_or(4_000),
+            timeout_ms.unwrap_or(4_000).clamp(500, 30_000),
         ))
         .build();
     let response = match agent.get(&url)
         .set("Range", &format!("bytes=0-{}", SAMPLE_BYTES - 1))
         .set("Accept", "*/*")
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/1.0 Safari/537.36")
+        .set("User-Agent", concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Aurales/", env!("CARGO_PKG_VERSION"), " Safari/537.36"))
         .call() {
         Ok(response) | Err(ureq::Error::Status(_, response)) => response,
         Err(error) => return Err(format!("Stream probe failed: {error}")),
@@ -146,11 +198,37 @@ pub fn pmdb_request(
     api_key: String,
     body: Option<String>,
 ) -> Result<ProxyResponse, String> {
-    let request = ureq::request(&method, &url)
+    validate_pmdb_url(&url)?;
+    let method = method.to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "DELETE") {
+        return Err("Unsupported PMDB request method".to_string());
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout(DEFAULT_HTTP_TIMEOUT)
+        // PMDB credentials must never be forwarded to a redirect target.
+        .redirects(0)
+        .build();
+    let request = agent
+        .request(&method, &url)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .set("Accept", "application/json");
     proxy_response(request, body, "PMDB")
+}
+
+fn validate_pmdb_url(value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|_| "Invalid PMDB request URL".to_string())?;
+    let path = url.path();
+    if url.scheme() != "https"
+        || url.host_str() != Some("publicmetadb.com")
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !(path == "/api/external" || path.starts_with("/api/external/"))
+    {
+        return Err("PMDB requests must target the PublicMetaDB external API".to_string());
+    }
+    Ok(())
 }
 
 pub fn normalize_pmdb_request(method: String, api_key: String) -> (String, String) {
@@ -166,6 +244,7 @@ pub fn torbox_request(
 ) -> Result<ProxyResponse, String> {
     let url = format!("https://api.torbox.app/v1/api{path}");
     let mut request = ureq::request(&method, &url)
+        .timeout(DEFAULT_HTTP_TIMEOUT)
         .set("Accept", "application/json")
         .set("Content-Type", &content_type);
     if !token.is_empty() {
@@ -203,19 +282,20 @@ pub fn openrouter_chat(api_key: String, request_body: serde_json::Value) -> Resu
         return Err("OpenRouter API key is required.".to_string());
     }
     let response = ureq::post("https://openrouter.ai/api/v1/chat/completions")
+        .timeout(DEFAULT_HTTP_TIMEOUT)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .set("HTTP-Referer", "https://github.com/itsrenoria/aurales")
         .set("X-Title", "Aurales Media Player")
         .send_json(request_body)
         .map_err(|error| openrouter_error(error))?;
-    response
-        .into_string()
+    read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
         .map_err(|error| format!("Failed to read OpenRouter response: {error}"))
 }
 
 pub fn github_release_notes() -> Result<String, String> {
     let mut request = ureq::get("https://api.github.com/repos/Febsho/Aurales/releases/latest")
+        .timeout(DEFAULT_HTTP_TIMEOUT)
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "Aurales-App");
     if let Some(token) = option_env!("AURALES_UPDATE_TOKEN") {
@@ -226,8 +306,7 @@ pub fn github_release_notes() -> Result<String, String> {
     let response = request
         .call()
         .map_err(|error| format!("GitHub release lookup failed: {error}"))?;
-    response
-        .into_string()
+    read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
         .map_err(|error| format!("Failed to read GitHub response: {error}"))
 }
 
@@ -240,15 +319,14 @@ pub fn innertube_player(body: String, user_agent: String) -> Result<String, Stri
         .set("User-Agent", &user_agent)
         .send_string(&body)
         .map_err(|error| format!("Innertube request failed: {error}"))?;
-    response
-        .into_string()
+    read_text_bounded(response, MAX_TEXT_RESPONSE_BYTES)
         .map_err(|error| format!("Failed to read Innertube response: {error}"))
 }
 
 fn openrouter_error(error: ureq::Error) -> String {
     match error {
         ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
+            let body = read_error_body_bounded(response, MAX_ERROR_BODY_BYTES);
             if body.is_empty() {
                 format!("OpenRouter request failed: HTTP {status}")
             } else {
@@ -272,12 +350,12 @@ fn proxy_response(
         Ok(response) => Ok(ProxyResponse {
             status: response.status(),
             ok: true,
-            body: response.into_string().unwrap_or_default(),
+            body: read_text_bounded(response, MAX_PROXY_RESPONSE_BYTES)?,
         }),
         Err(ureq::Error::Status(status, response)) => Ok(ProxyResponse {
             status,
             ok: false,
-            body: response.into_string().unwrap_or_default(),
+            body: read_error_body_bounded(response, MAX_ERROR_BODY_BYTES),
         }),
         Err(error) => Err(format!("Network error contacting {service}: {error}")),
     }

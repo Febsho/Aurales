@@ -96,9 +96,14 @@ Expand-Archive -Path $FfmpegArchive -DestinationPath "$TempDir\ffmpeg" -Force
 $FfmpegExe = Get-ChildItem -Path "$TempDir\ffmpeg" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
 if ($null -ne $FfmpegExe) {
     Copy-Item $FfmpegExe.FullName (Join-Path $BinDir "ffmpeg.exe") -Force
-    Write-Host "Successfully configured ffmpeg.exe." -ForegroundColor Green
+    # The Essentials build is dynamically linked. Keep its runtime DLLs beside
+    # the executable so both development runs and Tauri's bundled resources can
+    # launch FFmpeg on machines without a global FFmpeg installation.
+    Get-ChildItem -Path $FfmpegExe.DirectoryName -Filter "*.dll" -File |
+        ForEach-Object { Copy-Item $_.FullName -Destination $BinDir -Force }
+    Write-Host "Successfully configured ffmpeg.exe and its runtime DLLs." -ForegroundColor Green
 } else {
-    Write-Warning "Could not locate ffmpeg.exe inside the downloaded zip."
+    throw "Could not locate ffmpeg.exe inside the downloaded FFmpeg archive."
 }
 
 # Clean up

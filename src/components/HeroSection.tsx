@@ -8,12 +8,13 @@ import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../s
 import { cachedImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
-import HeroMpvTrailer from './HeroMpvTrailer'
-import TrailerPreview from './TrailerPreview'
 import { nativeTrailerPlayerSupported } from '../services/player'
 import { Button } from './ui'
 import { waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
+
+const HeroMpvTrailer = React.lazy(() => import('./HeroMpvTrailer'))
+const TrailerPreview = React.lazy(() => import('./TrailerPreview'))
 
 interface HeroSectionProps {
   items: SearchResult[]
@@ -31,6 +32,19 @@ function preloadImage(url: string): Promise<string> {
     img.onerror = reject
     img.src = url
   })
+}
+
+const MAX_TRACKED_BACKDROPS = 100
+function rememberBackdrop(urls: Set<string>, url: string): Set<string> {
+  const next = new Set(urls)
+  next.delete(url)
+  next.add(url)
+  while (next.size > MAX_TRACKED_BACKDROPS) {
+    const oldest = next.values().next().value as string | undefined
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  return next
 }
 
 function usableBackdrop(item?: SearchResult, highResolution = false): string | undefined {
@@ -168,9 +182,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       if (loadedBackdropsRef.current.has(url)) return
       if (!retryingDirectly) {
         setDirectBackdropRetries((current) => {
-          const next = new Set(current)
-          next.add(url)
-          return next
+          return rememberBackdrop(current, url)
         })
       } else {
         handleBrokenBackdrop(url)
@@ -248,7 +260,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   // them permanently using the catalog's lower-quality wordmark while the
   // details page used the configured artwork provider.
   useEffect(() => {
-    if (!appManagedMetadata || !presentedItem) return
+    if (!appManagedMetadata) return
     let cancelled = false
     const key = String(presentedItem.id)
 
@@ -293,14 +305,16 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   // slides use the serialized metadata queue.
   useEffect(() => {
     if (!appManagedMetadata) return
-    const active = presentedItem
-    const tmdbId = active?.tmdbId || (String(active?.id || '').startsWith('tmdb-') ? String(active.id).replace('tmdb-', '') : undefined)
-    if (!tmdbId || upgradedBackdrops[String(active.id)]) return
+    const activeId = presentedItem.id
+    const activeTmdbId = presentedItem.tmdbId
+    const activeType = presentedItem.type
+    const tmdbId = activeTmdbId || (/^tmdb[-:]/i.test(String(activeId || '')) ? String(activeId).replace(/^tmdb[-:]/i, '') : undefined)
+    if (!tmdbId || upgradedBackdrops[String(activeId)]) return
     let cancelled = false
-    getTmdbLandscapeBackdrop(active.type === 'series' ? 'series' : 'movie', tmdbId)
+    getTmdbLandscapeBackdrop(activeType === 'series' ? 'series' : 'movie', tmdbId)
       .then((url) => {
         if (cancelled || !url) return
-        setUpgradedBackdrops((current) => ({ ...current, [String(active.id)]: url }))
+        setUpgradedBackdrops((current) => ({ ...current, [String(activeId)]: url }))
         setPresentedBackdrop(url)
       })
       .catch(() => undefined)
@@ -311,11 +325,11 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!appManagedMetadata) return
     let cancelled = false
     const toFetch = items.filter((itm) => {
-      const tmdbId = itm.tmdbId || (String(itm.id).startsWith('tmdb-') ? String(itm.id).replace('tmdb-', '') : undefined)
+      const tmdbId = itm.tmdbId || (/^tmdb[-:]/i.test(String(itm.id)) ? String(itm.id).replace(/^tmdb[-:]/i, '') : undefined)
       return tmdbId && String(itm.id) !== String(presentedItem.id) && !upgradedBackdrops[String(itm.id)]
     })
     toFetch.forEach((itm) => {
-      const tmdbId = itm.tmdbId || String(itm.id).replace('tmdb-', '')
+      const tmdbId = itm.tmdbId || String(itm.id).replace(/^tmdb[-:]/i, '')
       const t = itm.type === 'series' ? 'series' : 'movie'
       scheduleTask(metadataTaskQueue, {
         id: `hero-backdrop:${itm.id}`,
@@ -401,8 +415,12 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (upgraded && upgraded !== presentedBackdrop) setPresentedBackdrop(upgraded)
   }, [presentedItem.id, presentedBackdrop, upgradedBackdrops])
 
-  const item = presentedItem
-  const type = item?.type === 'series' ? 'series' : 'movie'
+  const itemId = presentedItem.id
+  const itemTmdbId = presentedItem.tmdbId
+  const itemImdbId = presentedItem.imdbId
+  const itemTitle = presentedItem.title
+  const itemYear = presentedItem.year
+  const type = presentedItem.type === 'series' ? 'series' : 'movie'
 
   // Report active backdrop to parent for blurred background
   useEffect(() => {
@@ -411,12 +429,12 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     if (!activeItem) { onActiveBackdropChange(undefined); return }
     const backdrop = presentedBackdrop || usableBackdrop(activeItem, fixed)
     onActiveBackdropChange(backdrop)
-  }, [presentedItem, presentedBackdrop, customArtKey, isSmall])
+  }, [presentedItem, presentedBackdrop, customArtKey, isSmall, fixed, onActiveBackdropChange])
 
   // Fetch top 3 cast for the active hero item
   useEffect(() => {
-    if (!item || !startupEnrichmentReady || !appManagedMetadata) return
-    const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
+    if (!startupEnrichmentReady || !appManagedMetadata) return
+    const tmdbId = itemTmdbId || (/^tmdb[-:]/i.test(String(itemId)) ? String(itemId).replace(/^tmdb[-:]/i, '') : undefined)
     if (!tmdbId) { setCast([]); return }
 
     let cancelled = false
@@ -424,16 +442,16 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       .then((c) => { if (!cancelled) setCast(c) })
       .catch(() => { if (!cancelled) setCast([]) })
     return () => { cancelled = true }
-  }, [item?.id, item?.tmdbId, type, startupEnrichmentReady, appManagedMetadata])
+  }, [itemId, itemTmdbId, type, startupEnrichmentReady, appManagedMetadata])
 
   useEffect(() => {
-    if (!enableTrailers || !item || heroTrailerDelay <= 0 || scrolledAway) {
+    if (!enableTrailers || heroTrailerDelay <= 0 || scrolledAway) {
       setHeroTrailer(null)
       setHeroTrailerPlaying(false)
       return
     }
 
-    const tmdbId = item.tmdbId || (String(item.id).startsWith('tmdb-') ? String(item.id).replace('tmdb-', '') : undefined)
+    const tmdbId = itemTmdbId || (/^tmdb[-:]/i.test(String(itemId)) ? String(itemId).replace(/^tmdb[-:]/i, '') : undefined)
     let cancelled = false
     setHeroTrailer(null)
     setHeroTrailerPlaying(false)
@@ -443,9 +461,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       getTrailerSource({
         type,
         tmdbId,
-        imdbId: item.imdbId,
-        title: item.title,
-        year: item.year,
+        imdbId: itemImdbId,
+        title: itemTitle,
+        year: itemYear,
         language: trailerLanguage,
       }).then((trailer) => {
         if (!cancelled && trailer) {
@@ -460,14 +478,14 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       window.clearTimeout(timer)
       setHeroTrailerPlaying(false)
     }
-  }, [enableTrailers, item?.id, item?.tmdbId, item?.title, item?.year, type, heroTrailerDelay, trailerLanguage, scrolledAway])
+  }, [enableTrailers, itemId, itemTmdbId, itemImdbId, itemTitle, itemYear, type, heroTrailerDelay, trailerLanguage, scrolledAway])
 
   useEffect(() => {
     if (!enableTrailers) return
     if (heroTrailerDelay <= 0) return
     if (!displayItems.length) return
     displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
-      const candidateTmdbId = candidate.tmdbId || (String(candidate.id).startsWith('tmdb-') ? String(candidate.id).replace('tmdb-', '') : undefined)
+      const candidateTmdbId = candidate.tmdbId || (/^tmdb[-:]/i.test(String(candidate.id)) ? String(candidate.id).replace(/^tmdb[-:]/i, '') : undefined)
       if (!candidateTmdbId && !candidate.imdbId) return
       preloadTrailerSource({
         type: candidate.type === 'series' ? 'series' : 'movie',
@@ -480,6 +498,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     })
   }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage])
 
+  const item = presentedItem
   if (!items.length || !item) return null
 
   const sharedState = {
@@ -587,24 +606,20 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                       if (!isUsableLoadedBackdrop(event.currentTarget, isPosterFallback)) {
                         if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
                           setDirectBackdropRetries((current) => {
-                            const next = new Set(current)
-                            next.add(backdropUrl)
-                            return next
+                            return rememberBackdrop(current, backdropUrl)
                           })
                           return
                         }
                         handleBrokenBackdrop(backdropUrl)
                         return
                       }
-                      loadedBackdropsRef.current.add(backdropUrl)
+                      loadedBackdropsRef.current = rememberBackdrop(loadedBackdropsRef.current, backdropUrl)
                       onActiveImageSettled?.()
                     } : undefined}
                     onError={i === activeIndex ? () => {
                       if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
                         setDirectBackdropRetries((current) => {
-                          const next = new Set(current)
-                          next.add(backdropUrl)
-                          return next
+                          return rememberBackdrop(current, backdropUrl)
                         })
                         return
                       }
@@ -616,7 +631,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                 )}
               </div>
               {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (useNativeTrailerPlayer ? (
-                <HeroMpvTrailer
+                <React.Suspense fallback={null}><HeroMpvTrailer
                   trailer={heroTrailer}
                   muted={heroTrailerMuted}
                   className="pointer-events-none absolute inset-0"
@@ -631,9 +646,9 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     setHeroTrailer(null)
                     setHeroMpvVisible(false)
                   }}
-                />
+                /></React.Suspense>
               ) : (
-                <TrailerPreview
+                <React.Suspense fallback={null}><TrailerPreview
                   trailer={heroTrailer}
                   title={slideItem.title}
                   muted={heroTrailerMuted}
@@ -650,7 +665,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                     setHeroTrailerPlaying(false)
                     setHeroTrailer(null)
                   }}
-                />
+                /></React.Suspense>
               ))}
             </div>
           )

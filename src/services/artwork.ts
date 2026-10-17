@@ -298,7 +298,7 @@ export async function resolveArtFromProviders(
       tvdbIdPromise.then((resolvedId) => {
         if (!resolvedId) return undefined
         return import('./tvdb').then(({ tvdbProvider }) => {
-        const tvdbId = String(resolvedId).replace('tvdb-', '')
+        const tvdbId = String(resolvedId).replace(/^tvdb[-:]/i, '')
         const isMovie = tvdbId.startsWith('movie-') || mediaType === 'movie'
         const fetchPromise = isMovie
           ? tvdbProvider.getMovie(`tvdb-${tvdbId}`)
@@ -315,7 +315,7 @@ export async function resolveArtFromProviders(
     fetches.push(
       import('./fanart').then(async ({ getFanartMovieArt, getFanartShowArt }) => {
         await tvdbIdPromise
-        const isFanartMovie = mediaType === 'movie' || String(resolvedTvdbId || '').replace('tvdb-', '').startsWith('movie-')
+        const isFanartMovie = mediaType === 'movie' || String(resolvedTvdbId || '').replace(/^tvdb[-:]/i, '').startsWith('movie-')
         if (isFanartMovie && ids.tmdbId) {
           const art = await getFanartMovieArt(ids.tmdbId).catch(() => null)
           if (art && (art.poster || art.backdrop || art.logo)) {
@@ -331,7 +331,7 @@ export async function resolveArtFromProviders(
         }
         const tvdbId = resolvedTvdbId || ids.tvdbId
         if (tvdbId) {
-          const cleanTvdbId = String(tvdbId).replace('tvdb-', '')
+        const cleanTvdbId = String(tvdbId).replace(/^tvdb[-:]/i, '')
           const art = await getFanartShowArt(cleanTvdbId).catch(() => null)
           if (art && (art.poster || art.backdrop || art.logo)) {
             results.fanart = art

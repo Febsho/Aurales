@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -31,10 +31,19 @@ static CONFIG: Mutex<CacheConfig> = Mutex::new(CacheConfig {
 
 // Full-directory scans are O(files); run eviction only every N writes.
 static WRITES_SINCE_SWEEP: AtomicU32 = AtomicU32::new(0);
+// A clear can race with a download already in progress. Such a request may
+// still serve its bytes to the current image, but must not repopulate disk
+// after the user cleared the cache.
+static CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
 const SWEEP_EVERY_WRITES: u32 = 25;
 const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024;
+const ABANDONED_PARTIAL_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 const MAX_IMAGE_EDGE: u32 = 768;
 const MAX_BACKDROP_EDGE: u32 = 1920;
+// A compressed image can expand to hundreds of megabytes when decoded. Keep
+// the optional cache optimization from allocating an unbounded source bitmap.
+const MAX_DECODE_PIXELS: u64 = 48_000_000;
+const MAX_DECODE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 // Decoding a provider's multi-megapixel source can temporarily allocate far
 // more than its compressed size in both Rust and WebKit. Two workers keep
 // scrolling responsive on long shelves; additional requests are safely
@@ -49,6 +58,7 @@ const SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(6);
 
 struct DownloadState {
     active: usize,
+    clearing: usize,
     in_flight: HashSet<PathBuf>,
     recent_failures: HashMap<PathBuf, Instant>,
 }
@@ -60,6 +70,7 @@ fn download_state() -> &'static Mutex<DownloadState> {
     DOWNLOAD_STATE.get_or_init(|| {
         Mutex::new(DownloadState {
             active: 0,
+            clearing: 0,
             in_flight: HashSet::new(),
             recent_failures: HashMap::new(),
         })
@@ -88,6 +99,19 @@ impl Drop for SlotGuard {
         let mut state = lock_download_state();
         state.active = state.active.saturating_sub(1);
         state.in_flight.remove(&self.path);
+        DOWNLOAD_READY.notify_all();
+    }
+}
+
+/// Keep new cache misses out of the directory while a user initiated clear is
+/// removing files. Requests already in flight are handled by the generation
+/// check in `download_cached`.
+struct CacheClearGuard;
+
+impl Drop for CacheClearGuard {
+    fn drop(&mut self) {
+        let mut state = lock_download_state();
+        state.clearing = state.clearing.saturating_sub(1);
         DOWNLOAD_READY.notify_all();
     }
 }
@@ -172,14 +196,16 @@ fn cache_path(dir: &PathBuf, url: &str) -> PathBuf {
 /// Resize once while writing the disk cache; non-images and decode failures
 /// retain their original response as a safe fallback.
 fn origin_url(url: &str) -> &str {
-    let Some(marker) = url.find("aurales-cache=backdrop") else {
-        return url;
-    };
-    url[..marker].trim_end_matches(&['#', '&'][..])
+    // cachedImage appends the variant marker after any existing query or
+    // fragment. Match only that suffix: signed source URLs may themselves
+    // contain an `aurales-cache=backdrop` query parameter which must survive.
+    url.strip_suffix("&aurales-cache=backdrop")
+        .or_else(|| url.strip_suffix("#aurales-cache=backdrop"))
+        .unwrap_or(url)
 }
 
 fn requested_max_image_edge(url: &str) -> u32 {
-    if url.contains("aurales-cache=backdrop") {
+    if url.ends_with("&aurales-cache=backdrop") || url.ends_with("#aurales-cache=backdrop") {
         MAX_BACKDROP_EDGE
     } else {
         MAX_IMAGE_EDGE
@@ -187,7 +213,49 @@ fn requested_max_image_edge(url: &str) -> u32 {
 }
 
 fn optimize_image_bytes(bytes: Vec<u8>, max_edge: u32) -> Vec<u8> {
-    let Ok(image) = image::load_from_memory(&bytes) else {
+    // Inspect dimensions before decoding. This prevents a tiny compressed
+    // decompression-bomb image from allocating an enormous RGBA surface just
+    // to be reduced to a card-sized thumbnail.
+    let reader = image::ImageReader::new(Cursor::new(bytes.as_slice()))
+        .with_guessed_format()
+        .ok();
+    // DynamicImage::decode returns one frame. Re-encoding an animated source
+    // as PNG/JPEG would silently freeze artwork at its first frame.
+    let format = reader.as_ref().and_then(|reader| reader.format());
+    let is_animated = match format {
+        Some(image::ImageFormat::Gif) => true,
+        Some(image::ImageFormat::Png) => {
+            image::codecs::png::PngDecoder::new(Cursor::new(bytes.as_slice()))
+                .and_then(|decoder| decoder.is_apng())
+                .unwrap_or(false)
+        }
+        Some(image::ImageFormat::WebP) => {
+            image::codecs::webp::WebPDecoder::new(Cursor::new(bytes.as_slice()))
+                .map(|decoder| decoder.has_animation())
+                .unwrap_or(false)
+        }
+        _ => false,
+    };
+    if is_animated {
+        return bytes;
+    }
+    let dimensions = reader.and_then(|reader| reader.into_dimensions().ok());
+    let Some((width, height)) = dimensions else {
+        return bytes;
+    };
+    if width as u64 * height as u64 > MAX_DECODE_PIXELS {
+        return bytes;
+    }
+
+    let Ok(mut reader) =
+        image::ImageReader::new(Cursor::new(bytes.as_slice())).with_guessed_format()
+    else {
+        return bytes;
+    };
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+    reader.limits(limits);
+    let Ok(image) = reader.decode() else {
         return bytes;
     };
     let (width, height) = image.dimensions();
@@ -243,14 +311,37 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
         .timeout(Duration::from_secs(12))
         .call()
         .map_err(|e| e.to_string())?;
+    // Some providers return a branded HTML or JSON error page with status 200.
+    // Caching those bytes makes the custom protocol answer 200 forever, so the
+    // <img> never reaches the origin fallback. Preserve octet-stream origins
+    // because a few CDNs omit the image MIME type, but reject explicit non-image
+    // payloads and let serve() redirect the WebView to the source URL.
+    if let Some(content_type) = response.header("Content-Type") {
+        let media_type = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if !media_type.starts_with("image/") && media_type != "application/octet-stream" {
+            return Err(format!(
+                "unexpected image response content type: {media_type}"
+            ));
+        }
+    }
     let mut bytes: Vec<u8> = Vec::new();
     response
         .into_reader()
-        .take(MAX_DOWNLOAD_BYTES)
+        // Read one byte past the limit so oversized responses are rejected
+        // rather than silently cached as a valid but truncated image.
+        .take(MAX_DOWNLOAD_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.is_empty() {
         return Err("empty response".into());
+    }
+    if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
+        return Err("image exceeds the cache download limit".into());
     }
     Ok(bytes)
 }
@@ -258,16 +349,35 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
 /// Download a missing entry with bounded concurrency and per-path in-flight
 /// deduplication. Requests waiting for the same poster read the file written by
 /// the first request instead of opening duplicate HTTP connections.
-fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
+fn download_cached(url: &str, path: &PathBuf, keep_secs: u64) -> Result<Vec<u8>, String> {
+    let generation = CACHE_GENERATION.load(Ordering::SeqCst);
     let queue_deadline = Instant::now() + SLOT_WAIT_TIMEOUT;
 
     let _slot = loop {
         let mut state = lock_download_state();
 
         // Another request may have completed while this one waited.
+        if state.clearing > 0 {
+            let Some(remaining) = queue_deadline.checked_duration_since(Instant::now()) else {
+                return Err("timed out waiting for the cache clear".into());
+            };
+            let (guard, _) = DOWNLOAD_READY
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(guard);
+            continue;
+        }
+
         if path.exists() {
-            drop(state);
-            return fs::read(path).map_err(|error| error.to_string());
+            if !is_expired(path, keep_secs) {
+                drop(state);
+                return fs::read(path).map_err(|error| error.to_string());
+            }
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
         }
 
         state
@@ -302,6 +412,9 @@ fn download_cached(url: &str, path: &PathBuf) -> Result<Vec<u8>, String> {
         let tmp = path.with_extension(format!("{}.part", file_extension(url)));
         fs::write(&tmp, &bytes).map_err(|error| error.to_string())?;
         fs::rename(&tmp, path).map_err(|error| error.to_string())?;
+        if CACHE_GENERATION.load(Ordering::SeqCst) != generation {
+            let _ = fs::remove_file(path);
+        }
         Ok(bytes)
     });
 
@@ -326,41 +439,51 @@ fn enforce_limits(dir: &PathBuf) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<(PathBuf, SystemTime, u64)> = entries
+    let mut files: Vec<(PathBuf, SystemTime, u64, bool)> = entries
         .flatten()
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
             if !meta.is_file() {
                 return None;
             }
+            let path = entry.path();
             Some((
-                entry.path(),
+                path.clone(),
                 meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 meta.len(),
+                path.extension().and_then(|extension| extension.to_str()) != Some("part"),
             ))
         })
         .collect();
 
     let now = SystemTime::now();
-    files.retain(|(path, modified, _)| {
-        let expired = now
-            .duration_since(*modified)
-            .map(|age| age.as_secs() > keep_secs)
-            .unwrap_or(false);
+    files.retain(|(path, modified, _, evictable)| {
+        let age = now.duration_since(*modified).unwrap_or_default();
+        // A concurrent download owns its .part file until it atomically
+        // renames it. Never evict an active partial file during a size sweep;
+        // only clean one up after it has clearly been abandoned.
+        let expired = if *evictable {
+            age.as_secs() > keep_secs
+        } else {
+            age > ABANDONED_PARTIAL_MAX_AGE
+        };
         if expired {
             let _ = fs::remove_file(path);
         }
         !expired
     });
 
-    let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
+    let mut total: u64 = files.iter().map(|(_, _, len, _)| len).sum();
     if total <= max_bytes {
         return;
     }
-    files.sort_by_key(|(_, modified, _)| *modified);
-    for (path, _, len) in files {
+    files.sort_by_key(|(_, modified, _, _)| *modified);
+    for (path, _, len, evictable) in files {
         if total <= max_bytes {
             break;
+        }
+        if !evictable {
+            continue;
         }
         if fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(len);
@@ -398,14 +521,16 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
             Err(_) => return respond_redirect(origin_url(&url)),
         }
     } else {
-        // Expired files must be removed before entering download_cached;
-        // otherwise its post-wait existence check would serve stale bytes.
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
-        match download_cached(&url, &path) {
+        // Expiry check and removal happen under the download-state lock so a
+        // slower request cannot remove a fresh entry written by a concurrent
+        // refresh of the same URL.
+        match download_cached(&url, &path, keep_secs) {
             Ok(bytes) => {
-                if WRITES_SINCE_SWEEP.fetch_add(1, Ordering::Relaxed) >= SWEEP_EVERY_WRITES {
+                let max_bytes = lock_config().max_bytes;
+                let large_write_threshold = (max_bytes / SWEEP_EVERY_WRITES as u64).max(1);
+                if WRITES_SINCE_SWEEP.fetch_add(1, Ordering::Relaxed) >= SWEEP_EVERY_WRITES
+                    || bytes.len() as u64 >= large_write_threshold
+                {
                     WRITES_SINCE_SWEEP.store(0, Ordering::Relaxed);
                     enforce_limits(&dir);
                 }
@@ -430,7 +555,10 @@ fn serve(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8
     tauri::http::Response::builder()
         .status(200)
         .header("Content-Type", content_type)
-        .header("Cache-Control", "public, max-age=604800")
+        // Keep the native cache settings authoritative. A long-lived WebView
+        // HTTP entry would survive both a user-initiated clear and a shorter
+        // configured retention period without invoking this disk cache.
+        .header("Cache-Control", "no-cache")
         .header("Access-Control-Allow-Origin", "*")
         .body(bytes)
         .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
@@ -462,8 +590,10 @@ pub fn handle_request(
 pub fn image_cache_configure(app: tauri::AppHandle, max_mb: u64, keep_days: u64) {
     {
         let mut config = lock_config();
-        config.max_bytes = max_mb.max(10) * 1024 * 1024;
-        config.keep_secs = keep_days.max(1) * 24 * 60 * 60;
+        // Keep IPC inputs within the same range exposed by Settings and avoid
+        // overflow turning the user's disk quota into an unintended value.
+        config.max_bytes = max_mb.clamp(10, 2_000) * 1024 * 1024;
+        config.keep_secs = keep_days.clamp(1, 30) * 24 * 60 * 60;
     }
     if let Ok(dir) = cache_dir(&app) {
         tauri::async_runtime::spawn_blocking(move || enforce_limits(&dir));
@@ -471,28 +601,56 @@ pub fn image_cache_configure(app: tauri::AppHandle, max_mb: u64, keep_days: u64)
 }
 
 #[tauri::command]
-pub fn image_cache_stats(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub async fn image_cache_stats(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let dir = cache_dir(&app)?;
-    let mut bytes: u64 = 0;
-    let mut files: u64 = 0;
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                bytes += meta.len();
-                files += 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut bytes: u64 = 0;
+        let mut files: u64 = 0;
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    bytes = bytes.saturating_add(meta.len());
+                    files = files.saturating_add(1);
+                }
             }
         }
-    }
-    Ok(serde_json::json!({ "bytes": bytes, "files": files }))
+        Ok(serde_json::json!({ "bytes": bytes, "files": files }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn image_cache_clear(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn image_cache_clear(app: tauri::AppHandle) -> Result<(), String> {
     let dir = cache_dir(&app)?;
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
-        let _ = fs::remove_file(entry.path());
+    {
+        let mut state = lock_download_state();
+        state.clearing += 1;
+        CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
     }
-    Ok(())
+    let clear_guard = CacheClearGuard;
+    tauri::async_runtime::spawn_blocking(move || {
+        // The blocking filesystem job continues if the async command is
+        // cancelled. Keep the clear reservation alive until deletion itself
+        // finishes, or concurrent downloads could repopulate the cache.
+        let _clear_guard = clear_guard;
+        for entry in fs::read_dir(&dir).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let file_type = entry.file_type().map_err(|error| error.to_string())?;
+            if file_type.is_file() || file_type.is_symlink() {
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => {}
+                    // An in-flight download may have removed its own entry
+                    // after observing the generation bump.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]

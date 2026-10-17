@@ -47,7 +47,8 @@ describe('SIMKL v2 sync migration', () => {
       '/sync/all-items/anime?extended=full&episode_watched_at=yes&include_all_episodes=yes',
       '/sync/activities',
     ])
-    expect(JSON.parse(localStorage.getItem('simkl_sync_state_v2')!)).toEqual({ activitiesAll: '2026-09-19T10:00:00Z' })
+    const profileId = localStorage.getItem('aurales_active_profile_v1') || 'default'
+    expect(JSON.parse(localStorage.getItem(`simkl_sync_state_v2:${profileId}:account-1`)!)).toEqual({ activitiesAll: '2026-09-19T10:00:00Z' })
   })
 
   it('uses activities as the delta gate and preserves the opaque cursor exactly', async () => {

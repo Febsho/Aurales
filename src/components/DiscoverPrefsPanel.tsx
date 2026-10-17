@@ -90,11 +90,12 @@ export default function DiscoverPrefsPanel({
       setKeywordIncludeSuggestions([])
       return
     }
+    let cancelled = false
     const timer = setTimeout(async () => {
       const results = await searchTmdbKeywords(keywordIncludeQuery)
-      setKeywordIncludeSuggestions(results.slice(0, 5))
+      if (!cancelled) setKeywordIncludeSuggestions(results.slice(0, 5))
     }, 300)
-    return () => clearTimeout(timer)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [keywordIncludeQuery])
 
   // Keyword Exclude search
@@ -103,11 +104,12 @@ export default function DiscoverPrefsPanel({
       setKeywordExcludeSuggestions([])
       return
     }
+    let cancelled = false
     const timer = setTimeout(async () => {
       const results = await searchTmdbKeywords(keywordExcludeQuery)
-      setKeywordExcludeSuggestions(results.slice(0, 5))
+      if (!cancelled) setKeywordExcludeSuggestions(results.slice(0, 5))
     }, 300)
-    return () => clearTimeout(timer)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [keywordExcludeQuery])
 
   // Company search
@@ -116,11 +118,12 @@ export default function DiscoverPrefsPanel({
       setCompanySuggestions([])
       return
     }
+    let cancelled = false
     const timer = setTimeout(async () => {
       const results = await searchTmdbCompanies(companyQuery)
-      setCompanySuggestions(results.slice(0, 5))
+      if (!cancelled) setCompanySuggestions(results.slice(0, 5))
     }, 300)
-    return () => clearTimeout(timer)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [companyQuery])
 
   const handleLanguageToggle = (code: string, listKey: 'onlyLanguages' | 'excludeLanguages') => {
@@ -217,6 +220,15 @@ export default function DiscoverPrefsPanel({
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end -mb-3">
+        <button
+          type="button"
+          onClick={onReset}
+          className="text-label font-semibold text-white/55 hover:text-white transition-colors"
+        >
+          Reset all preferences
+        </button>
+      </div>
       {/* 1. RANKING WEIGHTS */}
       <div>
         <div className="flex items-center justify-between mb-4 border-b border-white/[0.04] pb-2">

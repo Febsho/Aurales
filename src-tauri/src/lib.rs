@@ -3,6 +3,9 @@ mod core;
 mod db;
 mod image_cache;
 mod libmpv_player;
+mod native_secrets {
+    include!(concat!(env!("OUT_DIR"), "/native_secrets.rs"));
+}
 #[cfg(target_os = "linux")]
 mod linux_render_surface;
 mod seekr;
@@ -214,12 +217,10 @@ pub fn run() {
                 )?;
             }
 
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to get app data dir");
+            let app_dir = app.path().app_data_dir()?;
+            thumbnails::cleanup_thumbnail_cache(&app_dir);
 
-            let database = Database::new(app_dir).expect("failed to initialize database");
+            let database = Database::new(app_dir.clone())?;
             app.manage(database);
             app.manage(core::detail_page::DetailPageCoordinator::default());
 
@@ -271,6 +272,7 @@ pub fn run() {
             commands::delete_app_metadata,
             commands::hard_reset_anime_metadata,
             commands::clear_app_metadata,
+            commands::clear_anime_app_metadata,
             commands::launch_mpv,
             commands::launch_embedded_mpv,
             commands::launch_minimal_mpv,
@@ -279,6 +281,7 @@ pub fn run() {
             commands::get_minimal_player_state,
             commands::get_embedded_player_supported,
             commands::get_embedded_player_running,
+            commands::get_embedded_player_session_id,
             commands::get_player_debug_logs,
             commands::clear_player_debug_logs,
             commands::select_local_video_file,
@@ -319,11 +322,13 @@ pub fn run() {
             commands::check_simkl_pin,
             commands::fetch_simkl_user,
             commands::start_simkl_callback_server,
+            commands::cancel_simkl_callback_server,
             commands::exchange_simkl_token,
             commands::exchange_simkl_v2_token,
             commands::refresh_simkl_v2_token,
             commands::open_simkl_auth,
             commands::start_anilist_callback_server,
+            commands::cancel_anilist_callback_server,
             commands::exchange_anilist_token,
             commands::discord_set_activity,
             commands::discord_clear_activity,
@@ -332,6 +337,8 @@ pub fn run() {
             commands::cache_entry_set,
             commands::cache_entry_get,
             commands::cache_entry_get_many,
+            commands::cache_entry_delete,
+            commands::cache_entry_delete_many,
             commands::cache_entry_clear_category,
             commands::cache_entry_clear_expired,
             commands::cache_entry_stats,

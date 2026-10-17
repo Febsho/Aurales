@@ -1,9 +1,10 @@
 import { v4 as uuid } from 'uuid'
 import { getActiveProfileId } from '../profiles'
-import { getOutboxRecords, putOutboxRecord } from './outbox'
+import { getOutboxRecords, putOutboxRecord, putOutboxRecords } from './outbox'
 
 export const AURALES_SYNC_SCHEMA_VERSION = 1
 const DEVICE_KEY = 'aurales_sync_device_v1'
+let memoryDeviceId: string | undefined
 
 export interface SyncRecord {
   recordId: string
@@ -18,12 +19,22 @@ export interface SyncRecord {
 }
 
 export function getDeviceId(): string {
-  let id = localStorage.getItem(DEVICE_KEY)
-  if (!id) {
-    id = uuid()
-    localStorage.setItem(DEVICE_KEY, id)
+  if (memoryDeviceId) return memoryDeviceId
+  try {
+    const stored = localStorage.getItem(DEVICE_KEY)
+    if (stored) {
+      memoryDeviceId = stored
+      return stored
+    }
+  } catch {
+    // The outbox remains usable when WebView storage is disabled.
   }
-  return id
+
+  memoryDeviceId = uuid()
+  try { localStorage.setItem(DEVICE_KEY, memoryDeviceId) } catch {
+    // Keep the same device ID for this process even if it cannot be persisted.
+  }
+  return memoryDeviceId
 }
 
 export function getSyncOutbox(): SyncRecord[] {
@@ -62,4 +73,28 @@ export function enqueueSyncRecord(
   putOutboxRecord(record)
   if (type !== 'encrypted-vault') scheduleAutomaticSync()
   return record
+}
+
+/** Queues a related group without scheduling one persist/notification per item. */
+export function enqueueSyncRecords(
+  type: SyncRecord['type'],
+  entries: Array<{ identity: string; payload: unknown }>,
+  profileId = getActiveProfileId(),
+): SyncRecord[] {
+  if (entries.length === 0) return []
+  const deviceId = getDeviceId()
+  const updatedAt = new Date().toISOString()
+  const records = entries.map(({ identity, payload }): SyncRecord => ({
+    recordId: `${profileId}:${type}:${identity}`,
+    profileId,
+    type,
+    payload,
+    updatedAt,
+    deviceId,
+    version: 1,
+    schemaVersion: AURALES_SYNC_SCHEMA_VERSION,
+  }))
+  putOutboxRecords(records)
+  if (type !== 'encrypted-vault') scheduleAutomaticSync()
+  return records
 }

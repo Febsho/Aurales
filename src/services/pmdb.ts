@@ -10,8 +10,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
 import { requestCoordinator } from './network/requestCoordinator'
+import { withRequestTimeout } from './network/timeout'
+import { readBoundedResponseJson } from './network/boundedResponse'
 
 const BASE_URL = 'https://publicmetadb.com/api/external'
+const MAX_TMDB_FIND_RESPONSE_BYTES = 1024 * 1024
 
 // ── Low-level proxy ───────────────────────────────────────────────────────────
 
@@ -20,6 +23,17 @@ interface RustPmdbResponse {
   ok: boolean
   /** Raw response body (JSON string). We JSON.parse it on the JS side. */
   body: string
+}
+
+function credentialFingerprint(value: string): string {
+  // Separate coordinator requests across accounts without storing the API key
+  // itself in the diagnostic/request identity.
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
 }
 
 async function pmdbFetch(
@@ -35,16 +49,21 @@ async function pmdbFetch(
       origin: BASE_URL,
       label: 'PublicMetaDB',
       kind: 'metadata',
-      dedupeKey: `${method}:${path}:${bodyObj === undefined ? '' : JSON.stringify(bodyObj)}`,
+      dedupeKey: `${credentialFingerprint(apiKey)}:${method}:${path}:${bodyObj === undefined ? '' : JSON.stringify(bodyObj)}`,
       priority: method === 'GET' ? 'visible' : 'interactive',
       timeoutMs: 15_000,
       retry: 'none',
-    }, () => invoke<RustPmdbResponse>('pmdb_request', {
+    }, () => {
+      if (useAppStore.getState().pmdbApiKey !== apiKey) {
+        throw new Error('PublicMetaDB connection changed before the request could be sent.')
+      }
+      return invoke<RustPmdbResponse>('pmdb_request', {
         method,
         url: `${BASE_URL}${path}`,
         apiKey,
         body: bodyObj !== undefined ? JSON.stringify(bodyObj) : null,
-      }))
+      })
+    })
 
     let data: unknown = null
     try { data = JSON.parse(result.body) } catch (_) { data = result.body }
@@ -117,7 +136,7 @@ function pickArrayPayload(data: unknown): unknown[] {
 
 function toNumber(value: unknown): number | undefined {
   if (value == null) return undefined
-  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)-/i, ''))
+  const num = Number(String(value).replace(/^(tmdb|tvdb|mal|anilist)[-:]/i, ''))
   return Number.isFinite(num) && num > 0 ? num : undefined
 }
 
@@ -243,11 +262,14 @@ export async function lookupTmdbId(
     const tmdbKey = getTmdbApiKey()
     if (tmdbKey) {
       try {
-        const res = await fetch(
-          `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=imdb_id`
-        )
-        if (res.ok) {
-          const data = await res.json()
+        const data = await withRequestTimeout(8_000, async (signal) => {
+          const res = await fetch(
+            `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=imdb_id`,
+            { signal },
+          )
+          return res.ok ? readBoundedResponseJson<Record<string, any>>(res, MAX_TMDB_FIND_RESPONSE_BYTES, 'TMDB find response') : null
+        }, 'TMDB ID lookup timed out')
+        if (data) {
           const movies: { id: number }[] = data.movie_results || []
           const shows: { id: number }[] = data.tv_results || []
           if (preferredMediaType === 'movie' && movies.length > 0) return { tmdbId: movies[0].id, mediaType: 'movie' }
@@ -264,11 +286,14 @@ export async function lookupTmdbId(
     const tmdbKey = getTmdbApiKey()
     if (tmdbKey) {
       try {
-        const res = await fetch(
-          `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=tvdb_id`
-        )
-        if (res.ok) {
-          const data = await res.json()
+        const data = await withRequestTimeout(8_000, async (signal) => {
+          const res = await fetch(
+            `https://api.themoviedb.org/3/find/${encodeURIComponent(idValue)}?api_key=${tmdbKey}&external_source=tvdb_id`,
+            { signal },
+          )
+          return res.ok ? readBoundedResponseJson<Record<string, any>>(res, MAX_TMDB_FIND_RESPONSE_BYTES, 'TMDB find response') : null
+        }, 'TMDB ID lookup timed out')
+        if (data) {
           const shows: { id: number }[] = data.tv_results || []
           if (shows.length > 0) return { tmdbId: shows[0].id, mediaType: 'tv' }
         }
@@ -382,7 +407,9 @@ export async function scrobblePMDB(
   episode?: number
 ): Promise<void> {
   if (!useAppStore.getState().pmdbApiKey) return
-  if (mediaType === 'tv' && (season == null || episode == null)) return
+  if (mediaType === 'tv' && (season == null || episode == null)) {
+    throw new Error('PMDB requires a season and episode to mark a TV item as watched.')
+  }
 
   const body: Record<string, unknown> = { tmdb_id: tmdbId, media_type: mediaType }
   if (mediaType === 'tv') { body.season = season; body.episode = episode }
@@ -390,6 +417,7 @@ export async function scrobblePMDB(
   const result = await pmdbFetch('POST', '/watched?dedupe=true', body)
   if (!result.ok) {
     console.warn('[PMDB] scrobblePMDB failed:', result.status)
+    throw new Error(`PMDB watched update failed${result.status ? ` (HTTP ${result.status})` : ''}.`)
   }
 }
 
@@ -402,7 +430,7 @@ export async function removePMDBWatched(
   if (!useAppStore.getState().pmdbApiKey) return
   if (mediaType === 'tv' && (season == null || episode == null)) return
 
-  const watched = await getPMDBWatched()
+  const watched = await getPMDBWatched({ strict: true })
   const target = watched.find((item) =>
     item.tmdb_id === tmdbId &&
     item.media_type === mediaType &&
@@ -413,15 +441,59 @@ export async function removePMDBWatched(
   const result = await pmdbFetch('DELETE', `/watched/${encodeURIComponent(target.id)}`)
   if (!result.ok) {
     console.warn('[PMDB] removePMDBWatched failed:', result.status)
+    throw new Error(`PMDB watched removal failed${result.status ? ` (HTTP ${result.status})` : ''}.`)
   }
 }
 
-export async function getPMDBWatched(): Promise<PMDBWatchedItem[]> {
-  if (!useAppStore.getState().pmdbApiKey) return []
+/** Remove multiple episode records from one snapshot instead of reloading the
+ * complete watched history for every episode in a season/show. */
+export async function removePMDBWatchedBatch(
+  targets: Array<{ tmdbId: number; season: number; episode: number }>,
+): Promise<void> {
+  if (!useAppStore.getState().pmdbApiKey || targets.length === 0) return
+  const wanted = new Set(targets.map((target) => `${target.tmdbId}:${target.season}:${target.episode}`))
+  const watched = await getPMDBWatched({ strict: true })
+  const ids = [...new Set(watched
+    .filter((item) => item.media_type === 'tv' && item.season != null && item.episode != null
+      && wanted.has(`${item.tmdb_id}:${item.season}:${item.episode}`))
+    .map((item) => item.id))]
+  await removePMDBWatchedRecords(ids)
+}
+
+/** Delete known PMDB watched-record IDs without fetching the list again. */
+export async function removePMDBWatchedRecords(recordIds: string[]): Promise<void> {
+  if (!useAppStore.getState().pmdbApiKey || recordIds.length === 0) return
+  const ids = [...new Set(recordIds.filter((id) => typeof id === 'string' && id.length > 0))]
+  let cursor = 0
+  let failed = false
+  let firstError: unknown
+  const worker = async () => {
+    while (!failed && cursor < ids.length) {
+      const id = ids[cursor++]
+      try {
+        const result = await pmdbFetch('DELETE', `/watched/${encodeURIComponent(id)}`)
+        if (!result.ok) throw new Error(`PMDB watched removal failed${result.status ? ` (HTTP ${result.status})` : ''}.`)
+      } catch (error) {
+        if (!failed) { failed = true; firstError = error }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker))
+  if (failed) throw firstError
+}
+
+export async function getPMDBWatched(options: { strict?: boolean } = {}): Promise<PMDBWatchedItem[]> {
+  if (!useAppStore.getState().pmdbApiKey) {
+    if (options.strict) throw new Error('PMDB is not connected.')
+    return []
+  }
   try {
     const perPage = 500
     const first = await pmdbFetch('GET', `/watched?perPage=${perPage}&page=1`)
-    if (!first.ok) return []
+    if (!first.ok) {
+      if (options.strict) throw new Error(`PMDB watched history could not be loaded${first.status ? ` (HTTP ${first.status})` : ''}.`)
+      return []
+    }
     const firstRaw = pickArrayPayload(first.data)
     const items = firstRaw.map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null)
     const firstData = first.data as Record<string, unknown> | null
@@ -437,17 +509,24 @@ export async function getPMDBWatched(): Promise<PMDBWatchedItem[]> {
       : (firstRaw.length < perPage ? 1 : 20)
 
     if (totalPages > 1) {
-      const remaining = await Promise.all(
-        Array.from({ length: totalPages - 1 }, (_, index) => pmdbFetch('GET', `/watched?perPage=${perPage}&page=${index + 2}`))
-      )
-      for (const result of remaining) {
-        if (!result.ok) continue
-        items.push(...pickArrayPayload(result.data).map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null))
+      for (let page = 2; page <= totalPages; page += 4) {
+        const pages = Array.from({ length: Math.min(4, totalPages - page + 1) }, (_, index) => page + index)
+        const remaining = await Promise.all(pages.map((number) =>
+          pmdbFetch('GET', `/watched?perPage=${perPage}&page=${number}`)
+        ))
+        for (const result of remaining) {
+          if (!result.ok) {
+            if (options.strict) throw new Error(`PMDB watched history could not be loaded${result.status ? ` (HTTP ${result.status})` : ''}.`)
+            continue
+          }
+          items.push(...pickArrayPayload(result.data).map(normalizeWatchedItem).filter((i): i is PMDBWatchedItem => i !== null))
+        }
       }
     }
     return items
   } catch (e) {
     console.error('[PMDB] getPMDBWatched failed:', e)
+    if (options.strict) throw e
     return []
   }
 }

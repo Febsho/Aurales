@@ -8,14 +8,26 @@ export interface ResolvedHeroStreams {
 }
 
 const resolveCache = new Map<string, Promise<ResolvedHeroStreams | null>>()
+const MAX_RESOLVED_HERO_STREAMS = 64
+
+function rememberResolvedHeroStream(key: string, promise: Promise<ResolvedHeroStreams | null>): void {
+  resolveCache.delete(key)
+  resolveCache.set(key, promise)
+  while (resolveCache.size > MAX_RESOLVED_HERO_STREAMS) {
+    const oldest = resolveCache.keys().next().value
+    if (oldest === undefined) break
+    resolveCache.delete(oldest)
+  }
+}
 
 export function resolveHeroStreams(videoId: string, maxHeight = 2160): Promise<ResolvedHeroStreams | null> {
   const cacheKey = `${videoId}:${maxHeight}`
   const cached = resolveCache.get(cacheKey)
   if (cached) {
+    rememberResolvedHeroStream(cacheKey, cached)
     return cached.then((streams) => {
       if (streams && streams.expiresAt > Date.now() + 60_000) return streams
-      resolveCache.delete(cacheKey)
+      if (resolveCache.get(cacheKey) === cached) resolveCache.delete(cacheKey)
       return resolveHeroStreams(videoId, maxHeight)
     })
   }
@@ -35,9 +47,9 @@ export function resolveHeroStreams(videoId: string, maxHeight = 2160): Promise<R
       return null
     })
 
-  resolveCache.set(cacheKey, promise)
+  rememberResolvedHeroStream(cacheKey, promise)
   promise.then((streams) => {
-    if (!streams) resolveCache.delete(cacheKey)
+    if (!streams && resolveCache.get(cacheKey) === promise) resolveCache.delete(cacheKey)
   })
   return promise
 }

@@ -1,9 +1,11 @@
-import { useMemo, useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { parseDetailId } from '../services/metadata/detailIds'
 import { matchingEpisode } from '../services/metadata/episodeIdentity'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
+import { readBoundedResponseJson } from '../services/network/boundedResponse'
 import { cachedImage, retryImageFromSource } from '../services/imageCache'
-import type { ShowDetails, SeasonDetails } from '../types'
+import type { ShowDetails, SeasonDetails, WatchProgress } from '../types'
 import { MOCK_SHOW, MOCK_SEASON, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
 import { tvdbProvider } from '../services/tvdb'
@@ -32,7 +34,7 @@ import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/tra
 import { getPMDBPlaybackProgress } from '../services/pmdb'
 import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
-import { isWatchedFromProviders, batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
+import { batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { resolveAnimeMetadata } from '../services/metadata/animeResolver'
@@ -53,6 +55,8 @@ import { loadAnimeSeason } from '../services/metadata/animeSeasonLoader'
 import { detailProviderRequestCount, markPerformance, measurePerformance, recordDetailProviderRequest, resetDetailProviderRequestCount } from '../services/performanceMetrics'
 import { getDetailView, rememberDetailView } from '../services/sessionViewState'
 import { seriesPrimaryLabel } from '../services/detailPresentation'
+import { isValidDateKey, localDateKey } from '../services/localDate'
+import { withRequestTimeout } from '../services/network/timeout'
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -445,7 +449,7 @@ function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number): 
 
 function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowDetails['seasons'] {
   const now = new Date()
-  const today = now.toISOString().slice(0, 10)
+  const today = localDateKey(now)
   const settings = useAppStore.getState()
 
   const hasEpisodeCounts = seasons.some((s) => s.episodeCount > 0)
@@ -455,7 +459,8 @@ function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowD
       if (isAnime && !settings.includeAnimeSpecials && s.seasonNumber === 0) return false
       // A future-dated season is announced but not watchable yet. Do not put
       // it in the selector until its release date arrives.
-      if (s.airDate && s.airDate.slice(0, 10) > today) return false
+      const dateKey = s.airDate?.slice(0, 10)
+      if (dateKey && isValidDateKey(dateKey) && dateKey > today) return false
       // TVDB frequently uses 0 when an anime season's episode summary has not
       // been fetched yet. Keep that season shell visible; its real count and
       // episodes are filled when selected/background-prefetched. Ordinary
@@ -480,7 +485,8 @@ function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowD
 function isReleasedEpisode(episode: SeasonDetails['episodes'][number]): boolean {
   // No date means the episode has not been announced with a release date yet.
   // It must not render as a blank, playable-looking episode card.
-  return Boolean(episode.airDate && episode.airDate.slice(0, 10) <= new Date().toISOString().slice(0, 10))
+  const dateKey = episode.airDate?.slice(0, 10)
+  return Boolean(dateKey && isValidDateKey(dateKey) && dateKey <= localDateKey())
 }
 
 function rotateFallback<T>(items: T[], seed: string): T[] {
@@ -494,7 +500,8 @@ function formatEpisodeAirDate(dateStr?: string): string {
   try {
     const cleanDate = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr
     const parts = cleanDate.split('-')
-    if (parts.length === 3) {
+    if (parts.length === 3 && /^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      if (!isValidDateKey(cleanDate)) return ''
       const year = parseInt(parts[0], 10)
       const month = parseInt(parts[1], 10) - 1
       const day = parseInt(parts[2], 10)
@@ -525,8 +532,11 @@ export default function SeriesDetailPage() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
   const state = (location.state || {}) as LocationState
+  const locationStateRef = useRef(state)
+  locationStateRef.current = state
   const detailViewKey = `series:${id || state.imdbId || state.tmdbId || state.tvdbId || state.title || 'unknown'}`
   const [show, setShow] = useState<ShowDetails | null>(null)
+  const showId = show?.id
   const showRef = useRef<ShowDetails | null>(null)
   showRef.current = show
   const [malRating, setMalRating] = useState<number | null>(null)
@@ -536,6 +546,8 @@ export default function SeriesDetailPage() {
   const selectedSeasonRef = useRef<number | null>(null)
   selectedSeasonRef.current = selectedSeason
   const [seasonCache, setSeasonCache] = useState<Record<number, SeasonDetails>>({})
+  const seasonCacheRef = useRef(seasonCache)
+  seasonCacheRef.current = seasonCache
   const seasonData = selectedSeason !== null ? (seasonCache[selectedSeason] || null) : null
   const [presentedSeasonData, setPresentedSeasonData] = useState<SeasonDetails | null>(null)
   const [loading, setLoading] = useState(true)
@@ -642,27 +654,34 @@ export default function SeriesDetailPage() {
   const traktConnected = useAppStore((s) => s.traktConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
-
-  const getEpisodeProgress = (seasonNum: number, episodeNum: number) => {
-    if (!show) return null
-    return [...watchedProgress.values()].find((p) => {
-      if (p.completed || p.progressSeconds <= 0 || p.season !== seasonNum || p.episode !== episodeNum) return false
-      return (
-        fuzzyIdsMatch(p.mediaId, show.id) ||
-        fuzzyIdsMatch(p.mediaId, show.imdbId) ||
-        fuzzyIdsMatch(p.mediaId, show.tmdbId) ||
-        fuzzyIdsMatch(p.mediaId, show.tvdbId) ||
-        fuzzyIdsMatch(p.imdbId, show.imdbId) ||
-        fuzzyIdsMatch(p.tmdbId, show.tmdbId)
-      )
-    }) || null
-  }
+  const episodeProgressIndex = useMemo(() => {
+    const index = new Map<string, WatchProgress>()
+    if (!show) return index
+    for (const progress of watchedProgress.values()) {
+      if (progress.completed || progress.progressSeconds <= 0 || progress.season == null || progress.episode == null) continue
+      const matchesShow = fuzzyIdsMatch(progress.mediaId, show.id) ||
+        fuzzyIdsMatch(progress.mediaId, show.imdbId) ||
+        fuzzyIdsMatch(progress.mediaId, show.tmdbId) ||
+        fuzzyIdsMatch(progress.mediaId, show.tvdbId) ||
+        fuzzyIdsMatch(progress.imdbId, show.imdbId) ||
+        fuzzyIdsMatch(progress.tmdbId, show.tmdbId)
+      if (!matchesShow) continue
+      const key = `${progress.season}:${progress.episode}`
+      // Preserve the original first-match behavior for duplicate provider rows.
+      if (!index.has(key)) index.set(key, progress)
+    }
+    return index
+  }, [show, watchedProgress])
+  const getEpisodeProgress = useCallback(
+    (seasonNum: number, episodeNum: number) => episodeProgressIndex.get(`${seasonNum}:${episodeNum}`) || null,
+    [episodeProgressIndex],
+  )
 
   const resumeProgress = useMemo(() => {
     if (!show) return null
     return [...watchedProgress.values()]
       .filter((progress) => !progress.completed && progress.season != null && progress.episode != null)
-      .filter((progress) => 
+      .filter((progress) =>
         fuzzyIdsMatch(progress.mediaId, show.id) ||
         fuzzyIdsMatch(progress.mediaId, show.imdbId) ||
         fuzzyIdsMatch(progress.mediaId, show.tmdbId) ||
@@ -670,7 +689,7 @@ export default function SeriesDetailPage() {
         fuzzyIdsMatch(progress.imdbId, show.imdbId) ||
         fuzzyIdsMatch(progress.tmdbId, show.tmdbId)
       )
-      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0] || null
+      .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0] || null
   }, [show, watchedProgress])
 
   const [liveResumePoint, setLiveResumePoint] = useState<{
@@ -737,9 +756,9 @@ export default function SeriesDetailPage() {
                   updatedAt: item.paused_at,
                 }
               })
-            
+
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -770,9 +789,9 @@ export default function SeriesDetailPage() {
                   updatedAt: item.paused_at,
                 }
               })
-            
+
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -798,9 +817,9 @@ export default function SeriesDetailPage() {
                   updatedAt: item.updated_at,
                 }
               })
-            
+
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -833,9 +852,9 @@ export default function SeriesDetailPage() {
                   updatedAt: item.updated_at,
                 }
               })
-            
+
             if (matches.length > 0 && active) {
-              matches.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+              matches.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
               candidates.push(matches[0])
             }
           } catch (_) {}
@@ -870,7 +889,7 @@ export default function SeriesDetailPage() {
 
       const selected = primaryProgressProvider === 'all'
         ? candidates.filter((candidate) => candidate.progressSeconds >= 0 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
-          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+          .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0]
         : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
       setLiveResumePoint(selected || null)
     }
@@ -880,7 +899,7 @@ export default function SeriesDetailPage() {
     return () => {
       active = false
     }
-  }, [show, resumeProgress, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected, anilistConnected])
+  }, [show, resumeProgress, getEpisodeProgress, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected, anilistConnected])
 
   useEffect(() => {
     manuallySelectedSeasonRef.current = false
@@ -895,9 +914,10 @@ export default function SeriesDetailPage() {
 
     resumeSeasonAppliedForShowRef.current = show.id
     setSelectedSeason(seasonNumber)
-    window.requestAnimationFrame(() => {
+    const frame = window.requestAnimationFrame(() => {
       centerSeasonTab(seasonNumber, 'auto')
     })
+    return () => window.cancelAnimationFrame(frame)
   }, [show, liveResumePoint, resumeProgress])
   const completedIds = useAppStore((s) => s.completedIds)
   const watchProgressRef = useRef(watchedProgress)
@@ -905,6 +925,7 @@ export default function SeriesDetailPage() {
   const completedIdsRef = useRef(completedIds)
   completedIdsRef.current = completedIds
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
+  const setWatchProgressBatch = useAppStore((s) => s.setWatchProgressBatch)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const showCtxMenu = useContextMenu((s) => s.show)
@@ -936,19 +957,28 @@ export default function SeriesDetailPage() {
     (id && /^(mal|anilist)[-:]/i.test(id)),
   )
   const isAnime = show?.isAnime ?? routeIsAnime
+  const appSeasonCounts = useMemo(() => isAnime && show
+    ? show.seasons
+      .filter((season) => season.seasonNumber > 0)
+      .map((season) => ({ season: season.seasonNumber, count: season.episodeCount }))
+      .sort((left, right) => left.season - right.season)
+    : undefined, [isAnime, show])
+  const showTitle = show?.title
+  const showPoster = show?.poster
+  const showImdbId = show?.imdbId
 
   useEffect(() => {
-    if (!show || !discordRichPresence) return
-    const image = show.poster?.startsWith('http') ? show.poster : undefined
+    if (!showId || !showTitle || !discordRichPresence) return
+    const image = showPoster?.startsWith('http') ? showPoster : undefined
     setDiscordBrowsingActivity({
-      details: `Browsing ${show.title}`,
+      details: `Browsing ${showTitle}`,
       state: isAnime ? 'Anime Series' : 'Series',
       largeImage: image || 'aurales_logo',
-      largeText: show.title,
+      largeText: showTitle,
       activityType: 3,
     }).catch(() => {})
     return () => { setDiscordBrowsingActivity().catch(() => {}) }
-  }, [show?.title, show?.poster, isAnime, discordRichPresence])
+  }, [showId, showTitle, showPoster, isAnime, discordRichPresence])
 
   useEffect(() => {
     let cancelled = false
@@ -1014,7 +1044,7 @@ export default function SeriesDetailPage() {
         setDetailResolved(true)
         setMetadataStatus('resolved')
         setLoading(false)
-        writeSeriesDetailCache(id, state, {
+        writeSeriesDetailCache(id, locationStateRef.current, {
           show: directShow,
           selectedSeason: selected,
           episodeMap,
@@ -1048,7 +1078,8 @@ export default function SeriesDetailPage() {
       showRef.current = immediateShow
       setShow(immediateShow)
 
-      const cached = await readSeriesDetailCache(id, state)
+      const cached = await readSeriesDetailCache(id, locationStateRef.current)
+      if (cancelled) return
       if (cached) {
         const cachedSeasonEpisodes = cached.selectedSeason == null
           ? undefined
@@ -1223,6 +1254,7 @@ export default function SeriesDetailPage() {
         } catch (e) {
           console.error('[SeriesDetailPage] Failed early anime resolution:', e)
         }
+        if (cancelled) return
       }
 
       let isAnimeLocal = routeIsAnime
@@ -1245,6 +1277,7 @@ export default function SeriesDetailPage() {
             if (resolved.imdbId && !knownIds.imdbId) knownIds.imdbId = resolved.imdbId
           }
         } catch (_) { /* ignore */ }
+        if (cancelled) return
       }
 
       if (appManagedMetadata && !isAnimeLocal && knownIds.tvdbId) {
@@ -1265,6 +1298,7 @@ export default function SeriesDetailPage() {
             if (first.imdb_id) knownIds.imdbId = Array.isArray(first.imdb_id) ? first.imdb_id[0] : first.imdb_id
           }
         } catch (_) { /* ignore */ }
+        if (cancelled) return
       }
 
       if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
@@ -1274,6 +1308,7 @@ export default function SeriesDetailPage() {
           tvdbId: Number(knownIds.tvdbId) || undefined, anilistId: Number(knownIds.anilistId) || undefined,
           malId: Number(knownIds.malId) || undefined,
         }).catch(() => null)
+        if (cancelled) return
         if (normalized && normalized.sourceMetadataProvider !== 'fallback_addon') {
           result = appMediaToShow(normalized)
           knownIds.imdbId ||= normalized.imdbId
@@ -1292,8 +1327,13 @@ export default function SeriesDetailPage() {
       if (shouldRequestAddonMeta && (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId))) {
         const addonItemId = state.sourceAddonItemId || id || ''
         const tryAddonMeta = async (addonUrl: string) => {
+          if (cancelled) return null
           try {
             const meta = await getAddonMeta(addonUrl, 'series', addonItemId)
+            // The route may have changed while the addon request was in
+            // flight. Do not seed the new route's season loader with this
+            // show's videos or issue more fallback addon requests.
+            if (cancelled) return null
             if (meta) {
               loadedAddonMeta = meta
               setAddonMeta(meta)
@@ -1312,7 +1352,7 @@ export default function SeriesDetailPage() {
         let addonResult: ShowDetails | null = loadedAddonMeta
           ? addonMetaToShow(loadedAddonMeta, addonItemId)
           : null
-        if (loadedAddonMeta) setAddonMeta(loadedAddonMeta)
+        if (loadedAddonMeta && !cancelled) setAddonMeta(loadedAddonMeta)
         if (!addonResult && state.addonUrl) {
           addonResult = await tryAddonMeta(state.addonUrl)
         }
@@ -1320,6 +1360,7 @@ export default function SeriesDetailPage() {
           const metaAddons = getMetaAddons('series')
           const storeAddons = addons.filter((a) => a.enabled)
           for (const addon of metaAddons.length > 0 ? metaAddons : storeAddons) {
+            if (cancelled) return
             addonResult = await tryAddonMeta(addon.url)
             if (addonResult) break
           }
@@ -1340,6 +1381,7 @@ export default function SeriesDetailPage() {
       // is authoritative. Publish it now and avoid the TMDB/TVDB/anime lookup
       // waterfall entirely.
       if (!appManagedMetadata && result) {
+        if (cancelled) return
         const addonIsAnime = Boolean(routeIsAnime || result.isAnime || knownIds.anilistId || knownIds.malId)
         const directShow = applyShowArt(applyInitialArtworkPreference({
           ...result,
@@ -1369,7 +1411,7 @@ export default function SeriesDetailPage() {
         setSelectedSeason(selected)
         setMetadataStatus('resolved')
         setLoading(false)
-        writeSeriesDetailCache(id, state, {
+        writeSeriesDetailCache(id, locationStateRef.current, {
           show: directShow,
           selectedSeason: selected,
           episodeMap,
@@ -1403,6 +1445,7 @@ export default function SeriesDetailPage() {
       } : null
 
       if (placeholder) {
+        if (cancelled) return
         const art = applyShowArt({ ...placeholder, seasons: processSeasons(placeholder.seasons, isAnimeLocal) })
         setShow(art)
         if (!isAnimeLocal) {
@@ -1418,7 +1461,7 @@ export default function SeriesDetailPage() {
         console.log('[SeriesDetailPage] Anime detected, using TVDB-first flow')
 
         // IDs already resolved by early resolve above — use knownIds directly
-        let tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
+        const tvdbId = knownIds.tvdbId ? String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
         let tmdbId = knownIds.tmdbId ? String(knownIds.tmdbId).replace(/^[a-z_]+[-:]/i, '') : undefined
 
         // Resolve TMDB ID if missing (needed for artwork)
@@ -1426,6 +1469,7 @@ export default function SeriesDetailPage() {
           try {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
+            if (cancelled) return
             if (found.tmdbId) tmdbId = String(found.tmdbId)
           } catch (_) { /* continue */ }
         }
@@ -1433,9 +1477,12 @@ export default function SeriesDetailPage() {
           try {
             const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
             const found = await tmdbFindByExternalId(tvdbId, 'tvdb_id')
+            if (cancelled) return
             if (found.tmdbId) tmdbId = String(found.tmdbId)
           } catch (_) { /* continue */ }
         }
+
+        if (cancelled) return
 
         // TMDB supplies supplementary artwork, cast, trailers, and ratings,
         // while TVDB remains the source of truth for anime seasons. Start the
@@ -1456,6 +1503,7 @@ export default function SeriesDetailPage() {
         if (tvdbId) {
           try {
             const tvdbData = await cachedProviderShow('tvdb', tvdbId)
+            if (cancelled) return
             console.log('[SeriesDetailPage] TVDB anime data:', {
               title: tvdbData.title,
               seasons: tvdbData.seasons.map(s => ({ num: s.seasonNumber, eps: s.episodeCount })),
@@ -1514,6 +1562,7 @@ export default function SeriesDetailPage() {
                   requestTimeoutMs: 8_000,
                 },
               )
+              if (cancelled) return
               const mappedSeasons = mergeMappedAnimeSeasons(normalizedSeasons, mappedActiveSeasons)
 
               console.log('[SeriesDetailPage] Mapped TVDB anime seasons:', mappedSeasons.map(s => ({
@@ -1615,6 +1664,7 @@ export default function SeriesDetailPage() {
         if (animeTmdbMetadata) {
           try {
             const tmdbData = await animeTmdbMetadata
+            if (cancelled) return
             if (tmdbData) {
               if (appResult) {
               // Only take artwork and supplementary data from TMDB, never seasons
@@ -1701,6 +1751,7 @@ export default function SeriesDetailPage() {
             includeSeasonMapping: false,
           },
         ).catch(() => null)
+        if (cancelled) return
 
         // Persist anime mapping so future loads skip re-resolution
         const localMediaId = appResult?.id || id || ''
@@ -1711,7 +1762,7 @@ export default function SeriesDetailPage() {
             tmdbId: tmdbId ? Number(tmdbId) : undefined,
             anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
-            seasons: (appResult?.seasons || []).map((s, idx) => ({
+            seasons: (appResult?.seasons || []).map((s) => ({
               localMediaId,
               seasonNumber: s.seasonNumber,
               anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
@@ -1821,6 +1872,7 @@ export default function SeriesDetailPage() {
         if (appResult && appResult.provider === 'tvdb' && tmdbId) {
           try {
             const tmdbData = await cachedProviderShow('tmdb', tmdbId)
+            if (cancelled) return
             appResult = {
               ...appResult,
               tmdbId: appResult.tmdbId || tmdbId,
@@ -1843,6 +1895,7 @@ export default function SeriesDetailPage() {
             (appResult.imdbId && await import('../services/animeLists').then(m => m.lookupByImdbId(appResult!.imdbId!)).then(e => !!e).catch(() => false)) ||
              (appResult.tvdbId && await import('../services/animeLists').then(m => m.lookupByTvdbId(Number(String(appResult!.tvdbId).replace(/^[a-z_]+[-:]/i, '')))).then(e => e.length > 0).catch(() => false))
           )
+          if (cancelled) return
 
           if (isAnimeLate) {
             console.log('[SeriesDetailPage] Late anime detection — applying TVDB season override')
@@ -1857,6 +1910,7 @@ export default function SeriesDetailPage() {
                 tvdbId: appResult.tvdbId ? Number(String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, '')) : undefined,
                 contentType: 'series',
               })
+              if (cancelled) return
               if (resolved?.tvdbId) tvdbId = String(resolved.tvdbId)
               if (resolved?.tmdbId) appResult = { ...appResult, tmdbId: appResult.tmdbId || resolved.tmdbId }
               if (resolved?.anilistId) appResult = { ...appResult, anilistId: appResult.anilistId || resolved.anilistId }
@@ -1896,6 +1950,7 @@ export default function SeriesDetailPage() {
                       requestTimeoutMs: 8_000,
                     },
                   )
+                  if (cancelled) return
                   const mappedSeasons = mergeMappedAnimeSeasons(normalizedSeasons, mappedActiveSeasons)
                   const lateValidation = validateAnimeTvdbStructure(mappedActiveSeasons)
                   if (lateValidation.suspiciousSingleSeasonFlattening) {
@@ -1999,6 +2054,7 @@ export default function SeriesDetailPage() {
         if (!appResult && knownIds.tvdbId) {
           try {
              appResult = await cachedProviderShow('tvdb', String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, ''))
+            if (cancelled) return
             appResult = { ...appResult, id: id || appResult.id, malId: knownIds.malId, anilistId: knownIds.anilistId }
           } catch (_) { /* continue */ }
         }
@@ -2028,6 +2084,7 @@ export default function SeriesDetailPage() {
         if (finalTmdbId) {
           englishShow = await cachedProviderShow('tmdb', finalTmdbId).catch(() => null)
         }
+        if (cancelled) return
         finalResult.overview = englishShow?.overview && !isLikelyJapaneseOnly(englishShow.overview)
           ? englishShow.overview
           : undefined
@@ -2055,6 +2112,11 @@ export default function SeriesDetailPage() {
           if (imdbId) artApplied.imdbId = imdbId
         } catch (_) { /* continue */ }
       }
+
+      // ID resolution and metadata providers can finish after a route change.
+      // Do not let an obsolete detail request publish its show or season state
+      // over the page that replaced it.
+      if (cancelled) return
 
       const finalArt = applyShowArt(preservePresentedArtwork(
         applyInitialArtworkPreference(artApplied, 'series', Boolean(artApplied.isAnime)),
@@ -2094,7 +2156,7 @@ export default function SeriesDetailPage() {
       // just that active season instead of clearing it and immediately issuing
       // the same TVDB request again. Keeping the rest lazy prevents a large
       // anime from materializing hundreds of episode cards at once.
-      let mappedEpisodes = nextSelectedSeason == null
+      const mappedEpisodes = nextSelectedSeason == null
         ? undefined
         : tvdbMappedEpisodesRef.current[nextSelectedSeason]
       if (isAnime && mappedEpisodes?.length && nextSelectedSeason != null) {
@@ -2150,7 +2212,7 @@ export default function SeriesDetailPage() {
       setMetadataStatus(status)
       setLoading(false)
 
-      writeSeriesDetailCache(id, state, {
+      writeSeriesDetailCache(id, locationStateRef.current, {
         show: finalArt,
         selectedSeason: nextSelectedSeason,
         episodeMap: tvdbMappedEpisodesRef.current,
@@ -2162,6 +2224,7 @@ export default function SeriesDetailPage() {
       void resolveArtFromProviders('series', {
         tmdbId: finalArt.tmdbId, tvdbId: finalArt.tvdbId, imdbId: finalArt.imdbId,
       }, finalArt.isAnime).then((providerArt) => {
+        if (cancelled) return
         if (!providerArt.poster && !providerArt.backdrop && !providerArt.logo) return
         const enhanced = applyShowArt({
           ...finalArt,
@@ -2170,7 +2233,7 @@ export default function SeriesDetailPage() {
           ...(providerArt.logo && { logo: providerArt.logo }),
         })
         setShow((current) => current?.id === finalArt.id ? enhanced : current)
-        writeSeriesDetailCache(id, state, {
+        writeSeriesDetailCache(id, locationStateRef.current, {
           show: enhanced,
           selectedSeason: nextSelectedSeason,
           episodeMap: tvdbMappedEpisodesRef.current,
@@ -2180,7 +2243,7 @@ export default function SeriesDetailPage() {
 
       if (finalArt.tmdbId && !finalArt.backdrop) {
         void getTmdbLandscapeBackdrop('series', finalArt.tmdbId, Boolean(finalArt.isAnime)).then((backdrop) => {
-          if (!backdrop) return
+          if (cancelled || !backdrop) return
           setShow((current) => current?.id === finalArt.id
             ? applyShowArt({ ...current, backdrop })
             : current)
@@ -2243,31 +2306,55 @@ export default function SeriesDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [id, state.addonUrl, state.provider, state.title, addons, artSettingsSignature])
+  }, [
+    id,
+    state.addonUrl,
+    state.provider,
+    state.title,
+    state.year,
+    state.overview,
+    state.rating,
+    state.poster,
+    state.backdrop,
+    state.logo,
+    state.imdbId,
+    state.tmdbId,
+    state.tvdbId,
+    state.malId,
+    state.anilistId,
+    state.isAnime,
+    state.addonMeta,
+    state.sourceAddonId,
+    state.sourceAddonItemId,
+    addons,
+    artSettingsSignature,
+    routeIsAnime,
+    resumeProgress?.season,
+  ])
 
   // Provider failures must never leave an anime route behind the full-screen
   // loader indefinitely. Keep normal series behavior unchanged; anime has a
   // usable navigation/provider shell that can render while metadata retries in
   // the background.
   useEffect(() => {
-    if (!isAnime || !show || (detailResolved && !loading && metadataStatus !== 'resolving')) return
+    if (!isAnime || !showId || (detailResolved && !loading && metadataStatus !== 'resolving')) return
     const timer = setTimeout(() => {
       setDetailResolved(true)
       setLoading(false)
       setMetadataStatus((current) => current === 'resolving' ? 'fallback' : current)
     }, 12_000)
     return () => clearTimeout(timer)
-  }, [isAnime, show?.id, detailResolved, loading, metadataStatus])
+  }, [isAnime, showId, detailResolved, loading, metadataStatus])
 
   // A season request has its own provider timeout/retry policy. Give the first
   // rail a shorter UI deadline so a stalled request becomes an actionable
   // retry state rather than an endless spinner.
   useEffect(() => {
-    if (!isAnime || !show || selectedSeason === null || seasonData || seasonError === selectedSeason) return
+    if (!isAnime || !showId || selectedSeason === null || seasonData || seasonError === selectedSeason) return
     const requestedSeason = selectedSeason
     const timer = setTimeout(() => setSeasonError(requestedSeason), 10_000)
     return () => clearTimeout(timer)
-  }, [isAnime, show?.id, selectedSeason, seasonData, seasonError])
+  }, [isAnime, showId, selectedSeason, seasonData, seasonError])
 
   useEffect(() => {
     if (seasonData && seasonError === selectedSeason) setSeasonError(null)
@@ -2298,7 +2385,7 @@ export default function SeriesDetailPage() {
     return () => { cancelled = true }
   }, [show])
 
-  const fetchSeasonUncached = async (seasonNum: number): Promise<SeasonDetails | null> => {
+  const fetchSeasonUncached = useCallback(async (seasonNum: number): Promise<SeasonDetails | null> => {
     if (!show || !id) return null
 
     const applyArt = (data: SeasonDetails) => ({
@@ -2421,33 +2508,35 @@ export default function SeriesDetailPage() {
           ? await loadAnimeSeason(tvdbId, seasonNum)
           : await getTvdbSeason(`tvdb-${tvdbId}`, seasonNum, 'visible')
         if (data.episodes.length === 0) return null
+        let episodes = data.episodes
         if (isAnimeShow) {
-          const today = new Date().toISOString().slice(0, 10)
+          const today = localDateKey()
           const settings = useAppStore.getState()
 
           // Filter episodes that don't belong to this season (TVDB sometimes
           // returns all episodes in the Season 1 response)
-          data.episodes = data.episodes.filter((ep) => {
+          episodes = episodes.filter((ep) => {
             if (ep.seasonNumber != null && ep.seasonNumber !== seasonNum) return false
             return true
           })
 
           if (settings.hideUnairedAnimeEpisodes) {
-            data.episodes = data.episodes.filter((ep) => {
-              if (!ep.airDate) return !!(ep.name || ep.overview)
-              return ep.airDate.slice(0, 10) <= today
+            episodes = episodes.filter((ep) => {
+              const dateKey = ep.airDate?.slice(0, 10)
+              if (!dateKey || !isValidDateKey(dateKey)) return !!(ep.name || ep.overview)
+              return dateKey <= today
             })
           }
 
           // A cached summary can be stale or incomplete. Never truncate valid
           // episodes to its count; explicit season ownership above is authoritative.
         }
-        if (data.episodes.length > 0) {
+        if (episodes.length > 0) {
           const tagged = {
             ...data,
             debugSource: 'tvdb',
             debugResolverStep: 'fetchSeason.tryTvdb',
-            episodes: data.episodes.map(e => ({
+            episodes: episodes.map(e => ({
               ...e,
               debugSource: e.debugSource || 'tvdb',
               debugResolverStep: e.debugResolverStep || 'fetchSeason.tryTvdb',
@@ -2562,9 +2651,9 @@ export default function SeriesDetailPage() {
     }
 
     return applyArt(MOCK_SEASON)
-  }
+  }, [show, id, isAnime, addonMeta])
 
-  const fetchSeason = (seasonNum: number): Promise<SeasonDetails | null> => {
+  const fetchSeason = useCallback((seasonNum: number): Promise<SeasonDetails | null> => {
     if (!show) return Promise.resolve(null)
     const requestKey = `${show.id}:${seasonNum}`
     const pending = seasonRequestsRef.current.get(requestKey)
@@ -2585,10 +2674,10 @@ export default function SeriesDetailPage() {
       })
     seasonRequestsRef.current.set(requestKey, request)
     return request
-  }
+  }, [show, isAnime, fetchSeasonUncached])
 
   const isCached = selectedSeason !== null && seasonCache[selectedSeason] !== undefined
-  const removeUnavailableSeason = (seasonNumber: number) => {
+  const removeUnavailableSeason = useCallback((seasonNumber: number) => {
     if (!show) return
     const remaining = show.seasons.filter((season) => season.seasonNumber !== seasonNumber)
     setShow((current) => current ? { ...current, seasons: current.seasons.filter((season) => season.seasonNumber !== seasonNumber) } : current)
@@ -2599,7 +2688,7 @@ export default function SeriesDetailPage() {
     setSelectedSeason((current) => current === seasonNumber
       ? (remaining.find((season) => season.seasonNumber > 0)?.seasonNumber ?? remaining[0]?.seasonNumber ?? null)
       : current)
-  }
+  }, [show])
   useEffect(() => {
     const prefix = detailMetricPrefixRef.current
     if (!prefix || !show?.seasons.length || seasonSelectorMeasuredRef.current) return
@@ -2643,19 +2732,19 @@ export default function SeriesDetailPage() {
     })
 
     return () => { cancelled = true }
-  }, [show, id, selectedSeason, addonMeta, isCached, seasonAttempt])
+  }, [show, id, selectedSeason, addonMeta, isCached, seasonAttempt, fetchSeason, removeUnavailableSeason])
 
-  const seasonNumbersSignature = show?.seasons.map((season) => season.seasonNumber).join(',') || ''
+  const showSeasons = show?.seasons
 
   // Match the proven v0.3.6 scheduling: the visible season finishes first,
   // then one worker warms adjacent seasons. Starting both paths together made
   // cold anime pages and early season switches compete for the same requests.
   useEffect(() => {
-    if (!show || !id || selectedSeason === null || !isCached || show.seasons.length === 0) return
+    if (!showId || !showSeasons || !id || selectedSeason === null || !isCached || showSeasons.length === 0) return
     const activeSeason = selectedSeason
-    const uncachedSeasons = show.seasons
+    const uncachedSeasons = showSeasons
       .map(s => s.seasonNumber)
-      .filter(num => num !== activeSeason && seasonCache[num] === undefined)
+      .filter(num => num !== activeSeason && seasonCacheRef.current[num] === undefined)
       .sort((left, right) => Math.abs(left - activeSeason) - Math.abs(right - activeSeason))
 
     if (uncachedSeasons.length === 0) return
@@ -2667,7 +2756,10 @@ export default function SeriesDetailPage() {
       await Promise.all(Array.from({ length: workerCount }, async () => {
         while (!cancelled && nextIndex < uncachedSeasons.length) {
           const num = uncachedSeasons[nextIndex++]
-          const data = await fetchSeason(num)
+          if (seasonCacheRef.current[num] !== undefined) continue
+          // A transient failure for one neighboring season must not stop the
+          // single prefetch worker from warming every later season.
+          const data = await fetchSeason(num).catch(() => null)
           if (data && !cancelled) {
             if (data.episodes.length === 0) removeUnavailableSeason(num)
             else setSeasonCache(prev => prev[num] ? prev : ({ ...prev, [num]: data }))
@@ -2679,12 +2771,12 @@ export default function SeriesDetailPage() {
     void prefetch().catch(() => undefined)
 
     return () => { cancelled = true }
-  }, [show?.id, id, seasonNumbersSignature, addonMeta, isAnime, selectedSeason, isCached])
+  }, [showSeasons, showId, id, addonMeta, isAnime, selectedSeason, isCached, fetchSeason, removeUnavailableSeason])
 
   useEffect(() => {
-    if (!show || !seasonData || seasonData.seasonNumber !== selectedSeason) return
+    if (!showId || !seasonData || seasonData.seasonNumber !== selectedSeason) return
 
-    const cacheKey = `${show.id}:${selectedSeason}`
+    const cacheKey = `${showId}:${selectedSeason}`
     if (fetchedSeasonRef.current === cacheKey) return
 
     const hasAllImdbRatings = seasonData.episodes.length > 0
@@ -2698,8 +2790,11 @@ export default function SeriesDetailPage() {
     let cancelled = false
 
     const fetchOMDb = (url: string) => {
-      fetch(url)
-        .then(res => res.json())
+      withRequestTimeout(8_000, async (signal) => {
+        const response = await fetch(url, { signal })
+        if (!response.ok) throw new Error(`OMDb request failed (${response.status})`)
+        return readBoundedResponseJson<Record<string, any>>(response, 1024 * 1024, 'OMDb season response')
+      }, 'OMDb episode request timed out')
         .then(omdbData => {
           if (cancelled) return
           if (omdbData.Response === 'True' && Array.isArray(omdbData.Episodes)) {
@@ -2740,7 +2835,7 @@ export default function SeriesDetailPage() {
             })
             fetchedSeasonRef.current = cacheKey
           } else if (omdbData.Response === 'False' && url.includes('?i=')) {
-            const fallbackUrl = `https://www.omdbapi.com/?t=${encodeURIComponent(show.title)}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`
+            const fallbackUrl = `https://www.omdbapi.com/?t=${encodeURIComponent(showTitle || '')}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`
             fetchOMDb(fallbackUrl)
           } else if (fetchedSeasonRef.current === cacheKey) {
             fetchedSeasonRef.current = null
@@ -2751,14 +2846,14 @@ export default function SeriesDetailPage() {
         })
     }
 
-    if (show.imdbId) {
-      fetchOMDb(`https://www.omdbapi.com/?i=${show.imdbId}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`)
+    if (showImdbId) {
+      fetchOMDb(`https://www.omdbapi.com/?i=${showImdbId}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`)
     } else {
-      fetchOMDb(`https://www.omdbapi.com/?t=${encodeURIComponent(show.title)}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`)
+      fetchOMDb(`https://www.omdbapi.com/?t=${encodeURIComponent(showTitle || '')}&Season=${selectedSeason}&apikey=${encodeURIComponent(getOmdbApiKey())}`)
     }
 
     return () => { cancelled = true }
-  }, [show?.id, show?.imdbId, show?.title, selectedSeason, seasonData?.seasonNumber, seasonData?.episodes.length])
+  }, [showId, showImdbId, showTitle, selectedSeason, seasonData])
 
   // Check watched status — uses refs for watchProgress/completedIds to avoid re-triggering on every progress update
   useEffect(() => {
@@ -2766,14 +2861,9 @@ export default function SeriesDetailPage() {
       setWatchedEpisodes(new Set())
       return
     }
-    const visibleSeason = seasonCache[selectedSeason]
+    const visibleSeason = seasonData
     if (!visibleSeason) return
     let cancelled = false
-
-    const appSeasonEpCounts = isAnime ? show.seasons
-      .filter((s) => s.seasonNumber > 0)
-      .map((s) => ({ season: s.seasonNumber, count: s.episodeCount }))
-      .sort((a, b) => a.season - b.season) : undefined
 
     const toLookup = (episode: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }): WatchedLookupItem => ({
       id: show.id,
@@ -2791,7 +2881,7 @@ export default function SeriesDetailPage() {
       episode: episode.episodeNumber,
       absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber,
       isAnime,
-      appSeasonEpCounts,
+      appSeasonEpCounts: appSeasonCounts,
     })
 
     // Check visible season first via batch
@@ -2812,17 +2902,22 @@ export default function SeriesDetailPage() {
       if (!cancelled) setWatchedEpisodes(new Set())
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime])
+  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime, appSeasonCounts])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
+    let cancelled = false
     const query = show.genres[0] || show.title
     tmdbProvider.recommendationsForText?.(query, 'series')
       .then((results) => {
+        if (cancelled) return
         const filtered = results.filter((item) => item.id !== show.id && item.title !== show.title)
         setFallbackRecommendations((filtered.length ? filtered : rotateFallback(MOCK_POPULAR_SHOWS, show.id)).map(applySearchResultArt))
       })
-      .catch(() => setFallbackRecommendations(rotateFallback(MOCK_POPULAR_SHOWS, show.id).map(applySearchResultArt)))
+      .catch(() => {
+        if (!cancelled) setFallbackRecommendations(rotateFallback(MOCK_POPULAR_SHOWS, show.id).map(applySearchResultArt))
+      })
+    return () => { cancelled = true }
   }, [show])
 
   useEffect(() => {
@@ -2862,15 +2957,16 @@ export default function SeriesDetailPage() {
   // The episode Play would start with right now: the resume point, or the
   // first visible episode. Shared by the DETAILS_OPEN preload effect and the
   // prepared-stream dwell hook below.
+  const resumeSeason = liveResumePoint?.season ?? resumeProgress?.season
+  const resumeEpisode = liveResumePoint?.episode ?? resumeProgress?.episode
   const detailStreamRequest = useMemo(() => {
     if (!show) return null
-    const resume = liveResumePoint || resumeProgress
     const firstEpisode = seasonData?.episodes[0]
     const fallbackSeason = firstEpisode?.seasonNumber
       ?? show.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
       ?? show.seasons[0]?.seasonNumber
-    const target = resume?.season && resume.episode
-      ? { season: resume.season, episode: resume.episode }
+    const target = resumeSeason != null && resumeEpisode != null
+      ? { season: resumeSeason, episode: resumeEpisode }
       : fallbackSeason != null
         ? { season: fallbackSeason, episode: firstEpisode?.episodeNumber ?? 1 }
         : null
@@ -2886,7 +2982,7 @@ export default function SeriesDetailPage() {
       sourceAddonId: state.sourceAddonId,
       sourceAddonItemId: state.sourceAddonItemId,
     }
-  }, [show, seasonData, liveResumePoint?.season, liveResumePoint?.episode, resumeProgress?.season, resumeProgress?.episode, id, state.sourceAddonId, state.sourceAddonItemId])
+  }, [show, seasonData, resumeSeason, resumeEpisode, id, state.sourceAddonId, state.sourceAddonItemId])
 
   useEffect(() => {
     if (!show || !detailStreamRequest || playbackPreloadMode === 'off') return
@@ -3108,7 +3204,6 @@ export default function SeriesDetailPage() {
                   )
                   if (!episode) return
                   const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                  const appSeasonCounts = isAnime ? show.seasons.filter((season) => season.seasonNumber > 0).map((season) => ({ season: season.seasonNumber, count: season.episodeCount })).sort((left, right) => left.season - right.season) : undefined
                   showCtxMenu(event.clientX, event.clientY, {
                     kind: 'episode', item: searchResult, episode, seasonNumber: episode.seasonNumber,
                     showImdbId: show.imdbId, appSeasonCounts,
@@ -3175,29 +3270,34 @@ export default function SeriesDetailPage() {
               isAnime={isAnime}
               episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber, absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber }))}
               watched={allEpisodesWatched}
-              appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
+              appSeasonCounts={appSeasonCounts}
               onMarked={() => {
                 setWatchedEpisodes(new Set(allEpisodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`)))
-                allEpisodes.forEach((episode) => setWatchProgress(`${show.id}:${episode.seasonNumber}:${episode.episodeNumber}`, {
-                  id: `${show.id}:${episode.seasonNumber}:${episode.episodeNumber}`,
-                  mediaType: 'series',
-                  mediaId: show.id,
-                  season: episode.seasonNumber,
-                  episode: episode.episodeNumber,
-                  progressSeconds: episode.runtime ? episode.runtime * 60 : 1,
-                  durationSeconds: episode.runtime ? episode.runtime * 60 : 1,
-                  completed: true,
-                  title: show.title,
-                  poster: show.poster,
-                  backdrop: episode.still || show.backdrop,
-                  imdbId: show.imdbId,
-                  tmdbId: show.tmdbId,
-                  updatedAt: new Date().toISOString(),
+                setWatchProgressBatch(allEpisodes.map((episode) => {
+                  const id = `${show.id}:${episode.seasonNumber}:${episode.episodeNumber}`
+                  return { id, progress: {
+                    id,
+                    mediaType: 'series',
+                    mediaId: show.id,
+                    season: episode.seasonNumber,
+                    episode: episode.episodeNumber,
+                    progressSeconds: episode.runtime ? episode.runtime * 60 : 1,
+                    durationSeconds: episode.runtime ? episode.runtime * 60 : 1,
+                    completed: true,
+                    title: show.title,
+                    poster: show.poster,
+                    backdrop: episode.still || show.backdrop,
+                    imdbId: show.imdbId,
+                    tmdbId: show.tmdbId,
+                    malId: show.malId,
+                    anilistId: show.anilistId,
+                    updatedAt: new Date().toISOString(),
+                  } }
                 }))
               }}
               onUnmarked={() => {
                 setWatchedEpisodes(new Set())
-                removeWatchProgress([show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : ''])
+                removeWatchProgress([show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : '', show.malId ? `mal-${show.malId}` : '', show.anilistId ? `anilist-${show.anilistId}` : ''])
               }}
             />
             <StartInRoomButton
@@ -3280,7 +3380,6 @@ export default function SeriesDetailPage() {
                 onContextMenu={(e) => {
                   e.preventDefault()
                   const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                  const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
                   showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
                 }}
                 className={[
@@ -3352,8 +3451,7 @@ export default function SeriesDetailPage() {
                       e.preventDefault()
                       if (!show) return
                       const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                      const appSeasonCounts = isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined
-                      showCtxMenu(e.clientX, e.clientY, {
+                          showCtxMenu(e.clientX, e.clientY, {
                         kind: 'episode',
                         item: searchResult,
                         episode: ep,
@@ -3481,7 +3579,7 @@ export default function SeriesDetailPage() {
                             anilistId={show.anilistId}
                             malId={show.malId}
                             isAnime={isAnime}
-                            appSeasonCounts={isAnime ? show.seasons.filter((s) => s.seasonNumber > 0).map((s) => ({ season: s.seasonNumber, count: s.episodeCount })).sort((a, b) => a.season - b.season) : undefined}
+                            appSeasonCounts={appSeasonCounts}
                             compact
                             watched={isWatched}
                             onMarked={() => {
@@ -3500,6 +3598,8 @@ export default function SeriesDetailPage() {
                                 backdrop: ep.still || show.backdrop,
                                 imdbId: show.imdbId,
                                 tmdbId: show.tmdbId,
+                                malId: show.malId,
+                                anilistId: show.anilistId,
                                 updatedAt: new Date().toISOString(),
                               })
                             }}
@@ -3507,7 +3607,7 @@ export default function SeriesDetailPage() {
                               const next = new Set(prev)
                               next.delete(`${ep.seasonNumber}:${ep.episodeNumber}`)
                               removeWatchProgress(
-                                [show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : ''],
+                                [show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : '', show.malId ? `mal-${show.malId}` : '', show.anilistId ? `anilist-${show.anilistId}` : ''],
                                 ep.seasonNumber,
                                 ep.episodeNumber,
                               )

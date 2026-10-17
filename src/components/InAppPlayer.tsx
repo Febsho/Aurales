@@ -11,7 +11,6 @@ import {
   scrobbleStop as traktScrobbleStop,
   buildMovieScrobble,
   buildEpisodeScrobble,
-  buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
 import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
@@ -19,6 +18,8 @@ import { lookupTmdbId, savePMDBPlaybackProgress, scrobblePMDB } from '../service
 import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
+import { withRequestTimeout } from '../services/network/timeout'
+import { readBoundedResponseText } from '../services/network/boundedResponse'
 import {
   play as wtPlay,
   pause as wtPause,
@@ -67,6 +68,32 @@ interface PreparedSubtitle {
   forced: boolean
 }
 
+const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
+
+async function readSubtitleText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Subtitle response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_SUBTITLE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Subtitle exceeded the 10 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
 function srtToVtt(input: string): string {
   const normalized = input.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
@@ -90,11 +117,23 @@ async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?
   }
 }
 
-async function fetchSubtitleText(url: string): Promise<string> {
+async function fetchSubtitleText(url: string, signal?: AbortSignal): Promise<string> {
+  const controller = new AbortController()
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+  const timeout = window.setTimeout(() => {
+    controller.abort(new DOMException('Subtitle request timed out', 'TimeoutError'))
+  }, 15_000)
   try {
-    const response = await fetch(url)
-    if (response.ok) return await response.text()
+    const response = await fetch(url, { signal: controller.signal })
+    if (response.ok) return await readSubtitleText(response)
   } catch (_) { /* use the native HTTP fallback below */ }
+  finally {
+    window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', onAbort)
+  }
+  if (signal?.aborted) throw signal.reason || new DOMException('Subtitle request cancelled', 'AbortError')
   if ((window as any).__TAURI_INTERNALS__) return await invoke<string>('http_get_text', { url })
   throw new Error('Could not fetch source subtitle content')
 }
@@ -133,13 +172,16 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
     if ((window as any).__TAURI_INTERNALS__) {
       raw = await openRouterChat(apiKey, requestBody)
     } else {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'X-Title': 'Aurales Media Player' },
-        body: JSON.stringify(requestBody),
-      })
-      if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
-      raw = await response.text()
+      raw = await withRequestTimeout(30_000, async (signal) => {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'X-Title': 'Aurales Media Player' },
+          body: JSON.stringify(requestBody),
+          signal,
+        })
+        if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
+        return readBoundedResponseText(response, 16 * 1024 * 1024, 'OpenRouter response')
+      }, 'Subtitle translation request timed out')
     }
 
     const payload = JSON.parse(raw)
@@ -172,6 +214,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
   const playbackStartedRef = useRef(false)
+  const playbackRunRef = useRef(0)
+  const translatedSubtitleUrlsRef = useRef<Set<string>>(new Set())
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -204,11 +248,16 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
   const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
   const canSkipEpisode = Boolean(onNextEpisode)
+  const nextEpisodeHintSeason = nextEpisodeHint?.season
+  const nextEpisodeHintEpisode = nextEpisodeHint?.episode
 
   useEffect(() => {
     if (!canSkipEpisode || playbackItem?.contentType !== 'series' || playbackItem.season == null || playbackItem.episode == null) return
     let cancelled = false
-    setNextEpisode(nextEpisodeHint ? { ...nextEpisodeHint, title: `Episode ${nextEpisodeHint.episode}` } : null)
+    const hintedEpisode = nextEpisodeHintEpisode == null
+      ? null
+      : { season: nextEpisodeHintSeason!, episode: nextEpisodeHintEpisode, title: `Episode ${nextEpisodeHintEpisode}` }
+    setNextEpisode(hintedEpisode)
     void (async () => {
       let tmdbId = playbackItem.tmdbId
       if (!tmdbId && playbackItem.imdbId) {
@@ -216,10 +265,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       }
       if (!tmdbId || cancelled) return
       const next = await fetchNextEpisodeFromTmdb(tmdbId, playbackItem.season!, playbackItem.episode! + 1)
-      if (!cancelled) setNextEpisode(next || (nextEpisodeHint ? { ...nextEpisodeHint, title: `Episode ${nextEpisodeHint.episode}` } : null))
+      if (!cancelled) setNextEpisode(next || hintedEpisode)
     })()
     return () => { cancelled = true }
-  }, [canSkipEpisode, playbackItem?.tmdbId, playbackItem?.imdbId, playbackItem?.contentType, playbackItem?.season, playbackItem?.episode, nextEpisodeHint?.season, nextEpisodeHint?.episode])
+  }, [canSkipEpisode, playbackItem?.tmdbId, playbackItem?.imdbId, playbackItem?.contentType, playbackItem?.season, playbackItem?.episode, nextEpisodeHintSeason, nextEpisodeHintEpisode])
 
   // This player is portaled next to #root. Hide the application shell while it
   // is active so top navigation, search affordances, and window-level controls
@@ -270,6 +319,28 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     }).catch(() => {})
   }
 
+  // Playback startup is keyed only by URL so changing provider preferences or
+  // callbacks does not reload the video. Keep those inputs fresh for delayed
+  // play/error handlers instead of closing over the first render.
+  const playbackStartupRef = useRef({
+    playbackItem,
+    startTime,
+    volume,
+    scrobbleSimkl,
+    scrobbleTrakt,
+    onPlaybackError,
+    sendMdblistScrobble,
+  })
+  playbackStartupRef.current = {
+    playbackItem,
+    startTime,
+    volume,
+    scrobbleSimkl,
+    scrobbleTrakt,
+    onPlaybackError,
+    sendMdblistScrobble,
+  }
+
   const saveAniListScrobble = (progress: number) => {
     if (!playbackItem || !scrobbleAnilist || !playbackItem.isAnime) return
     saveAniListProgressMapped(playbackItem, progress).catch(() => {})
@@ -301,6 +372,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   }
 
   const handleTranslateSubtitle = async (langCode: string, langName: string) => {
+    const playbackRun = playbackRunRef.current
+    const isCurrentRun = () => playbackRun === playbackRunRef.current
     if (selectedSubtitle === 'off') return
     const trackIdx = Number(selectedSubtitle)
     const track = preparedSubtitles[trackIdx]
@@ -310,6 +383,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setTranslationError('')
     try {
       const text = await fetchSubtitleText(track.url)
+      if (!isCurrentRun()) return
 
       const translatedText = await requestSubtitleTranslation(
         openrouterApiKey,
@@ -317,9 +391,11 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
         text,
         langName,
       )
+      if (!isCurrentRun()) return
 
       const blob = new Blob([srtToVtt(translatedText)], { type: 'text/vtt' })
       const objectUrl = URL.createObjectURL(blob)
+      translatedSubtitleUrlsRef.current.add(objectUrl)
 
       const newTrack: PreparedSubtitle = {
         id: `ai-translated-${langCode}-${Date.now()}`,
@@ -336,6 +412,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       if (videoRef.current) {
         const video = videoRef.current
         setTimeout(() => {
+          if (!isCurrentRun()) return
           Array.from(video.textTracks).forEach((t, idx) => {
             t.mode = idx === newIndex ? 'showing' : 'disabled'
           })
@@ -344,10 +421,11 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
 
       setShowTranslateModal(false)
     } catch (err: any) {
+      if (!isCurrentRun()) return
       console.error('AI Subtitle Translation error:', err)
       setTranslationError(err?.message || 'Translation failed')
     } finally {
-      setTranslatingSub(false)
+      if (isCurrentRun()) setTranslatingSub(false)
     }
   }
 
@@ -373,6 +451,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       durationSeconds: Math.floor(dur),
       completed: isCompleted,
       updatedAt: new Date().toISOString(),
+      imdbId: playbackItem.imdbId,
+      tmdbId: playbackItem.tmdbId,
+      malId: playbackItem.malId,
+      anilistId: playbackItem.anilistId,
     })
   }
 
@@ -394,61 +476,81 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
+    const translatedSubtitleUrls = translatedSubtitleUrlsRef.current
+    const playbackRun = ++playbackRunRef.current
+    const isCurrentRun = () => playbackRun === playbackRunRef.current
     setLoading(true)
     setError('')
+    setTranslatingSub(false)
+    setTranslationError('')
     setPaused(false)
     playbackStartedRef.current = false
     lastAniListPlaybackSaveRef.current = 0
     lastPmdbPlaybackSaveRef.current = 0
-    video.volume = volume
+    video.volume = playbackStartupRef.current.volume
     video.muted = false
     video.load()
     const playTimer = setTimeout(() => {
+      if (!isCurrentRun()) return
       video.play().then(() => {
+        if (!isCurrentRun()) return
+        const startup = playbackStartupRef.current
         setPaused(false)
-        if (startTime && startTime > 0) {
-          video.currentTime = startTime
+        if (startup.startTime && startup.startTime > 0) {
+          video.currentTime = startup.startTime
         }
-        if (playbackItem) {
-          const startProgress = startTime && video.duration > 0 ? startTime / video.duration : 0
-          if (scrobbleSimkl) {
-            onSimklPlaybackStart(playbackItem, startProgress).catch(() => {})
+        if (startup.playbackItem) {
+          const startProgress = startup.startTime && video.duration > 0 ? startup.startTime / video.duration : 0
+          if (startup.scrobbleSimkl) {
+            onSimklPlaybackStart(startup.playbackItem, startProgress).catch(() => {})
           }
-          if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
+          if (startup.scrobbleTrakt && isTraktAuthenticated() && startup.playbackItem.imdbId) {
             const startProgressPct = Math.round(startProgress * 10000) / 100
-            const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
-              ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, startProgressPct)
-              : buildMovieScrobble(playbackItem.imdbId, startProgressPct)
+            const traktPayload = startup.playbackItem.contentType === 'series' && startup.playbackItem.season != null && startup.playbackItem.episode != null
+              ? buildEpisodeScrobble(startup.playbackItem.imdbId, startup.playbackItem.season, startup.playbackItem.episode, startProgressPct)
+              : buildMovieScrobble(startup.playbackItem.imdbId, startProgressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
           }
-          sendMdblistScrobble('start', startProgress)
+          startup.sendMdblistScrobble('start', startProgress)
         }
       }).catch(() => {
+        if (!isCurrentRun()) return
         const message = 'The embedded WebView player could not start this stream.'
         setPaused(true)
         setError(message)
-        onPlaybackError?.(message, video.currentTime)
+        playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
       })
     }, 50)
     const startupTimer = setTimeout(() => {
-      if (playbackStartedRef.current) return
+      if (!isCurrentRun() || playbackStartedRef.current) return
       const message = 'The embedded WebView player did not receive a playable video frame. Trying another stream…'
       setLoading(false)
       setPaused(true)
       setError(message)
-      onPlaybackError?.(message, video.currentTime)
+      playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
     }, 15_000)
     return () => {
+      // Effects clean up before the next URL run starts; invalidate this run
+      // without consulting a mutable ref value from the cleanup closure.
+      playbackRunRef.current = playbackRun + 1
       clearTimeout(playTimer)
       clearTimeout(startupTimer)
+      for (const objectUrl of translatedSubtitleUrls) URL.revokeObjectURL(objectUrl)
+      translatedSubtitleUrls.clear()
     }
   }, [url])
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     const objectUrls: string[] = []
-
-    Promise.all(subtitles.map(async (track, index): Promise<PreparedSubtitle> => {
+    const prepared = new Array<PreparedSubtitle>(subtitles.length)
+    let cursor = 0
+    const loadWorker = async () => {
+      while (!cancelled) {
+        const index = cursor++
+        if (index >= subtitles.length) return
+        const track = subtitles[index]
       const fallback = {
         id: track.id || `sub-${index}`,
         url: track.url,
@@ -458,26 +560,36 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       }
 
       try {
-        const text = await fetchSubtitleText(track.url)
+        const text = await fetchSubtitleText(track.url, controller.signal)
+        if (cancelled) {
+          prepared[index] = fallback
+          continue
+        }
         const blob = new Blob([srtToVtt(text)], { type: 'text/vtt' })
         const objectUrl = URL.createObjectURL(blob)
         objectUrls.push(objectUrl)
-        return { ...fallback, url: objectUrl }
+        prepared[index] = { ...fallback, url: objectUrl }
       } catch (_) {
-        return fallback
+        prepared[index] = fallback
       }
-    })).then((tracks) => {
-      if (!cancelled) setPreparedSubtitles(tracks)
+      }
+    }
+
+    void Promise.all(Array.from({ length: Math.min(4, subtitles.length) }, loadWorker)).then(() => {
+      if (!cancelled) setPreparedSubtitles(prepared)
     })
 
     return () => {
       cancelled = true
+      controller.abort()
       objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl))
     }
   }, [subtitles])
 
   // ── Auto-select subtitle track by language priority ──
   useEffect(() => {
+    let cancelled = false
+    let selectionTimer: ReturnType<typeof setTimeout> | undefined
     const { preferredSubtitles: preferredSubs = ['en'], subtitleMode, preferSdhSubtitles } = useAppStore.getState()
     if (preparedSubtitles.length === 0) return
     const selectedAudioTrack = audioTracks.find((track) => String(track.index) === selectedAudio)
@@ -498,13 +610,17 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
       const bestIdx = selection.track.index
       setSelectedSubtitle(String(bestIdx))
       if (videoRef.current) {
-        setTimeout(() => {
-          if (!videoRef.current) return
+        selectionTimer = setTimeout(() => {
+          if (cancelled || !videoRef.current) return
           Array.from(videoRef.current.textTracks).forEach((t, idx) => {
             t.mode = idx === bestIdx ? 'showing' : 'disabled'
           })
         }, 100)
       }
+    }
+    return () => {
+      cancelled = true
+      if (selectionTimer) clearTimeout(selectionTimer)
     }
   }, [audioTracks, preparedSubtitles, selectedAudio])
 
@@ -818,7 +934,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const handleTimeUpdate = (time: number, dur: number) => {
     setCurrentTime(time)
     if (playbackItem) recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: time, durationSeconds: dur, playing: !videoRef.current?.paused, completed: dur > 0 && time / dur >= 0.85 })
-    if (Math.abs(time - lastSavedTimeRef.current) >= 2) {
+    if (Math.abs(time - lastSavedTimeRef.current) >= 15) {
       lastSavedTimeRef.current = time
       saveLocalProgress(time, dur, false)
     }

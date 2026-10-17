@@ -18,6 +18,8 @@ export interface TasteProfile {
   countryWeights: Record<string, number>
   /** Display names from resolved title details. IDs stay with the provider layer. */
   personWeights: Record<string, number>
+  /** Terms shared by titles and summaries the viewer has chosen. */
+  keywordWeights: Record<string, number>
   /** Weighted mean duration of titles the viewer chose to finish or revisit. */
   preferredRuntimeMinutes?: number
   movieWeight: number
@@ -38,7 +40,7 @@ export interface RecommendationFeedback {
 }
 
 export interface RecommendationReason {
-  code: 'genre-affinity' | 'recent-interest' | 'person-affinity' | 'runtime-affinity' | 'quality' | 'new-release' | 'hidden-gem' | 'quick-watch' | 'exploration' | 'rewatch'
+  code: 'genre-affinity' | 'keyword-affinity' | 'recent-interest' | 'person-affinity' | 'runtime-affinity' | 'quality' | 'new-release' | 'hidden-gem' | 'quick-watch' | 'exploration' | 'rewatch'
   label: string
   strength: number
 }

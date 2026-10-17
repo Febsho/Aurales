@@ -141,19 +141,28 @@ export async function searchSimklByTitleYear(item: MediaRef, options: { exactYea
 // ─── Cache ─────────────────────────────────────────────────────────────────────
 
 function clearLegacyMappingsOnce(): void {
-  if (localStorage.getItem(MIGRATION_KEY) === 'true') return
-  const keys: string[] = []
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index)
-    if (key?.startsWith(LEGACY_PREFIX) && !key.startsWith(LS_PREFIX)) keys.push(key)
+  try {
+    if (localStorage.getItem(MIGRATION_KEY) === 'true') return
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith(LEGACY_PREFIX) && !key.startsWith(LS_PREFIX)) keys.push(key)
+    }
+    keys.forEach((key) => localStorage.removeItem(key))
+    localStorage.setItem(MIGRATION_KEY, 'true')
+  } catch (_) {
+    // Mapping persistence is an optimization. Storage can be disabled or full;
+    // that must not prevent a successfully resolved ID from being used.
   }
-  keys.forEach((key) => localStorage.removeItem(key))
-  localStorage.setItem(MIGRATION_KEY, 'true')
 }
 
 export function saveSimklMapping(localMediaId: string, mapping: SimklMapping): void {
-  clearLegacyMappingsOnce()
-  localStorage.setItem(LS_PREFIX + localMediaId, JSON.stringify(mapping))
+  try {
+    clearLegacyMappingsOnce()
+    localStorage.setItem(LS_PREFIX + localMediaId, JSON.stringify(mapping))
+  } catch (_) {
+    // Keep the resolved mapping usable even when localStorage is unavailable.
+  }
 }
 
 export function getCachedSimklMapping(localMediaId: string): SimklMapping | null {
@@ -166,15 +175,21 @@ export function getCachedSimklMapping(localMediaId: string): SimklMapping | null
 }
 
 export function clearSimklMapping(localMediaId: string): void {
-  clearLegacyMappingsOnce()
-  localStorage.removeItem(LS_PREFIX + localMediaId)
+  try {
+    clearLegacyMappingsOnce()
+    localStorage.removeItem(LS_PREFIX + localMediaId)
+  } catch (_) {
+    // Clearing an optional cache must not interrupt the caller.
+  }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function titleMatches(a: string, b: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
-  return norm(a) === norm(b)
+  const norm = (s: string) => s.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const normalizedA = norm(a)
+  const normalizedB = norm(b)
+  return normalizedA.length > 0 && normalizedA === normalizedB
 }
 
 function yearMatches(a?: number, b?: number): boolean {

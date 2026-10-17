@@ -3,6 +3,7 @@ import { isLikelyJapaneseOnly } from './animeTitleResolver'
 import type { AppEpisode, AppSeason } from './types'
 import type { SeasonDetails } from '../../types'
 import { recordDetailProviderRequest } from '../performanceMetrics'
+import { isValidDateKey, localDateKey } from '../localDate'
 
 export interface AnimeSeasonMappingOptions {
   hideUnairedSeasons: boolean
@@ -19,12 +20,13 @@ const DEFAULT_OPTIONS: AnimeSeasonMappingOptions = {
   hideUnairedSeasons: true,
   hideUnairedEpisodes: true,
   includeSpecials: false,
-  today: new Date().toISOString().slice(0, 10),
+  today: localDateKey(),
 }
 
 function isAired(airDate: string | undefined, today: string): boolean {
   if (!airDate) return true
-  return airDate.slice(0, 10) <= today
+  const dateKey = airDate.slice(0, 10)
+  return isValidDateKey(dateKey) && dateKey <= today
 }
 
 function isPlaceholderEpisode(ep: { name?: string; airDate?: string; overview?: string }): boolean {
@@ -57,7 +59,7 @@ export async function mapTvdbSeasons(
   summaries: AppSeason[],
   options?: Partial<AnimeSeasonMappingOptions>,
 ): Promise<AppSeason[]> {
-  const opts = { ...DEFAULT_OPTIONS, ...options, today: options?.today || new Date().toISOString().slice(0, 10) }
+  const opts = { ...DEFAULT_OPTIONS, ...options, today: options?.today || localDateKey() }
 
   const ordered = [...summaries].sort((a, b) => a.seasonNumber - b.seasonNumber)
   const filtered = opts.includeSpecials ? ordered : ordered.filter((s) => s.seasonNumber !== 0)
@@ -105,9 +107,8 @@ export async function mapTvdbSeasons(
     if (season.seasonNumber <= 1 || !data) continue
     for (const ep of data.episodes) {
       if (ep.id) laterSeasonEpIds.add(ep.id)
-      const sn = ep.seasonNumber ?? season.seasonNumber
-      const en = ep.episodeNumber
-      if (sn != null && en != null) laterSeasonEpKeys.add(`${sn}:${en}`)
+      const episodeSeason = ep.seasonNumber ?? season.seasonNumber
+      if (ep.episodeNumber != null) laterSeasonEpKeys.add(`${episodeSeason}:${ep.episodeNumber}`)
     }
   }
 
@@ -152,7 +153,10 @@ export async function mapTvdbSeasons(
 
       // If processing Season 1 and this episode's TVDB ID also appears in a later
       // season, skip it from Season 1 to avoid duplicates.
-      if (season.seasonNumber === 1 && hasLaterSeasons && ep.id && laterSeasonEpIds.has(ep.id)) {
+      const duplicatedInLaterSeason = ep.id
+        ? laterSeasonEpIds.has(ep.id)
+        : laterSeasonEpKeys.has(`${epSeasonNumber}:${epEpisodeNumber}`)
+      if (season.seasonNumber === 1 && hasLaterSeasons && duplicatedInLaterSeason) {
         console.log('[tvdbSeasonMapper] Removing S1 duplicate (also in later season):', {
           epId: ep.id, name: ep.name, episodeNumber: epEpisodeNumber,
         })
@@ -169,14 +173,11 @@ export async function mapTvdbSeasons(
       if (opts.hideUnairedEpisodes && !released && airDate) continue
       if (isPlaceholderEpisode({ name: ep.name, airDate, overview: ep.overview })) continue
 
-      const isNonSpecial = season.seasonNumber > 0
-      if (isNonSpecial) absoluteCounter++
-
       episodes.push({
         id: `tvdb_${tvdbId}_s${epSeasonNumber}e${epEpisodeNumber}`,
         seasonNumber: epSeasonNumber,
         episodeNumber: epEpisodeNumber,
-        absoluteEpisodeNumber: isNonSpecial ? absoluteCounter : undefined,
+        absoluteEpisodeNumber: undefined,
         title: ep.name || `Episode ${epEpisodeNumber}`,
         overview: ep.overview,
         still: ep.still,
@@ -190,6 +191,12 @@ export async function mapTvdbSeasons(
     }
 
     episodes.sort((a, b) => a.episodeNumber - b.episodeNumber)
+    if (season.seasonNumber > 0) {
+      for (const episode of episodes) {
+        absoluteCounter++
+        episode.absoluteEpisodeNumber = absoluteCounter
+      }
+    }
 
     // A long first season is valid. Only explicit cross-season ownership and
     // duplicate IDs above justify removing episodes, never another season's size.

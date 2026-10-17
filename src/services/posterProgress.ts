@@ -19,7 +19,13 @@ let progressBySource = new Map<string, Map<string, number>>()
 
 function publish(progress: Map<string, number>) {
   snapshot = progress
-  listeners.forEach((listener) => listener())
+  for (const listener of [...listeners]) {
+    try {
+      listener()
+    } catch (error) {
+      console.error('[posterProgress] subscriber failed:', error)
+    }
+  }
 }
 
 function add(progress: Map<string, number>, item: PosterProgress) {
@@ -31,11 +37,7 @@ function add(progress: Map<string, number>, item: PosterProgress) {
   }
   if (item.title) {
     const title = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
-    if (title) {
-      for (const key of [`title:${item.type}:${title}`, `title:${title}`]) {
-        progress.set(key, Math.max(progress.get(key) ?? 0, item.pct))
-      }
-    }
+    if (title) progress.set(`title:${item.type}:${title}`, Math.max(progress.get(`title:${item.type}:${title}`) ?? 0, item.pct))
   }
 }
 
@@ -152,7 +154,13 @@ export function ensurePosterProgress(force = false) {
   })).then(() => {})
   pending = run
   pendingScope = scope
-  void run.finally(() => { if (pending === run) pending = null })
+  const clearPending = () => {
+    if (pending === run) {
+      pending = null
+      pendingScope = ''
+    }
+  }
+  void run.then(clearPending, clearPending)
 }
 
 if (typeof window !== 'undefined') {

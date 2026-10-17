@@ -59,7 +59,6 @@ export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): A
 export function normalizeShow(details: ShowDetails, input: AddonMediaInput, kind: MediaKind): AppMediaItem {
   const tvdbId = numberId(details.tvdbId ?? input.tvdbId)
   const tmdbId = numberId(details.tmdbId ?? input.tmdbId)
-  const isAnime = kind === 'anime'
   const seasons: AppSeason[] = (details.seasons || []).map((season) => ({
     id: `${tvdbId ? `tvdb_${tvdbId}` : tmdbId ? `tmdb_${tmdbId}` : `media_${details.id}`}_s${season.seasonNumber}`,
     seasonNumber: season.seasonNumber, title: season.name, overview: season.overview, poster: season.poster,

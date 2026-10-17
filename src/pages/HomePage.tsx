@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useRef, useCallback, cloneElement } from 'react'
+import { lazy, memo, Suspense, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import ErrorBoundary from '../components/ui/ErrorBoundary'
@@ -39,44 +39,11 @@ import { readHomeShelfStartupSnapshot, writeHomeShelfStartupSnapshots } from '..
 import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 import { SERVER_INTEGRATIONS_ENABLED } from '../services/serverIntegrations'
+import { getActiveProfileId } from '../services/profiles'
 import { getHomeShelfId, rememberHomeShelfId } from '../services/sessionViewState'
+import { HomeEditRowContext } from '../components/home/HomeEditRowContext'
 
-// Drag & Drop imports for Edit Mode
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
-
-const SIMKL_LIST_SOURCES = [
-  { id: 'watchlist',          label: 'Simkl — Plan to Watch (All)',       type: 'poster' },
-  { id: 'watching',           label: 'Simkl — Currently Watching (All)',  type: 'landscape' },
-  { id: 'completed',          label: 'Simkl — Completed (All)',           type: 'poster' },
-  { id: 'history',            label: 'Simkl — Watch History',             type: 'landscape' },
-  { id: 'movies-watchlist',   label: 'Simkl — Movies Watchlist',          type: 'poster' },
-  { id: 'movies-watching',    label: 'Simkl — Movies Watching',           type: 'landscape' },
-  { id: 'movies-completed',   label: 'Simkl — Movies Completed',          type: 'poster' },
-  { id: 'shows-watchlist',    label: 'Simkl — Shows Watchlist',           type: 'poster' },
-  { id: 'shows-watching',     label: 'Simkl — Shows Watching',            type: 'landscape' },
-  { id: 'shows-completed',    label: 'Simkl — Shows Completed',           type: 'poster' },
-  { id: 'anime-watchlist',    label: 'Simkl — Anime Watchlist',           type: 'poster' },
-  { id: 'anime-watching',     label: 'Simkl — Anime Watching',            type: 'landscape' },
-  { id: 'anime-completed',    label: 'Simkl — Anime Completed',           type: 'poster' },
-  { id: 'on-hold',            label: 'Simkl — On Hold',                   type: 'poster' },
-  { id: 'dropped',            label: 'Simkl — Dropped',                   type: 'poster' },
-] as const
+const HomeEditList = lazy(() => import('../components/home/HomeEditList'))
 
 function getRowDisplayTitle(row: HomeRowConfig): string {
   let title = row.title.trim().replace(/\s*\(\d+\)\s*$/, '')
@@ -99,16 +66,11 @@ function getRowDisplayTitle(row: HomeRowConfig): string {
   return title.trim() || row.title
 }
 
-function defaultCatalogExtra(extra: { name: string; isRequired?: boolean; options?: string[] }[] | undefined): Record<string, string> | undefined {
-  const required = (extra || []).filter((item) => item.isRequired)
-  if (required.length === 0) return undefined
-
-  const defaults = required.reduce<Record<string, string>>((acc, item) => {
-    const value = item.options?.[0]
-    if (value) acc[item.name] = value
-    return acc
-  }, {})
-  return Object.keys(defaults).length ? defaults : undefined
+function cacheKeyForHomeRow(row: HomeRowConfig, addons: ReturnType<typeof useAppStore.getState>['addons']): string | null {
+  const resolvedAddonUrl = row.addonId
+    ? addons.find((addon) => addon.enabled && addon.manifest.id === row.addonId)?.url || row.addonUrl
+    : row.addonUrl
+  return homeRowCacheKey(row, resolvedAddonUrl)
 }
 
 // Keep raw provider/HTTP errors in the console; show people a readable message.
@@ -199,14 +161,18 @@ function MediaRowError({ title, message, layout, headerLeftControls, headerRight
 
 function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = simklRowCacheKey(row)
-  const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
+  const memCacheGet = useHomeCatalogCache((state) => state.get)
+  const memCacheSet = useHomeCatalogCache((state) => state.set)
+  const cached = memCacheGet(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
+  const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
+    setError(null)
     let cancelled = false
+    let staleRefreshApplied = false
     const load = async () => {
       try {
         const fetcher = async () => {
@@ -232,29 +198,36 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
           revalidate: 'once-per-session',
           onStaleRefreshed: (fresh) => {
             if (!cancelled) {
-              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCache.get(cacheKey) || [])
-              memCache.set(cacheKey, fresh)
+              staleRefreshApplied = true
+              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCacheGet(cacheKey) || [])
+              memCacheSet(cacheKey, fresh)
+              setItemsCacheKey(cacheKey)
               if (changed) setItems(fresh)
             }
           },
         })
         if (!cancelled) {
-          setItems(results)
-          memCache.set(cacheKey, results)
+          const visible = staleRefreshApplied ? memCacheGet(cacheKey) || results : results
+          setItems(visible)
+          setItemsCacheKey(cacheKey)
+          if (!staleRefreshApplied) memCacheSet(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
         if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this Simkl list right now."))
+          setItemsCacheKey(cacheKey)
           setLoading(false)
         }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [cacheKey, row.providerListId, row.sortBy, retryNonce])
+  }, [cacheKey, row.providerListId, row.sortBy, retryNonce, memCacheGet, memCacheSet])
 
-  if (loading) {
+  const currentItems = itemsCacheKey === cacheKey ? items : cached
+
+  if ((loading || itemsCacheKey !== cacheKey) && !currentItems) {
     return (
       <MediaRowSkeleton
         title={getRowDisplayTitle(row)}
@@ -265,7 +238,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     )
   }
 
-  if (error) {
+  if (itemsCacheKey === cacheKey && error) {
     return (
       <MediaRowError
         title={getRowDisplayTitle(row)}
@@ -278,7 +251,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
     )
   }
 
-  if (!items || items.length === 0) {
+  if (!currentItems || currentItems.length === 0) {
     return (
       <MediaRowError
         title={getRowDisplayTitle(row)}
@@ -293,11 +266,11 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
   return (
     <MediaRow
       title={getRowDisplayTitle(row)}
-      items={items}
+      items={currentItems}
       layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
       showRank={row.layout === 'ranked'}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
-      forceShowAll={items.length >= 20}
+      forceShowAll={currentItems.length >= 20}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
     />
@@ -306,14 +279,18 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = providerRowCacheKey(row)
-  const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
+  const memCacheGet = useHomeCatalogCache((state) => state.get)
+  const memCacheSet = useHomeCatalogCache((state) => state.set)
+  const cached = memCacheGet(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
+  const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
+    setError(null)
     let cancelled = false
+    let staleRefreshApplied = false
     const load = async () => {
       try {
         const fetcher = async () => {
@@ -328,77 +305,91 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
           revalidate: 'once-per-session',
           onStaleRefreshed: (fresh) => {
             if (!cancelled) {
-              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCache.get(cacheKey) || [])
-              memCache.set(cacheKey, fresh)
+              staleRefreshApplied = true
+              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCacheGet(cacheKey) || [])
+              memCacheSet(cacheKey, fresh)
+              setItemsCacheKey(cacheKey)
               if (changed) setItems(fresh)
             }
           },
         })
         if (!cancelled) {
-          setItems(results)
-          memCache.set(cacheKey, results)
+          const visible = staleRefreshApplied ? memCacheGet(cacheKey) || results : results
+          setItems(visible)
+          setItemsCacheKey(cacheKey)
+          if (!staleRefreshApplied) memCacheSet(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
         if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this list right now."))
+          setItemsCacheKey(cacheKey)
           setLoading(false)
         }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [cacheKey, row.providerListId, row.sourceType, row.sortBy, retryNonce])
+  // `row` is read only through the listed scalar fields; depending on its
+  // object identity would refetch when an unrelated Home setting replaces it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey, row.providerListId, row.sourceType, row.sortBy, retryNonce, memCacheGet, memCacheSet])
 
   const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
-  if (loading) return <MediaRowSkeleton title={getRowDisplayTitle(row)} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
-  if (error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }} />
-  if (!items || items.length === 0) return <MediaRowError title={getRowDisplayTitle(row)} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  const currentItems = itemsCacheKey === cacheKey ? items : cached
+  if ((loading || itemsCacheKey !== cacheKey) && !currentItems) return <MediaRowSkeleton title={getRowDisplayTitle(row)} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
+  if (itemsCacheKey === cacheKey && error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }} />
+  if (!currentItems || currentItems.length === 0) return <MediaRowError title={getRowDisplayTitle(row)} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
 
   return (
     <MediaRow
       title={getRowDisplayTitle(row)}
-      items={items}
+      items={currentItems}
       layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
       disableArtOverride={false}
       showRank={row.layout === 'ranked'}
       headerLeftControls={headerLeftControls}
       headerRightControls={headerRightControls}
       showAllPath={`/catalog/${row.id}?title=${encodeURIComponent(getRowDisplayTitle(row))}`}
-      forceShowAll={items.length >= 20}
+      forceShowAll={currentItems.length >= 20}
     />
   )
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
-  const cacheKey = addonRowCacheKey(row)
-  const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
+  const memCacheGet = useHomeCatalogCache((state) => state.get)
+  const memCacheSet = useHomeCatalogCache((state) => state.set)
+  const addons = useAppStore((s) => s.addons)
+  const isMockCatalog = row.catalogId?.startsWith('mock-')
+  const addonUrl = addons.find((a) => a.enabled && a.manifest.id === row.addonId)?.url || row.addonUrl
+  const cacheKey = addonRowCacheKey(row, addonUrl)
+  const cached = memCacheGet(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
+  const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
-  const addons = useAppStore((s) => s.addons)
-  const isMockCatalog = row.catalogId?.startsWith('mock-')
   useEffect(() => {
+    setError(null)
     let cancelled = false
 
     if (isMockCatalog && row.catalogId) {
       setItems(getMockCatalog(row.catalogId))
+      setItemsCacheKey(cacheKey)
       setLoading(false)
       return
     }
 
     if (!row.catalogType || !row.catalogId) {
       setError('Shelf is unconfigured.')
+      setItemsCacheKey(cacheKey)
       setLoading(false)
       return
     }
 
-    const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
-    const url = addon?.url || row.addonUrl
-    if (!url) {
+    if (!addonUrl) {
       setError('Addon not found or disabled.')
+      setItemsCacheKey(cacheKey)
       setLoading(false)
       return
     }
@@ -406,7 +397,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     const load = async () => {
       try {
         const fetcher = async () => {
-          const firstPage = await getAddonCatalog(url, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
+          const firstPage = await getAddonCatalog(addonUrl, row.catalogType!, row.catalogId!, row.catalogExtra, row.addonId)
           // One addon page already fills a Home shelf. Fetching page 2 for every
           // visible row doubles startup traffic and can overwhelm self-hosted
           // addons; the full Catalog page retains on-demand pagination.
@@ -420,7 +411,8 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
         const results = await fetcher()
         if (!cancelled) {
           setItems(results)
-          memCache.set(cacheKey, results)
+          setItemsCacheKey(cacheKey)
+          memCacheSet(cacheKey, results)
           setLoading(false)
           if (results.length > 0) {
             void cacheSet(cacheKey, results, { category: CACHE_CATEGORIES.ADDON_CATALOG, ttlSeconds: CACHE_TTLS.ADDON_CATALOG })
@@ -429,17 +421,20 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
       } catch (err: any) {
         if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load this catalog right now."))
+          setItemsCacheKey(cacheKey)
           setLoading(false)
         }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [cacheKey, isMockCatalog, row.addonId, row.addonUrl, row.catalogType, row.catalogId, row.catalogExtra, addons, retryNonce])
+  }, [cacheKey, isMockCatalog, addonUrl, row.addonId, row.catalogType, row.catalogId, row.catalogExtra, retryNonce, memCacheSet])
 
-  const displayItems = isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items
+  const displayItems = itemsCacheKey === cacheKey
+    ? (isMockCatalog && row.catalogId ? getMockCatalog(row.catalogId) : items)
+    : cached
 
-  if (loading) {
+  if ((loading || itemsCacheKey !== cacheKey) && !displayItems) {
     return (
       <MediaRowSkeleton
         title={getRowDisplayTitle(row)}
@@ -450,7 +445,7 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
     )
   }
 
-  if (error) {
+  if (itemsCacheKey === cacheKey && error) {
     return (
       <MediaRowError
         title={getRowDisplayTitle(row)}
@@ -496,17 +491,22 @@ function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row
 
 function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = discoverRowCacheKey(row)
-  const memCache = useHomeCatalogCache.getState()
-  const cached = memCache.get(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
+  const memCacheGet = useHomeCatalogCache((state) => state.get)
+  const memCacheSet = useHomeCatalogCache((state) => state.set)
+  const cached = memCacheGet(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
   const [items, setItems] = useState<SearchResult[] | null>(cached)
+  const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
   useEffect(() => {
+    setError(null)
     let cancelled = false
+    let staleRefreshApplied = false
 
     if (!row.discoverConfig) {
       setError('Shelf is unconfigured.')
+      setItemsCacheKey(cacheKey)
       setLoading(false)
       return
     }
@@ -525,29 +525,36 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
           revalidate: 'once-per-session',
           onStaleRefreshed: (fresh) => {
             if (!cancelled) {
-              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCache.get(cacheKey) || [])
-              memCache.set(cacheKey, fresh)
+              staleRefreshApplied = true
+              const changed = catalogContentFingerprint(fresh) !== catalogContentFingerprint(memCacheGet(cacheKey) || [])
+              memCacheSet(cacheKey, fresh)
+              setItemsCacheKey(cacheKey)
               if (changed) setItems(fresh)
             }
           },
         })
         if (!cancelled) {
-          setItems(results)
-          memCache.set(cacheKey, results)
+          const visible = staleRefreshApplied ? memCacheGet(cacheKey) || results : results
+          setItems(visible)
+          setItemsCacheKey(cacheKey)
+          if (!staleRefreshApplied) memCacheSet(cacheKey, results)
           setLoading(false)
         }
       } catch (err: any) {
         if (!cancelled) {
           setError(friendlyRowError(err, "Couldn't load recommendations right now."))
+          setItemsCacheKey(cacheKey)
           setLoading(false)
         }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [cacheKey, row.id, row.discoverConfig, retryNonce])
+  }, [cacheKey, row.id, row.discoverConfig, retryNonce, memCacheGet, memCacheSet])
 
-  if (loading) {
+  const currentItems = itemsCacheKey === cacheKey ? items : cached
+
+  if ((loading || itemsCacheKey !== cacheKey) && !currentItems) {
     return (
       <MediaRowSkeleton
         title={getRowDisplayTitle(row)}
@@ -558,7 +565,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     )
   }
 
-  if (error) {
+  if (itemsCacheKey === cacheKey && error) {
     return (
       <MediaRowError
         title={getRowDisplayTitle(row)}
@@ -571,7 +578,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     )
   }
 
-  if (!items || items.length === 0) {
+  if (!currentItems || currentItems.length === 0) {
     return (
       <MediaRowError
         title={getRowDisplayTitle(row)}
@@ -583,7 +590,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
     )
   }
 
-  const sortedItems = [...items]
+  const sortedItems = [...currentItems]
   if (row.sortBy === 'alphabetical') {
     sortedItems.sort((a, b) => a.title.localeCompare(b.title))
   }
@@ -603,25 +610,31 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
 }
 
 function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
-  const memCache = useHomeCatalogCache.getState()
-  const cacheKey = heroRowCacheKey(row)
-  const cached = memCache.get(cacheKey) || readHeroStartupSnapshot(row)
-  const [items, setItems] = useState<SearchResult[]>(cached || [])
+  const memCacheGet = useHomeCatalogCache((state) => state.get)
+  const memCacheSet = useHomeCatalogCache((state) => state.set)
   const addons = useAppStore((s) => s.addons)
+  const addonUrl = addons.find((a) => a.enabled && a.manifest.id === row.addonId)?.url || row.addonUrl
+  const cacheKey = heroRowCacheKey(row, addonUrl)
+  const cached = memCacheGet(cacheKey) || readHeroStartupSnapshot(row, addonUrl)
+  const [items, setItems] = useState<SearchResult[]>(cached || [])
+  const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
   const heroMode = useAppStore((s) => s.homeHeroMode)
   const heroSource = useAppStore((s) => s.fixedHeroSource)
   const manualItem = useAppStore((s) => s.fixedHeroManualItem)
   const recentlyWatched = useAppStore((s) => s.recentlyWatched)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
   useEffect(() => {
+    const snapshotProfileId = getActiveProfileId()
     let cancelled = false
+    let staleRefreshApplied = false
 
     const load = async () => {
       try {
         if (isMockCatalog && row.catalogId) {
           const mockItems = getMockCatalog(row.catalogId)
           setItems(mockItems)
-          writeHeroStartupSnapshot(row, mockItems)
+          setItemsCacheKey(cacheKey)
+          writeHeroStartupSnapshot(row, mockItems, snapshotProfileId, addonUrl)
           return
         }
 
@@ -642,10 +655,8 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
             }
             return []
           } else if (row.addonId) {
-            const addon = addons.find((a) => a.enabled && a.manifest.id === row.addonId)
-            const url = addon?.url || row.addonUrl
-            if (url && row.catalogType && row.catalogId) {
-              return getAddonCatalog(url, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
+            if (addonUrl && row.catalogType && row.catalogId) {
+              return getAddonCatalog(addonUrl, row.catalogType, row.catalogId, row.catalogExtra, row.addonId)
             }
             return []
           }
@@ -660,18 +671,21 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
           priority: 'high',
           onStaleRefreshed: (fresh) => {
             if (!cancelled) {
+              staleRefreshApplied = true
               const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
-              writeHeroStartupSnapshot(row, sorted)
-              memCache.set(cacheKey, sorted)
+              writeHeroStartupSnapshot(row, sorted, snapshotProfileId, addonUrl)
+              memCacheSet(cacheKey, sorted)
+              setItemsCacheKey(cacheKey)
               setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
             }
           },
         })
 
-        if (!cancelled) {
+        if (!cancelled && !staleRefreshApplied) {
           const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
-          memCache.set(cacheKey, sorted)
-          writeHeroStartupSnapshot(row, sorted)
+          memCacheSet(cacheKey, sorted)
+          setItemsCacheKey(cacheKey)
+          writeHeroStartupSnapshot(row, sorted, snapshotProfileId, addonUrl)
           setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
         }
       } catch (e) {
@@ -681,6 +695,9 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
 
     load()
     return () => { cancelled = true }
+  // `row` is read through the listed fields and `cacheKey`; its object identity
+  // changes for unrelated Home edits and must not trigger another provider fetch.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     cacheKey,
     isMockCatalog,
@@ -693,12 +710,16 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
     row.providerListId,
     row.discoverConfig,
     row.sortBy,
-    addons
+    addonUrl,
+    row.id,
+    memCacheGet,
+    memCacheSet
   ])
 
   if (heroMode === 'disabled') return null
-  if (items.length === 0) return null
-  let heroItems = items.filter((item) => Boolean(item.backdrop && item.backdrop !== item.poster))
+  const currentItems = itemsCacheKey === cacheKey ? items : cached || []
+  if (currentItems.length === 0) return null
+  let heroItems = currentItems.filter((item) => Boolean(item.backdrop && item.backdrop !== item.poster))
   if (heroMode === 'fixed') {
     if (heroSource === 'manual' && manualItem?.backdrop && manualItem.backdrop !== manualItem.poster) heroItems = [manualItem]
     else if (heroSource === 'continue-watching') heroItems = recentlyWatched.filter((item) => Boolean(item.backdrop && item.backdrop !== item.poster))
@@ -720,134 +741,6 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
   }
   if (heroItems.length === 0) return null
   return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} />
-}
-
-// ── Unconfigured shelf customizer (Pic 1) ───────────────────────────────────
-function UnconfiguredShelf({
-  row,
-  onConfigure,
-  onRemove,
-  headerLeftControls,
-}: {
-  row: HomeRowConfig
-  onConfigure: (row: HomeRowConfig) => void
-  onRemove: (id: string) => void
-  headerLeftControls?: React.ReactNode
-}) {
-  return (
-    <div className="px-6 mb-8 select-none">
-      <div className="flex items-center gap-2.5 mb-3">
-        {headerLeftControls}
-        <h2 className="text-lg font-semibold text-white/60">{getRowDisplayTitle(row)}</h2>
-      </div>
-      <div className="px-6">
-        <div
-          onClick={() => onConfigure(row)}
-          className="w-full max-w-4xl border border-dashed border-white/10 hover:border-accent/40 bg-white/[0.01] hover:bg-white/[0.03] rounded-2xl p-6 flex items-center justify-between transition-all duration-200 cursor-pointer group"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-white/60 group-hover:text-accent transition-colors">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div className="text-left">
-              <span className="block text-sm font-bold text-white/60 group-hover:text-white transition-colors">Unconfigured Shelf</span>
-              <span className="block text-xs text-white/60 mt-0.5">Click to choose a content source for this row.</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onConfigure(row)
-              }}
-              className="text-xs font-semibold text-accent bg-accent/10 hover:bg-accent/20 px-3.5 py-2 rounded-xl border border-accent/10 transition-colors cursor-pointer"
-            >
-              Configure
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                if (confirm(`Delete shelf "${row.title}"?`)) {
-                  onRemove(row.id)
-                }
-              }}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
-              title="Delete Shelf"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-interface SortableRowContainerProps {
-  row: HomeRowConfig
-  isEditing: boolean
-  onRemove: (id: string) => void
-  children: React.ReactNode
-}
-
-function SortableRowContainer({
-  row,
-  isEditing,
-  onRemove,
-  children,
-}: SortableRowContainerProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.id })
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition: isDragging ? 'none' : transition,
-    zIndex: isDragging ? 50 : undefined,
-    opacity: isDragging ? 0.8 : undefined,
-  }
-
-  if (!isEditing) {
-    return <>{children}</>
-  }
-
-  const headerLeftControls = (
-    <button
-      {...attributes}
-      {...listeners}
-      className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-hover cursor-grab text-muted active:cursor-grabbing flex-shrink-0"
-    >
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-        <path d="M4 8h16M4 16h16" />
-      </svg>
-    </button>
-  )
-
-  const headerRightControls = (
-    <button
-      onClick={(e) => { e.stopPropagation(); onRemove(row.id) }}
-      className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer flex-shrink-0"
-      title="Remove shelf"
-    >
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-      </svg>
-    </button>
-  )
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="border border-transparent hover:border-border-subtle/20 rounded-2xl py-1 transition-colors relative"
-    >
-      {cloneElement(children as React.ReactElement<any>, {
-        headerLeftControls,
-        headerRightControls,
-      })}
-    </div>
-  )
 }
 
 // ── Staggered row renderer ─────────────────────────────────────────────────
@@ -903,6 +796,7 @@ function scheduleRowActivation(activate: () => void): () => void {
 
 const LazyRow = memo(function LazyRow({ row, isEditing, onRemove, eager, motionClass = '' }: { row: HomeRowConfig; isEditing: boolean; onRemove: (id: string) => void; eager?: boolean; motionClass?: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
+  const SortableHomeRow = useContext(HomeEditRowContext)
   // Keep a generous ahead-of-scroll buffer for shelves that are added after
   // the startup preloader yields, including very long custom Home layouts.
   const approaching = useVisibilityOnce(sentinelRef, { eager: eager ?? false, rootMargin: '1600px' })
@@ -942,13 +836,9 @@ const LazyRow = memo(function LazyRow({ row, isEditing, onRemove, eager, motionC
   return (
     <div className={`row-contain ${motionClass}`} data-fixed-hero-row>
       <ErrorBoundary key={row.id} label={row.title}>
-        <SortableRowContainer
-          row={row}
-          isEditing={isEditing}
-          onRemove={onRemove}
-        >
-          {element}
-        </SortableRowContainer>
+        {isEditing && SortableHomeRow
+          ? <SortableHomeRow row={row} onRemove={onRemove}>{element}</SortableHomeRow>
+          : element}
       </ErrorBoundary>
     </div>
   )
@@ -984,15 +874,6 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
 }
 
 // ── Main Home Page Component ────────────────────────────────────────────────
-const LAYOUT_OPTIONS: { value: HomeRowConfig['layout']; label: string }[] = [
-  { value: 'poster', label: 'Poster Carousel' },
-  { value: 'ranked', label: 'Ranked Posters' },
-  { value: 'feature', label: 'Feature Posters' },
-  { value: 'landscape', label: 'Landscape Carousel' },
-  { value: 'list', label: 'Compact List' },
-  { value: 'continue', label: 'Continue Watching' },
-];
-
 export default function HomePage() {
   const homeRootRef = useRef<HTMLDivElement>(null)
   // Do not subscribe Home to the entire app store. Playback progress, player
@@ -1098,7 +979,7 @@ export default function HomePage() {
     const rows = useAppStore.getState().homeRows
       .filter((row) => row.enabled)
       .sort((a, b) => a.order - b.order)
-    const visibleKeys = rows.filter((row) => row.layout !== 'hero' && row.layout !== 'continue').slice(0, 3).map(homeRowCacheKey).filter((key): key is string => !!key)
+    const visibleKeys = rows.filter((row) => row.layout !== 'hero' && row.layout !== 'continue').slice(0, 3).map((row) => cacheKeyForHomeRow(row, useAppStore.getState().addons)).filter((key): key is string => !!key)
     const hasCachedShelf = visibleKeys.some((key) => state.get(key) || readHomeShelfStartupSnapshot(key))
     const store = useAppStore.getState()
     const hasCachedContinue = rows.some((row) => row.layout === 'continue') && Boolean(readContinueWatchingStartupSnapshot(
@@ -1111,11 +992,17 @@ export default function HomePage() {
   const initiallyPreloadedRef = useRef(cachePreloaded)
 
   useEffect(() => {
+    const snapshotProfileId = getActiveProfileId()
     let timer: ReturnType<typeof setTimeout> | null = null
     const flush = () => {
       if (timer) clearTimeout(timer)
       timer = null
-      writeHomeShelfStartupSnapshots(homeRows, (key) => useHomeCatalogCache.getState().get(key))
+      writeHomeShelfStartupSnapshots(
+        homeRows,
+        (key) => useHomeCatalogCache.getState().get(key),
+        snapshotProfileId,
+        (row) => cacheKeyForHomeRow(row, useAppStore.getState().addons),
+      )
     }
     const unsubscribe = useHomeCatalogCache.subscribe(() => {
       if (timer) clearTimeout(timer)
@@ -1142,7 +1029,7 @@ export default function HomePage() {
     const state = useHomeCatalogCache.getState()
     const keys = useAppStore.getState().homeRows
       .filter((row) => row.enabled)
-      .map(homeRowCacheKey)
+      .map((row) => cacheKeyForHomeRow(row, useAppStore.getState().addons))
       .filter((key): key is string => !!key && !state.get(key))
 
     cacheGetMany<SearchResult[]>(keys)
@@ -1226,15 +1113,6 @@ export default function HomePage() {
     }
   };
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
   const serverRowEnabled = (row: HomeRowConfig) => SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
   const enabledRows = homeRows.filter((row) => row.enabled && serverRowEnabled(row));
   const heroRow = homeRows.find((row) => row.layout === 'hero' && row.enabled && serverRowEnabled(row));
@@ -1244,24 +1122,19 @@ export default function HomePage() {
     .filter((row) => row.layout !== 'hero')
     .sort((a, b) => a.order - b.order);
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const oldIndex = activeRows.findIndex((r) => r.id === active.id);
-      const newIndex = activeRows.findIndex((r) => r.id === over.id);
-      const reorderedActive = arrayMove(activeRows, oldIndex, newIndex);
+  const handleReorder = (activeId: string, overId: string) => {
+    const oldIndex = activeRows.findIndex((row) => row.id === activeId)
+    const newIndex = activeRows.findIndex((row) => row.id === overId)
+    if (oldIndex < 0 || newIndex < 0) return
+    const reorderedActive = [...activeRows]
+    const [moved] = reorderedActive.splice(oldIndex, 1)
+    reorderedActive.splice(newIndex, 0, moved)
 
-      // Reconstruct the full list preserving hero and disabled shelves
-      const hero = homeRows.find((row) => row.layout === 'hero');
-      const disabled = homeRows.filter((row) => !row.enabled);
-      const nextRows = [
-        ...(hero ? [hero] : []),
-        ...reorderedActive,
-        ...disabled,
-      ];
-      reorderHomeRows(nextRows);
-    }
-  };
+    // Reconstruct the full list preserving hero and disabled shelves.
+    const hero = homeRows.find((row) => row.layout === 'hero')
+    const disabled = homeRows.filter((row) => !row.enabled)
+    reorderHomeRows([...(hero ? [hero] : []), ...reorderedActive, ...disabled])
+  }
 
   const shelvesContent = cachePreloaded ? (
     <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={homeHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
@@ -1304,14 +1177,10 @@ export default function HomePage() {
         <>
           <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && homeHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={activeRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>
-                  {shelvesContent}
-                </SortableContext>
-              </DndContext>
-            ) : (
-              shelvesContent
-            )}
+              <Suspense fallback={shelvesContent}>
+                <HomeEditList rows={activeRows} onReorder={handleReorder}>{shelvesContent}</HomeEditList>
+              </Suspense>
+            ) : shelvesContent}
           </div>
         </>
       )}

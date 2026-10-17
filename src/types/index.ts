@@ -10,6 +10,8 @@ export interface SearchResult {
   overview?: string
   rating?: number
   provider: string
+  /** Original catalog namespace retained after adding an item to the local watchlist. */
+  watchlistIdentityProvider?: string
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number

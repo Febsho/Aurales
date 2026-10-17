@@ -1,5 +1,6 @@
 import type { StreamResult } from '../../types'
-import { profileStorageKey } from '../profiles'
+import { getActiveProfileId, profileStorageKey } from '../profiles'
+import { enqueueSyncRecord } from '../sync/syncQueue'
 import { streamSearchText } from './streamFeatures'
 
 export interface PlaybackPreference {
@@ -20,6 +21,20 @@ export interface PlaybackPreference {
 }
 export type PlaybackMemory = Record<string, PlaybackPreference>
 const KEY = 'aurales_stream_playback_memory_v1'
+
+function normalizePlaybackPreference(value: unknown): PlaybackPreference | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entry = value as Record<string, unknown>
+  const textFields = ['addonId', 'addonFamily', 'sourceType', 'resolution', 'hdrFormat', 'videoCodec', 'audioCodec', 'releaseType', 'audioLanguage', 'subtitleLanguage', 'lastSuccessfulAt'] as const
+  const normalized: Partial<PlaybackPreference> = {}
+  for (const field of textFields) {
+    if (typeof entry[field] === 'string') normalized[field] = entry[field]
+  }
+  if (typeof entry.cached === 'boolean') normalized.cached = entry.cached
+  const successCount = typeof entry.successCount === 'number' && Number.isFinite(entry.successCount) ? Math.max(0, entry.successCount) : 0
+  const failureCount = typeof entry.failureCount === 'number' && Number.isFinite(entry.failureCount) ? Math.max(0, entry.failureCount) : 0
+  return { ...normalized, successCount, failureCount }
+}
 
 export function playbackMemoryKey(mediaType: 'movie' | 'series', mediaId: string, season?: number, episode?: number): string {
   const base = `${mediaType}:${mediaId}`
@@ -44,18 +59,42 @@ export function playbackPreferenceFromStream(stream: StreamResult & { addonId?: 
     cached: stream.behaviorHints?.torboxCached === true, successCount: 0, failureCount: 0,
   }
 }
-export function loadPlaybackMemory(profileId?: string): PlaybackMemory { try { return JSON.parse(localStorage.getItem(profileStorageKey(KEY, profileId)) || '{}') } catch { return {} } }
-function save(memory: PlaybackMemory) { localStorage.setItem(profileStorageKey(KEY), JSON.stringify(memory)) }
-export function recordPlaybackPreference(key: string, stream: StreamResult & { addonId?: string }, outcome: 'success' | 'failure', preferences?: { audioLanguage?: string; subtitleLanguage?: string }): void {
-  const memory = loadPlaybackMemory(); const current = memory[key] || playbackPreferenceFromStream(stream, preferences)
-  const fresh = playbackPreferenceFromStream(stream, preferences)
-  memory[key] = { ...current, ...Object.fromEntries(Object.entries(fresh).filter(([, value]) => value !== undefined && value !== '')), successCount: current.successCount + (outcome === 'success' ? 1 : 0), failureCount: current.failureCount + (outcome === 'failure' ? 1 : 0), lastSuccessfulAt: outcome === 'success' ? new Date().toISOString() : current.lastSuccessfulAt }
-  save(memory)
-  // Only the derived characteristics are queued; stream URLs and provider
-  // credentials never enter this record.
-  void import('../sync/syncQueue').then(({ enqueueSyncRecord }) => enqueueSyncRecord('playback-memory', key, memory[key]))
+export function loadPlaybackMemory(profileId?: string): PlaybackMemory {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(profileStorageKey(KEY, profileId)) || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed)
+      .map(([key, value]) => [key, normalizePlaybackPreference(value)] as const)
+      .filter((entry): entry is readonly [string, PlaybackPreference] => entry[1] != null))
+  } catch { return {} }
 }
-export function resetPlaybackMemory(): void { localStorage.removeItem(profileStorageKey(KEY)) }
+function save(memory: PlaybackMemory, profileId: string) { localStorage.setItem(profileStorageKey(KEY, profileId), JSON.stringify(memory)) }
+export function recordPlaybackPreference(key: string, stream: StreamResult & { addonId?: string }, outcome: 'success' | 'failure', preferences?: { audioLanguage?: string; subtitleLanguage?: string }): void {
+  try {
+    const profileId = getActiveProfileId()
+    const memory = loadPlaybackMemory(profileId); const current = memory[key] || playbackPreferenceFromStream(stream, preferences)
+    const fresh = playbackPreferenceFromStream(stream, preferences)
+    memory[key] = { ...current, ...Object.fromEntries(Object.entries(fresh).filter(([, value]) => value !== undefined && value !== '')), successCount: current.successCount + (outcome === 'success' ? 1 : 0), failureCount: current.failureCount + (outcome === 'failure' ? 1 : 0), lastSuccessfulAt: outcome === 'success' ? new Date().toISOString() : current.lastSuccessfulAt }
+    save(memory, profileId)
+    // Only the derived characteristics are queued; stream URLs and provider
+    // credentials never enter this record. Neither storage nor Sync is part of
+    // the playback success/fallback path.
+    try { enqueueSyncRecord('playback-memory', key, memory[key], profileId) }
+    catch (error) { console.warn('[streams] could not queue playback memory', error) }
+  } catch (error) {
+    console.warn('[streams] could not persist playback memory', error)
+  }
+}
+export function resetPlaybackMemory(): void {
+  const profileId = getActiveProfileId()
+  const memory = loadPlaybackMemory(profileId)
+  try { localStorage.removeItem(profileStorageKey(KEY, profileId)) }
+  catch (error) { console.warn('[streams] could not clear playback memory', error); return }
+  try {
+    const deletedAt = new Date().toISOString()
+    for (const key of Object.keys(memory)) enqueueSyncRecord('playback-memory', key, { deleted: true, deletedAt }, profileId)
+  } catch { /* The local playback-memory reset already succeeded. */ }
+}
 export function playbackMemoryScore(stream: StreamResult & { addonId?: string }, memories: Array<PlaybackPreference | undefined>): { score: number; reasons: string[] } {
   const current = playbackPreferenceFromStream(stream); let score = 0; const reasons: string[] = []
   for (const memory of memories.filter(Boolean) as PlaybackPreference[]) {

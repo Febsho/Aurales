@@ -10,13 +10,13 @@ interface ShelfSnapshot {
   rows: Record<string, SearchResult[]>
 }
 
-function storageKey(): string {
-  return `${STORAGE_PREFIX}${localStorage.getItem('aurales_active_profile_v1') || 'default'}`
+function storageKey(profileId?: string): string {
+  return `${STORAGE_PREFIX}${profileId || localStorage.getItem('aurales_active_profile_v1') || 'default'}`
 }
 
-function readState(): ShelfSnapshot {
+function readState(profileId?: string): ShelfSnapshot {
   try {
-    const value = JSON.parse(localStorage.getItem(storageKey()) || 'null') as ShelfSnapshot | null
+    const value = JSON.parse(localStorage.getItem(storageKey(profileId)) || 'null') as ShelfSnapshot | null
     return value?.version === 1 && value.rows && typeof value.rows === 'object' ? value : { version: 1, rows: {} }
   } catch {
     return { version: 1, rows: {} }
@@ -31,11 +31,16 @@ export function readHomeShelfStartupSnapshot(key: string | null): SearchResult[]
   return valid.length ? valid.slice(0, MAX_ITEMS) : null
 }
 
-export function writeHomeShelfStartupSnapshots(rows: HomeRowConfig[], getItems: (key: string) => SearchResult[] | null): void {
-  const previous = readState().rows
+export function writeHomeShelfStartupSnapshots(
+  rows: HomeRowConfig[],
+  getItems: (key: string) => SearchResult[] | null,
+  profileId?: string,
+  getCacheKey: (row: HomeRowConfig) => string | null = homeRowCacheKey,
+): void {
+  const previous = readState(profileId).rows
   const next: ShelfSnapshot['rows'] = {}
   for (const row of rows.filter((item) => item.enabled && item.layout !== 'hero' && item.layout !== 'continue').sort((a, b) => a.order - b.order).slice(0, MAX_ROWS)) {
-    const key = homeRowCacheKey(row)
+    const key = getCacheKey(row)
     if (!key) continue
     const items = getItems(key) || previous[key]
     if (!Array.isArray(items) || !items.length) continue
@@ -50,7 +55,7 @@ export function writeHomeShelfStartupSnapshots(rows: HomeRowConfig[], getItems: 
       sourceAddonId: item.sourceAddonId, sourceAddonItemId: item.sourceAddonItemId,
     }))
   }
-  try { localStorage.setItem(storageKey(), JSON.stringify({ version: 1, rows: next } satisfies ShelfSnapshot)) } catch { /* SQLite remains authoritative if local storage is full. */ }
+  try { localStorage.setItem(storageKey(profileId), JSON.stringify({ version: 1, rows: next } satisfies ShelfSnapshot)) } catch { /* SQLite remains authoritative if local storage is full. */ }
 }
 
 export function clearHomeShelfStartupSnapshots(): void {

@@ -2,7 +2,10 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getSelfhstIconUrl } from './serviceIcons'
 import type { SearchResult } from '../types'
+import { mediaIdentity } from './mediaPresentation'
 import { rotateProviderCredentialScope } from './cache/homeStartupSnapshot'
+import { withRequestTimeout } from './network/timeout'
+import { readBoundedResponseJson, readBoundedResponseText } from './network/boundedResponse'
 
 export interface MdblistRating {
   source: string
@@ -23,6 +26,9 @@ interface RatingRequest {
 }
 
 const BASE_URL = 'https://api.mdblist.com'
+const MAX_MDBLIST_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_MDBLIST_OAUTH_RESPONSE_BYTES = 1024 * 1024
+const MAX_MDBLIST_PUBLIC_LIST_HTML_BYTES = 2 * 1024 * 1024
 const BUILTIN_KEY = '9x2ikjc88drsgwc0ocsp2p5wn'
 const BUILTIN_MDBLIST_CLIENT_ID = '1QZNjkmxhfpFEWOsOmAmkphArnbfoKeWlmbJZMOC'
 const MDBLIST_CLIENT_ID = import.meta.env.VITE_MDBLIST_CLIENT_ID || BUILTIN_MDBLIST_CLIENT_ID
@@ -30,6 +36,9 @@ const MDBLIST_TOKEN_KEY = 'mdblist_oauth_tokens'
 const MDBLIST_REQUEST_SPACING_MS = 250
 let mdblistRequestQueue: Promise<void> = Promise.resolve()
 let mdblistNextRequestAt = 0
+const mdblistRefreshPending = new Map<string, Promise<MdblistOAuthTokens | null>>()
+let mdblistAuthGeneration = 0
+let mdblistCallbackCancellation: Promise<void> | null = null
 
 class MdblistRateLimitError extends Error {
   retryAfterMs: number
@@ -83,8 +92,6 @@ function mdblistRetryAfterMs(response: Response): number {
   if (Number.isFinite(resetSeconds) && resetSeconds > 0) return Math.max(1000, resetSeconds * 1000 - Date.now())
   return 10_000
 }
-
-type MdblistMediaType = 'movie' | 'show'
 
 export interface MdblistUser {
   user_id?: number
@@ -192,6 +199,7 @@ export function getMdblistClientId(): string {
 }
 
 export function setMdblistClientId(clientId: string): void {
+  mdblistAuthGeneration++
   localStorage.setItem('mdblist_client_id', clientId.trim())
 }
 
@@ -215,46 +223,84 @@ function storeMdblistTokens(data: any, replaceAccount = false): MdblistOAuthToke
     createdAt,
   }
   if (!tokens.accessToken) throw new Error('MDBList did not return an access token')
-  if (replaceAccount || !localStorage.getItem(MDBLIST_TOKEN_KEY)) rotateProviderCredentialScope('mdblist', true)
+  const accountChanged = replaceAccount || !localStorage.getItem(MDBLIST_TOKEN_KEY)
+  if (accountChanged) rotateProviderCredentialScope('mdblist', true)
   localStorage.setItem(MDBLIST_TOKEN_KEY, JSON.stringify(tokens))
   window.dispatchEvent(new Event('aurales:mdblist-auth-changed'))
+  if (accountChanged) window.dispatchEvent(new Event('aurales:provider-account-changed'))
   return tokens
 }
 
 export function clearMdblistOAuth(): void {
+  mdblistAuthGeneration++
   localStorage.removeItem(MDBLIST_TOKEN_KEY)
   rotateProviderCredentialScope('mdblist', Boolean(userApiKey()))
   window.dispatchEvent(new Event('aurales:mdblist-auth-changed'))
+  window.dispatchEvent(new Event('aurales:provider-account-changed'))
+}
+
+export function cancelMdblistOAuthLogin(): void {
+  mdblistAuthGeneration++
+  const cancellation = invoke<void>('cancel_anilist_callback_server', { provider: 'mdblist' })
+  mdblistCallbackCancellation = cancellation
+  void cancellation.finally(() => {
+    if (mdblistCallbackCancellation === cancellation) mdblistCallbackCancellation = null
+  }).catch(() => {})
 }
 
 async function postMdblistOAuthForm(path: string, params: Record<string, string>): Promise<any> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-    body: new URLSearchParams(params),
-  })
-  const data = await res.json().catch(() => null)
-  if (!res.ok) {
-    const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${res.status})`
-    const err = new Error(String(message)) as Error & { code?: string }
-    err.code = data?.error
-    throw err
-  }
-  return data
+  return withRequestTimeout(15_000, async (signal) => {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: new URLSearchParams(params),
+      signal,
+    })
+    const data = await readBoundedResponseJson<any>(res, MAX_MDBLIST_OAUTH_RESPONSE_BYTES, 'MDBList OAuth response').catch(() => null)
+    if (!res.ok) {
+      const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${res.status})`
+      const err = new Error(String(message)) as Error & { code?: string; status?: number }
+      err.code = data?.error
+      err.status = res.status
+      throw err
+    }
+    return data
+  }, 'MDBList OAuth request timed out')
 }
 
 async function refreshMdblistAccessToken(tokens: MdblistOAuthTokens): Promise<MdblistOAuthTokens | null> {
+  const key = `${getMdblistClientId()}\u0000${tokens.refreshToken || ''}\u0000${tokens.accessToken}`
+  const existing = mdblistRefreshPending.get(key)
+  if (existing) return existing
+  const pending = refreshMdblistAccessTokenImpl(tokens)
+  const tracked = pending.finally(() => {
+    if (mdblistRefreshPending.get(key) === tracked) mdblistRefreshPending.delete(key)
+  })
+  mdblistRefreshPending.set(key, tracked)
+  return tracked
+}
+
+async function refreshMdblistAccessTokenImpl(tokens: MdblistOAuthTokens): Promise<MdblistOAuthTokens | null> {
   const clientId = getMdblistClientId()
+  const generation = mdblistAuthGeneration
   if (!clientId || !tokens.refreshToken) return null
+  const isCurrentRefresh = () => {
+    const current = getStoredMdblistTokens()
+    return Boolean(current && current.refreshToken === tokens.refreshToken && current.accessToken === tokens.accessToken)
+  }
   try {
     const data = await postMdblistOAuthForm('/oauth/token/', {
       grant_type: 'refresh_token',
       refresh_token: tokens.refreshToken,
       client_id: clientId,
     })
-    return storeMdblistTokens(data)
-  } catch (_) {
-    clearMdblistOAuth()
+    if (generation !== mdblistAuthGeneration || clientId !== getMdblistClientId() || !isCurrentRefresh()) return null
+    // Keep the current refresh token if the server rotates access tokens only.
+    return storeMdblistTokens({ ...data, refresh_token: data.refresh_token || tokens.refreshToken })
+  } catch (error) {
+    const oauthError = error as Error & { code?: string; status?: number }
+    const credentialsRejected = oauthError.code === 'invalid_grant' || oauthError.status === 401 || oauthError.status === 403
+    if (credentialsRejected && isCurrentRefresh()) clearMdblistOAuth()
     return null
   }
 }
@@ -264,7 +310,8 @@ async function getValidMdblistAccessToken(): Promise<string> {
   if (!tokens) return ''
   if (Date.now() / 1000 < tokens.expiresAt - 86400) return tokens.accessToken
   const refreshed = await refreshMdblistAccessToken(tokens)
-  return refreshed?.accessToken || ''
+  const current = getStoredMdblistTokens()
+  return refreshed && current?.accessToken === refreshed.accessToken ? refreshed.accessToken : ''
 }
 
 export function hasMdblistOAuth(): boolean {
@@ -290,13 +337,19 @@ const MDBLIST_REDIRECT_URI = 'http://localhost:42814/'
 export interface MdblistPKCESession {
   codeVerifier: string
   state: string
+  authGeneration?: number
 }
 
 export async function startMdblistPKCELogin(): Promise<{ authUrl: string; session: MdblistPKCESession }> {
+  if (mdblistCallbackCancellation) await mdblistCallbackCancellation
+  const generation = mdblistAuthGeneration
   const clientId = getMdblistClientId()
   if (!clientId) throw new Error('MDBList OAuth Client ID is required')
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = await generateCodeChallenge(codeVerifier)
+  if (generation !== mdblistAuthGeneration || clientId !== getMdblistClientId()) {
+    throw new Error('MDBList sign-in was cancelled.')
+  }
   const state = crypto.randomUUID()
   const params = new URLSearchParams({
     client_id: clientId,
@@ -309,13 +362,15 @@ export async function startMdblistPKCELogin(): Promise<{ authUrl: string; sessio
   })
   return {
     authUrl: `https://mdblist.com/oauth/authorize/?${params}`,
-    session: { codeVerifier, state },
+    session: { codeVerifier, state, authGeneration: generation },
   }
 }
 
 export async function exchangeMdblistPKCEToken(code: string, session: MdblistPKCESession): Promise<MdblistOAuthTokens> {
   const clientId = getMdblistClientId()
+  const generation = session.authGeneration ?? mdblistAuthGeneration
   if (!clientId) throw new Error('MDBList OAuth Client ID is required')
+  if (generation !== mdblistAuthGeneration) throw new Error('MDBList sign-in was cancelled.')
   const data = await postMdblistOAuthForm('/oauth/token/', {
     grant_type: 'authorization_code',
     code,
@@ -323,15 +378,50 @@ export async function exchangeMdblistPKCEToken(code: string, session: MdblistPKC
     client_id: clientId,
     code_verifier: session.codeVerifier,
   })
+  if (generation !== mdblistAuthGeneration || clientId !== getMdblistClientId()) {
+    throw new Error('MDBList sign-in was cancelled.')
+  }
   return storeMdblistTokens(data, true)
 }
 
-export async function waitForMdblistCallback(): Promise<string> {
-  return invoke<string>('start_anilist_callback_server')
+export interface MdblistOAuthCallback {
+  code?: string
+  state?: string
+  error?: string
+}
+
+export async function waitForMdblistCallback(): Promise<MdblistOAuthCallback> {
+  const result = await invoke<string>('start_anilist_callback_server', { provider: 'mdblist' })
+  let callback: unknown
+  try {
+    callback = JSON.parse(result)
+  } catch {
+    throw new Error('MDBList returned an invalid OAuth callback.')
+  }
+  if (!callback || typeof callback !== 'object' || Array.isArray(callback)) {
+    throw new Error('MDBList returned an invalid OAuth callback.')
+  }
+  const values = callback as Record<string, unknown>
+  return {
+    ...(typeof values.code === 'string' ? { code: values.code } : {}),
+    ...(typeof values.state === 'string' ? { state: values.state } : {}),
+    ...(typeof values.error === 'string' ? { error: values.error } : {}),
+  }
 }
 
 function ratingsApiKey(): string {
   return userApiKey() || BUILTIN_KEY
+}
+
+function authFingerprint(value: string): string {
+  // Keep credentials out of request-coordinator keys while separating requests
+  // made by different MDBList accounts.
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
 }
 
 export function hasMdblistUserApiKey(): boolean {
@@ -344,7 +434,8 @@ async function mdblistFetch<T>(
   body?: unknown,
   options?: { allowBuiltinForRatings?: boolean }
 ): Promise<T> {
-  const token = options?.allowBuiltinForRatings ? '' : await getValidMdblistAccessToken()
+  let token = options?.allowBuiltinForRatings ? '' : await getValidMdblistAccessToken()
+  if (token && getStoredMdblistTokens()?.accessToken !== token) token = ''
   const key = token ? '' : options?.allowBuiltinForRatings ? ratingsApiKey() : userApiKey()
   if (!token && !key) throw new Error('MDBList account auth is required')
 
@@ -356,12 +447,15 @@ async function mdblistFetch<T>(
     origin: BASE_URL,
     label: 'MDBList',
     kind: 'metadata',
-    dedupeKey: `${method}:${path}:${body === undefined ? '' : JSON.stringify(body)}`,
+    dedupeKey: `${authFingerprint(token || key)}:${method}:${path}:${body === undefined ? '' : JSON.stringify(body)}`,
     priority: method === 'GET' ? 'visible' : 'interactive',
     timeoutMs: 20_000,
     retry: 'none',
   }, (signal) => queueMdblistRequest(async () => {
     if (token) {
+      if (getStoredMdblistTokens()?.accessToken !== token) {
+        throw new Error('MDBList connection changed before the request could be sent.')
+      }
       const headers: Record<string, string> = {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
@@ -404,15 +498,14 @@ async function mdblistFetch<T>(
     if (!res.ok) {
       let message = `MDBList ${method} ${path} failed (${res.status})`
       try {
-        const data = await res.json()
+        const text = await readBoundedResponseText(res, MAX_MDBLIST_RESPONSE_BYTES, 'MDBList response')
+        const data = JSON.parse(text)
         message = String((data as any)?.detail || (data as any)?.error || message)
-      } catch (_) {
-        try { message = await res.text() || message } catch (_) { /* ignore */ }
-      }
+      } catch (_) { /* retain bounded generic error */ }
       throw new Error(message)
     }
     if (res.status === 204) return undefined as T
-    return res.json() as Promise<T>
+    return readBoundedResponseJson<T>(res, MAX_MDBLIST_RESPONSE_BYTES, 'MDBList response')
   }))
 }
 
@@ -599,9 +692,11 @@ export async function searchMdblistPublicLists(query: string, limit = 20): Promi
 
 async function searchMdblistPublicListsFallback(query: string): Promise<MdblistList[]> {
   const url = `https://mdblist.com/toplists/?public_list_name=${encodeURIComponent(query)}`
-  const res = await fetch(url)
-  if (!res.ok) return []
-  const html = await res.text()
+  const html = await withRequestTimeout(10_000, async (signal) => {
+    const res = await fetch(url, { signal })
+    return res.ok ? readBoundedResponseText(res, MAX_MDBLIST_PUBLIC_LIST_HTML_BYTES, 'MDBList public list response') : ''
+  }, 'MDBList public list request timed out')
+  if (!html) return []
 
   const results: MdblistList[] = []
   const seen = new Set<string>()
@@ -918,7 +1013,7 @@ export function normalizeMdblistWatched(data: unknown): MdblistWatchedItem[] {
 function dedupeSearchResults(items: SearchResult[]): SearchResult[] {
   const seen = new Set<string>()
   return items.filter((item) => {
-    const key = item.imdbId || (item.tmdbId ? `${item.type}:${item.tmdbId}` : item.id)
+    const key = mediaIdentity(item)
     if (seen.has(String(key))) return false
     seen.add(String(key))
     return true

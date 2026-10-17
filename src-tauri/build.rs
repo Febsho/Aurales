@@ -23,10 +23,12 @@ fn env_file_value(content: &str, key: &str) -> Option<String> {
     })
 }
 
-fn inject_native_secret(key: &str) {
+fn native_secret(key: &str) -> Option<String> {
     println!("cargo:rerun-if-env-changed={key}");
-    if std::env::var_os(key).is_some() {
-        return;
+    if let Ok(value) = std::env::var(key) {
+        if !value.is_empty() {
+            return Some(value);
+        }
     }
 
     // Vite reads the project .env files for the WebView, but it does not
@@ -38,16 +40,32 @@ fn inject_native_secret(key: &str) {
             continue;
         };
         if let Some(value) = env_file_value(&content, key) {
-            println!("cargo:rustc-env={key}={value}");
-            return;
+            return Some(value);
         }
     }
+    None
+}
+
+fn write_native_secrets() {
+    let simkl = native_secret("SIMKL_CLIENT_SECRET")
+        .map(|value| format!("Some({value:?})"))
+        .unwrap_or_else(|| "None".into());
+    let anilist = native_secret("ANILIST_CLIENT_SECRET")
+        .map(|value| format!("Some({value:?})"))
+        .unwrap_or_else(|| "None".into());
+    let source = format!(
+        "pub const SIMKL_CLIENT_SECRET: Option<&str> = {simkl};\npub const ANILIST_CLIENT_SECRET: Option<&str> = {anilist};\n"
+    );
+    let output =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
+            .join("native_secrets.rs");
+    std::fs::write(output, source).expect("could not write generated native secrets module");
 }
 
 fn main() {
-    // These values are injected only into the native Rust compilation. They
-    // are never exposed through import.meta.env or bundled JavaScript.
-    inject_native_secret("SIMKL_CLIENT_SECRET");
-    inject_native_secret("ANILIST_CLIENT_SECRET");
+    // Keep values out of Cargo's build-script stdout: cargo:rustc-env would
+    // echo each secret in build logs. The generated file lives under OUT_DIR
+    // and is compiled only into the native application.
+    write_native_secrets();
     tauri_build::build()
 }

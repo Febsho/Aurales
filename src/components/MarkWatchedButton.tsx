@@ -18,13 +18,13 @@ import {
   unmarkSimklEpisodePending,
 } from '../services/simkl/history'
 import { markAniListEpisodeExact, removeFromAniListList, saveAniListProgress, unmarkAniListEpisodeExact } from '../services/anilist'
-import { scrobblePMDB, removePMDBWatched } from '../services/pmdb'
+import { scrobblePMDB, removePMDBWatched, removePMDBWatchedBatch } from '../services/pmdb'
 import { markMdblistWatched, removeMdblistWatched, hasMdblistOAuth } from '../services/mdblist'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { useAppStore } from '../stores/appStore'
 import type { MediaRef } from '../services/simkl/mappings'
-import { isWatchedFromProviderFresh, isWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
+import { batchIsWatchedFromProviders, isWatchedFromProviderFresh, type WatchedLookupItem } from '../services/watchedStatus'
 
 interface MarkWatchedButtonProps {
   mediaRef: MediaRef
@@ -60,6 +60,30 @@ const SERVICE_LABELS: Record<Service, string> = {
   anilist: 'AniList',
 }
 
+async function mapEpisodesWithConcurrency(
+  episodes: { season: number; episode: number; absoluteEpisode?: number }[],
+  action: (episode: { season: number; episode: number; absoluteEpisode?: number }) => Promise<unknown>,
+): Promise<void> {
+  let cursor = 0
+  let failed = false
+  let firstError: unknown
+  const worker = async () => {
+    while (!failed && cursor < episodes.length) {
+      const episode = episodes[cursor++]
+      try {
+        await action(episode)
+      } catch (error) {
+        if (!failed) {
+          failed = true
+          firstError = error
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, episodes.length) }, worker))
+  if (failed) throw firstError
+}
+
 export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, isAnime = false, compact, watched = false, onMarked, onUnmarked, appSeasonCounts, className = '' }: MarkWatchedButtonProps) {
   const [open, setOpen] = useState(false)
   const [allDone, setAllDone] = useState(watched)
@@ -86,9 +110,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
     anilistId: anilistId != null ? Number(anilistId) : mediaRef.anilistId,
     malId: malId != null ? Number(malId) : mediaRef.malId,
   }
+  const traktImdbId = imdbId || mediaRef.imdbId
 
   const connectedServices: Service[] = []
-  if (traktConnected) connectedServices.push('trakt')
+  if (traktConnected && traktImdbId) connectedServices.push('trakt')
   if (simklConnected) connectedServices.push('simkl')
   if (pmdbConnected && Number.isFinite(tmdbId)) connectedServices.push('pmdb')
   if (mdblistConnected && (Number.isFinite(tmdbId) || imdbId)) connectedServices.push('mdblist')
@@ -134,10 +159,8 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         if (lookups.length === 0) return false
         const firstWatched = await isWatchedFromProviderFresh(lookups[0], service)
         if (!firstWatched || lookups.length === 1) return firstWatched
-        const remaining = await Promise.all(lookups.slice(1).map((lookup) =>
-          isWatchedFromProviders(lookup, [service], new Map()).catch(() => false)
-        ))
-        return remaining.every(Boolean)
+        const remaining = await batchIsWatchedFromProviders(lookups.slice(1), [service], new Set())
+        return remaining.size === lookups.length - 1
       })().then((done) => {
         if (cancelled) return
         setStates((previous) => ({
@@ -168,10 +191,13 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   async function markOn(service: Service) {
     setStates((prev) => ({ ...prev, [service]: { loading: true, done: false, error: false } }))
     try {
+      if (mediaType === 'series' && !episode && episodes.length === 0) {
+        throw new Error('Cannot mark the series without loaded episode data.')
+      }
       if (service === 'trakt') {
-        if (mediaType === 'movie' && imdbId) {
-          await traktMarkMovie(imdbId)
-        } else if (episode && imdbId) {
+        if (mediaType === 'movie' && traktImdbId) {
+          await traktMarkMovie(traktImdbId)
+        } else if (episode && traktImdbId) {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, episode) : null
           if (mapped?.traktId) {
             const { addToHistory } = await import('../services/trakt/sync')
@@ -182,10 +208,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
               }],
             })
           } else {
-            await traktMarkEpisode(imdbId, episode.season, episode.episode, appSeasonCounts)
+            await traktMarkEpisode(traktImdbId, episode.season, episode.episode, appSeasonCounts)
           }
-        } else if (imdbId && episodes.length > 0) {
-          await Promise.all(episodes.map(async (item) => {
+        } else if (traktImdbId && episodes.length > 0) {
+          await mapEpisodesWithConcurrency(episodes, async (item) => {
             const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
             if (mapped?.traktId) {
               const { addToHistory } = await import('../services/trakt/sync')
@@ -196,9 +222,9 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
                 }],
               })
             } else {
-              await traktMarkEpisode(imdbId, item.season, item.episode, appSeasonCounts)
+              await traktMarkEpisode(traktImdbId, item.season, item.episode, appSeasonCounts)
             }
-          }))
+          })
         }
       } else if (service === 'simkl') {
         if (mediaType === 'movie') {
@@ -209,12 +235,12 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
           await markEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(episode, isAnime, appSeasonCounts))
           markSimklEpisodePending(trackingMediaRef.localId, episode.season, episode.episode)
         } else if (episodes.length > 0) {
-          await Promise.all(episodes.map(async (item) => {
+          await mapEpisodesWithConcurrency(episodes, async (item) => {
             const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
             const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
             await markEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
             markSimklEpisodePending(trackingMediaRef.localId, item.season, item.episode)
-          }))
+          })
         }
       } else if (service === 'anilist') {
         const resolved = episode
@@ -251,13 +277,15 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
             await removePMDBWatched(providerEp.tmdbId, 'tv', episode.season, episode.episode)
           }
         } else if (episodes.length > 0) {
-          await Promise.all(episodes.map(async (item) => {
+          const removeTargets: Array<{ tmdbId: number; season: number; episode: number }> = []
+          await mapEpisodesWithConcurrency(episodes, async (item) => {
             const providerEp = await resolvePmdbProviderEpisode(mediaRef, item, tmdbId, isAnime, appSeasonCounts)
             if (providerEp.season !== item.season || providerEp.episode !== item.episode) {
-              await removePMDBWatched(providerEp.tmdbId, 'tv', item.season, item.episode)
+              removeTargets.push({ tmdbId: providerEp.tmdbId, season: item.season, episode: item.episode })
             }
             return scrobblePMDB(providerEp.tmdbId, 'tv', providerEp.season, providerEp.episode)
-          }))
+          })
+          await removePMDBWatchedBatch(removeTargets)
         }
       } else if (service === 'mdblist') {
         if (mediaType === 'movie') {
@@ -265,9 +293,9 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         } else if (episode) {
           await markMdblistWatched(tmdbId, 'series', episode.season, episode.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
         } else if (episodes.length > 0) {
-          await Promise.all(episodes.map((item) =>
+          await mapEpisodesWithConcurrency(episodes, (item) =>
             markMdblistWatched(tmdbId, 'series', item.season, item.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
-          ))
+          )
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
@@ -282,9 +310,12 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   async function unmarkOn(service: Service) {
     setStates((prev) => ({ ...prev, [service]: { loading: true, done: false, error: false } }))
     try {
+      if (mediaType === 'series' && !episode && episodes.length === 0 && !(service === 'trakt' && traktImdbId)) {
+        throw new Error('Cannot remove series episode history without loaded episode data.')
+      }
       if (service === 'trakt') {
-        if (mediaType === 'movie' && imdbId) await traktUnmarkMovie(imdbId)
-        else if (episode && imdbId) {
+        if (mediaType === 'movie' && traktImdbId) await traktUnmarkMovie(traktImdbId)
+        else if (episode && traktImdbId) {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, episode) : null
           if (mapped?.traktId) {
             const { removeFromHistory } = await import('../services/trakt/sync')
@@ -295,10 +326,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
               }],
             })
           } else {
-            await traktUnmarkEpisode(imdbId, episode.season, episode.episode, appSeasonCounts)
+            await traktUnmarkEpisode(traktImdbId, episode.season, episode.episode, appSeasonCounts)
           }
         }
-        else if (imdbId && episodes.length > 0) await Promise.all(episodes.map(async (item) => {
+        else if (traktImdbId && episodes.length > 0) await mapEpisodesWithConcurrency(episodes, async (item) => {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
           if (mapped?.traktId) {
             const { removeFromHistory } = await import('../services/trakt/sync')
@@ -309,10 +340,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
               }],
             })
           } else {
-            await traktUnmarkEpisode(imdbId, item.season, item.episode, appSeasonCounts)
+            await traktUnmarkEpisode(traktImdbId, item.season, item.episode, appSeasonCounts)
           }
-        }))
-        else if (imdbId) await traktUnmarkShow(imdbId)
+        })
+        else if (traktImdbId) await traktUnmarkShow(traktImdbId)
       } else if (service === 'simkl') {
         if (mediaType === 'movie') await removeWatchedFromSimkl(trackingMediaRef, 'movie')
         else if (episode) {
@@ -321,12 +352,12 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
           await removeEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(episode, isAnime, appSeasonCounts))
           unmarkSimklEpisodePending(trackingMediaRef.localId, episode.season, episode.episode)
         }
-        else await Promise.all(episodes.map(async (item) => {
+        else await mapEpisodesWithConcurrency(episodes, async (item) => {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, item) : null
           const mappedRef = mapped?.simklId ? { ...trackingMediaRef, simklId: mapped.simklId, malId: mapped.malId ?? trackingMediaRef.malId } : trackingMediaRef
           await removeEpisodeWatchedOnSimkl(mappedRef, mapped?.simklId ? { season: mapped.simklSeason ?? 1, episode: mapped.simklEpisode ?? mapped.episode } : providerEpisode(item, isAnime, appSeasonCounts))
           unmarkSimklEpisodePending(trackingMediaRef.localId, item.season, item.episode)
-        }))
+        })
       } else if (service === 'anilist') {
         const resolved = episode
           ? await resolveAniListEpisode(mediaRef, episode, anilistId, malId, appSeasonCounts)
@@ -364,18 +395,21 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         if (mediaType === 'movie') await removePMDBWatched(tmdbId, 'movie')
         else if (episode) {
           const providerEp = await resolvePmdbProviderEpisode(mediaRef, episode, tmdbId, isAnime, appSeasonCounts)
-          await removePMDBWatched(providerEp.tmdbId, 'tv', providerEp.season, providerEp.episode)
+          const removeTargets = [{ tmdbId: providerEp.tmdbId, season: providerEp.season, episode: providerEp.episode }]
           if (providerEp.season !== episode.season || providerEp.episode !== episode.episode) {
-            await removePMDBWatched(providerEp.tmdbId, 'tv', episode.season, episode.episode)
+            removeTargets.push({ tmdbId: providerEp.tmdbId, season: episode.season, episode: episode.episode })
           }
+          await removePMDBWatchedBatch(removeTargets)
         } else {
-          await Promise.all(episodes.map(async (item) => {
+          const removeTargets: Array<{ tmdbId: number; season: number; episode: number }> = []
+          await mapEpisodesWithConcurrency(episodes, async (item) => {
             const providerEp = await resolvePmdbProviderEpisode(mediaRef, item, tmdbId, isAnime, appSeasonCounts)
-            await removePMDBWatched(providerEp.tmdbId, 'tv', providerEp.season, providerEp.episode)
+            removeTargets.push({ tmdbId: providerEp.tmdbId, season: providerEp.season, episode: providerEp.episode })
             if (providerEp.season !== item.season || providerEp.episode !== item.episode) {
-              await removePMDBWatched(providerEp.tmdbId, 'tv', item.season, item.episode)
+              removeTargets.push({ tmdbId: providerEp.tmdbId, season: item.season, episode: item.episode })
             }
-          }))
+          })
+          await removePMDBWatchedBatch(removeTargets)
         }
       } else if (service === 'mdblist') {
         if (mediaType === 'movie') {
@@ -383,9 +417,9 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         } else if (episode) {
           await removeMdblistWatched(tmdbId, 'series', episode.season, episode.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
         } else {
-          await Promise.all(episodes.map((item) =>
+          await mapEpisodesWithConcurrency(episodes, (item) =>
             removeMdblistWatched(tmdbId, 'series', item.season, item.episode, imdbId, mediaRef.tvdbId ? Number(mediaRef.tvdbId) : undefined)
-          ))
+          )
         }
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
@@ -731,8 +765,7 @@ function seasonEpToAbsolute(
   if (!seasonCounts?.length) return null
   let absolute = 0
   for (const s of seasonCounts) {
-    if (s.season >= season) break
-    absolute += s.count
+    if (s.season < season) absolute += s.count
   }
   return absolute + episode
 }

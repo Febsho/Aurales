@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getLogs, clearLogs, subscribeLogs, logEvent } from '../services/diagnostics'
 import { useAppStore } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
-import { launchEmbeddedPlayer } from '../services/player'
+import { getPlayerProperty, getPlayerSnapshot, launchEmbeddedPlayer } from '../services/player'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 import { requestDiagnostics, type RequestDiagnostics } from '../services/network/requestCoordinator'
 import { getAppVersion } from '../services/updater'
@@ -101,56 +101,49 @@ export default function DeveloperPage() {
 
   // Poll current player properties if running
   useEffect(() => {
-    const interval = setInterval(async () => {
+    let cancelled = false
+    let polling = false
+    const poll = async () => {
+      if (cancelled || polling) return
+      polling = true
       try {
         if (store.isolatedPlaybackMode) {
           const state = await minimalMpvPlayer.getState()
-          setPlaybackState(state.running ? state : null)
+          if (!cancelled) setPlaybackState(state.running ? state : null)
           return
         }
-        const timePos = await invoke('mpv_get_property', { property: 'time-pos' })
-        const duration = await invoke('mpv_get_property', { property: 'duration' })
-        const volume = await invoke('mpv_get_property', { property: 'volume' })
-        const pause = await invoke('mpv_get_property', { property: 'pause' })
-        const buffering = await invoke('mpv_get_property', { property: 'buffering' })
-        const cacheBuffState = await invoke('mpv_get_property', { property: 'cache-buffering-state' })
-        const demuxerCacheDur = await invoke('mpv_get_property', { property: 'demuxer-cache-duration' })
-        const eofReached = await invoke('mpv_get_property', { property: 'eof-reached' })
-        const idleActive = await invoke('mpv_get_property', { property: 'idle-active' })
-        const coreIdle = await invoke('mpv_get_property', { property: 'core-idle' })
-
-        if (timePos !== null || duration !== null || buffering !== null) {
-          setPlaybackState({
-            timePos,
-            duration,
-            volume,
-            pause,
-            buffering,
-            cacheBuffState,
-            demuxerCacheDur,
-            eofReached,
-            idleActive,
-            coreIdle
-          })
+        const [snapshot, volume] = await Promise.all([getPlayerSnapshot(), getPlayerProperty('volume')])
+        if (cancelled) return
+        if (snapshot.timePos !== null || snapshot.duration !== null || snapshot.buffering !== null) {
+          setPlaybackState({ ...snapshot, volume })
         } else {
           setPlaybackState(null)
         }
       } catch (_) {
-        setPlaybackState(null)
+        if (!cancelled) setPlaybackState(null)
+      } finally {
+        polling = false
       }
-    }, 1000)
+    }
+    void poll()
+    const interval = setInterval(() => { void poll() }, 1000)
 
-    return () => clearInterval(interval)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [store.isolatedPlaybackMode])
 
   useEffect(() => {
+    let cancelled = false
+    let polling = false
     const loadThumbnailDebug = async () => {
+      if (cancelled || polling) return
+      polling = true
       const state = await invoke<ThumbnailDebugState>('get_thumbnail_debug_state').catch(() => null)
-      setThumbnailDebug(state)
+      if (!cancelled) setThumbnailDebug(state)
+      polling = false
     }
-    loadThumbnailDebug()
-    const interval = setInterval(loadThumbnailDebug, 1000)
-    return () => clearInterval(interval)
+    void loadThumbnailDebug()
+    const interval = setInterval(() => { void loadThumbnailDebug() }, 1000)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   // Play Direct stream handler

@@ -22,18 +22,6 @@
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
     "updater:default",
-    "process:allow-restart",
-    "shell:allow-open",
-    "shell:allow-execute",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "binaries/mpv",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    }
+    "process:allow-restart"
   ]
 }

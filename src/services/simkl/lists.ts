@@ -6,19 +6,22 @@ import { simklRequest, MOCK_WATCHLIST } from './client'
 import { getSimklClientId, getStoredSimklAccount, isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
 import { cachedFetch } from '../cache/sqliteCache'
+import { withRequestTimeout } from '../network/timeout'
+import { readBoundedResponseJson } from '../network/boundedResponse'
+import { APP_VERSION } from '../appVersion'
 import type { SimklWatchlistItem, SimklApiItem, SimklCustomList, SimklMediaType, SimklWatchStatus } from './types'
 import type { SearchResult } from '../../types'
+import { profileProviderCacheKey } from '../profiles'
+import { getBerlinDateKey } from '../discovery/berlinDate'
 
-const LS_WATCHLIST_CACHE = 'simkl_watchlist_cache'
-const LS_WATCHING_CACHE  = 'simkl_watching_cache'
-const LS_COMPLETED_CACHE = 'simkl_completed_cache'
+const MAX_SIMKL_DATA_FILE_RESPONSE_BYTES = 64 * 1024 * 1024
 
 // ─── Fetch lists ───────────────────────────────────────────────────────────────
 
 export async function getSimklWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'plantowatch'))
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_list:plantowatch',
+    profileProviderCacheKey('simkl_list:plantowatch', 'simkl'),
     async () => {
       const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/plantowatch?extended=full')
       return toWatchlistItems(data ?? [])
@@ -30,7 +33,7 @@ export async function getSimklWatchlist(): Promise<SimklWatchlistItem[]> {
 export async function getSimklWatching(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'watching'))
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_list:watching',
+    profileProviderCacheKey('simkl_list:watching', 'simkl'),
     async () => {
       const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/watching?extended=full')
       return toWatchlistItems(data ?? [])
@@ -42,7 +45,7 @@ export async function getSimklWatching(): Promise<SimklWatchlistItem[]> {
 export async function getSimklCompleted(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => i.status === 'completed'))
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_list:completed',
+    profileProviderCacheKey('simkl_list:completed', 'simkl'),
     async () => {
       const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies,shows,anime/completed?extended=full')
       return toWatchlistItems(data ?? [])
@@ -54,7 +57,7 @@ export async function getSimklCompleted(): Promise<SimklWatchlistItem[]> {
 export async function getSimklAnimeWatchlist(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) return toWatchlistItems(MOCK_WATCHLIST.filter(i => !!i.anime))
   return cachedFetch<SimklWatchlistItem[]>(
-    'simkl_list:anime:plantowatch',
+    profileProviderCacheKey('simkl_list:anime:plantowatch', 'simkl'),
     async () => {
       const data = await simklRequest<SimklApiItem[]>('/sync/all-items/anime/plantowatch?extended=full')
       return toWatchlistItems(data ?? [])
@@ -66,7 +69,7 @@ export async function getSimklAnimeWatchlist(): Promise<SimklWatchlistItem[]> {
 export async function getSimklCustomLists(): Promise<SimklCustomList[]> {
   const userId = getStoredSimklAccount()?.id
   if (!userId) return []
-  const cacheKey = `simkl_custom_lists:${userId}`
+  const cacheKey = profileProviderCacheKey(`simkl_custom_lists:${userId}`, 'simkl')
   return cachedFetch(cacheKey, async () => {
     const lists = await fetchSimklListPages(`/lists/user/${encodeURIComponent(userId)}`, 'lists')
     return lists.map((list) => ({
@@ -80,7 +83,7 @@ export async function getSimklCustomLists(): Promise<SimklCustomList[]> {
 export async function getSimklCustomListItems(id: string): Promise<SimklWatchlistItem[]> {
   if (!/^\d+$/.test(id)) throw new Error('Invalid Simkl Custom List ID.')
   const accountId = getStoredSimklAccount()?.id || 'anonymous'
-  return cachedFetch(`simkl_custom_list:${accountId}:${id}`, async () => {
+  return cachedFetch(profileProviderCacheKey(`simkl_custom_list:${accountId}:${id}`, 'simkl'), async () => {
     const first = await simklRequest<{ items?: any[]; media_type?: string; pagination?: { total_pages?: number } }>(`/lists/${id}?limit=500&extended=full`)
     const items = [...(first.items || [])]
     const pages = Math.min(Number(first.pagination?.total_pages || 1), 20)
@@ -205,7 +208,7 @@ export function isSimklDerivedCatalogId(listId?: string): boolean {
 }
 
 export async function getSimklDerivedCatalogItems(listId: string): Promise<SearchResult[]> {
-  let items: SimklDataItem[] = []
+  let items: SimklDataItem[]
   let type: SimklDataType = 'movies'
 
   switch (listId) {
@@ -278,7 +281,7 @@ async function getSimklTypedStatusList(mediaType: 'movies' | 'shows' | 'anime', 
   }
 
   return cachedFetch<SimklWatchlistItem[]>(
-    `simkl_list:${mediaType}:${status}`,
+    profileProviderCacheKey(`simkl_list:${mediaType}:${status}`, 'simkl'),
     async () => {
       const data = await simklRequest<SimklApiItem[]>(`/sync/all-items/${mediaType}/${status}?extended=full`)
       return toWatchlistItems(data ?? [])
@@ -323,14 +326,17 @@ async function fetchSimklDataFile(path: string): Promise<SimklDataItem[]> {
       const params = new URLSearchParams({
         client_id: clientId || 'aurales',
         'app-name': 'Aurales',
-        'app-version': '0.2.8',
+        'app-version': APP_VERSION,
       })
-      const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
-        headers: { 'User-Agent': 'Aurales/0.2.8' },
-      })
-      if (!res.ok) return []
-      const data = await res.json()
-      return Array.isArray(data) ? data : []
+      return withRequestTimeout(15_000, async (signal) => {
+        const res = await fetch(`https://data.simkl.in/${path}?${params.toString()}`, {
+          headers: { 'User-Agent': `Aurales/${APP_VERSION}` },
+          signal,
+        })
+        if (!res.ok) return []
+        const data = await readBoundedResponseJson<unknown>(res, MAX_SIMKL_DATA_FILE_RESPONSE_BYTES, 'Simkl data file response')
+        return Array.isArray(data) ? data : []
+      }, 'Simkl data request timed out')
     },
     { category: 'SIMKL_DATA', ttlSeconds: 3600 },
   )
@@ -416,6 +422,11 @@ function boxOfficeValue(metadata?: string): number {
 
 function isFutureDate(value?: string): boolean {
   if (!value) return false
+  // Simkl calendar entries are often date-only strings. Treat an airing today
+  // as upcoming for the whole Berlin calendar day instead of comparing its
+  // implicit midnight timestamp with the current instant.
+  const dateOnly = value.match(/^\d{4}-\d{2}-\d{2}$/)
+  if (dateOnly) return value >= getBerlinDateKey()
   const time = new Date(value).getTime()
   return Number.isFinite(time) && time >= Date.now()
 }
@@ -482,11 +493,13 @@ export async function getSimklWatchStatus(item: MediaRef): Promise<SimklWatchSta
 
   // Some Simkl accounts/items return no value from /sync/userlist. Inspect the
   // actual status collections as a reliable fallback.
-  const statuses: SimklWatchStatus[] = ['plantowatch', 'watching', 'hold', 'completed', 'dropped']
-  const mediaTypes = ['movies', 'shows', 'anime'] as const
-  const lists = await Promise.all(statuses.map(async (status) => (
-    await Promise.all(mediaTypes.map((mediaType) => getSimklTypedStatusList(mediaType, status).catch(() => [])))
-  ).flat()))
+  const statuses: SimklWatchStatus[] = ['plantowatch', 'watching', 'hold', 'completed', 'dropped', 'notinteresting']
+  const mediaType = mapping.type === 'movie' ? 'movies' : mapping.type === 'show' ? 'shows' : 'anime'
+  // The item's media type is already resolved above. Fetching all 3 types for
+  // every status multiplied a single ambiguous lookup into 15 full-list calls.
+  const lists = await Promise.all(statuses.map((status) =>
+    getSimklTypedStatusList(mediaType, status).catch(() => [])
+  ))
   for (let index = 0; index < lists.length; index += 1) {
     if (lists[index].some((entry) => simklListEntryMatches(item, simklId, entry))) return statuses[index]
   }
@@ -562,8 +575,10 @@ function simklListEntryMatches(item: MediaRef, simklId: number, entry: SimklWatc
   if (item.tmdbId && entry.tmdbId && Number(item.tmdbId) === Number(entry.tmdbId)) return true
   if (item.tvdbId && entry.tvdbId && Number(item.tvdbId) === Number(entry.tvdbId)) return true
   if (item.malId && entry.malId && Number(item.malId) === Number(entry.malId)) return true
-  const normalize = (value: string) => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')
-  return normalize(item.title) === normalize(entry.title) && (!item.year || !entry.year || item.year === entry.year)
+  const normalize = (value: string) => value.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const itemTitle = normalize(item.title)
+  const entryTitle = normalize(entry.title)
+  return itemTitle.length > 0 && itemTitle === entryTitle && (!item.year || !entry.year || item.year === entry.year)
 }
 
 function toWatchlistItems(raw: any): SimklWatchlistItem[] {
@@ -638,13 +653,6 @@ function toWatchlistItems(raw: any): SimklWatchlistItem[] {
       totalEpisodesCount: r.total_episodes_count,
     } satisfies SimklWatchlistItem
   }).filter(Boolean) as SimklWatchlistItem[]
-}
-
-function getCached(key: string): SimklWatchlistItem[] {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as SimklWatchlistItem[]) : []
-  } catch (_) { return [] }
 }
 
 // ─── Mock watchlist state ──────────────────────────────────────────────────────

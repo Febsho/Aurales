@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAppStore } from '../stores/appStore'
 import type { SearchResult } from '../types'
 import { useLocalWatchlist } from '../hooks/useLocalWatchlist'
-import { localWatchlistKey, toggleLocalWatchlist } from '../services/localWatchlist'
+import { toggleLocalWatchlist } from '../services/localWatchlist'
+import { sameWatchlistItem } from '../services/watchlistIdentity'
 import {
   addToSimklWatchlist,
   removeFromSimklWatchlist,
@@ -108,20 +109,22 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
     anilistId,
     isAnime: isAnime || mediaRef.type === 'anime',
   }), [anilistId, isAnime, item, malId, mediaRef, mediaType, tvdbId])
-  const localKey = localWatchlistKey(localItem)
-  const localInList = localItems.some((entry) => localWatchlistKey(entry) === localKey)
+  const localInList = localItems.some((entry) => sameWatchlistItem(entry, localItem))
 
   const [animeIds, setAnimeIds] = useState<{ anilistId?: number; malId?: number }>({
     anilistId: anilistId ? Number(anilistId) : undefined,
     malId: malId ? Number(malId) : undefined,
   })
-  const [animeDetected, setAnimeDetected] = useState(isAnime || Boolean(anilistId || malId))
   const [animeCandidates, setAnimeCandidates] = useState<{ anilistId?: number; malId?: number; simklId?: number }[]>(
     anilistId || malId ? [{ anilistId: anilistId ? Number(anilistId) : undefined, malId: malId ? Number(malId) : undefined }] : [],
   )
   // AniList is an anime tracker. Do not surface it for regular movies/shows
   // merely because a provider happened to return a loose MAL/AniList mapping.
   const anilistActive = isAnime === true && isAniListConnected() && (animeCandidates.length > 0 || !!(animeIds.anilistId || animeIds.malId))
+  const fallbackAnimeCandidate = useMemo(
+    () => ({ anilistId: animeIds.anilistId, malId: animeIds.malId }),
+    [animeIds.anilistId, animeIds.malId],
+  )
   // Callers commonly construct mediaRef inline. Depending on that object by
   // identity makes the provider-check effect run after every state update and
   // can create an infinite render loop (notably in the rotating Discover hero).
@@ -188,7 +191,6 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
       anilistId: anilistId ? Number(anilistId) : undefined,
       malId: malId ? Number(malId) : undefined,
     })
-    setAnimeDetected(isAnime || Boolean(anilistId || malId))
     if (anilistId || malId) {
       setAnimeCandidates([{ anilistId: anilistId ? Number(anilistId) : undefined, malId: malId ? Number(malId) : undefined }])
       return
@@ -213,7 +215,6 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
       if (!cancelled && candidates.length) {
         setAnimeCandidates(candidates)
         setAnimeIds({ anilistId: candidates[0].anilistId, malId: candidates[0].malId })
-        setAnimeDetected(true)
         return
       }
       const resolved = await resolveAnimeIds({ imdbId: mediaRef.imdbId, tmdbId: mediaRef.tmdbId, tvdbId: tvdbId ? Number(tvdbId) : undefined, contentType: mediaType })
@@ -221,7 +222,6 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
         const candidate = { anilistId: resolved.anilistId, malId: resolved.malId, simklId: resolved.simklId }
         setAnimeCandidates([candidate])
         setAnimeIds(candidate)
-        setAnimeDetected(true)
       }
     })().catch(() => undefined)
     return () => { cancelled = true }
@@ -292,7 +292,7 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
       if (anilistActive) {
         checks.push((async () => {
           try {
-            const candidates = animeCandidates.length ? animeCandidates : [animeIds]
+            const candidates = animeCandidates.length ? animeCandidates : [fallbackAnimeCandidate]
             const progresses = await Promise.all(candidates.map(async (candidate) => ({ candidate, progress: await getAniListProgress(candidate.anilistId, candidate.malId).catch(() => null) })))
             const priority: Record<string, number> = { CURRENT: 5, PLANNING: 4, PAUSED: 3, COMPLETED: 2, DROPPED: 1, REPEATING: 5 }
             const active = progresses.filter((entry) => entry.progress).sort((left, right) => (priority[right.progress?.status ?? ''] || 0) - (priority[left.progress?.status ?? ''] || 0))[0]
@@ -315,7 +315,7 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
 
     checkAll()
     return () => { cancelled = true }
-  }, [mediaRef.localId, mediaRef.imdbId, mediaRef.tmdbId, simklMediaRef, mediaType, traktConnected, simklConnected, pmdbApiKey, mdblistApiKey, anilistActive, animeIds.anilistId, animeIds.malId, animeCandidates])
+  }, [mediaRef.localId, mediaRef.imdbId, mediaRef.tmdbId, simklMediaRef, mediaType, traktConnected, simklConnected, pmdbApiKey, mdblistApiKey, anilistActive, fallbackAnimeCandidate, animeCandidates])
 
   useEffect(() => {
     if (!open) return

@@ -11,7 +11,28 @@ impl Database {
     pub fn new(app_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&app_dir).ok();
         let db_path = app_dir.join("aurales.db");
+        if !db_path.exists() {
+            let mut legacy_paths = vec![app_dir.join("orynt.db")];
+            if let Some(parent) = app_dir.parent() {
+                legacy_paths.push(parent.join("com.orynt.app").join("orynt.db"));
+            }
+
+            if let Some(legacy_path) = legacy_paths.into_iter().find(|path| path.is_file()) {
+                // Use SQLite's online backup API instead of copying the file:
+                // committed data may still live in the legacy database's WAL.
+                let legacy = Connection::open(legacy_path)?;
+                let migration_path = app_dir.join("aurales.db.migrating");
+                let _ = std::fs::remove_file(&migration_path);
+                legacy.backup(rusqlite::DatabaseName::Main, &migration_path, None)?;
+                std::fs::rename(&migration_path, &db_path)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            }
+        }
         let conn = Connection::open(db_path)?;
+        // SQLite leaves foreign-key enforcement disabled by default. The
+        // schema relies on cascades for media seasons, episodes, and server
+        // catalog rows, so enable enforcement before migrations or writes.
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Database {
             conn: Arc::new(Mutex::new(conn)),
         };
@@ -20,7 +41,10 @@ impl Database {
     }
 
     fn run_migrations(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS settings (
@@ -356,9 +380,14 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_server_catalog_connection ON server_catalog_items(connection_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_tmdb ON server_catalog_items(tmdb_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_tvdb ON server_catalog_items(tvdb_id);
-            CREATE INDEX IF NOT EXISTS idx_server_catalog_anilist ON server_catalog_items(anilist_id);
+            DROP INDEX IF EXISTS idx_server_catalog_tmdb;
+            DROP INDEX IF EXISTS idx_server_catalog_tvdb;
+            DROP INDEX IF EXISTS idx_server_catalog_anilist;
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tmdb ON server_catalog_items(connection_id,tmdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tvdb ON server_catalog_items(connection_id,tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_anilist ON server_catalog_items(connection_id,anilist_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_mal ON server_catalog_items(connection_id,mal_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_parent_episode ON server_catalog_items(connection_id,parent_source_item_id,season,episode);
             ",
         )?;
         Ok(())

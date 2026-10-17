@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ''
+            args: '--config src-tauri/tauri.windows.conf.json'
           - platform: ubuntu-22.04
             # Only the AppImage is uploaded by tauri-action. A .deb is built
             # separately below as an internal Flatpak assembly input.
@@ -36,11 +36,15 @@ jobs:
           const fs = require('node:fs');
           const expected = process.env.GITHUB_REF_NAME.replace(/^v/, '');
           const packageVersion = require('./package.json').version;
-          const lockVersion = require('./package-lock.json').version;
+          const packageLock = require('./package-lock.json');
+          const packageLockVersion = packageLock.version;
+          const packageLockRootVersion = packageLock.packages?.['']?.version;
           const tauriVersion = require('./src-tauri/tauri.conf.json').version;
-          const cargoVersion = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
-            .match(/^version = "([^"]+)"/m)?.[1];
-          const versions = { packageVersion, lockVersion, tauriVersion, cargoVersion };
+          const cargoManifest = fs.readFileSync('./src-tauri/Cargo.toml', 'utf8');
+          const cargoVersion = cargoManifest.match(/^version = "([^"]+)"/m)?.[1];
+          const cargoLock = fs.readFileSync('./src-tauri/Cargo.lock', 'utf8');
+          const cargoLockVersion = cargoLock.match(/\[\[package\]\]\r?\nname = "aurales-app"\r?\nversion = "([^"]+)"/)?.[1];
+          const versions = { packageVersion, packageLockVersion, packageLockRootVersion, tauriVersion, cargoVersion, cargoLockVersion };
           if (Object.values(versions).some((version) => version !== expected)) {
             throw new Error(`Tag v${expected} does not match project versions: ${JSON.stringify(versions)}`);
           }
@@ -130,6 +134,17 @@ jobs:
 
           # Fetch the latest yt-dlp binary
           Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe' -UserAgent 'aurales-ci'
+
+          # The Windows bundle declares ffmpeg.exe as a resource. Download
+          # the current static build and place the executable at that path.
+          $ffmpegRoot = Join-Path $env:RUNNER_TEMP 'ffmpeg'
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP 'ffmpeg-win64.zip'
+          New-Item -ItemType Directory -Force $ffmpegRoot | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $ffmpegZip -UserAgent 'aurales-ci'
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegRoot -Force
+          $ffmpeg = Get-ChildItem -Path $ffmpegRoot -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'The FFmpeg archive did not contain ffmpeg.exe.' }
+          Copy-Item $ffmpeg.FullName 'src-tauri/binaries/ffmpeg.exe' -Force
 
           Write-Host "Bundled binaries:"
           Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize

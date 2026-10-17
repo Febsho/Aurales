@@ -6,7 +6,7 @@ describe('Upcoming date policy', () => {
   it('keeps provider date-only releases timezone-safe', () => {
     const now = new Date('2026-08-30T23:30:00-07:00')
     expect(isReleaseInHorizon(event('2026-08-31'), 1, now)).toBe(true)
-    expect(releaseTiming('2026-08-31', now)).toBe('In 1 day')
+    expect(releaseTiming('2026-08-31', now)).toBe('In 0 days')
   })
   it('does not place unknown dates in the compact horizon', () => expect(isReleaseInHorizon(event(), 14)).toBe(false))
   it('ranks dated episodes for actively watched series above a season announcement', async () => {

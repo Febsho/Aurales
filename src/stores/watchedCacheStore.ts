@@ -24,11 +24,23 @@ export interface WatchedIdInput {
 
 function keysForItem(ids: WatchedIdInput): string[] {
   const out: string[] = []
-  if (ids.imdbId) out.push(`imdb:${ids.imdbId}`)
-  if (ids.tmdbId) out.push(`tmdb:${ids.tmdbId}`)
-  if (ids.tvdbId) out.push(`tvdb:${String(ids.tvdbId).replace('tvdb-', '')}`)
-  if (ids.malId) out.push(`mal:${ids.malId}`)
-  if (ids.anilistId) out.push(`anilist:${ids.anilistId}`)
+  const addProviderKey = (provider: string, value: string | number | undefined) => {
+    if (value == null || value === '') return
+    const normalized = String(value).trim().replace(new RegExp(`^${provider}[-:]`, 'i'), '')
+    if (normalized) out.push(`${provider}:${normalized}`)
+  }
+  if (ids.imdbId) {
+    out.push(`imdb:${ids.imdbId}`)
+    const normalizedImdbId = ids.imdbId.toLowerCase()
+    if (normalizedImdbId !== ids.imdbId) out.push(`imdb:${normalizedImdbId}`)
+  }
+  addProviderKey('tmdb', ids.tmdbId)
+  addProviderKey('tvdb', ids.tvdbId)
+  addProviderKey('mal', ids.malId)
+  addProviderKey('anilist', ids.anilistId)
+  const providerId = ids.id?.match(/^(tmdb|tvdb|mal|anilist)[-:]([^:]+)$/i)
+  if (providerId) addProviderKey(providerId[1].toLowerCase(), providerId[2])
+  else if (ids.id && /^tt\d+$/i.test(ids.id)) out.push(`imdb:${ids.id.toLowerCase()}`)
   if (ids.id) out.push(`id:${ids.id}`)
   return out
 }

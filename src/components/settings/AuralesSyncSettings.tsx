@@ -1,11 +1,33 @@
 import { useEffect, useState } from 'react'
-import { DEFAULT_SYNC_ENDPOINT, downloadSyncNow, getSyncConfig, getSyncOutbox, setSyncConfig, uploadSyncNow } from '../../services/sync/auralesSync'
+import { DEFAULT_SYNC_ENDPOINT, downloadSyncNow, getSyncConfig, getSyncOutbox, setSyncConfig, syncIfConfigured, uploadSyncNow } from '../../services/sync/auralesSync'
 import EncryptedVaultSettings from './EncryptedVaultSettings'
 import { OUTBOX_CHANGED_EVENT, getOutboxError } from '../../services/sync/outbox'
 import { lockSyncVault, unlockSyncVault } from '../../services/sync/encryptedVault'
 import { deleteSyncPassword, saveSyncPassword } from '../../services/sync/secureLogin'
+import { readBoundedResponseJson } from '../../services/network/boundedResponse'
+
+const MAX_SYNC_AUTH_RESPONSE_BYTES = 256 * 1024
 
 function Row({ icon, title, detail, onClick }: { icon: string; title: string; detail: string; onClick: () => void }) { return <button type="button" onClick={onClick} className="flex w-full items-center gap-4 px-5 py-4 text-left transition hover:bg-white/[.07]"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white/[.08] text-xl text-white">{icon}</span><span><span className="block font-semibold text-white">{title}</span><span className="mt-1 block text-xs text-white/45">{detail}</span></span></button> }
+
+async function requestSyncAuth(action: 'register' | 'login', email: string, password: string): Promise<{ accessToken?: string; error?: string }> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(new DOMException('Authentication request timed out', 'TimeoutError')), 15_000)
+  try {
+    const response = await fetch(`${DEFAULT_SYNC_ENDPOINT}/v1/auth/${action}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal,
+    })
+    const result = await readBoundedResponseJson<{ accessToken?: string; error?: string }>(response, MAX_SYNC_AUTH_RESPONSE_BYTES, 'Sync authentication response')
+    if (!response.ok || !result.accessToken) throw new Error(result.error || 'Authentication failed')
+    return result
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
 export default function AuralesSyncSettings() {
   const [config, setConfig] = useState(getSyncConfig); const [message, setMessage] = useState(''); const [email, setEmail] = useState(config.email || ''); const [password, setPassword] = useState(''); const connected = Boolean(config.accessToken); const automatic = config.autoSync !== false
   // The queue is read back from IndexedDB after mount, so the pending count has
@@ -18,7 +40,7 @@ export default function AuralesSyncSettings() {
     window.addEventListener(OUTBOX_CHANGED_EVENT, update)
     return () => window.removeEventListener(OUTBOX_CHANGED_EVENT, update)
   }, [])
-  const authenticate = async (action: 'register' | 'login') => { try { const response = await fetch(`${DEFAULT_SYNC_ENDPOINT}/v1/auth/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }); const result = await response.json() as { accessToken?: string; error?: string }; if (!response.ok || !result.accessToken) throw new Error(result.error || 'Authentication failed'); unlockSyncVault(password); await saveSyncPassword(email.trim().toLowerCase(), password); const next = { ...config, endpoint: DEFAULT_SYNC_ENDPOINT, accessToken: result.accessToken, email: email.trim().toLowerCase(), autoSync: true }; setConfig(next); setSyncConfig(next); setPassword(''); setMessage('Signed in and automatic sync enabled') } catch (error) { setMessage(error instanceof Error ? error.message : 'Authentication failed') } }
+  const authenticate = async (action: 'register' | 'login') => { try { const result = await requestSyncAuth(action, email, password); unlockSyncVault(password); await saveSyncPassword(email.trim().toLowerCase(), password); const next = { ...config, endpoint: DEFAULT_SYNC_ENDPOINT, accessToken: result.accessToken, email: email.trim().toLowerCase(), autoSync: true }; setConfig(next); setSyncConfig(next); setPassword(''); setMessage('Signed in and automatic sync enabled'); void syncIfConfigured().catch((error) => setMessage(`Signed in, but sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`)) } catch (error) { setMessage(error instanceof Error ? error.message : 'Authentication failed') } }
   const push = () => { if (!connected) return setMessage('Sign in first.'); void uploadSyncNow().then((result) => setMessage(`Uploaded ${result.uploaded} changes from every profile`)).catch((error) => setMessage(error.message)) }
   const pull = () => { if (!connected) return setMessage('Sign in first.'); void downloadSyncNow().then((result) => setMessage(`Downloaded ${result.downloaded} server changes`)).catch((error) => setMessage(error.message)) }
   const toggle = () => { const next = { ...config, autoSync: !automatic }; setConfig(next); setSyncConfig(next); setMessage(!automatic ? 'Automatic sync enabled' : 'Automatic sync paused') }

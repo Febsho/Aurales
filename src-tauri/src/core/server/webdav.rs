@@ -8,6 +8,14 @@ use quick_xml::Reader;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
+use std::sync::OnceLock;
+
+const MAX_PROPFIND_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SCAN_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_SCAN_RESOURCE_COUNT: usize = 100_000;
+static EPISODE_RE: OnceLock<Regex> = OnceLock::new();
+static MOVIE_RE: OnceLock<Regex> = OnceLock::new();
 
 pub fn test(
     request: &SaveServerConnectionRequest,
@@ -38,12 +46,23 @@ pub fn scan(
             Ok(v) => v,
             Err(_) => recursive_propfind(&url, username, secret)?,
         };
+    if resources.len() > MAX_SCAN_RESOURCE_COUNT {
+        return Err(format!(
+            "WebDAV scan exceeded the {MAX_SCAN_RESOURCE_COUNT} resource limit"
+        ));
+    }
     let mut items = Vec::new();
     let mut shows = HashMap::<String, ServerCatalogItem>::new();
-    for resource in resources
-        .into_iter()
-        .filter(|r| !r.collection && is_video(&r.href))
-    {
+    for mut resource in resources {
+        let Some(absolute) = absolute_href(&url, &resource.href) else {
+            // Never trust a server-controlled href to redirect authenticated
+            // requests to another origin.
+            continue;
+        };
+        resource.href = absolute;
+        if resource.collection || !is_video(&resource.href) {
+            continue;
+        }
         if let Some(mut item) = catalog_item(connection, resource) {
             if item.media_type == "episode" {
                 if let Some((show_title, anime)) =
@@ -113,7 +132,8 @@ pub fn streams(
         .get("href")
         .and_then(Value::as_str)
         .ok_or_else(|| "WebDAV item has no resource URL".to_string())?;
-    let mut url = absolute_href(&connection.server_url, href);
+    let mut url = absolute_href(&connection.server_url, href)
+        .ok_or_else(|| "WebDAV item points outside the configured server origin".to_string())?;
     let username = connection.username.as_deref().unwrap_or("");
     let mut headers = Vec::new();
     if !username.is_empty() || !secret.is_empty() {
@@ -169,6 +189,7 @@ struct Resource {
 
 fn propfind(url: &str, username: &str, password: &str, depth: &str) -> Result<String, String> {
     let mut request = ureq::request("PROPFIND", url)
+        .timeout(std::time::Duration::from_secs(30))
         .set("Depth", depth)
         .set("Content-Type", "application/xml");
     if !username.is_empty() || !password.is_empty() {
@@ -178,13 +199,24 @@ fn propfind(url: &str, username: &str, password: &str, depth: &str) -> Result<St
     }
     let body = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontenttype/><d:getcontentlength/><d:getetag/><d:getlastmodified/></d:prop></d:propfind>"#;
     let response = request.send_string(body).map_err(http_error)?;
-    response.into_string().map_err(|e| e.to_string())
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_PROPFIND_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_PROPFIND_RESPONSE_BYTES {
+        return Err("WebDAV PROPFIND response exceeds the 64 MiB limit".into());
+    }
+    String::from_utf8(bytes).map_err(|error| format!("WebDAV returned invalid UTF-8: {error}"))
 }
 
 fn recursive_propfind(root: &str, username: &str, password: &str) -> Result<Vec<Resource>, String> {
     let mut queue = VecDeque::from([root.to_string()]);
     let mut visited = HashSet::new();
     let mut files = Vec::new();
+    let mut total_response_bytes = 0_usize;
+    let mut total_resources = 0_usize;
     while let Some(url) = queue.pop_front() {
         if !visited.insert(url.clone()) {
             continue;
@@ -193,8 +225,22 @@ fn recursive_propfind(root: &str, username: &str, password: &str) -> Result<Vec<
             return Err("WebDAV directory traversal exceeded 10,000 folders".into());
         }
         let xml = propfind(&url, username, password, "1")?;
-        for resource in parse_multistatus(&xml)? {
-            let absolute = absolute_href(root, &resource.href);
+        total_response_bytes = total_response_bytes.saturating_add(xml.len());
+        if total_response_bytes > MAX_SCAN_RESPONSE_BYTES {
+            return Err("WebDAV scan exceeded the 256 MiB response limit".into());
+        }
+        let resources = parse_multistatus(&xml)?;
+        total_resources = total_resources.saturating_add(resources.len());
+        if total_resources > MAX_SCAN_RESOURCE_COUNT {
+            return Err(format!(
+                "WebDAV scan exceeded the {MAX_SCAN_RESOURCE_COUNT} resource limit"
+            ));
+        }
+        for mut resource in resources {
+            let Some(absolute) = absolute_href(&url, &resource.href) else {
+                continue;
+            };
+            resource.href = absolute.clone();
             if resource.collection && absolute.trim_end_matches('/') != url.trim_end_matches('/') {
                 queue.push_back(absolute)
             } else if !resource.collection {
@@ -234,7 +280,10 @@ fn parse_multistatus(xml: &str) -> Result<Vec<Resource>, String> {
             }
             Ok(Event::Text(e)) => {
                 if let Some(r) = current.as_mut() {
-                    let text = e.unescape().map_err(|e| e.to_string())?.into_owned();
+                    let decoded = e.decode().map_err(|e| e.to_string())?;
+                    let text = quick_xml::escape::unescape(&decoded)
+                        .map_err(|e| e.to_string())?
+                        .into_owned();
                     match field.as_str() {
                         "href" => r.href = text,
                         "getcontenttype" => r.content_type = Some(text),
@@ -265,15 +314,28 @@ fn parse_multistatus(xml: &str) -> Result<Vec<Resource>, String> {
 }
 
 fn catalog_item(connection: &ServerConnection, resource: Resource) -> Option<ServerCatalogItem> {
-    let decoded = resource.href.replace("%20", " ");
-    let filename = decoded.rsplit('/').find(|v| !v.is_empty())?;
-    let stem = filename.rsplit_once('.').map(|v| v.0).unwrap_or(filename);
-    let episode_re = Regex::new(r"(?i)(?P<title>.*?)[ ._-]+S(?P<s>\d{1,3})E(?P<e>\d{1,4})").ok()?;
-    let movie_re = Regex::new(r"(?i)(?P<title>.*?)[ ._-]*\((?P<year>19\d{2}|20\d{2})\)").ok()?;
+    // Split the URL before decoding so an escaped slash in a filename does not
+    // accidentally become a path separator. WebDAV servers percent-encode
+    // spaces, unicode and punctuation, not only spaces.
+    let encoded_filename = resource.href.rsplit('/').find(|v| !v.is_empty())?;
+    let filename =
+        percent_decode_component(encoded_filename).unwrap_or_else(|| encoded_filename.to_string());
+    let stem = filename
+        .rsplit_once('.')
+        .map(|v| v.0)
+        .unwrap_or(filename.as_str());
+    let episode_re = EPISODE_RE.get_or_init(|| {
+        Regex::new(r"(?i)(?P<title>.*?)[ ._-]+S(?P<s>\d{1,3})E(?P<e>\d{1,4})")
+            .expect("episode filename regex is valid")
+    });
+    let movie_re = MOVIE_RE.get_or_init(|| {
+        Regex::new(r"(?i)(?P<title>.*?)[ ._-]*\((?P<year>19\d{2}|20\d{2})\)")
+            .expect("movie filename regex is valid")
+    });
     let (media_type, title, year, season, episode, mut catalogs) =
         if let Some(c) = episode_re.captures(stem) {
             let title = clean_title(c.name("title").map(|v| v.as_str()).unwrap_or(stem));
-            let anime = decoded.to_ascii_lowercase().contains("anime");
+            let anime = resource.href.to_ascii_lowercase().contains("anime");
             (
                 "episode",
                 title,
@@ -340,23 +402,59 @@ fn catalog_item(connection: &ServerConnection, resource: Resource) -> Option<Ser
     })
 }
 
-fn collection_url(base: &str, directory: Option<&str>) -> String {
-    match directory {
-        Some(v) => format!("{}/{}", base.trim_end_matches('/'), v.trim_matches('/')),
-        None => base.trim_end_matches('/').into(),
+fn percent_decode_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            let hex = |byte: u8| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                b'A'..=b'F' => Some(byte - b'A' + 10),
+                _ => None,
+            };
+            decoded.push(hex(high)? * 16 + hex(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
     }
+    String::from_utf8(decoded).ok()
 }
-fn absolute_href(base: &str, href: &str) -> String {
-    if href.starts_with("http://") || href.starts_with("https://") {
-        href.into()
-    } else if let Ok(origin) = url::Url::parse(base) {
-        origin
-            .join(href)
-            .map(|v| v.into())
-            .unwrap_or_else(|_| format!("{}{}", base.trim_end_matches('/'), href))
-    } else {
-        href.into()
+
+fn collection_url(base: &str, directory: Option<&str>) -> String {
+    let Ok(mut url) = url::Url::parse(base) else {
+        // Saved server URLs are validated before they reach this helper. Keep
+        // the fallback non-panicking for legacy or corrupted database rows.
+        return match directory {
+            Some(value) => format!("{}/{}", base.trim_end_matches('/'), value.trim_matches('/')),
+            None => base.trim_end_matches('/').to_string(),
+        };
+    };
+    if let Some(directory) = directory {
+        if let Ok(mut segments) = url.path_segments_mut() {
+            segments.pop_if_empty();
+            for segment in directory.split('/').filter(|part| !part.is_empty()) {
+                segments.push(segment);
+            }
+        }
     }
+    url.into()
+}
+fn absolute_href(base: &str, href: &str) -> Option<String> {
+    let base_url = url::Url::parse(base).ok()?;
+    let resolved = base_url.join(href).ok()?;
+    if resolved.origin() != base_url.origin()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        return None;
+    }
+    Some(resolved.into())
 }
 fn is_video(path: &str) -> bool {
     matches!(
@@ -390,17 +488,22 @@ fn clean_title(value: &str) -> String {
         .to_string()
 }
 fn show_identity(path: &str) -> Option<(String, bool)> {
-    let decoded = path.replace("%20", " ");
-    let parts: Vec<_> = decoded.split('/').filter(|v| !v.is_empty()).collect();
+    let parts: Vec<String> = path
+        .split('/')
+        .filter(|v| !v.is_empty())
+        .map(|part| percent_decode_component(part).unwrap_or_else(|| part.to_string()))
+        .collect();
     let season_pos = parts
         .iter()
         .position(|v| v.to_ascii_lowercase().starts_with("season "));
     let raw = season_pos
-        .and_then(|i| i.checked_sub(1).and_then(|p| parts.get(p).copied()))
-        .or_else(|| parts.get(parts.len().saturating_sub(2)).copied())?;
+        .and_then(|i| i.checked_sub(1).and_then(|p| parts.get(p)))
+        .or_else(|| parts.get(parts.len().saturating_sub(2)))?;
     Some((
         clean_title(raw),
-        decoded.to_ascii_lowercase().contains("anime"),
+        parts
+            .iter()
+            .any(|part| part.to_ascii_lowercase().contains("anime")),
     ))
 }
 fn stable_id(value: &str) -> String {

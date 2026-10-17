@@ -148,7 +148,10 @@ export default function HeroMpvTrailer({
   // and stand down if the real player claims the mpv instance.
   useEffect(() => {
     if (mode !== 'mpv') return
+    let polling = false
+    let cancelled = false
     const interval = window.setInterval(async () => {
+      if (cancelled || polling) return
       if (getEmbeddedPlayerOwner() !== ownerId) {
         launchedRef.current = false
         setVideoVisible(false)
@@ -156,11 +159,13 @@ export default function HeroMpvTrailer({
         window.clearInterval(interval)
         return
       }
+      polling = true
       try {
         const [timePos, eof] = await Promise.all([
           getPlayerProperty('time-pos'),
           getPlayerProperty('eof-reached'),
         ])
+        if (cancelled || getEmbeddedPlayerOwner() !== ownerId) return
         if (eof === true || (endedRef.current === false && timePos == null && videoVisible)) {
           if (!endedRef.current) {
             endedRef.current = true
@@ -178,9 +183,13 @@ export default function HeroMpvTrailer({
           onPlayingChange?.(true)
         }
       } catch (_) { /* player briefly unavailable */ }
+      finally { polling = false }
     }, 500)
-    return () => window.clearInterval(interval)
-  }, [mode, videoVisible, onEnded, onPlayingChange])
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [mode, videoVisible, ownerId, onEnded, onPlayingChange])
 
   // launch_embedded_mpv can succeed even when the remote host subsequently
   // rejects the stream. Do not leave the Hero frozen on its artwork forever:
@@ -200,7 +209,7 @@ export default function HeroMpvTrailer({
       }
     }, 7000)
     return () => window.clearTimeout(timeout)
-  }, [mode, videoVisible, trailer.directUrl, maxHeight])
+  }, [mode, videoVisible, ownerId, trailer.directUrl, maxHeight])
 
   // Native resolution can fail in a packaged release when yt-dlp is missing,
   // out of date, or rejected by YouTube. Let TrailerPreview use its direct
@@ -237,7 +246,7 @@ export default function HeroMpvTrailer({
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
     }
-  }, [mode, onEnded, onPlayingChange])
+  }, [mode, ownerId, onEnded, onPlayingChange])
 
   // Keep the mpv child window glued to the hero rect through scroll/resize.
   useEffect(() => {
@@ -266,7 +275,7 @@ export default function HeroMpvTrailer({
       observer.disconnect()
       if (frame) window.cancelAnimationFrame(frame)
     }
-  }, [mode])
+  }, [mode, ownerId])
 
   // Mute / volume live updates
   useEffect(() => {
@@ -274,7 +283,7 @@ export default function HeroMpvTrailer({
     if (getEmbeddedPlayerOwner() !== ownerId) return
     sendPlayerCommand('set_property', ['mute', muted ? 'yes' : 'no']).catch(() => undefined)
     sendPlayerCommand('set_property', ['volume', muted ? trailerVolume : Math.max(30, trailerVolume)]).catch(() => undefined)
-  }, [mode, muted, trailerVolume])
+  }, [mode, ownerId, muted, trailerVolume])
 
   // Transparent hole: while the video is visible, everything above the hero
   // rect must not paint opaque pixels (same trick NativeMpvPlayer uses).

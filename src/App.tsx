@@ -1,4 +1,4 @@
-import { useEffect, lazy, Suspense, useState } from 'react'
+import { useEffect, lazy, Suspense, useState, useRef } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import ErrorBoundary from './components/ui/ErrorBoundary'
@@ -8,9 +8,10 @@ import { markPerformance, measurePerformance } from './services/performanceMetri
 import WhoWatching from './components/WhoWatching'
 import ProfileSwitchTransition from './components/ProfileSwitchTransition'
 import { getProfileSetting } from './services/profiles'
-import HomePage from './pages/HomePage'
 import { disconnectDisabledServerIntegrations } from './services/serverIntegrations'
+import { syncAddonsFromStore } from './services/addons'
 
+const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
 const MovieDetailPage = lazy(() => import('./pages/MovieDetailPage'))
 const SeriesDetailPage = lazy(() => import('./pages/SeriesDetailPage'))
@@ -69,6 +70,10 @@ export default function App() {
     // dedicated transition, so this only removes the startup picker.
     return !switched && getProfileSetting('aurales_skip_profile_picker') !== 'true'
   })
+  // The startup sync timing depends on the chooser state at mount. Keep that
+  // initial choice explicit without making the sync/event-listener effect
+  // restart after the chooser is dismissed.
+  const chooseProfileAtLaunchRef = useRef(chooseProfile)
   const [updatePromptReady, setUpdatePromptReady] = useState(false)
 
   useEffect(() => {
@@ -133,7 +138,7 @@ export default function App() {
     // Profiles need an immediate pull only while the startup chooser is being
     // shown. Returning sessions can sync after the shell has had an idle turn;
     // previously both paths ran on every launch and could overlap.
-    const cancelIdle = chooseProfile
+    const cancelIdle = chooseProfileAtLaunchRef.current
       ? (() => { runSync(); return () => {} })()
       : scheduleIdleWork(runSync, 3000)
     const onPageHide = () => runSync()
@@ -166,7 +171,10 @@ export default function App() {
       }).catch(() => {})
     }
     checkForChanges()
-    const interval = window.setInterval(checkForChanges, 5000)
+    // Fingerprinting walks the profile's durable localStorage state. Fifteen
+    // seconds keeps automatic-sync detection responsive without repeatedly
+    // hashing a potentially multi-megabyte profile while the app is idle.
+    const interval = window.setInterval(checkForChanges, 15000)
     return () => { stopped = true; window.clearInterval(interval) }
   }, [chooseProfile])
 
@@ -200,20 +208,22 @@ export default function App() {
   }, [primaryProgressProvider, progressConnections, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
-    if (chooseProfile) return
-    let cancelled = false
-    const cancelIdle = scheduleIdleWork(() => {
-      import('./services/addons')
-        .then(({ syncAddonsFromStore }) => {
-          if (!cancelled) syncAddonsFromStore(addons)
-        })
-        .catch(() => {})
-    }, 500)
-
-    return () => {
-      cancelled = true
-      cancelIdle()
+    const refreshWatchedSources = () => {
+      const current = useAppStore.getState()
+      const sources = current.primaryProgressProvider === 'all'
+        ? connectedProgressSources(current)
+        : [current.primaryProgressProvider]
+      void import('./services/watchedCacheSync')
+        .then(({ refreshWatchedCache }) => refreshWatchedCache(sources))
+        .catch((error) => console.warn('[WatchedCache] account-change refresh failed:', error))
     }
+    window.addEventListener('aurales:provider-account-changed', refreshWatchedSources)
+    return () => window.removeEventListener('aurales:provider-account-changed', refreshWatchedSources)
+  }, [])
+
+  useEffect(() => {
+    if (chooseProfile) return
+    return scheduleIdleWork(() => syncAddonsFromStore(addons), 500)
   }, [addons, chooseProfile])
 
   useEffect(() => {
@@ -275,17 +285,6 @@ export default function App() {
       clearActivity?.().catch(() => {})
     }
   }, [discordRichPresence, chooseProfile])
-
-  useEffect(() => {
-    if (chooseProfile) return
-    const cancelIdle = scheduleIdleWork(() => {
-      const { imageCacheSizeMb, imageKeepDays } = useAppStore.getState()
-      void import('./services/imageCache')
-        .then(({ configureImageCache }) => configureImageCache(imageCacheSizeMb, imageKeepDays))
-        .catch(() => {})
-    }, 1800)
-    return cancelIdle
-  }, [chooseProfile])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme-accent', accentColor)

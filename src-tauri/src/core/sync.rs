@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::time::Duration;
 
 const KEYRING_SERVICE: &str = "com.aurales.app.sync";
+const MAX_SYNC_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 fn keyring_entry(email: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, email).map_err(|error| error.to_string())
@@ -114,13 +116,26 @@ pub async fn sync_batch(
 }
 
 fn sync_endpoint(endpoint: &str) -> Result<String, String> {
-    let endpoint = format!("{}/v1/sync", endpoint.trim_end_matches('/'));
-    let parsed =
-        url::Url::parse(&endpoint).map_err(|_| "Invalid Aurales Sync endpoint".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("Invalid Aurales Sync endpoint".to_string());
+    let mut parsed = url::Url::parse(endpoint.trim().trim_end_matches('/'))
+        .map_err(|_| "Invalid Aurales Sync endpoint".to_string())?;
+    let loopback_host = match parsed.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if parsed.host_str().is_none()
+        || !(parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback_host))
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Aurales Sync requires HTTPS (HTTP is allowed only for localhost)".to_string());
     }
-    Ok(endpoint)
+    let base_path = parsed.path().trim_end_matches('/');
+    parsed.set_path(&format!("{base_path}/v1/sync"));
+    Ok(parsed.to_string())
 }
 
 fn sync_request_key(endpoint: &str, access_token: &str, body: &Value) -> String {
@@ -155,8 +170,19 @@ fn post_sync(
             ureq::Error::Status(status, _) => format!("{label} failed ({status})"),
             other => other.to_string(),
         })?;
-    let value = response
-        .into_json::<Value>()
+    let mut response_bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_SYNC_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response_bytes)
+        .map_err(|error| format!("Could not read sync response: {error}"))?;
+    if response_bytes.len() as u64 > MAX_SYNC_RESPONSE_BYTES {
+        return Err(format!(
+            "Sync response exceeded the {} MiB limit",
+            MAX_SYNC_RESPONSE_BYTES / (1024 * 1024)
+        ));
+    }
+    let value: Value = serde_json::from_slice(&response_bytes)
         .map_err(|error| format!("Invalid sync response: {error}"))?;
     let object = value
         .as_object()
@@ -191,7 +217,10 @@ pub struct WatchProgress {
 }
 
 pub fn save_watch_progress(db: &Database, progress: WatchProgress) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection lock is poisoned".to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO watch_progress (id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
         rusqlite::params![
@@ -210,7 +239,7 @@ pub fn save_watch_progress(db: &Database, progress: WatchProgress) -> Result<(),
 }
 
 pub fn get_watch_progress(db: &Database, media_id: String) -> Option<WatchProgress> {
-    let conn = db.conn.lock().unwrap();
+    let conn = db.conn.lock().ok()?;
     conn.query_row(
         "SELECT id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed FROM watch_progress WHERE media_id = ?1 ORDER BY updated_at DESC LIMIT 1",
         [&media_id],

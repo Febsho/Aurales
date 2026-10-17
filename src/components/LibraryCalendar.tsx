@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { hasMdblistOAuth } from '../services/mdblist'
-import { loadLibraryCalendar, type CalendarEntry } from '../services/libraryCalendar'
+import { calendarProgressSignature, loadLibraryCalendar, type CalendarEntry } from '../services/libraryCalendar'
 
 type CalendarView = 'month' | 'week' | 'agenda'
 type MediaFilter = 'all' | 'movie' | 'episode'
@@ -37,12 +37,15 @@ function countdownLabel(date: string) {
 
 export default function LibraryCalendar() {
   const navigate = useNavigate()
-  const watchProgress = useAppStore((state) => state.watchProgress)
+  const progressSignature = useAppStore((state) => calendarProgressSignature(state.watchProgress))
+  const watchProgressRef = useRef(useAppStore.getState().watchProgress)
+  watchProgressRef.current = useAppStore.getState().watchProgress
   const traktConnected = useAppStore((state) => state.traktConnected)
   const simklConnected = useAppStore((state) => state.simklConnected)
   const anilistConnected = useAppStore((state) => state.anilistConnected)
   const mdblistConnected = Boolean(useAppStore((state) => state.mdblistApiKey)) || hasMdblistOAuth()
   const [anchor, setAnchor] = useState(() => new Date())
+  const [todayKey, setTodayKey] = useState(() => keyForDate(new Date()))
   const [view, setView] = useState<CalendarView>(() => (localStorage.getItem('aurales_calendar_view') as CalendarView) || 'month')
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
@@ -51,6 +54,13 @@ export default function LibraryCalendar() {
   const [errors, setErrors] = useState<string[]>([])
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [preview, setPreview] = useState<{ entry: CalendarEntry; x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    const now = new Date()
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 100)
+    const timer = window.setTimeout(() => setTodayKey(keyForDate(new Date())), nextMidnight.getTime() - now.getTime())
+    return () => window.clearTimeout(timer)
+  }, [todayKey])
 
   const requestedMonths = useMemo(() => {
     if (view !== 'week') return [new Date(anchor.getFullYear(), anchor.getMonth(), 1)]
@@ -65,7 +75,7 @@ export default function LibraryCalendar() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all(requestedMonths.map((month) => loadLibraryCalendar({ month, watchProgress, traktConnected, simklConnected, anilistConnected, mdblistConnected })))
+    Promise.all(requestedMonths.map((month) => loadLibraryCalendar({ month, watchProgress: watchProgressRef.current, traktConnected, simklConnected, anilistConnected, mdblistConnected })))
       .then((results) => {
         if (cancelled) return
         const unique = new Map(results.flatMap((result) => result.entries).map((entry) => [entry.id, entry]))
@@ -75,7 +85,7 @@ export default function LibraryCalendar() {
       .catch((error) => { if (!cancelled) setErrors([error instanceof Error ? error.message : 'Could not load the calendar']) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [requestedMonths, watchProgress, traktConnected, simklConnected, anilistConnected, mdblistConnected])
+  }, [requestedMonths, progressSignature, todayKey, traktConnected, simklConnected, anilistConnected, mdblistConnected])
 
   const filtered = useMemo(() => entries.filter((entry) => {
     if (mediaFilter !== 'all' && entry.kind !== mediaFilter) return false

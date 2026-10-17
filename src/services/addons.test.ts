@@ -27,10 +27,10 @@ describe('addon catalog metadata preference', () => {
     vi.stubGlobal('window', {})
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key: string) => key === 'aurales_app_managed_metadata' ? 'false' : null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
     })
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
         metas: [{
           id: 'addon-show-1',
           type: 'series',
@@ -39,8 +39,7 @@ describe('addon catalog metadata preference', () => {
           background: 'https://images.example/backdrop.jpg',
           description: 'Addon description',
         }],
-      }),
-    })))
+      }), { status: 200 })))
   })
 
   it('returns addon metadata immediately when app-managed metadata is disabled', async () => {
@@ -65,10 +64,7 @@ describe('addon catalog metadata preference', () => {
 
   it('keeps episode metadata already included in a catalog item', async () => {
     const videos = [{ season: 1, episode: 1, name: 'Episode 1' }]
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ metas: [{ id: 'addon-show-1', type: 'series', name: 'Addon Show', videos }] }),
-    })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ metas: [{ id: 'addon-show-1', type: 'series', name: 'Addon Show', videos }] }), { status: 200 })))
 
     const result = await getAddonCatalog(
       'https://addon.example/manifest.json',
@@ -151,10 +147,7 @@ describe('addon catalog metadata preference', () => {
   })
 
   it('stores successful addon detail metadata in the detail cache', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ meta: { id: 'addon-show-1', name: 'Addon Show' } }),
-    })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { id: 'addon-show-1', name: 'Addon Show' } }), { status: 200 })))
 
     await expect(getAddonMeta(
       'https://addon.example/manifest.json',
@@ -163,7 +156,7 @@ describe('addon catalog metadata preference', () => {
     )).resolves.toEqual({ id: 'addon-show-1', name: 'Addon Show' })
 
     expect(cachedFetch).toHaveBeenCalledWith(
-      expect.stringContaining('addon-meta:v1:'),
+      expect.stringContaining('addon-meta:v2:'),
       expect.any(Function),
       expect.objectContaining({ category: 'detail_page' }),
     )
@@ -185,7 +178,7 @@ describe('addon catalog metadata preference', () => {
     }))
     expect(fetch).not.toHaveBeenCalled()
     expect(cachedFetch).toHaveBeenCalledWith(
-      expect.stringContaining('addon-meta:v1:'),
+      expect.stringContaining('addon-meta:v2:'),
       expect.any(Function),
       expect.objectContaining({ category: 'detail_page' }),
     )
@@ -194,10 +187,7 @@ describe('addon catalog metadata preference', () => {
   it('keeps the addon metadata compatibility path available on native failure', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
     invokeMock.mockRejectedValue(new Error('native unavailable'))
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ meta: { id: 'addon-show-1', name: 'Fallback Show' } }),
-    })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { id: 'addon-show-1', name: 'Fallback Show' } }), { status: 200 })))
 
     await expect(getAddonMeta(
       'https://addon.example/manifest.json',
@@ -210,10 +200,7 @@ describe('addon catalog metadata preference', () => {
   it('limits simultaneous catalog requests to one addon', async () => {
     const releases: Array<() => void> = []
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
-      releases.push(() => resolve({
-        ok: true,
-        json: async () => ({ metas: [{ id: `item-${releases.length}`, name: 'Item' }] }),
-      } as Response))
+      releases.push(() => resolve(new Response(JSON.stringify({ metas: [{ id: `item-${releases.length}`, name: 'Item' }] }), { status: 200 })))
     }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -237,12 +224,9 @@ describe('addon catalog metadata preference', () => {
   it('prioritizes detail metadata ahead of queued catalogs for the same addon', async () => {
     const releases: Array<() => void> = []
     const fetchMock = vi.fn((url: string) => new Promise<Response>((resolve) => {
-      releases.push(() => resolve({
-        ok: true,
-        json: async () => url.includes('/meta/')
+      releases.push(() => resolve(new Response(JSON.stringify(url.includes('/meta/')
           ? { meta: { id: 'show-1', videos: [] } }
-          : { metas: [{ id: url, name: 'Item' }] },
-      } as Response))
+          : { metas: [{ id: url, name: 'Item' }] }), { status: 200 })))
     }))
     vi.stubGlobal('fetch', fetchMock)
 

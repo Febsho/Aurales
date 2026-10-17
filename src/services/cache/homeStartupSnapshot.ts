@@ -1,4 +1,6 @@
 import type { HomeRowConfig, SearchResult } from '../../types'
+import { getActiveProfileId } from '../profiles'
+import { mediaIdentity } from '../mediaPresentation'
 import { heroRowCacheKey } from './homeRowCacheKeys'
 
 export type ContinueWatchingSource = 'all' | 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist' | 'anilist'
@@ -52,22 +54,42 @@ const STORAGE_KEY = 'aurales_home_startup_snapshots_v1'
 const MAX_ITEMS = 15
 const CREDENTIAL_SCOPE_PREFIX = 'aurales_cw_credential_scope:'
 
+function storageValue(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+function storageKey(profileId = getActiveProfileId()): string {
+  return `${STORAGE_KEY}:profile:${profileId}`
+}
+
 function emptyState(): HomeStartupSnapshotState {
   return { version: 1, continueWatching: {} }
 }
 
-function loadState(): HomeStartupSnapshotState {
+function validContinueSnapshot(value: unknown): value is ContinueWatchingStartupSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const snapshot = value as Partial<ContinueWatchingStartupSnapshot>
+  return snapshot.version === 1
+    && ['all', 'local', 'simkl', 'trakt', 'pmdb', 'mdblist', 'anilist'].includes(snapshot.source as string)
+    && typeof snapshot.accountScope === 'string'
+    && typeof snapshot.limit === 'number' && Number.isFinite(snapshot.limit)
+    && typeof snapshot.savedAt === 'number' && Number.isFinite(snapshot.savedAt)
+    && Array.isArray(snapshot.items)
+}
+
+function loadState(profileId?: string): HomeStartupSnapshotState {
   try {
-    const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') as HomeStartupSnapshotState | null
+    const value = JSON.parse(localStorage.getItem(storageKey(profileId)) || 'null') as HomeStartupSnapshotState | null
     if (!value || value.version !== 1 || !value.continueWatching || typeof value.continueWatching !== 'object') return emptyState()
-    return value
+    const continueWatching = Object.fromEntries(Object.entries(value.continueWatching).filter(([, snapshot]) => validContinueSnapshot(snapshot)))
+    return { version: 1, continueWatching, ...(value.hero ? { hero: value.hero } : {}) }
   } catch {
     return emptyState()
   }
 }
 
-function saveState(state: HomeStartupSnapshotState): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* storage unavailable/full */ }
+function saveState(state: HomeStartupSnapshotState, profileId?: string): void {
+  try { localStorage.setItem(storageKey(profileId), JSON.stringify(state)) } catch { /* storage unavailable/full */ }
 }
 
 function validHeroItem(value: unknown): value is SearchResult {
@@ -102,20 +124,20 @@ function validContinueItem(value: unknown): value is ContinueWatchingSnapshotIte
     && typeof item.updatedAt === 'string')
 }
 
-export function readHeroStartupSnapshot(row: HomeRowConfig): SearchResult[] | null {
+export function readHeroStartupSnapshot(row: HomeRowConfig, resolvedAddonUrl?: string): SearchResult[] | null {
   const snapshot = loadState().hero
-  const rowKey = heroRowCacheKey(row)
+  const rowKey = heroRowCacheKey(row, resolvedAddonUrl)
   if (!snapshot || snapshot.version !== 1 || snapshot.rowKey !== rowKey || !Array.isArray(snapshot.items)) return null
   const items = snapshot.items.filter(validHeroItem).slice(0, MAX_ITEMS)
   return items.length ? items : null
 }
 
-export function writeHeroStartupSnapshot(row: HomeRowConfig, items: SearchResult[]): void {
+export function writeHeroStartupSnapshot(row: HomeRowConfig, items: SearchResult[], profileId?: string, resolvedAddonUrl?: string): void {
   const safe = items.filter(validHeroItem).slice(0, MAX_ITEMS).map(compactHeroItem)
   if (!safe.length) return
-  const state = loadState()
-  state.hero = { version: 1, rowKey: heroRowCacheKey(row), savedAt: Date.now(), items: safe }
-  saveState(state)
+  const state = loadState(profileId)
+  state.hero = { version: 1, rowKey: heroRowCacheKey(row, resolvedAddonUrl), savedAt: Date.now(), items: safe }
+  saveState(state, profileId)
 }
 
 function continueKey(source: ContinueWatchingSource, accountScope: string, limit: number): string {
@@ -185,7 +207,7 @@ function randomScope(): string {
 
 function credentialScope(source: 'pmdb' | 'mdblist'): string {
   const key = `${CREDENTIAL_SCOPE_PREFIX}${source}`
-  let value = localStorage.getItem(key)
+  let value = storageValue(key)
   if (!value) {
     value = randomScope()
     try { localStorage.setItem(key, value) } catch { /* storage unavailable */ }
@@ -199,7 +221,7 @@ export function rotateProviderCredentialScope(source: 'pmdb' | 'mdblist', connec
   if (connected) {
     try { localStorage.setItem(key, randomScope()) } catch { /* storage unavailable */ }
   } else {
-    localStorage.removeItem(key)
+    try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
   }
 }
 
@@ -212,37 +234,37 @@ export function getContinueWatchingAccountScope(source: ContinueWatchingSource):
     const accounts = (['trakt', 'simkl', 'anilist', 'pmdb', 'mdblist'] as const)
       .map((provider) => getContinueWatchingAccountScope(provider))
       .filter((scope): scope is string => Boolean(scope))
-    return `all:device:${accounts.join('|')}`
+    return `all:profile:${getActiveProfileId()}:device:${accounts.join('|')}`
   }
-  if (source === 'local') return 'device'
+  if (source === 'local') return `device:profile:${getActiveProfileId()}`
   if (source === 'trakt') {
-    if (!localStorage.getItem('trakt_tokens')) return null
+    if (!storageValue('trakt_tokens')) return null
     const account = parsedAccount<{ username?: string }>('trakt_account')
     return account?.username ? `trakt:${account.username}` : null
   }
   if (source === 'simkl') {
-    if (!localStorage.getItem('simkl_token')) return null
+    if (!storageValue('simkl_token')) return null
     const account = parsedAccount<{ id?: string }>('simkl_account')
     return account?.id ? `simkl:${account.id}` : null
   }
   if (source === 'anilist') {
-    if (!localStorage.getItem('anilist_token')) return null
+    if (!storageValue('anilist_token')) return null
     const account = parsedAccount<{ id?: number }>('anilist_account')
     return account?.id ? `anilist:${account.id}` : null
   }
-  if (source === 'pmdb') return localStorage.getItem('pmdb_api_key') ? `pmdb:${credentialScope('pmdb')}` : null
-  const mdblistConnected = Boolean(localStorage.getItem('mdblist_api_key') || localStorage.getItem('mdblist_oauth_tokens'))
+  if (source === 'pmdb') return storageValue('pmdb_api_key') ? `pmdb:${credentialScope('pmdb')}` : null
+  const mdblistConnected = Boolean(storageValue('mdblist_api_key') || storageValue('mdblist_oauth_tokens'))
   return mdblistConnected ? `mdblist:${credentialScope('mdblist')}` : null
 }
 
 function normalizedIdentity(item: SearchResult | ContinueWatchingSnapshotItem): string {
-  const mediaType = 'mediaType' in item ? item.mediaType : item.type
-  if (item.imdbId) return `${mediaType}:imdb:${item.imdbId}`
-  if (item.tmdbId != null) return `${mediaType}:tmdb:${item.tmdbId}`
-  if ('anilistId' in item && item.anilistId != null) return `${mediaType}:anilist:${item.anilistId}`
-  if ('malId' in item && item.malId != null) return `${mediaType}:mal:${item.malId}`
-  if ('mediaId' in item && item.mediaId) return `${mediaType}:media:${item.mediaId}`
-  return `${mediaType}:id:${item.id}`
+  if (!('mediaType' in item)) return mediaIdentity(item)
+  if (item.imdbId) return `${item.mediaType}:imdb:${item.imdbId.toLowerCase()}`
+  if (item.tmdbId != null) return `${item.mediaType}:tmdb:${item.tmdbId}`
+  if (item.anilistId != null) return `${item.mediaType}:anilist:${item.anilistId}`
+  if (item.malId != null) return `${item.mediaType}:mal:${item.malId}`
+  const source = item.progressSource || 'local'
+  return `${item.mediaType}:${source}:${item.mediaId || item.id}`
 }
 
 export function stableListFingerprint(items: Array<SearchResult | ContinueWatchingSnapshotItem>): string {
@@ -253,15 +275,40 @@ export function stableListFingerprint(items: Array<SearchResult | ContinueWatchi
 export function catalogContentFingerprint(items: SearchResult[]): string {
   return JSON.stringify(items.map((item) => ({
     identity: normalizedIdentity(item),
+    id: item.id,
+    type: item.type,
     title: item.title,
     year: item.year,
     poster: item.poster,
     backdrop: item.backdrop,
     logo: item.logo,
+    overview: item.overview,
     rating: item.rating,
+    voteCount: item.voteCount,
+    popularity: item.popularity,
     releaseDate: item.releaseDate,
+    runtime: item.runtime,
     genres: item.genres,
     genreIds: item.genreIds,
+    originalLanguage: item.originalLanguage,
+    originCountry: item.originCountry,
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId,
+    tvdbId: item.tvdbId,
+    malId: item.malId,
+    anilistId: item.anilistId,
+    traktId: item.traktId,
+    simklId: item.simklId,
+    season: item.season,
+    episode: item.episode,
+    provider: item.provider,
+    isAnime: item.isAnime,
+    addonUrl: item.addonUrl,
+    sourceAddonId: item.sourceAddonId,
+    sourceAddonItemId: item.sourceAddonItemId,
+    sourceConnectionId: item.sourceConnectionId,
+    sourceItemId: item.sourceItemId,
+    metadataFallback: item.metadataFallback,
   })))
 }
 

@@ -213,14 +213,15 @@ export default function DetailHero({
     }
 
     const controller = new AbortController()
+    let current = true
     fetchTitleAccolade(imdbId, controller.signal)
-      .then((label) => setAccolade(label))
+      .then((label) => { if (current) setAccolade(label) })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        if (current && !(error instanceof DOMException && error.name === 'AbortError')) {
           setAccolade(null)
         }
       })
-    return () => controller.abort()
+    return () => { current = false; controller.abort() }
   }, [imdbId])
   const editorialLabel = editorialAccolade({
     type,

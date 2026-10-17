@@ -37,12 +37,10 @@ export async function saveAnimeMapping(mapping: AnimeMappingResult): Promise<voi
   if (mapping.anilistId) keys.push({ anilistId: mapping.anilistId, contentType })
   if (mapping.malId) keys.push({ malId: mapping.malId, contentType })
 
-  await Promise.all(
-    keys.map((k) => {
-      const cacheKey = seriesCacheKey(k)
-      return cacheKey ? cacheSet(cacheKey, mapping, opts) : Promise.resolve()
-    }),
-  )
+  for (const key of keys) {
+    const cacheKey = seriesCacheKey(key)
+    if (cacheKey) void cacheSet(cacheKey, mapping, opts)
+  }
 }
 
 export async function getCachedEpisodeMapping(
@@ -57,7 +55,7 @@ export async function getCachedEpisodeMapping(
 
 export async function saveEpisodeMapping(mapping: ProviderEpisodeMapping): Promise<void> {
   const key = episodeCacheKey(mapping.tvdbSeriesId, mapping.tvdbSeasonNumber, mapping.tvdbEpisodeNumber)
-  await cacheSet(key, mapping, {
+  void cacheSet(key, mapping, {
     category: CACHE_CATEGORIES.ANIME_MAPPING,
     ttlSeconds: CACHE_TTLS.ANIME_MAPPING_FINISHED,
   })

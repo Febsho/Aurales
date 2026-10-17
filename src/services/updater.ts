@@ -2,6 +2,7 @@ import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { APP_VERSION } from './appVersion'
 
 export interface UpdateInfo {
   version: string
@@ -16,13 +17,15 @@ export interface UpdateProgress {
 }
 
 const RELEASE_BASE_URL = 'https://github.com/Febsho/Aurales/releases'
+const SAFE_RELEASE_VERSION = /^[0-9][A-Za-z0-9.+-]{0,63}$/
 
 /**
  * CI currently publishes a standalone Flatpak bundle, not an OSTree
  * repository. Installing that bundle creates a disabled `app-origin`, so
  * `flatpak update com.aurales.app` can never discover a newer release.
  */
-export function getFlatpakInstallCommand(version: string): string {
+export function getFlatpakInstallCommand(version: string): string | null {
+  if (/\s/.test(version) || !SAFE_RELEASE_VERSION.test(version)) return null
   return `flatpak install --reinstall ~/Downloads/Aurales_${version}_amd64.flatpak`
 }
 
@@ -125,7 +128,5 @@ export async function getLatestReleaseNotes(): Promise<ReleaseNotes | null> {
 }
 
 export function getAppVersion(): string {
-  return __APP_VERSION__
+  return APP_VERSION
 }
-
-declare const __APP_VERSION__: string

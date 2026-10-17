@@ -6,7 +6,7 @@ import { type SmartPlayMode, type SmartScoreContext, type SmartStream } from './
 import { rankStreamCandidates } from './nativeScoring'
 import type { PlaybackPreference } from './playbackMemory'
 import { getPlayableStreamUrl } from './playableUrl'
-import { loadReliabilityHistory } from './reliabilityHistory'
+import { loadReliabilityHistory, reliabilityHistoryRevision } from './reliabilityHistory'
 import { probeStreamUrl, type StreamProbeResult } from './streamProbe'
 import { annotateTorBoxStreams, resolveTorBoxStream } from '../torbox'
 
@@ -22,6 +22,8 @@ export interface PreparedStream {
   reasons: string[]
   runnerUp?: PreloadedStream // measured fallback retained for diagnostics
   probe?: StreamProbeResult // undefined when probing is unavailable (web build)
+  rankingContextKey: string
+  title?: string
   preparedAt: number
   expiresAt: number
   lastAccessAt: number
@@ -43,6 +45,16 @@ const READY_TTL_CAP_MS = 15 * 60_000
 const TOKENIZED_TTL_CAP_MS = 10 * 60_000
 const CONSUME_MARGIN_MS = 5_000
 
+interface PrepareFlight {
+  promise: Promise<PreparedStream | null>
+  controller: AbortController
+  rankingContextKey: string
+  signalConsumers: Set<symbol>
+  hasUncancellableConsumer: boolean
+  priority: StreamPreloadPriority
+  streamRequestPending: boolean
+}
+
 const devLog = (...args: unknown[]) => { if (import.meta.env.DEV) console.log('[PreparedStream]', ...args) }
 
 function warmupScore(probe: StreamProbeResult | null): number {
@@ -52,6 +64,31 @@ function warmupScore(probe: StreamProbeResult | null): number {
   const latencyScore = latency < 500 ? 18 : latency < 1000 ? 10 : latency < 2000 ? 2 : latency < 3000 ? -10 : -25
   const speedScore = speed >= 80 ? 24 : speed >= 30 ? 16 : speed >= 10 ? 7 : speed >= 5 ? 0 : -30
   return latencyScore + speedScore + (probe.acceptsRanges ? 5 : 0)
+}
+
+function rankingContext(request: StreamPreloadRequest, title?: string): SmartScoreContext {
+  return buildSmartContext({
+    title,
+    season: request.seasonEpisode?.season,
+    episode: request.seasonEpisode?.episode,
+  })
+}
+
+function rankingContextKey(context: SmartScoreContext, request: StreamPreloadRequest): string {
+  return JSON.stringify([
+    streamPreloadManager.configurationKey(request.mediaType),
+    context.title,
+    context.season ?? null,
+    context.episode ?? null,
+    context.preferredAudio ?? [],
+    context.preferredSubtitles ?? [],
+    context.subtitles ?? [],
+    context.mode,
+    context.player,
+    context.maxSizeGb ?? null,
+    typeof reliabilityHistoryRevision === 'function' ? reliabilityHistoryRevision() : 0,
+    context.playbackMemories ?? [],
+  ])
 }
 
 // Shared ranking context so StreamSelector, the prepared registry and the
@@ -81,26 +118,111 @@ function readyTtlMs(url: string): number {
 
 class PreparedStreamRegistry {
   private entries = new Map<string, PreparedStream>()
-  private inFlight = new Map<string, Promise<PreparedStream | null>>()
+  private inFlight = new Map<string, PrepareFlight>()
 
   async prepare(request: StreamPreloadRequest, opts: PrepareOptions = {}): Promise<PreparedStream | null> {
     const mediaKey = canonicalStreamKey(request)
-    const pending = this.inFlight.get(mediaKey)
-    if (pending) return pending
+    if (opts.signal?.aborted) return null
+    const currentRankingContextKey = rankingContextKey(rankingContext(request, opts.title), request)
+    let pending = this.inFlight.get(mediaKey)
+    if (pending?.controller.signal.aborted) {
+      // All previous callers cancelled. Do not hand a fresh request the
+      // already-aborted flight; let it start a new preparation attempt.
+      this.inFlight.delete(mediaKey)
+      pending = undefined
+    }
+    if (pending && pending.rankingContextKey !== currentRankingContextKey) {
+      pending.controller.abort()
+      if (this.inFlight.get(mediaKey) === pending) this.inFlight.delete(mediaKey)
+      pending = undefined
+    }
+    if (pending) {
+      const priority = opts.priority ?? StreamPreloadPriority.DETAILS_OPEN
+      if (priority > pending.priority) {
+        pending.priority = priority
+        if (pending.streamRequestPending) {
+          // The selector may request the same prepared stream at playback
+          // priority while a detail-page prefetch is still resolving. Join
+          // the existing aggregate flight so its queued addon work is promoted.
+          void streamPreloadManager.request(request, { priority }).catch(() => undefined)
+        }
+      }
+      return this.subscribeToFlight(pending, opts.signal)
+    }
 
     const existing = this.entries.get(mediaKey)
     const now = Date.now()
     if (existing && existing.expiresAt > now + (existing.state === 'ready' ? 10_000 : 0)) {
-      existing.lastAccessAt = now
-      return existing.state === 'ready' ? existing : null
+      if (existing.rankingContextKey !== currentRankingContextKey) {
+        this.entries.delete(mediaKey)
+      } else {
+        existing.lastAccessAt = now
+        return existing.state === 'ready' ? existing : null
+      }
     }
 
-    const flight = this.resolve(request, mediaKey, opts).finally(() => this.inFlight.delete(mediaKey))
+    const controller = new AbortController()
+    const flight: PrepareFlight = {
+      promise: Promise.resolve(null),
+      controller,
+      rankingContextKey: currentRankingContextKey,
+      signalConsumers: new Set(),
+      hasUncancellableConsumer: false,
+      priority: opts.priority ?? StreamPreloadPriority.DETAILS_OPEN,
+      streamRequestPending: !opts.streams,
+    }
+    flight.promise = this.resolve(request, mediaKey, { ...opts, signal: controller.signal }, flight).finally(() => {
+      if (this.inFlight.get(mediaKey) === flight) this.inFlight.delete(mediaKey)
+    })
     this.inFlight.set(mediaKey, flight)
-    return flight
+    return this.subscribeToFlight(flight, opts.signal)
   }
 
-  private async resolve(request: StreamPreloadRequest, mediaKey: string, opts: PrepareOptions): Promise<PreparedStream | null> {
+  private subscribeToFlight(flight: PrepareFlight, signal?: AbortSignal): Promise<PreparedStream | null> {
+    if (!signal) {
+      // A caller without a signal has requested the shared result until it
+      // settles, so another caller's navigation must not cancel that work.
+      flight.hasUncancellableConsumer = true
+      return flight.promise
+    }
+    if (signal.aborted) return Promise.resolve(null)
+
+    const consumer = Symbol('prepared-stream-consumer')
+    flight.signalConsumers.add(consumer)
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const release = () => {
+        signal.removeEventListener('abort', onAbort)
+        flight.signalConsumers.delete(consumer)
+        if (!flight.hasUncancellableConsumer && flight.signalConsumers.size === 0) {
+          flight.controller.abort()
+        }
+      }
+      const onAbort = () => {
+        if (settled) return
+        settled = true
+        release()
+        resolve(null)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      flight.promise.then(
+        (prepared) => {
+          if (settled) return
+          settled = true
+          release()
+          resolve(prepared)
+        },
+        (error) => {
+          if (settled) return
+          settled = true
+          release()
+          reject(error)
+        },
+      )
+    })
+  }
+
+  private async resolve(request: StreamPreloadRequest, mediaKey: string, opts: PrepareOptions, flight: PrepareFlight): Promise<PreparedStream | null> {
     const entry: PreparedStream = {
       mediaKey,
       request,
@@ -109,6 +231,8 @@ class PreparedStreamRegistry {
       playableUrl: '',
       score: 0,
       reasons: [],
+      rankingContextKey: flight.rankingContextKey,
+      title: opts.title,
       preparedAt: Date.now(),
       expiresAt: Date.now() + PROBE_TIMEOUT_MS + 30_000,
       lastAccessAt: Date.now(),
@@ -117,15 +241,22 @@ class PreparedStreamRegistry {
     this.insert(entry)
 
     try {
-      const rawStreams = opts.streams ?? await streamPreloadManager.request(request, { priority: opts.priority ?? StreamPreloadPriority.DETAILS_OPEN })
+      let rawStreams = opts.streams
+      if (!rawStreams) {
+        try {
+          rawStreams = await streamPreloadManager.request(request, { priority: flight.priority })
+        } finally {
+          flight.streamRequestPending = false
+        }
+      }
       const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
       if (opts.signal?.aborted) { this.drop(entry); return null }
 
-      const ranked = (await rankStreamCandidates(streams as SmartStream[], buildSmartContext({
-        title: opts.title,
-        season: request.seasonEpisode?.season,
-        episode: request.seasonEpisode?.episode,
-      }), { cancelGroup: `streams:prepare:${mediaKey}`, priority: opts.priority === StreamPreloadPriority.PLAYBACK ? 'playback' : 'visible', signal: opts.signal })).filter((candidate) => candidate.score > -500)
+      const context = rankingContext(request, opts.title)
+      flight.rankingContextKey = rankingContextKey(context, request)
+      entry.rankingContextKey = flight.rankingContextKey
+      const ranked = (await rankStreamCandidates(streams as SmartStream[], context, { cancelGroup: `streams:prepare:${mediaKey}`, priority: flight.priority === StreamPreloadPriority.PLAYBACK ? 'playback' : 'visible', signal: opts.signal })).filter((candidate) => candidate.score > -500)
+      if (opts.signal?.aborted || flight.rankingContextKey !== rankingContextKey(rankingContext(request, opts.title), request)) { this.drop(entry); return null }
       const candidates = ranked.slice(0, 2)
       if (candidates.length === 0) {
         this.drop(entry)
@@ -144,7 +275,7 @@ class PreparedStreamRegistry {
           return { candidate, url: '', probe: { ok: false, status: 0 } as StreamProbeResult, total: -Infinity }
         }
       }))
-      if (opts.signal?.aborted) { this.drop(entry); return null }
+      if (opts.signal?.aborted || flight.rankingContextKey !== rankingContextKey(rankingContext(request, opts.title), request)) { this.drop(entry); return null }
 
       const playable = measured
         .filter((item) => item.url && (item.probe == null || item.probe.ok))
@@ -192,15 +323,28 @@ class PreparedStreamRegistry {
 
   invalidate(mediaKey: string): void {
     this.entries.delete(mediaKey)
+    const flight = this.inFlight.get(mediaKey)
+    if (flight) {
+      flight.controller.abort()
+      if (this.inFlight.get(mediaKey) === flight) this.inFlight.delete(mediaKey)
+    }
   }
 
   clear(): void {
     this.entries.clear()
+    for (const [mediaKey, flight] of this.inFlight) {
+      flight.controller.abort()
+      if (this.inFlight.get(mediaKey) === flight) this.inFlight.delete(mediaKey)
+    }
   }
 
   private valid(mediaKey: string): PreparedStream | null {
     const entry = this.entries.get(mediaKey)
     if (!entry || entry.state !== 'ready' || entry.expiresAt <= Date.now() + CONSUME_MARGIN_MS) return null
+    if (entry.rankingContextKey !== rankingContextKey(rankingContext(entry.request, entry.title), entry.request)) {
+      this.entries.delete(mediaKey)
+      return null
+    }
     return entry
   }
 

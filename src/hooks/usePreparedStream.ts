@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import type { StreamPreloadRequest } from '../services/streams/preloadManager'
-import { canonicalStreamKey } from '../services/streams/preloadUtils'
+import { canonicalStreamKey, streamRequestFingerprint } from '../services/streams/preloadUtils'
 import { preparedStreamRegistry } from '../services/streams/preparedStreams'
 
 // Just enough to skip prepare while flipping through pages; the detail-page
@@ -14,6 +14,7 @@ const DWELL_MS = 1_250
 // instantly. Only when auto-play is enabled — manual pickers see no benefit.
 export function usePreparedStream(request: StreamPreloadRequest | null, title?: string): void {
   const mediaKey = request ? canonicalStreamKey(request) : null
+  const requestFingerprint = streamRequestFingerprint(request)
   const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
   const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
 
@@ -31,5 +32,5 @@ export function usePreparedStream(request: StreamPreloadRequest | null, title?: 
     // Keyed on the canonical media key: a new media (or episode target)
     // restarts the dwell timer; unmount cancels an in-flight prepare.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mediaKey, autoPlayFirstStream, playbackPreloadMode])
+  }, [mediaKey, requestFingerprint, title, autoPlayFirstStream, playbackPreloadMode])
 }

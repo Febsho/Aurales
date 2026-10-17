@@ -111,6 +111,7 @@ export default function PlayerChatOverlay({ visible, onInteraction }: PlayerChat
             <input
               ref={inputRef}
               type="text"
+              maxLength={wsClient.MAX_WATCH_TOGETHER_CHAT_MESSAGE_CHARS}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={(e) => { onInteraction?.(); handleKeyDown(e) }}

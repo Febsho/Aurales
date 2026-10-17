@@ -40,11 +40,6 @@ export default function Layout() {
   const cinematicNavHiddenRef = useRef(false)
   const cinematicAtTopRef = useRef(true)
 
-  const showSearchBar = useCallback(() => {
-    if (searchHideTimer.current) { clearTimeout(searchHideTimer.current); searchHideTimer.current = null }
-    setSearchBarVisible(true)
-  }, [])
-
   const scheduleHideSearchBar = useCallback(() => {
     if (searchFocused || isSearchPage) return
     if (searchHideTimer.current) clearTimeout(searchHideTimer.current)

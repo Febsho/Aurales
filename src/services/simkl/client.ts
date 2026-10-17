@@ -5,12 +5,26 @@
  * AUTH V2 calls use a Bearer token and required app query parameters.
  */
 
-import { getStoredSimklToken, getSimklClientId, isSimklMockMode, refreshSimklToken } from './auth'
+import { getStoredSimklToken, getSimklClientId, getSimklAuthGeneration, isSimklMockMode, refreshSimklToken } from './auth'
 import type { SimklApiItem, SimklMapping } from './types'
 import { logEvent } from '../diagnostics'
+import { readBoundedResponseJson } from '../network/boundedResponse'
+import { APP_VERSION } from '../appVersion'
 
 const BASE = 'https://api.simkl.com'
 const MOCK_DELAY_MS = 200
+const MAX_RATE_LIMIT_WAIT_MS = 60_000
+const DEFAULT_RATE_LIMIT_WAIT_MS = 5_000
+const MAX_SIMKL_API_RESPONSE_BYTES = 16 * 1024 * 1024
+
+function createRequestTimeout(timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
+  if (typeof AbortSignal.timeout === 'function') {
+    return { signal: AbortSignal.timeout(timeoutMs), dispose: () => {} }
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new DOMException('Simkl request timed out', 'TimeoutError')), timeoutMs)
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) }
+}
 
 // ─── Error types ──────────────────────────────────────────────────────────────
 
@@ -56,17 +70,29 @@ export async function simklRequest<T = unknown>(
   if (!token?.accessToken) {
     throw new SimklError('Not connected to Simkl', 'not_connected')
   }
+  const authGeneration = getSimklAuthGeneration()
+  const assertConnectionCurrent = () => {
+    if (authGeneration !== getSimklAuthGeneration() || !getStoredSimklToken()?.accessToken) {
+      throw new SimklError('Simkl connection changed before the request completed.', 'not_connected')
+    }
+  }
 
   const clientId = await ensureClientId()
-  const retries = options.retries ?? 1
+  assertConnectionCurrent()
   const { retries: _r, ...fetchOptions } = options
+  const method = (fetchOptions.method || 'GET').toUpperCase()
+  const safeToRetryAmbiguousFailure = ['GET', 'HEAD', 'OPTIONS'].includes(method) || (options.retries ?? 0) > 0
+  const retries = options.retries ?? (['GET', 'HEAD', 'OPTIONS'].includes(method) ? 1 : 0)
+  // Keep one extra attempt available for a rejected 401 refresh or explicit
+  // 429 response, even when ambiguous write failures are not retried.
+  const maxAttempts = Math.max(retries, 1)
 
   let lastError: SimklError | null = null
 
   const urlParams = new URLSearchParams()
   urlParams.set('client_id', clientId)
   urlParams.set('app-name', 'Aurales')
-  urlParams.set('app-version', '0.4.8')
+  urlParams.set('app-version', APP_VERSION)
 
   let finalPath = path
   if (path.includes('?')) {
@@ -78,65 +104,96 @@ export async function simklRequest<T = unknown>(
     finalPath = basePath
   }
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    assertConnectionCurrent()
     if (attempt > 0) {
       // Exponential back-off: 1s, 2s, …
       await sleep(1000 * attempt)
+      assertConnectionCurrent()
     }
 
     let res: Response
+    const timeout = fetchOptions.signal ? undefined : createRequestTimeout(15_000)
     try {
       const fullUrl = `${BASE}${finalPath}?${urlParams.toString()}`
       if (fetchOptions.method === 'POST') {
-        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] POST ${finalPath} body: ${fetchOptions.body}`)
+        logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] POST ${finalPath} (request body omitted)`)
       } else {
         logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] GET ${finalPath}`)
       }
       res = await fetch(fullUrl, {
         ...fetchOptions,
+        signal: fetchOptions.signal ?? timeout?.signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token.accessToken}`,
-          'User-Agent': 'Aurales/0.4.8',
+          'User-Agent': `Aurales/${APP_VERSION}`,
           ...fetchOptions.headers,
         },
       })
       logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] Response ${res.status} ${res.statusText} for ${finalPath}`)
     } catch (networkErr) {
+      timeout?.dispose()
+      if (fetchOptions.signal?.aborted) {
+        throw fetchOptions.signal.reason || networkErr
+      }
       logEvent('PLAYBACK SYNC DEBUG', `[SIMKL] Network error for ${finalPath}: ${networkErr}`)
       lastError = new SimklError(
         `Network error: ${networkErr instanceof Error ? networkErr.message : networkErr}`,
         'network_offline',
       )
+      if (!safeToRetryAmbiguousFailure) throw lastError
+      if (attempt >= maxAttempts) break
       continue
     }
-
     // Success
     if (res.status === 200 || res.status === 201) {
       try {
-        const data = await res.json() as { error?: string }
+        const data = await readBoundedResponseJson<{ error?: string }>(res, MAX_SIMKL_API_RESPONSE_BYTES, 'Simkl API response')
+        assertConnectionCurrent()
         if (data?.error === 'premium_only') throw new SimklError('Simkl Custom Lists require a PRO or VIP account.', 'premium_only', res.status)
         return data as T
       } catch (error) {
         if (error instanceof SimklError) throw error
+        if (fetchOptions.signal?.aborted) throw fetchOptions.signal.reason || error
+        if (timeout?.signal.aborted) throw timeout.signal.reason || error
         return null as T
+      } finally {
+        timeout?.dispose()
       }
     }
-    if (res.status === 204) return null as T
+    if (res.status === 204) {
+      timeout?.dispose()
+      assertConnectionCurrent()
+      return null as T
+    }
 
     // Retryable
     if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10)
-      await sleep(retryAfter * 1000)
+      timeout?.dispose()
+      if (attempt >= maxAttempts) throw new SimklError('Rate limited by Simkl', 'rate_limited', 429)
+      const retryAfter = parseRetryAfter(res.headers.get('Retry-After'))
+      if (retryAfter > MAX_RATE_LIMIT_WAIT_MS) {
+        throw new SimklError(
+          `Simkl rate limit requires waiting ${Math.ceil(retryAfter / 1000)} seconds. Try again later.`,
+          'rate_limited',
+          429,
+        )
+      }
+      await sleep(retryAfter)
       lastError = new SimklError('Rate limited by Simkl', 'rate_limited', 429)
       continue
     }
     if (res.status >= 500) {
+      timeout?.dispose()
       lastError = new SimklError(`Simkl server error: ${res.status}`, 'api_error', res.status)
+      if (!safeToRetryAmbiguousFailure) throw lastError
+      if (attempt >= maxAttempts) break
       continue
     }
 
     // Non-retryable
+    timeout?.dispose()
     if (res.status === 401 && attempt === 0) {
       const refreshed = await refreshSimklToken()
       if (refreshed) { token = refreshed; continue }
@@ -221,6 +278,15 @@ export async function resolveSimklMapping(opts: {
 }
 
 // ─── Utilities ─────────────────────────────────────────────────────────────────
+
+function parseRetryAfter(value: string | null): number {
+  if (!value?.trim()) return DEFAULT_RATE_LIMIT_WAIT_MS
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const dateMs = Date.parse(value)
+  if (!Number.isFinite(dateMs)) return DEFAULT_RATE_LIMIT_WAIT_MS
+  return Math.max(0, dateMs - Date.now())
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))

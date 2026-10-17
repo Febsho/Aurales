@@ -19,6 +19,8 @@ const PERSISTENT_CACHE = 'aurales-anibridge-mappings-v1'
 const CACHE_TIMESTAMP_HEADER = 'x-aurales-cached-at'
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000
 const FAILURE_RETRY_MS = 60 * 1000
+const FETCH_TIMEOUT_MS = 8_000
+const MAX_MAPPING_BYTES = 64 * 1024 * 1024
 
 let cachedData: AniBridgeMappings | null = null
 let cacheTimestamp = 0
@@ -120,13 +122,24 @@ function loadAniBridgeMappings(): Promise<AniBridgeMappings> {
     }
 
     try {
-      const response = await fetch(DATA_URL)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const data = await response.json() as AniBridgeMappings
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+      let data: AniBridgeMappings
+      let responseText: string
+      try {
+        const response = await fetch(DATA_URL, { signal: controller.signal })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        responseText = await readBoundedText(response)
+        const parsed = JSON.parse(responseText) as unknown
+        if (!isValidMappings(parsed)) throw new Error('AniBridge mapping response is empty or invalid')
+        data = parsed
+      } finally {
+        clearTimeout(timeout)
+      }
       cachedData = data
       cacheTimestamp = Date.now()
       lastFetchFailureAt = 0
-      void writePersistentCache(data)
+      void writePersistentCache(responseText)
       console.log(`[anibridge] loaded ${countMappingEntries(data).toLocaleString()} mapping sources`)
       return data
     } catch (e) {
@@ -153,19 +166,43 @@ async function readPersistentCache(): Promise<{ data: AniBridgeMappings; timesta
     const cache = await caches.open(PERSISTENT_CACHE)
     const response = await cache.match(DATA_URL)
     if (!response) return null
-    const data = await response.json() as AniBridgeMappings
+    const data = JSON.parse(await readBoundedText(response)) as unknown
     const timestamp = Number(response.headers.get(CACHE_TIMESTAMP_HEADER)) || 0
-    return data && typeof data === 'object' ? { data, timestamp } : null
+    return isValidMappings(data) ? { data, timestamp } : null
   } catch (_) {
     return null
   }
 }
 
-async function writePersistentCache(data: AniBridgeMappings): Promise<void> {
+async function readBoundedText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('AniBridge mapping response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_MAPPING_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('AniBridge mapping response exceeded the 64 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+async function writePersistentCache(text: string): Promise<void> {
   if (typeof caches === 'undefined') return
   try {
     const cache = await caches.open(PERSISTENT_CACHE)
-    await cache.put(DATA_URL, new Response(JSON.stringify(data), {
+    await cache.put(DATA_URL, new Response(text, {
       headers: {
         'Content-Type': 'application/json',
         [CACHE_TIMESTAMP_HEADER]: String(Date.now()),
@@ -177,6 +214,13 @@ async function writePersistentCache(data: AniBridgeMappings): Promise<void> {
 function countMappingEntries(data?: AniBridgeMappings | null): number {
   if (!data) return 0
   return Object.keys(data).filter((key) => !key.startsWith('$')).length
+}
+
+function isValidMappings(value: unknown): value is AniBridgeMappings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.entries(value).some(([key, targets]) =>
+    !key.startsWith('$') && Boolean(targets) && typeof targets === 'object' && !Array.isArray(targets),
+  )
 }
 
 function parseDescriptor(value: string): Descriptor | null {

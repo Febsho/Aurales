@@ -4,6 +4,7 @@ import { cachedFetch, cacheGet, cacheSet } from './cache/sqliteCache'
 import { catalogCacheKey } from './cache/catalogCacheKeys'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
+import { isValidDateKey, localDateKey } from './localDate'
 
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
@@ -55,15 +56,15 @@ export async function getTvdbIdFromTmdb(tmdbId: string | number): Promise<number
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
 
-  const result = await cachedFetch<number | null>(`tmdb_tvdb_id:${id}`, async () => {
-    try {
+  try {
+    const result = await cachedFetch<number | null>(`tmdb_tvdb_id:${id}`, async () => {
       const data = await tmdbFetch(`/tv/${id}/external_ids`) as Record<string, unknown>
       return Number(data.tvdb_id) || null
-    } catch (_) {
-      return null
-    }
-  }, { category: CACHE_CATEGORIES.TMDB_TVDB_ID, ttlSeconds: CACHE_TTLS.TMDB_TVDB_ID })
-  return result ?? undefined
+    }, { category: CACHE_CATEGORIES.TMDB_TVDB_ID, ttlSeconds: CACHE_TTLS.TMDB_TVDB_ID })
+    return result ?? undefined
+  } catch (_) {
+    return undefined
+  }
 }
 
 export interface TmdbAiredEpisode {
@@ -86,23 +87,30 @@ export interface TmdbRuntimeMetadata {
  */
 export async function getTmdbAiredEpisodes(tmdbId: string | number): Promise<TmdbAiredEpisode[]> {
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateKey()
   return cachedFetch<TmdbAiredEpisode[]>(`tmdb_aired_episodes_v1:${id}:${today}`, async () => {
     const details = await tmdbFetch(`/tv/${id}`) as Record<string, unknown>
     const seasonNumbers = ((details.seasons as Record<string, unknown>[]) || [])
       .map((season) => Number(season.season_number))
       .filter((seasonNumber) => Number.isInteger(seasonNumber) && seasonNumber > 0)
 
-    const episodesBySeason = await Promise.all(seasonNumbers.map(async (seasonNumber) => {
-      const season = await tmdbFetch(`/tv/${id}/season/${seasonNumber}`) as Record<string, unknown>
-      return ((season.episodes as Record<string, unknown>[]) || [])
-        .filter((episode) => {
-          const episodeNumber = Number(episode.episode_number)
-          const airDate = typeof episode.air_date === 'string' ? episode.air_date : ''
-          return Number.isInteger(episodeNumber) && episodeNumber > 0 && airDate !== '' && airDate <= today
-        })
-        .map((episode) => ({ seasonNumber, episodeNumber: Number(episode.episode_number) }))
-    }))
+    const episodesBySeason: TmdbAiredEpisode[][] = []
+    // A long-running show can have dozens of seasons. Keep requests bounded so
+    // a single watched-status check doesn't flood the TMDB request queue.
+    for (let offset = 0; offset < seasonNumbers.length; offset += 4) {
+      const batch = await Promise.all(seasonNumbers.slice(offset, offset + 4).map(async (seasonNumber) => {
+        const season = await tmdbFetch(`/tv/${id}/season/${seasonNumber}`) as Record<string, unknown>
+        return ((season.episodes as Record<string, unknown>[]) || [])
+          .filter((episode) => {
+            const episodeNumber = Number(episode.episode_number)
+            const airDate = typeof episode.air_date === 'string' ? episode.air_date : ''
+            const dateKey = airDate.slice(0, 10)
+            return Number.isInteger(episodeNumber) && episodeNumber > 0 && isValidDateKey(dateKey) && dateKey <= today
+          })
+          .map((episode) => ({ seasonNumber, episodeNumber: Number(episode.episode_number) }))
+      }))
+      episodesBySeason.push(...batch)
+    }
     return episodesBySeason.flat()
   }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
 }
@@ -558,7 +566,7 @@ export async function getTmdbGenres(type: 'movie' | 'tv'): Promise<{ id: number;
 export async function getTmdbLanguages(): Promise<{ iso_639_1: string; english_name: string }[]> {
   try {
     const data = await tmdbFetch('/configuration/languages') as { iso_639_1: string; english_name: string }[]
-    return (data || []).sort((a, b) => a.english_name.localeCompare(b.english_name))
+    return [...(data || [])].sort((a, b) => a.english_name.localeCompare(b.english_name))
   } catch (_) {
     return []
   }
@@ -567,7 +575,7 @@ export async function getTmdbLanguages(): Promise<{ iso_639_1: string; english_n
 export async function getTmdbCountries(): Promise<{ iso_3166_1: string; english_name: string }[]> {
   try {
     const data = await tmdbFetch('/configuration/countries') as { iso_3166_1: string; english_name: string }[]
-    return (data || []).sort((a, b) => a.english_name.localeCompare(b.english_name))
+    return [...(data || [])].sort((a, b) => a.english_name.localeCompare(b.english_name))
   } catch (_) {
     return []
   }
@@ -696,7 +704,7 @@ function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | '
 }
 
 export async function getTmdbPerson(personId: string | number): Promise<TmdbPersonDetails> {
-  const id = String(personId).replace('tmdb-', '')
+  const id = String(personId).replace(/^tmdb[-:]/i, '')
   return cachedFetch<TmdbPersonDetails>(`tmdb_person:${id}`, async () => {
     const data = await tmdbFetch(`/person/${id}`, {
       append_to_response: 'combined_credits,external_ids',
@@ -880,7 +888,7 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
   }
 
   if (config.releasedOnly) {
-    const today = new Date().toISOString().split('T')[0]
+    const today = localDateKey()
     if (params[dateToKey]) {
       if (params[dateToKey] > today) {
         params[dateToKey] = today
@@ -907,7 +915,12 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
     throw (settled[0] as PromiseRejectedResult).reason
   }
   const merged = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-  const items = merged.filter((item, idx, self) => self.findIndex((other) => other.id === item.id) === idx)
+  const seenIds = new Set<string>()
+  const items = merged.filter((item) => {
+    if (seenIds.has(item.id)) return false
+    seenIds.add(item.id)
+    return true
+  })
 
   // If the source is TVDB, Simkl, or AniList, we keep the TMDB results (filters are TMDB-specific)
   // but we can label the item's provider.
@@ -954,7 +967,7 @@ export async function discoverTmdbPreviewWithCache(config: DiscoverConfig, rowId
     .then(async (items) => {
       const preview = items.slice(0, Math.min(20, config.maxResults || 20))
       if (preview.length) {
-        await cacheSet(cacheKey, preview, {
+        void cacheSet(cacheKey, preview, {
           category: CACHE_CATEGORIES.DISCOVER,
           ttlSeconds: null,
         })
@@ -974,7 +987,7 @@ export async function discoverTmdbWithCache(config: DiscoverConfig, rowId?: stri
 
   if (forceRefresh) {
     const fresh = await fetchRow()
-    if (fresh.length) await cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds: null })
+    if (fresh.length) void cacheSet(cacheKey, fresh, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds: null })
     return fresh
   }
 

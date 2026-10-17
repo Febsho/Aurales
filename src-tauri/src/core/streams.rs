@@ -4,7 +4,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+static REGEX_CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
+
+fn cached_regex(pattern: &str) -> Option<Regex> {
+    let cache = REGEX_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(regex) = cache.get(pattern) {
+        return Some(regex.clone());
+    }
+    let regex = Regex::new(pattern).ok()?;
+    cache.insert(pattern.to_string(), regex.clone());
+    Some(regex)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,7 +241,7 @@ fn score_stream(stream: Value, context: &SmartScoreContext) -> ScoredStream {
 
     if let Some(audio) = context.preferred_audio.iter().find(|language| {
         let base = language.split(['-', '_']).next().unwrap_or(language);
-        Regex::new(&format!(r"(?i)\b{}\b", base))
+        cached_regex(&format!(r"(?i)\b{}\b", regex::escape(base)))
             .map(|regex| regex.is_match(&value))
             .unwrap_or(false)
     }) {
@@ -276,7 +292,7 @@ fn score_stream(stream: Value, context: &SmartScoreContext) -> ScoredStream {
     }
 
     if let (Some(season), Some(episode)) = (context.season, context.episode) {
-        let episode_match = Regex::new(&format!(
+        let episode_match = cached_regex(&format!(
             r"(?i)(?:s0?{}e0?{}|{}x0?{})",
             season, episode, season, episode
         ))
@@ -445,14 +461,15 @@ fn playback_preference(stream: &Value) -> PlaybackPreference {
 }
 
 fn addon_family(addon_id: &str) -> String {
-    let without_scheme = Regex::new(r"(?i)^https?://").unwrap().replace(addon_id, "");
-    let without_path = Regex::new(r"[?/#].*$")
-        .unwrap()
-        .replace(&without_scheme, "");
-    Regex::new(r"(?i)[-_]?\d+$")
-        .unwrap()
-        .replace(&without_path, "")
-        .to_string()
+    let without_scheme = cached_regex(r"(?i)^https?://")
+        .map(|regex| regex.replace(addon_id, "").into_owned())
+        .unwrap_or_else(|| addon_id.to_string());
+    let without_path = cached_regex(r"[?/#].*$")
+        .map(|regex| regex.replace(&without_scheme, "").into_owned())
+        .unwrap_or(without_scheme);
+    cached_regex(r"(?i)[-_]?\d+$")
+        .map(|regex| regex.replace(&without_path, "").into_owned())
+        .unwrap_or(without_path)
 }
 
 fn same_some(left: &Option<String>, right: &Option<String>) -> bool {
@@ -461,17 +478,15 @@ fn same_some(left: &Option<String>, right: &Option<String>) -> bool {
 }
 
 fn capture(value: &str, pattern: &str) -> Option<String> {
-    Regex::new(&format!("(?i){pattern}"))
-        .ok()?
+    cached_regex(&format!("(?i){pattern}"))?
         .captures(value)?
         .get(1)
         .map(|value| value.as_str().to_lowercase())
 }
 
 fn parse_size_gb(value: &str) -> Option<f64> {
-    let captures = Regex::new(r"(?i)\b(\d+(?:\.\d+)?)\s*(tb|gb|gib|mb|mib)\b")
-        .unwrap()
-        .captures(value)?;
+    let captures =
+        cached_regex(r"(?i)\b(\d+(?:\.\d+)?)\s*(tb|gb|gib|mb|mib)\b")?.captures(value)?;
     let amount = captures.get(1)?.as_str().parse::<f64>().ok()?;
     let unit = captures.get(2)?.as_str().to_lowercase();
     Some(if unit == "tb" {
@@ -498,15 +513,15 @@ fn resolution(value: &str) -> i64 {
 }
 
 fn normalized(value: &str) -> String {
-    Regex::new(r"[^a-z0-9]+")
-        .unwrap()
-        .replace_all(&value.to_lowercase(), " ")
+    cached_regex(r"[^a-z0-9]+")
+        .map(|regex| regex.replace_all(&value.to_lowercase(), " ").into_owned())
+        .unwrap_or_else(|| value.to_lowercase())
         .trim()
         .to_string()
 }
 
 fn is_match(pattern: &str, value: &str) -> bool {
-    Regex::new(&format!("(?i){pattern}"))
+    cached_regex(&format!("(?i){pattern}"))
         .map(|regex| regex.is_match(value))
         .unwrap_or(false)
 }

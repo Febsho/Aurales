@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
+import { PROFILE_CHANGED_EVENT } from '../services/profiles'
 import { enrichViewingActivityGenres, seedViewingActivity, subscribeViewingActivity, summarizeViewingActivity, type ActivityMediaType } from '../services/viewingActivity'
 import ConnectedHistory from './ConnectedHistory'
 
@@ -14,19 +15,32 @@ function durationLabel(seconds: number) {
 }
 
 export default function LibraryActivity() {
-  const watchProgress = useAppStore((state) => state.watchProgress)
   const [range, setRange] = useState<Range>('30d')
   const [media, setMedia] = useState<Media>('all')
   const [revision, setRevision] = useState(0)
   const [activityView, setActivityView] = useState<'local' | 'connected'>('local')
 
   useEffect(() => {
-    const unsubscribe = subscribeViewingActivity(() => setRevision((value) => value + 1))
-    seedViewingActivity(watchProgress)
+    const unsubscribe = subscribeViewingActivity(() => {
+      setRevision((value) => value + 1)
+      enrichViewingActivityGenres().catch(() => {})
+    })
+    const refreshForProfile = () => {
+      seedViewingActivity(useAppStore.getState().watchProgress)
+      setRevision((value) => value + 1)
+      enrichViewingActivityGenres().catch(() => {})
+    }
+    window.addEventListener(PROFILE_CHANGED_EVENT, refreshForProfile)
+    seedViewingActivity(useAppStore.getState().watchProgress)
     enrichViewingActivityGenres().catch(() => {})
-    return unsubscribe
-  }, [watchProgress])
+    return () => {
+      unsubscribe()
+      window.removeEventListener(PROFILE_CHANGED_EVENT, refreshForProfile)
+    }
+  }, [])
 
+  // Viewing activity is persisted outside React state; revision is its change signal.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const summary = useMemo(() => summarizeViewingActivity(range, media), [range, media, revision])
   const maxDaily = Math.max(1, ...summary.daily.map((day) => day.seconds))
   const totalByType = Math.max(1, Object.values(summary.mediaSeconds).reduce((sum, value) => sum + value, 0))

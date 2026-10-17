@@ -17,13 +17,25 @@ interface NativeDetailResponse<T> {
 }
 
 const fallbackPending = new Map<string, Promise<ShowDetails>>()
-const navigationGroups = new Map<string, { key: string; generation: number }>()
+const navigationGroups = new Map<string, { key: string; generation: number; users: number }>()
+let nextNavigationGeneration = 0
 
 function beginNavigationRequest(group: string, key: string): number {
   const current = navigationGroups.get(group)
-  const generation = current?.key === key ? current.generation : (current?.generation || 0) + 1
-  navigationGroups.set(group, { key, generation })
+  if (current?.key === key) {
+    current.users += 1
+    return current.generation
+  }
+  const generation = ++nextNavigationGeneration
+  navigationGroups.set(group, { key, generation, users: 1 })
   return generation
+}
+
+function finishNavigationRequest(group: string, key: string, generation: number): void {
+  const current = navigationGroups.get(group)
+  if (!current || current.key !== key || current.generation !== generation) return
+  current.users -= 1
+  if (current.users === 0) navigationGroups.delete(group)
 }
 
 function ensureCurrentNavigation(group: string, key: string, generation: number): void {
@@ -40,6 +52,10 @@ function imageQuality(): 'data-saver' | 'balanced' | 'high' {
   }
 }
 
+function detailCacheKey(provider: DetailProvider, id: string, quality: ReturnType<typeof imageQuality>): string {
+  return `detail:series-provider:v3:${provider}:${id}:image:${quality}`
+}
+
 function staleRequestError(): DOMException {
   return new DOMException('Detail request was superseded', 'AbortError')
 }
@@ -49,8 +65,8 @@ function isNativeCancellation(error: unknown): boolean {
   return /detail request was (superseded|cancelled)/i.test(message)
 }
 
-async function loadDetailPageFallback(provider: DetailProvider, cleanProviderId: string): Promise<ShowDetails> {
-  const key = `detail:series-provider:v2:${provider}:${cleanProviderId}`
+async function loadDetailPageFallback(provider: DetailProvider, cleanProviderId: string, quality: ReturnType<typeof imageQuality>): Promise<ShowDetails> {
+  const key = detailCacheKey(provider, cleanProviderId, quality)
   const cached = await cacheGet<ShowDetails>(key)
   if (cached?.data) return cached.data
 
@@ -84,35 +100,40 @@ export async function loadDetailPage(
   options: { cancelGroup?: string; priority?: DetailPriority } = {},
 ): Promise<ShowDetails> {
   const cleanProviderId = id.replace(/^(tmdb|tvdb)[-:]/i, '')
+  const quality = imageQuality()
   const cancelGroup = options.cancelGroup || `detail:series:${provider}`
-  const operationKey = `series:${provider}:${cleanProviderId}`
+  const operationKey = `series:${provider}:${cleanProviderId}:image:${quality}`
   const generation = beginNavigationRequest(cancelGroup, operationKey)
   try {
-    const response = await invoke<NativeDetailResponse<ShowDetails>>('load_detail_page', {
-      request: {
-        provider,
-        mediaType: 'series',
-        id: cleanProviderId,
-        apiKey: provider === 'tmdb' ? getTmdbApiKey() : getTvdbApiKey(),
-        imageQuality: imageQuality(),
-        priority: options.priority || 'visible',
-        cancelGroup,
-        timeoutMs: 15_000,
-      },
-    })
-    if (response.stale) throw staleRequestError()
-    ensureCurrentNavigation(cancelGroup, operationKey, generation)
-    if (response.cacheStatus === 'miss') recordDetailProviderRequest()
-    return response.data
-  } catch (error) {
-    if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
-    ensureCurrentNavigation(cancelGroup, operationKey, generation)
-    console.warn('[detail] Native detail load failed, using compatibility path:', error)
-  }
+    try {
+      const response = await invoke<NativeDetailResponse<ShowDetails>>('load_detail_page', {
+        request: {
+          provider,
+          mediaType: 'series',
+          id: cleanProviderId,
+          apiKey: provider === 'tmdb' ? getTmdbApiKey() : getTvdbApiKey(),
+          imageQuality: quality,
+          priority: options.priority || 'visible',
+          cancelGroup,
+          timeoutMs: 15_000,
+        },
+      })
+      if (response.stale) throw staleRequestError()
+      ensureCurrentNavigation(cancelGroup, operationKey, generation)
+      if (response.cacheStatus === 'miss') recordDetailProviderRequest()
+      return response.data
+    } catch (error) {
+      if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+      ensureCurrentNavigation(cancelGroup, operationKey, generation)
+      console.warn('[detail] Native detail load failed, using compatibility path:', error)
+    }
 
-  const fallback = await loadDetailPageFallback(provider, cleanProviderId)
-  ensureCurrentNavigation(cancelGroup, operationKey, generation)
-  return fallback
+    const fallback = await loadDetailPageFallback(provider, cleanProviderId, quality)
+    ensureCurrentNavigation(cancelGroup, operationKey, generation)
+    return fallback
+  } finally {
+    finishNavigationRequest(cancelGroup, operationKey, generation)
+  }
 }
 
 /** Movie variant of the coarse detail operation. The page-level cache remains
@@ -122,31 +143,36 @@ export async function loadMovieDetailPage(
   options: { cancelGroup?: string; priority?: DetailPriority } = {},
 ): Promise<MovieDetails> {
   const cleanProviderId = id.replace(/^tmdb[-:]/i, '')
+  const quality = imageQuality()
   const cancelGroup = options.cancelGroup || 'detail:movie:tmdb'
-  const operationKey = `movie:tmdb:${cleanProviderId}`
+  const operationKey = `movie:tmdb:${cleanProviderId}:image:${quality}`
   const generation = beginNavigationRequest(cancelGroup, operationKey)
   try {
-    const response = await invoke<NativeDetailResponse<MovieDetails>>('load_detail_page', {
-      request: {
-        provider: 'tmdb',
-        mediaType: 'movie',
-        id: cleanProviderId,
-        apiKey: getTmdbApiKey(),
-        imageQuality: imageQuality(),
-        priority: options.priority || 'visible',
-        cancelGroup,
-        timeoutMs: 15_000,
-      },
-    })
-    if (response.stale) throw staleRequestError()
-    ensureCurrentNavigation(cancelGroup, operationKey, generation)
-    return response.data
-  } catch (error) {
-    if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
-    ensureCurrentNavigation(cancelGroup, operationKey, generation)
-    console.warn('[detail] Native movie detail load failed, using compatibility path:', error)
-    const fallback = await tmdbProvider.getMovie(`tmdb-${cleanProviderId}`)
-    ensureCurrentNavigation(cancelGroup, operationKey, generation)
-    return fallback
+    try {
+      const response = await invoke<NativeDetailResponse<MovieDetails>>('load_detail_page', {
+        request: {
+          provider: 'tmdb',
+          mediaType: 'movie',
+          id: cleanProviderId,
+          apiKey: getTmdbApiKey(),
+          imageQuality: quality,
+          priority: options.priority || 'visible',
+          cancelGroup,
+          timeoutMs: 15_000,
+        },
+      })
+      if (response.stale) throw staleRequestError()
+      ensureCurrentNavigation(cancelGroup, operationKey, generation)
+      return response.data
+    } catch (error) {
+      if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+      ensureCurrentNavigation(cancelGroup, operationKey, generation)
+      console.warn('[detail] Native movie detail load failed, using compatibility path:', error)
+      const fallback = await tmdbProvider.getMovie(`tmdb-${cleanProviderId}`)
+      ensureCurrentNavigation(cancelGroup, operationKey, generation)
+      return fallback
+    }
+  } finally {
+    finishNavigationRequest(cancelGroup, operationKey, generation)
   }
 }

@@ -1,21 +1,27 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { subscribeLocalWatchlist } from '../services/localWatchlist'
 import { tmdbProvider } from '../services/tmdb'
 import { buildUpcomingEvents, getUpcomingPreferences, isReleaseInHorizon, releaseTiming, type ReleaseEvent } from '../services/upcoming'
-import { loadUpcomingSeeds } from '../services/upcomingSources'
+import { loadUpcomingSeeds, upcomingProgressSignature } from '../services/upcomingSources'
 import { readUpcomingEventsCache, readUpcomingEventsStartupSnapshot, writeUpcomingEventsCache, writeUpcomingEventsStartupSnapshot } from '../services/upcomingCache'
+import { getActiveProfileId } from '../services/profiles'
 import { cachedImage, warmCachedImages } from '../services/imageCache'
 
 /** A landscape shelf deliberately sharing Continue Watching's size, controls, and card treatment. */
 export default function UpcomingHomeRow() {
   const navigate = useNavigate()
-  const progress = useAppStore((s) => s.watchProgress)
+  const watchProgress = useAppStore((state) => state.watchProgress)
+  const progressSeedSignature = useMemo(
+    () => upcomingProgressSignature(watchProgress.values()),
+    [watchProgress],
+  )
   const posterSize = useAppStore((s) => s.posterSize)
   const [events, setEvents] = useState<ReleaseEvent[]>(() => readUpcomingEventsStartupSnapshot() ?? [])
   const [preferencesRevision, setPreferencesRevision] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const loadGeneration = useRef(0)
   const prefs = getUpcomingPreferences()
   // Upcoming is a primary, landscape Home shelf. Keep it larger than poster
   // rows at every density, while still respecting the user's size preference.
@@ -23,38 +29,60 @@ export default function UpcomingHomeRow() {
 
   useEffect(() => {
     let cancelled = false
+    const generation = ++loadGeneration.current
     const load = async () => {
-      const startup = readUpcomingEventsStartupSnapshot()
+      const profileId = getActiveProfileId()
+      const preferences = getUpcomingPreferences(profileId)
+      const startup = readUpcomingEventsStartupSnapshot(profileId, preferences)
       if (startup && !cancelled) setEvents(startup)
-      const cached = await readUpcomingEventsCache()
+      const cached = await readUpcomingEventsCache(profileId, preferences)
+      if (cancelled || generation !== loadGeneration.current) return
       if (cached) {
         // Backfill the synchronous snapshot for users upgrading with only the
         // existing SQLite cache, even when the provider refresh later fails.
-        writeUpcomingEventsStartupSnapshot(cached)
+        writeUpcomingEventsStartupSnapshot(cached, profileId, preferences)
         if (!cancelled) setEvents(cached)
       }
-      const seeds = await loadUpcomingSeeds(getUpcomingPreferences())
-      const next = await buildUpcomingEvents({ ...seeds, getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`), getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season) })
-      void writeUpcomingEventsCache(next)
-      if (!cancelled) setEvents(next)
+      const seeds = await loadUpcomingSeeds(preferences)
+      if (cancelled || generation !== loadGeneration.current) return
+      const next = await buildUpcomingEvents({ ...seeds, preferences, getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`), getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season) })
+      if (cancelled || generation !== loadGeneration.current) return
+      void writeUpcomingEventsCache(next, profileId, preferences)
+      setEvents(next)
     }
-    void load()
-    return () => { cancelled = true }
-  }, [progress, preferencesRevision])
+    void load().catch((error) => console.warn('[Upcoming] could not load Home releases:', error))
+    return () => {
+      cancelled = true
+      if (loadGeneration.current === generation) loadGeneration.current += 1
+    }
+  }, [progressSeedSignature, preferencesRevision])
   useEffect(() => {
     const refresh = () => setPreferencesRevision((value) => value + 1)
     window.addEventListener('aurales:upcoming-preferences-changed', refresh)
     return () => window.removeEventListener('aurales:upcoming-preferences-changed', refresh)
   }, [])
-  useEffect(() => subscribeLocalWatchlist(() => {
-    void loadUpcomingSeeds(getUpcomingPreferences())
-      .then((seeds) => buildUpcomingEvents({
-        ...seeds,
-        getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`),
-        getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season),
-      }))
-      .then((events) => { void writeUpcomingEventsCache(events); setEvents(events) })
-  }), [])
+  useEffect(() => {
+    let mounted = true
+    const unsubscribe = subscribeLocalWatchlist(() => {
+      const generation = ++loadGeneration.current
+      const profileId = getActiveProfileId()
+      const preferences = getUpcomingPreferences(profileId)
+      void loadUpcomingSeeds(preferences)
+        .then((seeds) => buildUpcomingEvents({
+          ...seeds,
+          preferences,
+          getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`),
+          getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season),
+        }))
+        .then((events) => {
+          if (!mounted || generation !== loadGeneration.current) return
+          void writeUpcomingEventsCache(events, profileId, preferences)
+          setEvents(events)
+        })
+        .catch(() => {})
+    })
+    return () => { mounted = false; loadGeneration.current += 1; unsubscribe() }
+  }, [])
 
   // Upcoming is a fixed, short Home shelf. Warm its exact landscape artwork
   // immediately so quick vertical scrolling never exposes empty card frames.

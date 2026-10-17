@@ -188,9 +188,14 @@ export default function CatalogPage() {
       const maxResults = row.discoverConfig.maxResults && row.discoverConfig.maxResults > 0
         ? row.discoverConfig.maxResults
         : undefined
-      let loadedResultCount = maxResults
-        ? Math.min(restoredCache?.items.length || 0, maxResults)
-        : restoredCache?.items.length || 0
+      // Keep a stable identity across later metadata enrichment. TMDB results
+      // can gain an IMDb ID after their first paint, which changes the normal
+      // cross-provider identity from TMDB to IMDb for the same title.
+      const pageIdentity = (item: SearchResult) => item.tmdbId != null
+        ? `${item.type}:tmdb:${item.tmdbId}`
+        : mediaIdentity(item)
+      const seenPageIdentities = new Set((restoredCache?.items || []).map(pageIdentity))
+      let loadedResultCount = seenPageIdentities.size
       let scrollFrame = 0
       const scrollRoot = document.querySelector('main') || document.documentElement
 
@@ -213,9 +218,15 @@ export default function CatalogPage() {
 
           // TMDB already gives us everything required to render a useful card.
           // Do not keep the whole catalog behind secondary metadata lookups.
-          const allowedResults = maxResults
-            ? results.slice(0, Math.max(0, maxResults - loadedResultCount))
-            : results
+          const remaining = maxResults == null ? Infinity : Math.max(0, maxResults - loadedResultCount)
+          const allowedResults: SearchResult[] = []
+          for (const result of results) {
+            if (allowedResults.length >= remaining) break
+            const identity = pageIdentity(result)
+            if (seenPageIdentities.has(identity)) continue
+            seenPageIdentities.add(identity)
+            allowedResults.push(result)
+          }
           if (allowedResults.length > 0) {
             loadedResultCount += allowedResults.length
             setItems((current) => dedupeMediaItems([...current, ...allowedResults]).slice(0, maxResults))
@@ -329,6 +340,7 @@ export default function CatalogPage() {
     let page = restoredCache ? Math.max(0, restoredCache.page) : 0
     let loadingPage = false
     let canLoadMore = true
+    let consecutiveDuplicatePages = 0
     const seen = new Set<string>((restoredCache?.items || []).map(mediaIdentity))
     const pageSize = 20
     let scrollFrame = 0
@@ -359,7 +371,11 @@ export default function CatalogPage() {
           return true
         })
 
-        if (results.length === 0 || unique.length === 0 || results.length < pageSize) {
+        consecutiveDuplicatePages = unique.length === 0 && results.length >= pageSize
+          ? consecutiveDuplicatePages + 1
+          : 0
+
+        if (results.length === 0 || results.length < pageSize || consecutiveDuplicatePages >= 3) {
           canLoadMore = false
           setHasMore(false)
         } else {

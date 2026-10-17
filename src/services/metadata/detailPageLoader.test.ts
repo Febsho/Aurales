@@ -82,10 +82,10 @@ describe('detail page compatibility loader', () => {
     invokeMock.mockRejectedValue(new Error('native unavailable'))
     tmdbGetShowMock.mockResolvedValue(show)
     await expect(loadDetailPage('tmdb', '7')).resolves.toEqual(show)
-    expect(cacheGetMock).toHaveBeenCalledWith('detail:series-provider:v2:tmdb:7')
+    expect(cacheGetMock).toHaveBeenCalledWith('detail:series-provider:v3:tmdb:7:image:balanced')
     expect(tmdbGetShowMock).toHaveBeenCalledWith('tmdb-7')
     expect(cacheSetMock).toHaveBeenCalledWith(
-      'detail:series-provider:v2:tmdb:7',
+      'detail:series-provider:v3:tmdb:7:image:balanced',
       show,
       expect.objectContaining({ category: 'detail_page' }),
     )
