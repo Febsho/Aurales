@@ -27,6 +27,7 @@ const MPV_END_FILE_REASON_ERROR: c_int = 4;
 const MPV_END_FILE_REASON_REDIRECT: c_int = 5;
 
 const MPV_EVENT_SHUTDOWN: c_int = 1;
+const MPV_EVENT_NONE: c_int = 0;
 const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 const MPV_EVENT_START_FILE: c_int = 6;
 const MPV_EVENT_END_FILE: c_int = 7;
@@ -36,6 +37,7 @@ const MPV_EVENT_SEEK: c_int = 20;
 const MPV_EVENT_PLAYBACK_RESTART: c_int = 21;
 const MPV_EVENT_PROPERTY_CHANGE: c_int = 22;
 const MPV_EVENT_QUEUE_OVERFLOW: c_int = 24;
+const MPV_EVENT_POLL_TIMEOUT_SECONDS: c_double = 0.01;
 
 type MpvHandle = c_void;
 type MpvCreate = unsafe extern "C" fn() -> *mut MpvHandle;
@@ -348,15 +350,26 @@ impl LibMpvPlayer {
             if player.destroyed.load(Ordering::SeqCst) {
                 return;
             }
-            let event = unsafe { (player.api.wait_event)(player.handle, 0.5) };
+            // The Linux OpenGL renderer and playback commands use the same
+            // API mutex. Never leave it held for a long blocking event wait:
+            // mpv audio can keep advancing while rendering and seeks starve.
+            let event =
+                unsafe { (player.api.wait_event)(player.handle, MPV_EVENT_POLL_TIMEOUT_SECONDS) };
             if player.destroyed.load(Ordering::SeqCst) {
                 return;
             }
             if event.is_null() {
+                drop(_api_guard);
+                std::thread::sleep(std::time::Duration::from_millis(1));
                 continue;
             }
 
             let event = unsafe { &*event };
+            if event.event_id == MPV_EVENT_NONE {
+                drop(_api_guard);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
             match event.event_id {
                 MPV_EVENT_SHUTDOWN => {
                     crate::commands::player_debug_log(format!(
