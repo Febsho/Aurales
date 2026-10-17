@@ -3,7 +3,204 @@ import type { HomeRowConfig, WatchProgress, SearchResult, TraktAccount } from '.
 import type { InstalledAddon } from '../services/addons'
 import type { SimklAccount } from '../services/simkl/types'
 import type { AniListAccount } from '../services/anilist'
+import { clearContinueWatchingSnapshotsForSource, getContinueWatchingAccountScope, readContinueWatchingStartupSnapshot, rotateProviderCredentialScope } from '../services/cache/homeStartupSnapshot'
+import { buildDefaultHomeRows } from '../data/defaultHomeRows'
 import { v4 as uuid } from 'uuid'
+import { cacheClearCategory } from '../services/cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
+import { getActiveProfileId, getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
+import { enqueueSyncRecord, enqueueSyncRecords } from '../services/sync/syncQueue'
+import { DEFAULT_BETTER_POSTERS_SETTINGS, type BetterPostersSettings } from '../services/betterPosters'
+
+function invalidateCatalogData(): void {
+  ;[
+    CACHE_CATEGORIES.ADDON_CATALOG, CACHE_CATEGORIES.PROVIDER_LIST, CACHE_CATEGORIES.DISCOVER,
+    CACHE_CATEGORIES.HOME_ROW, CACHE_CATEGORIES.TMDB_CARD, CACHE_CATEGORIES.TVDB_CARD, CACHE_CATEGORIES.ARTWORK,
+    CACHE_CATEGORIES.DETAIL_PAGE,
+  ].forEach((category) => { cacheClearCategory(category).catch(() => {}) })
+}
+
+const CONTINUE_WATCHING_LIMITS = [5, 10, 20, 50] as const
+function loadContinueWatchingLimit(): number {
+  const saved = Number(localStorage.getItem('aurales_cw_limit') || '10')
+  return CONTINUE_WATCHING_LIMITS.includes(saved as typeof CONTINUE_WATCHING_LIMITS[number]) ? saved : 10
+}
+
+const DISCOVERY_MIN_RATINGS = [0, 5, 6, 7, 8] as const
+function loadDiscoveryMinRating(): number {
+  const saved = Number(localStorage.getItem('aurales_discovery_min_rating') || '6')
+  return DISCOVERY_MIN_RATINGS.includes(saved as typeof DISCOVERY_MIN_RATINGS[number]) ? saved : 6
+}
+
+function loadNumberInRange(key: string, fallback: number, min: number, max: number): number {
+  const raw = localStorage.getItem(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
+}
+
+function loadNumberOption(key: string, fallback: number, options: readonly number[]): number {
+  const raw = localStorage.getItem(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return options.includes(value) ? value : fallback
+}
+
+function loadProfileNumberOption(key: string, fallback: number, options: readonly number[]): number {
+  const raw = getProfileSetting(key)
+  if (raw == null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return options.includes(value) ? value : fallback
+}
+
+export function notifyWatchedProviderAccountChanged(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('aurales:provider-account-changed'))
+}
+
+export type ProgressProvider = 'local' | 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+export type ProgressSelection = ProgressProvider | 'all'
+
+const PROGRESS_PROVIDERS: ProgressProvider[] = ['local', 'trakt', 'simkl', 'anilist', 'pmdb', 'mdblist']
+
+function loadProgressSelection(): ProgressSelection {
+  // This setting replaces the former single-provider default. Existing
+  // installs start with every service once, then keep their new choice.
+  const saved = localStorage.getItem('aurales_watch_data_source')
+  return saved === 'all' || PROGRESS_PROVIDERS.includes(saved as ProgressProvider) ? saved as ProgressSelection : 'all'
+}
+
+export function connectedProgressSources(state: {
+  traktConnected: boolean; simklConnected: boolean; anilistConnected: boolean; pmdbApiKey: string; mdblistApiKey: string
+}): ProgressProvider[] {
+  return [
+    'local',
+    ...(state.traktConnected ? ['trakt' as const] : []),
+    ...(state.simklConnected ? ['simkl' as const] : []),
+    ...(state.anilistConnected ? ['anilist' as const] : []),
+    ...(state.pmdbApiKey ? ['pmdb' as const] : []),
+    ...(state.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens') ? ['mdblist' as const] : []),
+  ]
+}
+
+export type ArtProvider = 'tmdb' | 'tvdb' | 'fanart'
+export type PlaybackPreloadMode = 'off' | 'smart' | 'aggressive'
+export type HomeHeroMode = 'dynamic' | 'fixed' | 'disabled'
+export type FixedHeroSource = 'automatic' | 'trending' | 'recommended' | 'continue-watching' | 'recently-added' | 'manual'
+export type RowEntryCount = 10 | 15 | 20 | 25
+
+type ContinueWatchingProgressItem = { id: string; mediaId: string; mediaType?: 'movie' | 'series'; title?: string; imdbId?: string; tmdbId?: number; malId?: number; anilistId?: number; progressPct: number }
+
+function buildContinueWatchingProgress(items: ContinueWatchingProgressItem[]): Map<string, number> {
+  const progress = new Map<string, number>()
+  for (const item of items) {
+    const pct = Math.min(100, Math.max(0, item.progressPct))
+    // Preserve the most advanced resume when provider responses contain
+    // duplicate identifiers for a title and its current episode.
+    const ids = [item.id, item.mediaId, item.imdbId, item.tmdbId != null ? String(item.tmdbId) : undefined,
+      item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+      item.malId != null ? `mal-${item.malId}` : undefined,
+      item.anilistId != null ? `anilist-${item.anilistId}` : undefined]
+    for (const key of ids) {
+      if (!key) continue
+      progress.set(key, Math.max(progress.get(key) || 0, pct))
+      if (item.mediaType) progress.set(`${item.mediaType}:${key}`, Math.max(progress.get(`${item.mediaType}:${key}`) || 0, pct))
+    }
+    if (item.mediaType && item.title) {
+      const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      if (!normalizedTitle) continue
+      for (const titleKey of [`title:${item.mediaType}:${normalizedTitle}`, `title:${normalizedTitle}`]) {
+        progress.set(titleKey, Math.max(progress.get(titleKey) || 0, pct))
+      }
+    }
+  }
+  return progress
+}
+
+function loadContinueWatchingProgress(): Map<string, number> {
+  const source = loadProgressSelection()
+  const limit = loadContinueWatchingLimit()
+  return buildContinueWatchingProgress(readContinueWatchingStartupSnapshot(source, getContinueWatchingAccountScope(source), limit) || [])
+}
+
+function loadRowEntryCount(): RowEntryCount {
+  const saved = Number(localStorage.getItem('aurales_row_entry_count'))
+  return saved === 10 || saved === 15 || saved === 20 || saved === 25 ? saved : 15
+}
+
+export interface ArtProviderSettings {
+  moviePoster: ArtProvider
+  movieBackdrop: ArtProvider
+  movieLogo: ArtProvider
+  seriesPoster: ArtProvider
+  seriesBackdrop: ArtProvider
+  seriesLogo: ArtProvider
+  animePoster: ArtProvider
+  animeBackdrop: ArtProvider
+  animeLogo: ArtProvider
+}
+
+export interface CustomArtUrls {
+  posterUrl: string
+  backdropUrl: string
+  logoUrl: string
+  episodeThumbnailUrl: string
+}
+
+function normalizeArtProviderSettings(value: unknown): ArtProviderSettings {
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof ArtProviderSettings, string>>
+  const normalize = (provider?: string): ArtProvider =>
+    provider === 'tvdb' || provider === 'fanart' ? provider : 'tmdb'
+  return {
+    moviePoster: normalize(raw.moviePoster),
+    movieBackdrop: normalize(raw.movieBackdrop),
+    movieLogo: normalize(raw.movieLogo),
+    seriesPoster: normalize(raw.seriesPoster),
+    seriesBackdrop: normalize(raw.seriesBackdrop),
+    seriesLogo: normalize(raw.seriesLogo),
+    animePoster: normalize(raw.animePoster),
+    animeBackdrop: normalize(raw.animeBackdrop),
+    animeLogo: normalize(raw.animeLogo),
+  }
+}
+
+function readStoredObject(key: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) || 'null')
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+function loadCustomArtUrls(): CustomArtUrls {
+  const saved = readStoredObject('aurales_custom_art_urls')
+  return {
+    posterUrl: typeof saved.posterUrl === 'string' ? saved.posterUrl : '',
+    backdropUrl: typeof saved.backdropUrl === 'string' ? saved.backdropUrl : '',
+    logoUrl: typeof saved.logoUrl === 'string' ? saved.logoUrl : '',
+    episodeThumbnailUrl: typeof saved.episodeThumbnailUrl === 'string' ? saved.episodeThumbnailUrl : '',
+  }
+}
+
+function loadBetterPosterSettings(): BetterPostersSettings {
+  const saved = readStoredObject('aurales_better_posters')
+  const ratingSources: BetterPostersSettings['ratingSource'][] = ['avg', 'IM', 'TM', 'RT', 'MC', 'TR', 'LB', 'RE']
+  return {
+    enabled: typeof saved.enabled === 'boolean' ? saved.enabled : DEFAULT_BETTER_POSTERS_SETTINGS.enabled,
+    trendTags: typeof saved.trendTags === 'boolean' ? saved.trendTags : DEFAULT_BETTER_POSTERS_SETTINGS.trendTags,
+    qualityTags: typeof saved.qualityTags === 'boolean' ? saved.qualityTags : DEFAULT_BETTER_POSTERS_SETTINGS.qualityTags,
+    showGenre: typeof saved.showGenre === 'boolean' ? saved.showGenre : DEFAULT_BETTER_POSTERS_SETTINGS.showGenre,
+    showRating: typeof saved.showRating === 'boolean' ? saved.showRating : DEFAULT_BETTER_POSTERS_SETTINGS.showRating,
+    ratingSource: ratingSources.includes(saved.ratingSource as BetterPostersSettings['ratingSource'])
+      ? saved.ratingSource as BetterPostersSettings['ratingSource']
+      : DEFAULT_BETTER_POSTERS_SETTINGS.ratingSource,
+    ageRating: typeof saved.ageRating === 'boolean' ? saved.ageRating : DEFAULT_BETTER_POSTERS_SETTINGS.ageRating,
+    language: typeof saved.language === 'string' && saved.language ? saved.language : DEFAULT_BETTER_POSTERS_SETTINGS.language,
+  }
+}
 
 interface AppState {
   sidebarCollapsed: boolean
@@ -12,15 +209,11 @@ interface AppState {
   // Settings
   tmdbApiKey: string
   tvdbApiKey: string
-  traktClientId: string
-  traktClientSecret: string
   traktConnected: boolean
   traktAccount: TraktAccount | null
   mdblistApiKey: string
   setTmdbApiKey: (key: string) => void
   setTvdbApiKey: (key: string) => void
-  setTraktClientId: (key: string) => void
-  setTraktClientSecret: (key: string) => void
   setTraktConnected: (connected: boolean) => void
   setTraktAccount: (account: TraktAccount | null) => void
   setMdblistApiKey: (key: string) => void
@@ -28,10 +221,12 @@ interface AppState {
   scrobbleSimkl: boolean
   scrobbleTrakt: boolean
   scrobblePmdb: boolean
+  scrobbleMdblist: boolean
   scrobbleAnilist: boolean
   setScrobbleSimkl: (enabled: boolean) => void
   setScrobbleTrakt: (enabled: boolean) => void
   setScrobblePmdb: (enabled: boolean) => void
+  setScrobbleMdblist: (enabled: boolean) => void
   setScrobbleAnilist: (enabled: boolean) => void
 
   // Simkl
@@ -43,18 +238,15 @@ interface AppState {
   // AniList
   anilistConnected: boolean
   anilistAccount: AniListAccount | null
-  anilistClientId: string
-  anilistClientSecret: string
   setAnilistConnected: (connected: boolean) => void
   setAnilistAccount: (account: AniListAccount | null) => void
-  setAnilistClientId: (key: string) => void
-  setAnilistClientSecret: (key: string) => void
 
   // Addons
   addons: InstalledAddon[]
   setAddons: (addons: InstalledAddon[]) => void
   addAddon: (addon: InstalledAddon) => void
   removeAddon: (addonId: string) => void
+  renameAddon: (addonId: string, displayName: string) => void
 
   // Home layout
   homeRows: HomeRowConfig[]
@@ -67,7 +259,9 @@ interface AppState {
 
   // Watch progress
   watchProgress: Map<string, WatchProgress>
+  completedIds: Set<string>
   setWatchProgress: (id: string, progress: WatchProgress) => void
+  setWatchProgressBatch: (updates: Array<{ id: string; progress: WatchProgress }>) => void
   removeWatchProgress: (mediaIds: string[], season?: number, episode?: number) => void
 
   // Recently watched
@@ -75,16 +269,29 @@ interface AppState {
   addRecentlyWatched: (item: SearchResult) => void
 
   preferredSubtitles: string[]
+  subtitleMode: 'show' | 'forced' | 'hide'
   preferredAudio: string[]
+  preferSdhSubtitles: boolean
+  animeAudioMode: 'sub' | 'dub'
   setPreferredSubtitles: (langs: string[]) => void
+  setSubtitleMode: (mode: 'show' | 'forced' | 'hide') => void
   setPreferredAudio: (langs: string[]) => void
+  setPreferSdhSubtitles: (enabled: boolean) => void
+  setAnimeAudioMode: (mode: 'sub' | 'dub') => void
 
-  continueWatchingSource: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+  continueWatchingSource: ProgressSelection
+  /** Connected services together, or one selected source for watch data. */
+  primaryProgressProvider: ProgressSelection
   continueWatchingLimit: number
-  watchedCheckmarkSources: ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
-  watchlistButtonTarget: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist'
+  /** Cached resume percentages from the selected Continue Watching sources. */
+  continueWatchingProgress: Map<string, number>
+  showPosterWatchStatus: boolean
+  watchedCheckmarkSources: ProgressProvider[]
   pmdbApiKey: string
   pmdbSaveResumePosition: boolean
+  mdblistSaveResumePosition: boolean
+  mdblistSyncFrequency: string
+  mdblistLastSyncTime: string
   pmdbSyncFrequency: string
   pmdbLastSyncTime: string
   traktSaveResumePosition: boolean
@@ -94,14 +301,20 @@ interface AppState {
   anilistSyncFrequency: string
   introdbApiKey: string
   animeTrackingProvider: 'anilist' | 'simkl' | 'trakt' | 'local'
-  animeShowWatchedFrom: 'all' | 'provider'
+  resumePriorityOrder: ProgressProvider[]
 
-  setContinueWatchingSource: (src: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist') => void
+  setContinueWatchingSource: (src: ProgressSelection) => void
+  setPrimaryProgressProvider: (src: ProgressSelection) => void
   setContinueWatchingLimit: (limit: number) => void
-  setWatchedCheckmarkSources: (sources: ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]) => void
-  setWatchlistButtonTarget: (target: 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist') => void
+  setContinueWatchingProgress: (items: ContinueWatchingProgressItem[]) => void
+  setShowPosterWatchStatus: (enabled: boolean) => void
+  setResumePriorityOrder: (order: ProgressProvider[]) => void
+  setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
   setPmdBApiKey: (key: string) => void
   setPmdBSaveResumePosition: (val: boolean) => void
+  setMdblistSaveResumePosition: (val: boolean) => void
+  setMdblistSyncFrequency: (freq: string) => void
+  setMdblistLastSyncTime: (time: string) => void
   setPmdBSyncFrequency: (freq: string) => void
   setPmdBLastSyncTime: (time: string) => void
   setTraktSaveResumePosition: (val: boolean) => void
@@ -111,7 +324,6 @@ interface AppState {
   setAnilistSyncFrequency: (freq: string) => void
   setIntrodbApiKey: (key: string) => void
   setAnimeTrackingProvider: (prov: 'anilist' | 'simkl' | 'trakt' | 'local') => void
-  setAnimeShowWatchedFrom: (watchedFrom: 'all' | 'provider') => void
 
   // Library & Spoilers
   blurSpoilers: boolean
@@ -119,42 +331,93 @@ interface AppState {
   blurTitles: boolean
   blurDescriptions: boolean
   keepNextEpisodeVisible: boolean
-  keepFramesFor: 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year'
-  savedFramesCount: number
 
   setBlurSpoilers: (val: boolean) => void
   setBlurThumbnails: (val: boolean) => void
   setBlurTitles: (val: boolean) => void
   setBlurDescriptions: (val: boolean) => void
   setKeepNextEpisodeVisible: (val: boolean) => void
-  setKeepFramesFor: (val: 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year') => void
-  setSavedFramesCount: (count: number) => void
 
   posterSize: 'compact' | 'default' | 'large' | 'huge'
   nextEpisodePrompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m'
+  heroTrailerDelay: number
+  homeHeroMode: HomeHeroMode
+  homeCardAnimations: boolean
+  fixedHeroSource: FixedHeroSource
+  fixedHeroManualItem: SearchResult | null
   setPosterSize: (size: 'compact' | 'default' | 'large' | 'huge') => void
   setNextEpisodePrompt: (prompt: 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m') => void
+  setHeroTrailerDelay: (seconds: number) => void
+  setHomeHeroMode: (mode: HomeHeroMode) => void
+  setHomeCardAnimations: (enabled: boolean) => void
+  setFixedHeroSource: (source: FixedHeroSource) => void
+  setFixedHeroManualItem: (item: SearchResult | null) => void
 
   // New settings options
   accentColor: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white'
+  interfaceTheme: InterfaceTheme
+  themeBackground: 'graphite' | 'slate' | 'oled'
+  navigationStyle: 'sidebar' | 'topbar'
   defaultStartPage: 'home' | 'discover' | 'collections' | 'search'
+  rowEntryCount: RowEntryCount
   showRatingsOnCards: boolean
+  showGenreOnCards: boolean
+  posterTrailerPreviews: boolean
+  posterTrailerHoverDelayMs: number
+  posterTrailerSound: boolean
+  trailerVolume: number
   discoveryRegion: string
   discoveryMinRating: number
   discoveryIncludeAdult: boolean
-  hwdecMode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox'
   isolatedPlaybackMode: boolean
   isolatedPlaybackHwdec: 'auto-safe' | 'no'
   isolatedPlaybackResume: boolean
-  cacheBufferSize: 'default' | 'large' | 'aggressive'
+  videoCacheMode: 'memory' | 'disk' | 'auto'
   audioPassthrough: boolean
   autoSkipSegments: boolean
+  showSkipIntroButton: boolean
+  autoSkipIntro: boolean
+  showSkipCreditsButton: boolean
+  autoSkipCredits: boolean
+  autoPlayNextEpisode: boolean
+  nextEpisodeCountdownSeconds: 5 | 10 | 15 | 30
+  scrubThumbnailPreviews: boolean
+  showPlayerLoadingIndicator: boolean
+  autoPlayFirstStream: boolean
+  automaticStreamRecovery: boolean
+  playbackPreloadMode: PlaybackPreloadMode
   subtitleFontSize: number
   subtitleBgOpacity: string
+  subtitleColor: string
+  subtitleBorderStyle: 'outline' | 'shadow' | 'none'
+  subtitlePreset: 'standard' | 'boxed' | 'classic' | 'minimal' | 'bold' | 'custom'
+  subtitleScale: number
+  subtitleBold: boolean
+  subtitleItalic: boolean
+  subtitleOutlineColor: string
+  subtitleBgColor: string
+  subtitleOutlineThickness: number
+  subtitleShadowOffset: number
+  subtitleShadowOpacity: number
+  subtitleVerticalPosition: number
+  subtitleAlignment: 'left' | 'center' | 'right'
+  subtitleHorizontalMargin: number
+  subtitleTextBlur: number
+  subtitleScaleWithWindow: boolean
+  subtitleAssOverride: 'apply' | 'scale_only' | 'ignore'
   visibleHeroRatings: string[]
+  fanartApiKey: string
+  setFanartApiKey: (key: string) => void
   openrouterApiKey: string
   openrouterModel: string
 
+  // Art providers
+  artProviders: ArtProviderSettings
+  setArtProviders: (providers: ArtProviderSettings) => void
+  customArtUrls: CustomArtUrls
+  setCustomArtUrls: (urls: CustomArtUrls) => void
+  betterPosters: BetterPostersSettings
+  setBetterPosters: (settings: BetterPostersSettings) => void
   // Metadata sources
   movieMetadataSource: 'tmdb' | 'tvdb'
   seriesMetadataSource: 'tvdb' | 'tmdb'
@@ -175,9 +438,6 @@ interface AppState {
   avoidJapaneseSeasonNames: boolean
   setUseGenericAnimeSeasonLabels: (val: boolean) => void
   setAvoidJapaneseSeasonNames: (val: boolean) => void
-  setMovieMetadataSource: (src: 'tmdb' | 'tvdb') => void
-  setSeriesMetadataSource: (src: 'tvdb' | 'tmdb') => void
-  setAnimeMetadataSource: (src: 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb') => void
   setMovieMetadataFallback: (val: boolean) => void
   setSeriesMetadataFallback: (val: boolean) => void
   setAnimeMetadataFallback: (val: boolean) => void
@@ -225,96 +485,222 @@ interface AppState {
   setContextAwareTranslation: (val: boolean) => void
 
   setAccentColor: (color: 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white') => void
+  setInterfaceTheme: (theme: InterfaceTheme) => void
+  setThemeBackground: (bg: 'graphite' | 'slate' | 'oled') => void
+  setNavigationStyle: (style: 'sidebar' | 'topbar') => void
   setDefaultStartPage: (page: 'home' | 'discover' | 'collections' | 'search') => void
+  setRowEntryCount: (count: RowEntryCount) => void
   setShowRatingsOnCards: (show: boolean) => void
+  setShowGenreOnCards: (show: boolean) => void
+  setPosterTrailerPreviews: (show: boolean) => void
+  setPosterTrailerHoverDelayMs: (delayMs: number) => void
+  setPosterTrailerSound: (sound: boolean) => void
+  setTrailerVolume: (volume: number) => void
   setDiscoveryRegion: (region: string) => void
   setDiscoveryMinRating: (rating: number) => void
   setDiscoveryIncludeAdult: (include: boolean) => void
-  setHwdecMode: (mode: 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox') => void
   setIsolatedPlaybackMode: (value: boolean) => void
   setIsolatedPlaybackHwdec: (mode: 'auto-safe' | 'no') => void
   setIsolatedPlaybackResume: (value: boolean) => void
-  setCacheBufferSize: (size: 'default' | 'large' | 'aggressive') => void
+  setVideoCacheMode: (mode: 'memory' | 'disk' | 'auto') => void
   setAudioPassthrough: (val: boolean) => void
   setAutoSkipSegments: (val: boolean) => void
+  setShowSkipIntroButton: (val: boolean) => void
+  setAutoSkipIntro: (val: boolean) => void
+  setShowSkipCreditsButton: (val: boolean) => void
+  setAutoSkipCredits: (val: boolean) => void
+  setAutoPlayNextEpisode: (val: boolean) => void
+  setNextEpisodeCountdownSeconds: (seconds: 5 | 10 | 15 | 30) => void
+  setScrubThumbnailPreviews: (val: boolean) => void
+  setShowPlayerLoadingIndicator: (val: boolean) => void
+  setAutoPlayFirstStream: (val: boolean) => void
+  setAutomaticStreamRecovery: (val: boolean) => void
+  setPlaybackPreloadMode: (mode: PlaybackPreloadMode) => void
   setSubtitleFontSize: (size: number) => void
   setSubtitleBgOpacity: (opacity: string) => void
+  setSubtitleColor: (color: string) => void
+  setSubtitleBorderStyle: (style: 'outline' | 'shadow' | 'none') => void
+  setSubtitlePreset: (preset: 'standard' | 'boxed' | 'classic' | 'minimal' | 'bold' | 'custom') => void
+  setSubtitleScale: (scale: number) => void
+  setSubtitleBold: (bold: boolean) => void
+  setSubtitleItalic: (italic: boolean) => void
+  setSubtitleOutlineColor: (color: string) => void
+  setSubtitleBgColor: (color: string) => void
+  setSubtitleOutlineThickness: (thickness: number) => void
+  setSubtitleShadowOffset: (offset: number) => void
+  setSubtitleShadowOpacity: (opacity: number) => void
+  setSubtitleVerticalPosition: (pos: number) => void
+  setSubtitleAlignment: (align: 'left' | 'center' | 'right') => void
+  setSubtitleHorizontalMargin: (margin: number) => void
+  setSubtitleTextBlur: (blur: number) => void
+  setSubtitleScaleWithWindow: (scale: boolean) => void
+  setSubtitleAssOverride: (override: 'apply' | 'scale_only' | 'ignore') => void
+  resetSubtitleSettings: () => void
   setVisibleHeroRatings: (ratings: string[]) => void
   setOpenrouterApiKey: (key: string) => void
   setOpenrouterModel: (model: string) => void
 
-  mpvCacheSecs: number
-  mpvNetworkTimeout: number
-  mpvCustomArgs: string
-  setMpvCacheSecs: (secs: number) => void
-  setMpvNetworkTimeout: (secs: number) => void
-  setMpvCustomArgs: (args: string) => void
+  seekStepSeconds: number
+  setSeekStepSeconds: (secs: number) => void
   resetPlayerSettings: () => void
+
+  // Image cache settings
+  imageQuality: 'data-saver' | 'balanced' | 'high'
+  imageCacheSizeMb: number
+  imageKeepDays: number
+  setImageQuality: (q: 'data-saver' | 'balanced' | 'high') => void
+  setImageCacheSizeMb: (mb: number) => void
+  setImageKeepDays: (days: number) => void
+  hydrateProfileState: () => void
 }
 
 function loadPersistedAddons(): InstalledAddon[] {
   try {
-    const raw = localStorage.getItem('orynt_addons')
+    const raw = localStorage.getItem('aurales_addons')
     if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return []
 }
 
 function persistAddons(addons: InstalledAddon[]): void {
-  localStorage.setItem('orynt_addons', JSON.stringify(addons))
+  localStorage.setItem('aurales_addons', JSON.stringify(addons))
 }
 
 function loadPersistedHomeRows(): HomeRowConfig[] | null {
   try {
-    const raw = localStorage.getItem('orynt_home_rows')
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+    const raw = localStorage.getItem(profileStorageKey('aurales_home_rows'))
+    if (raw) {
+      const rows = JSON.parse(raw) as HomeRowConfig[]
+      const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
+      // Upcoming is a core built-in shelf, like Continue Watching. Existing
+      // profiles receive it once without replacing or reordering their layout.
+      const migrated = sanitized.some((row) => row.layout === 'upcoming')
+        ? sanitized
+        : (() => {
+            const ordered = [...sanitized].sort((a, b) => a.order - b.order)
+            const continueIndex = ordered.findIndex((row) => row.layout === 'continue')
+            ordered.splice(continueIndex >= 0 ? continueIndex + 1 : 0, 0, { id: 'upcoming', title: 'Upcoming', layout: 'upcoming' as const, enabled: true, order: 0, sourceType: 'local' as const })
+            return ordered.map((row, index) => ({ ...row, order: index }))
+          })()
+      if (migrated.length !== rows.length || migrated !== sanitized) persistHomeRows(migrated)
+      return migrated
+    }
+  } catch (_) { /* ignore */ }
   return null
 }
 
 function persistHomeRows(rows: HomeRowConfig[]): void {
-  localStorage.setItem('orynt_home_rows', JSON.stringify(rows))
+  localStorage.setItem(profileStorageKey('aurales_home_rows'), JSON.stringify(rows))
 }
 
 function loadPersistedWatchProgress(): Map<string, WatchProgress> {
   try {
-    const raw = localStorage.getItem('orynt_watch_progress')
+    const raw = localStorage.getItem(profileStorageKey('aurales_watch_progress'))
     if (raw) {
-      const parsed = JSON.parse(raw)
-      return new Map(Object.entries(parsed))
+      const parsed: unknown = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map()
+      const entries = Object.entries(parsed).flatMap(([key, value]) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+          typeof (value as Record<string, unknown>).completed !== 'boolean') return []
+        return [[key, value as WatchProgress] as [string, WatchProgress]]
+      })
+      return new Map(entries)
     }
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
   return new Map()
+}
+
+function buildCompletedIds(map: Map<string, WatchProgress>): Set<string> {
+  const ids = new Set<string>()
+  for (const [key, p] of map) {
+    if (!p.completed) continue
+
+    const tmdbId = p.tmdbId != null && p.tmdbId !== ''
+      ? String(p.tmdbId).replace(/^tmdb[-:]/i, '')
+      : undefined
+    const normalizeAlias = (value: string) => {
+      if (!tmdbId) return value
+      if (value === tmdbId) return `tmdb-${tmdbId}`
+      if (value.startsWith(`${tmdbId}:`)) return `tmdb-${value}`
+      return value
+    }
+
+    // Keep the batch lookup's local index in step with normalizedIds() in
+    // watchedStatus. Playback progress can be keyed by a provider's canonical
+    // id while detail rows are keyed by a different provider id.
+    const mediaIds = new Set<string>([key, p.id, p.mediaId].filter(Boolean).map((value) => normalizeAlias(String(value))))
+    if (p.imdbId) mediaIds.add(String(p.imdbId))
+    if (p.tmdbId != null && p.tmdbId !== '') {
+      mediaIds.add(`tmdb-${tmdbId}`)
+    }
+    if (p.malId != null && p.malId !== '') {
+      mediaIds.add(`mal-${p.malId}`)
+    }
+    if (p.anilistId != null && p.anilistId !== '') {
+      mediaIds.add(`anilist-${p.anilistId}`)
+    }
+
+    for (const id of mediaIds) {
+      ids.add(id)
+      if (p.season != null && p.episode != null) ids.add(`${id}:${p.season}:${p.episode}`)
+    }
+  }
+  return ids
+}
+
+function hasSameCompletedIdentity(a: WatchProgress, b: WatchProgress): boolean {
+  return a.completed === b.completed
+    && a.id === b.id
+    && a.mediaId === b.mediaId
+    && a.imdbId === b.imdbId
+    && a.tmdbId === b.tmdbId
+    && a.malId === b.malId
+    && a.anilistId === b.anilistId
+    && a.season === b.season
+    && a.episode === b.episode
 }
 
 function persistWatchProgress(map: Map<string, WatchProgress>): void {
   try {
     const obj = Object.fromEntries(map.entries())
-    localStorage.setItem('orynt_watch_progress', JSON.stringify(obj))
-  } catch { /* ignore */ }
+    localStorage.setItem(profileStorageKey('aurales_watch_progress'), JSON.stringify(obj))
+  } catch (_) { /* ignore */ }
 }
 
 function loadPersistedPreferredSubtitles(): string[] {
   try {
-    const raw = localStorage.getItem('orynt_preferred_subtitles')
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+    const raw = localStorage.getItem(profileStorageKey('aurales_preferred_subtitles'))
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === 'string')
+    }
+  } catch (_) { /* ignore */ }
   return ['en']
+}
+
+function loadPersistedSubtitleMode(): 'show' | 'forced' | 'hide' {
+  const mode = localStorage.getItem(profileStorageKey('aurales_subtitle_mode'))
+  return mode === 'forced' || mode === 'hide' || mode === 'show' ? mode : 'show'
 }
 
 function loadPersistedPreferredAudio(): string[] {
   try {
-    const raw = localStorage.getItem('orynt_preferred_audio')
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
+    const raw = localStorage.getItem(profileStorageKey('aurales_preferred_audio'))
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === 'string')
+    }
+  } catch (_) { /* ignore */ }
   return ['en', 'ja']
 }
 
 function loadRecentlyViewed(): SearchResult[] {
   try {
-    const raw = localStorage.getItem('orynt_recently_viewed')
-    return raw ? JSON.parse(raw) as SearchResult[] : []
-  } catch {
+    const raw = localStorage.getItem(profileStorageKey('aurales_recently_viewed'))
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((item): item is SearchResult => Boolean(item && typeof item === 'object')) : []
+  } catch (_) {
     return []
   }
 }
@@ -357,19 +743,37 @@ export const APP_LANGUAGES: LanguageItem[] = [
 
 export function getLanguageCodeFromTrack(langStr?: string): string | null {
   if (!langStr) return null
-  const cleaned = langStr.toLowerCase().trim()
+  const cleaned = langStr
+    .toLowerCase()
+    .trim()
+    .replace(/_/g, '-')
+    .replace(/\b(?:forced|default|sdh|cc)\b/g, '')
+    .replace(/[()[\]]/g, ' ')
+    .trim()
+  const tag = cleaned.split(/[\s/|,]+/)[0]
+  const base = tag.split('-')[0]
   const found = APP_LANGUAGES.find(
-    (l) => l.code === cleaned || l.iso3.includes(cleaned) || l.name.toLowerCase() === cleaned
+    (l) => l.code === cleaned || l.code === base || l.iso3.includes(cleaned) || l.iso3.includes(base) || l.name.toLowerCase() === cleaned
   )
-  return found ? found.code : null
+  return found?.code || (/^[a-z]{2,3}$/.test(base) ? base : null)
 }
 
-const DEFAULT_HOME_ROWS: HomeRowConfig[] = [
-  { id: 'hero-featured', title: 'Featured', layout: 'hero', enabled: true, order: 0 },
-  { id: 'continue-watching', title: 'Continue Watching', layout: 'continue', enabled: true, order: 1, sourceType: 'local' },
-  { id: 'trending-movies', title: 'Trending Movies', addonId: 'com.example.mockaddon', catalogType: 'movie', catalogId: 'mock-movies', layout: 'poster', enabled: true, order: 2 },
-  { id: 'popular-series', title: 'Popular Series', addonId: 'com.example.mockaddon', catalogType: 'series', catalogId: 'mock-series', layout: 'landscape', enabled: true, order: 3 },
-]
+export function getLanguageNameFromTrack(langStr?: string): string {
+  if (!langStr) return 'Unknown'
+  const code = getLanguageCodeFromTrack(langStr)
+  const known = APP_LANGUAGES.find((language) => language.code === code || language.iso3.includes(code || ''))
+  if (known) return known.name
+  if (code) {
+    try {
+      const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(code)
+      if (name && name.toLowerCase() !== code.toLowerCase()) return name
+    } catch (_) { /* fall through */ }
+  }
+  return langStr.trim() || 'Unknown'
+}
+
+const DEFAULT_HOME_ROWS: HomeRowConfig[] = buildDefaultHomeRows()
+const INITIAL_WATCH_PROGRESS = loadPersistedWatchProgress()
 
 export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: true,
@@ -377,35 +781,46 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   tmdbApiKey: localStorage.getItem('tmdb_api_key') || '',
   tvdbApiKey: localStorage.getItem('tvdb_api_key') || '',
-  traktClientId: localStorage.getItem('trakt_client_id') || '',
-  traktClientSecret: localStorage.getItem('trakt_client_secret') || '',
   traktConnected: !!localStorage.getItem('trakt_tokens'),
   mdblistApiKey: localStorage.getItem('mdblist_api_key') || '',
   traktAccount: (() => {
     try {
       const raw = localStorage.getItem('trakt_account')
       return raw ? JSON.parse(raw) as TraktAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
-  setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); set({ tmdbApiKey: key }) },
-  setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); set({ tvdbApiKey: key }) },
-  setTraktClientId: (key) => { localStorage.setItem('trakt_client_id', key); set({ traktClientId: key }) },
-  setTraktClientSecret: (key) => { localStorage.setItem('trakt_client_secret', key); set({ traktClientSecret: key }) },
-  setTraktConnected: (connected) => set({ traktConnected: connected }),
+  setTmdbApiKey: (key) => { localStorage.setItem('tmdb_api_key', key); invalidateCatalogData(); set({ tmdbApiKey: key }) },
+  setTvdbApiKey: (key) => { localStorage.setItem('tvdb_api_key', key); invalidateCatalogData(); set({ tvdbApiKey: key }) },
+  setTraktConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('trakt')
+    set({ traktConnected: connected })
+  },
   setTraktAccount: (account) => {
+    const previous = get().traktAccount
+    const changed = previous?.username !== account?.username
+    if (previous?.username && changed) clearContinueWatchingSnapshotsForSource('trakt')
     if (account) localStorage.setItem('trakt_account', JSON.stringify(account))
     else localStorage.removeItem('trakt_account')
     set({ traktAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
-  setMdblistApiKey: (key) => { localStorage.setItem('mdblist_api_key', key); set({ mdblistApiKey: key }) },
+  setMdblistApiKey: (key) => {
+    const changed = get().mdblistApiKey !== key
+    localStorage.setItem('mdblist_api_key', key)
+    if (changed) rotateProviderCredentialScope('mdblist', Boolean(key || localStorage.getItem('mdblist_oauth_tokens')))
+    set({ mdblistApiKey: key })
+  },
 
   scrobbleSimkl: localStorage.getItem('scrobble_simkl') !== 'false',
   scrobbleTrakt: localStorage.getItem('scrobble_trakt') !== 'false',
   scrobblePmdb: localStorage.getItem('scrobble_pmdb') !== 'false',
+  scrobbleMdblist: localStorage.getItem('scrobble_mdblist') !== 'false',
   scrobbleAnilist: localStorage.getItem('scrobble_anilist') !== 'false',
   setScrobbleSimkl: (enabled) => { localStorage.setItem('scrobble_simkl', String(enabled)); set({ scrobbleSimkl: enabled }) },
   setScrobbleTrakt: (enabled) => { localStorage.setItem('scrobble_trakt', String(enabled)); set({ scrobbleTrakt: enabled }) },
   setScrobblePmdb: (enabled) => { localStorage.setItem('scrobble_pmdb', String(enabled)); set({ scrobblePmdb: enabled }) },
+  setScrobbleMdblist: (enabled) => { localStorage.setItem('scrobble_mdblist', String(enabled)); set({ scrobbleMdblist: enabled }) },
   setScrobbleAnilist: (enabled) => { localStorage.setItem('scrobble_anilist', String(enabled)); set({ scrobbleAnilist: enabled }) },
 
   simklConnected: !!localStorage.getItem('simkl_token'),
@@ -413,13 +828,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('simkl_account')
       return raw ? JSON.parse(raw) as SimklAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
-  setSimklConnected: (connected) => set({ simklConnected: connected }),
+  setSimklConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('simkl')
+    set({ simklConnected: connected })
+  },
   setSimklAccount: (account) => {
+    const previous = get().simklAccount
+    const changed = previous?.id !== account?.id
+    if (previous?.id && changed) clearContinueWatchingSnapshotsForSource('simkl')
     if (account) localStorage.setItem('simkl_account', JSON.stringify(account))
     else localStorage.removeItem('simkl_account')
     set({ simklAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
 
   anilistConnected: !!localStorage.getItem('anilist_token'),
@@ -427,28 +850,41 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('anilist_account')
       return raw ? JSON.parse(raw) as AniListAccount : null
-    } catch { return null }
+    } catch (_) { return null }
   })(),
-  anilistClientId: localStorage.getItem('anilist_client_id') || '',
-  anilistClientSecret: localStorage.getItem('anilist_client_secret') || '',
-  setAnilistConnected: (connected) => set({ anilistConnected: connected }),
+  setAnilistConnected: (connected) => {
+    invalidateCatalogData()
+    if (!connected) clearContinueWatchingSnapshotsForSource('anilist')
+    set({ anilistConnected: connected })
+  },
   setAnilistAccount: (account) => {
+    const previous = get().anilistAccount
+    const changed = previous?.id !== account?.id
+    if (previous?.id && changed) clearContinueWatchingSnapshotsForSource('anilist')
     if (account) localStorage.setItem('anilist_account', JSON.stringify(account))
     else localStorage.removeItem('anilist_account')
     set({ anilistAccount: account })
+    if (changed) notifyWatchedProviderAccountChanged()
   },
-  setAnilistClientId: (key) => { localStorage.setItem('anilist_client_id', key); set({ anilistClientId: key }) },
-  setAnilistClientSecret: (key) => { localStorage.setItem('anilist_client_secret', key); set({ anilistClientSecret: key }) },
 
   addons: loadPersistedAddons(),
-  setAddons: (addons) => { persistAddons(addons); set({ addons }) },
+  setAddons: (addons) => { persistAddons(addons); invalidateCatalogData(); set({ addons }) },
   addAddon: (addon) => set((s) => {
+    invalidateCatalogData()
     const next = [...s.addons, addon]
     persistAddons(next)
     return { addons: next }
   }),
   removeAddon: (addonId) => set((s) => {
+    invalidateCatalogData()
     const next = s.addons.filter((a) => a.manifest.id !== addonId)
+    persistAddons(next)
+    return { addons: next }
+  }),
+  renameAddon: (addonId, displayName) => set((s) => {
+    const next = s.addons.map((addon) => addon.manifest.id === addonId
+      ? { ...addon, displayName: displayName.trim() || undefined }
+      : addon)
     persistAddons(next)
     return { addons: next }
   }),
@@ -462,6 +898,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { homeRows: next }
   }),
   removeHomeRow: (id) => set((s) => {
+    if (s.homeRows.some((row) => row.id === id && (row.layout === 'continue' || row.layout === 'upcoming'))) return s
     const next = s.homeRows.filter((r) => r.id !== id)
     persistHomeRows(next)
     return { homeRows: next }
@@ -478,59 +915,118 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   resetHomeRows: () => { persistHomeRows(DEFAULT_HOME_ROWS); set({ homeRows: DEFAULT_HOME_ROWS }) },
 
-  watchProgress: loadPersistedWatchProgress(),
-  setWatchProgress: (id, progress) => set((s) => {
+  watchProgress: INITIAL_WATCH_PROGRESS,
+  completedIds: buildCompletedIds(INITIAL_WATCH_PROGRESS),
+  setWatchProgress: (id, progress) => get().setWatchProgressBatch([{ id, progress }]),
+  setWatchProgressBatch: (updates) => set((s) => {
+    if (updates.length === 0) return s
+    const profileId = getActiveProfileId()
     const map = new Map(s.watchProgress)
-    map.set(id, progress)
+    const completedIdsChanged = updates.some(({ id, progress }) => {
+      const previous = s.watchProgress.get(id)
+      return !previous || !hasSameCompletedIdentity(previous, progress)
+    })
+    for (const { id, progress } of updates) map.set(id, progress)
+    void import('../services/continueWatchingPolicy').then(({ reconcileContinueWatchingSuppressions }) => {
+      reconcileContinueWatchingSuppressions(updates.map(({ progress }) => progress), profileId)
+    }).catch((error) => console.warn('[appStore] could not reconcile Continue Watching suppressions', error))
     persistWatchProgress(map)
-    return { watchProgress: map }
+    enqueueSyncRecords('progress', updates.map(({ id, progress }) => ({ identity: id, payload: progress })))
+    return { watchProgress: map, completedIds: completedIdsChanged ? buildCompletedIds(map) : s.completedIds }
   }),
   removeWatchProgress: (mediaIds, season, episode) => set((s) => {
     const ids = new Set(mediaIds.filter(Boolean).map(String))
     const map = new Map(s.watchProgress)
+    const removedIds: string[] = []
     for (const [key, progress] of map) {
-      const matchesMedia = ids.has(String(progress.mediaId))
-        || (progress.imdbId != null && ids.has(String(progress.imdbId)))
-        || (progress.tmdbId != null && (ids.has(String(progress.tmdbId)) || ids.has(`tmdb-${progress.tmdbId}`)))
+      const progressIds = [
+        progress.id,
+        progress.mediaId,
+        progress.imdbId,
+        progress.tmdbId,
+        progress.tmdbId != null ? `tmdb-${progress.tmdbId}` : undefined,
+        progress.malId != null ? `mal-${progress.malId}` : undefined,
+        progress.anilistId != null ? `anilist-${progress.anilistId}` : undefined,
+      ]
+      const matchesMedia = progressIds.some((id) => id != null && ids.has(String(id)))
         || Array.from(ids).some((id) => key === id || key.startsWith(`${id}:`))
-      const matchesEpisode = season == null || episode == null
-        || (progress.season === season && progress.episode === episode)
-      if (matchesMedia && matchesEpisode) map.delete(key)
+      const matchesEpisode = season == null
+        || (progress.season === season && (episode == null || progress.episode === episode))
+      if (matchesMedia && matchesEpisode) {
+        map.delete(key)
+        removedIds.push(key)
+      }
     }
     persistWatchProgress(map)
-    return { watchProgress: map }
+    const deletedAt = new Date().toISOString()
+    enqueueSyncRecords('progress', removedIds.map((identity) => ({ identity, payload: { deleted: true, deletedAt } })))
+    return { watchProgress: map, completedIds: buildCompletedIds(map) }
   }),
 
   recentlyWatched: loadRecentlyViewed(),
   addRecentlyWatched: (item) => set((s) => {
     const next = [item, ...s.recentlyWatched.filter((r) => r.id !== item.id)].slice(0, 30)
-    localStorage.setItem('orynt_recently_viewed', JSON.stringify(next))
+    localStorage.setItem(profileStorageKey('aurales_recently_viewed'), JSON.stringify(next))
     return { recentlyWatched: next }
   }),
 
   preferredSubtitles: loadPersistedPreferredSubtitles(),
+  subtitleMode: loadPersistedSubtitleMode(),
   preferredAudio: loadPersistedPreferredAudio(),
+  preferSdhSubtitles: localStorage.getItem(profileStorageKey('aurales_prefer_sdh_subtitles')) === 'true',
+  animeAudioMode: localStorage.getItem(profileStorageKey('aurales_anime_audio_mode')) === 'dub' ? 'dub' : 'sub',
   setPreferredSubtitles: (langs) => {
-    localStorage.setItem('orynt_preferred_subtitles', JSON.stringify(langs))
-    set({ preferredSubtitles: langs })
+    localStorage.setItem(profileStorageKey('aurales_preferred_subtitles'), JSON.stringify(langs))
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: langs,
+      preferredAudio: get().preferredAudio,
+      subtitleMode: get().subtitleMode,
+    })
+    const updates: Partial<AppState> = { preferredSubtitles: langs }
+    if (!localStorage.getItem('aurales_sub_translation_lang') && langs[0]) {
+      updates.subtitleTranslationLang = langs[0]
+    }
+    set(updates)
+  },
+  setSubtitleMode: (mode) => {
+    localStorage.setItem(profileStorageKey('aurales_subtitle_mode'), mode)
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: get().preferredSubtitles,
+      preferredAudio: get().preferredAudio,
+      subtitleMode: mode,
+    })
+    set({ subtitleMode: mode })
   },
   setPreferredAudio: (langs) => {
-    localStorage.setItem('orynt_preferred_audio', JSON.stringify(langs))
+    localStorage.setItem(profileStorageKey('aurales_preferred_audio'), JSON.stringify(langs))
+    enqueueSyncRecord('profile-preferences', 'language-playback', {
+      preferredSubtitles: get().preferredSubtitles,
+      preferredAudio: langs,
+      subtitleMode: get().subtitleMode,
+    })
     set({ preferredAudio: langs })
   },
+  setPreferSdhSubtitles: (enabled) => { localStorage.setItem(profileStorageKey('aurales_prefer_sdh_subtitles'), String(enabled)); set({ preferSdhSubtitles: enabled }) },
+  setAnimeAudioMode: (mode) => { localStorage.setItem(profileStorageKey('aurales_anime_audio_mode'), mode); set({ animeAudioMode: mode }) },
 
-  continueWatchingSource: (localStorage.getItem('orynt_cw_source') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
-  continueWatchingLimit: Number(localStorage.getItem('orynt_cw_limit') || '10'),
-  watchedCheckmarkSources: (() => {
-    try {
-      const raw = localStorage.getItem('orynt_watched_checkmark_sources')
-      if (raw) return JSON.parse(raw) as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
-    } catch { /* ignore */ }
-    return ['local'] as ('local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist')[]
-  })(),
-  watchlistButtonTarget: (localStorage.getItem('orynt_watchlist_target') || 'local') as 'local' | 'trakt' | 'simkl' | 'pmdb' | 'anilist',
+  // Migrate the former Continue Watching-only choice into the unified source.
+  continueWatchingSource: loadProgressSelection(),
+  primaryProgressProvider: loadProgressSelection(),
+  continueWatchingLimit: loadContinueWatchingLimit(),
+  watchedCheckmarkSources: loadProgressSelection() === 'all' ? connectedProgressSources({
+    traktConnected: Boolean(localStorage.getItem('trakt_tokens')),
+    simklConnected: Boolean(localStorage.getItem('simkl_token')),
+    anilistConnected: Boolean(localStorage.getItem('anilist_token')),
+    pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
+    mdblistApiKey: localStorage.getItem('mdblist_api_key') || '',
+  }) : [loadProgressSelection() as ProgressProvider],
+  continueWatchingProgress: loadContinueWatchingProgress(),
+  showPosterWatchStatus: localStorage.getItem('aurales_show_poster_watch_status') !== 'false',
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
+  mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
+  mdblistSyncFrequency: localStorage.getItem('mdblist_sync_freq') || 'every_5',
+  mdblistLastSyncTime: localStorage.getItem('mdblist_last_sync') || '',
   pmdbSyncFrequency: localStorage.getItem('pmdb_sync_freq') || 'every_minute',
   pmdbLastSyncTime: localStorage.getItem('pmdb_last_sync') || '',
   traktSaveResumePosition: localStorage.getItem('trakt_save_resume') !== 'false',
@@ -540,51 +1036,154 @@ export const useAppStore = create<AppState>((set, get) => ({
   anilistSyncFrequency: localStorage.getItem('anilist_sync_freq') || 'every_5',
   introdbApiKey: localStorage.getItem('introdb_api_key') || '',
   animeTrackingProvider: (localStorage.getItem('anime_tracking_provider') || 'anilist') as 'anilist' | 'simkl' | 'trakt' | 'local',
-  animeShowWatchedFrom: (localStorage.getItem('anime_show_watched') || 'all') as 'all' | 'provider',
 
-  blurSpoilers: localStorage.getItem('orynt_blur_spoilers') === 'true',
-  blurThumbnails: localStorage.getItem('orynt_blur_thumbnails') !== 'false',
-  blurTitles: localStorage.getItem('orynt_blur_titles') !== 'false',
-  blurDescriptions: localStorage.getItem('orynt_blur_descriptions') !== 'false',
-  keepNextEpisodeVisible: localStorage.getItem('orynt_keep_next_episode_visible') === 'true',
-  keepFramesFor: (localStorage.getItem('orynt_keep_frames_for') || '30_days') as 'none' | '1_week' | '30_days' | '3_months' | '6_months' | '1_year',
-  savedFramesCount: Number(localStorage.getItem('orynt_saved_frames_count') || '2'),
-  posterSize: (localStorage.getItem('orynt_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
-  nextEpisodePrompt: (localStorage.getItem('orynt_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
+  blurSpoilers: localStorage.getItem('aurales_blur_spoilers') === 'true',
+  blurThumbnails: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_thumbnails') !== 'false',
+  blurTitles: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_titles') !== 'false',
+  blurDescriptions: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_blur_descriptions') !== 'false',
+  keepNextEpisodeVisible: localStorage.getItem('aurales_blur_spoilers') === 'true' && localStorage.getItem('aurales_keep_next_episode_visible') === 'true',
+  posterSize: (getProfileSetting('aurales_poster_size') || 'default') as 'compact' | 'default' | 'large' | 'huge',
+  nextEpisodePrompt: (localStorage.getItem('aurales_next_episode_prompt') || 'auto') as 'auto' | 'off' | '30s' | '45s' | '1m' | '1.5m' | '2m',
+  heroTrailerDelay: loadProfileNumberOption('aurales_hero_trailer_delay', 3, [0, 3, 5, 10, 15, 30]),
+  homeHeroMode: (getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic') as HomeHeroMode,
+  homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
+  fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
+  fixedHeroManualItem: (() => {
+    try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null }
+    catch { return null }
+  })(),
+  resumePriorityOrder: (() => {
+    try {
+      const raw = localStorage.getItem('aurales_resume_priority')
+      const saved = raw ? JSON.parse(raw) as ProgressProvider[] : []
+      const all: ProgressProvider[] = ['simkl', 'trakt', 'pmdb', 'mdblist', 'anilist', 'local']
+      const order = [...new Set([...saved, ...all])].filter((provider): provider is ProgressProvider => all.includes(provider as ProgressProvider))
+      // Existing installs used Local first. Treat it as a fallback until the
+      // user deliberately moves it above a service in the priority list.
+      if (localStorage.getItem('aurales_resume_local_priority_override') !== 'true') {
+        return [...order.filter((provider) => provider !== 'local'), 'local']
+      }
+      return order
+    } catch (_) { /* ignore */ }
+    return ['simkl', 'trakt', 'pmdb', 'mdblist', 'anilist', 'local'] as ProgressProvider[]
+  })(),
 
   // New settings options initial values
-  accentColor: (localStorage.getItem('orynt_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
-  defaultStartPage: (localStorage.getItem('orynt_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
-  showRatingsOnCards: localStorage.getItem('orynt_show_ratings_on_cards') !== 'false',
-  discoveryRegion: localStorage.getItem('orynt_discovery_region') || 'US',
-  discoveryMinRating: Number(localStorage.getItem('orynt_discovery_min_rating') || '6'),
-  discoveryIncludeAdult: localStorage.getItem('orynt_discovery_include_adult') === 'true',
-  hwdecMode: (localStorage.getItem('orynt_hwdec_mode') || 'auto') as 'auto' | 'no' | 'nvdec' | 'vaapi' | 'videotoolbox',
+  accentColor: (localStorage.getItem('aurales_accent_color') || 'white') as 'green' | 'purple' | 'blue' | 'red' | 'orange' | 'pink' | 'white',
+  interfaceTheme: loadInterfaceTheme(),
+  // `theme` was the original name for the soft graphite surface. Keep old
+  // installations on that visually-identical option when they update.
+  themeBackground: (() => {
+    const saved = localStorage.getItem('aurales_theme_background')
+    return saved === 'slate' || saved === 'oled' ? saved : 'graphite'
+  })() as 'graphite' | 'slate' | 'oled',
+  navigationStyle: (localStorage.getItem('aurales_navigation_style') || (loadInterfaceTheme() === 'cinematic' ? 'topbar' : 'sidebar')) as 'sidebar' | 'topbar',
+  defaultStartPage: (localStorage.getItem('aurales_default_start_page') || 'home') as 'home' | 'discover' | 'collections' | 'search',
+  rowEntryCount: loadRowEntryCount(),
+  showRatingsOnCards: localStorage.getItem('aurales_show_ratings_on_cards') === 'true',
+  showGenreOnCards: localStorage.getItem('aurales_show_genre_on_cards') === 'true',
+  posterTrailerPreviews: localStorage.getItem('aurales_poster_trailer_previews') !== 'false',
+  posterTrailerHoverDelayMs: (() => {
+    const delayMs = Number(localStorage.getItem('aurales_poster_trailer_hover_delay_ms') || '2000')
+    return [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 2000
+  })(),
+  posterTrailerSound: localStorage.getItem('aurales_poster_trailer_sound') !== 'false',
+  trailerVolume: (() => {
+    const volume = Number(localStorage.getItem('aurales_trailer_volume') || '50')
+    return Number.isFinite(volume) ? Math.min(100, Math.max(0, volume)) : 50
+  })(),
+  discoveryRegion: localStorage.getItem('aurales_discovery_region') || 'US',
+  discoveryMinRating: loadDiscoveryMinRating(),
+  discoveryIncludeAdult: localStorage.getItem('aurales_discovery_include_adult') === 'true',
   isolatedPlaybackMode: false,
-  isolatedPlaybackHwdec: (localStorage.getItem('orynt_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
-  isolatedPlaybackResume: localStorage.getItem('orynt_isolated_resume') === 'true',
-  cacheBufferSize: (localStorage.getItem('orynt_cache_buffer_size') || 'default') as 'default' | 'large' | 'aggressive',
-  audioPassthrough: localStorage.getItem('orynt_audio_passthrough') === 'true',
-  autoSkipSegments: localStorage.getItem('orynt_auto_skip_segments') === 'true',
-  subtitleFontSize: Number(localStorage.getItem('orynt_sub_font_size') || '24'),
-  subtitleBgOpacity: localStorage.getItem('orynt_sub_bg_opacity') || '0',
+  isolatedPlaybackHwdec: (localStorage.getItem('aurales_isolated_hwdec') || 'auto-safe') as 'auto-safe' | 'no',
+  isolatedPlaybackResume: localStorage.getItem('aurales_isolated_resume') === 'true',
+  videoCacheMode: (() => {
+    const mode = getProfileSetting('aurales_video_cache_mode')
+    return mode === 'memory' || mode === 'disk' ? mode : 'auto'
+  })() as 'memory' | 'disk' | 'auto',
+  audioPassthrough: localStorage.getItem('aurales_audio_passthrough') === 'true',
+  autoSkipSegments: localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  showSkipIntroButton: localStorage.getItem('aurales_show_skip_intro_button') !== 'false',
+  autoSkipIntro: localStorage.getItem('aurales_auto_skip_intro') === 'true' || localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  showSkipCreditsButton: localStorage.getItem('aurales_show_skip_credits_button') !== 'false',
+  autoSkipCredits: localStorage.getItem('aurales_auto_skip_credits') === 'true' || localStorage.getItem('aurales_auto_skip_segments') === 'true',
+  autoPlayNextEpisode: localStorage.getItem('aurales_auto_play_next_episode') !== 'false',
+  nextEpisodeCountdownSeconds: (() => {
+    const value = Number(localStorage.getItem('aurales_next_episode_countdown_seconds') || '15')
+    return ([5, 10, 15, 30].includes(value) ? value : 15) as 5 | 10 | 15 | 30
+  })(),
+  scrubThumbnailPreviews: localStorage.getItem('aurales_scrub_thumbnail_previews') !== 'false',
+  showPlayerLoadingIndicator: localStorage.getItem('aurales_show_player_loading_indicator') !== 'false',
+  // Default ON: instant playback (detail-page prepare + startup preload) is
+  // the expected experience; users who want the manual picker opt out.
+  autoPlayFirstStream: localStorage.getItem('aurales_auto_play_first_stream') !== 'false',
+  automaticStreamRecovery: localStorage.getItem('aurales_automatic_stream_recovery') !== 'false',
+  playbackPreloadMode: (() => {
+    const saved = localStorage.getItem('aurales_playback_preload_mode')
+    if (saved === 'off' || saved === 'smart' || saved === 'aggressive') return saved
+    const migrated: PlaybackPreloadMode = localStorage.getItem('aurales_preload_playback_sources') === 'false' ? 'off' : 'smart'
+    localStorage.setItem('aurales_playback_preload_mode', migrated)
+    return migrated
+  })(),
+  subtitleFontSize: loadNumberInRange('aurales_sub_font_size', 24, 16, 64),
+  subtitleBgOpacity: localStorage.getItem('aurales_sub_bg_opacity') || '0',
+  subtitleColor: localStorage.getItem('aurales_sub_color') || '#FFFFFF',
+  subtitleBorderStyle: (localStorage.getItem('aurales_sub_border_style') as 'outline' | 'shadow' | 'none') || 'outline',
+  subtitlePreset: (localStorage.getItem('aurales_sub_preset') as any) || 'standard',
+  subtitleScale: loadNumberInRange('aurales_sub_scale', 1, 0.5, 2.5),
+  subtitleBold: localStorage.getItem('aurales_sub_bold') === 'true',
+  subtitleItalic: localStorage.getItem('aurales_sub_italic') === 'true',
+  subtitleOutlineColor: localStorage.getItem('aurales_sub_outline_color') || '#000000',
+  subtitleBgColor: localStorage.getItem('aurales_sub_bg_color') || '#000000',
+  subtitleOutlineThickness: loadNumberInRange('aurales_sub_outline_thickness', 1.4, 0, 4),
+  subtitleShadowOffset: loadNumberInRange('aurales_sub_shadow_offset', 1, 0, 5),
+  subtitleShadowOpacity: loadNumberInRange('aurales_sub_shadow_opacity', 0.5, 0, 1),
+  subtitleVerticalPosition: loadNumberInRange('aurales_sub_vertical_position', 100, 50, 150),
+  subtitleAlignment: (localStorage.getItem('aurales_sub_alignment') as any) || 'center',
+  subtitleHorizontalMargin: loadNumberInRange('aurales_sub_horizontal_margin', 19, 0, 100),
+  subtitleTextBlur: loadNumberInRange('aurales_sub_text_blur', 0, 0, 5),
+  subtitleScaleWithWindow: localStorage.getItem('aurales_sub_scale_with_window') !== 'false',
+  subtitleAssOverride: (localStorage.getItem('aurales_sub_ass_override') as any) || 'scale_only',
   visibleHeroRatings: (() => {
     try {
-      const raw = localStorage.getItem('orynt_visible_hero_ratings')
+      const raw = localStorage.getItem('aurales_visible_hero_ratings')
       if (raw) return JSON.parse(raw) as string[]
-    } catch { /* ignore */ }
+    } catch (_) { /* ignore */ }
     return ['imdb', 'rottentomatoes', 'tomatoesaudience', 'metacritic', 'tmdb', 'trakt', 'letterboxd', 'myanimelist']
   })(),
 
-  setContinueWatchingSource: (src) => { localStorage.setItem('orynt_cw_source', src); set({ continueWatchingSource: src }) },
-  setContinueWatchingLimit: (limit) => { localStorage.setItem('orynt_cw_limit', String(limit)); set({ continueWatchingLimit: limit }) },
+  setContinueWatchingSource: (src) => { get().setPrimaryProgressProvider(src) },
+  setPrimaryProgressProvider: (src) => {
+    localStorage.setItem('aurales_watch_data_source', src)
+    localStorage.setItem('aurales_primary_progress_service', src)
+    // Keep the old key in sync for existing Continue Watching snapshots.
+    localStorage.setItem('aurales_cw_source', src)
+    set((state) => ({
+      primaryProgressProvider: src,
+      continueWatchingSource: src,
+      continueWatchingProgress: new Map(),
+      watchedCheckmarkSources: src === 'all' ? connectedProgressSources(state) : [src],
+      resumePriorityOrder: state.resumePriorityOrder,
+    }))
+  },
+  setContinueWatchingLimit: (limit) => { const safe = CONTINUE_WATCHING_LIMITS.includes(limit as typeof CONTINUE_WATCHING_LIMITS[number]) ? limit : 10; localStorage.setItem('aurales_cw_limit', String(safe)); set({ continueWatchingLimit: safe }) },
+  setContinueWatchingProgress: (items) => set({ continueWatchingProgress: buildContinueWatchingProgress(items) }),
+  setShowPosterWatchStatus: (enabled) => { localStorage.setItem('aurales_show_poster_watch_status', String(enabled)); set({ showPosterWatchStatus: enabled }) },
   setWatchedCheckmarkSources: (sources) => {
-    localStorage.setItem('orynt_watched_checkmark_sources', JSON.stringify(sources))
+    localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })
   },
-  setWatchlistButtonTarget: (target) => { localStorage.setItem('orynt_watchlist_target', target); set({ watchlistButtonTarget: target }) },
-  setPmdBApiKey: (key) => { localStorage.setItem('pmdb_api_key', key); set({ pmdbApiKey: key }) },
+  setPmdBApiKey: (key) => {
+    const changed = get().pmdbApiKey !== key
+    localStorage.setItem('pmdb_api_key', key)
+    if (changed) rotateProviderCredentialScope('pmdb', Boolean(key))
+    set({ pmdbApiKey: key })
+  },
   setPmdBSaveResumePosition: (val) => { localStorage.setItem('pmdb_save_resume', String(val)); set({ pmdbSaveResumePosition: val }) },
+  setMdblistSaveResumePosition: (val) => { localStorage.setItem('mdblist_save_resume', String(val)); set({ mdblistSaveResumePosition: val }) },
+  setMdblistSyncFrequency: (freq) => { localStorage.setItem('mdblist_sync_freq', freq); set({ mdblistSyncFrequency: freq }) },
+  setMdblistLastSyncTime: (time) => { localStorage.setItem('mdblist_last_sync', time); set({ mdblistLastSyncTime: time }) },
   setPmdBSyncFrequency: (freq) => { localStorage.setItem('pmdb_sync_freq', freq); set({ pmdbSyncFrequency: freq }) },
   setPmdBLastSyncTime: (time) => { localStorage.setItem('pmdb_last_sync', time); set({ pmdbLastSyncTime: time }) },
   setTraktSaveResumePosition: (val) => { localStorage.setItem('trakt_save_resume', String(val)); set({ traktSaveResumePosition: val }) },
@@ -594,94 +1193,378 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAnilistSyncFrequency: (freq) => { localStorage.setItem('anilist_sync_freq', freq); set({ anilistSyncFrequency: freq }) },
   setIntrodbApiKey: (key) => { localStorage.setItem('introdb_api_key', key); set({ introdbApiKey: key }) },
   setAnimeTrackingProvider: (prov) => { localStorage.setItem('anime_tracking_provider', prov); set({ animeTrackingProvider: prov }) },
-  setAnimeShowWatchedFrom: (watchedFrom) => { localStorage.setItem('anime_show_watched', watchedFrom); set({ animeShowWatchedFrom: watchedFrom }) },
 
-  setBlurSpoilers: (val) => { localStorage.setItem('orynt_blur_spoilers', String(val)); set({ blurSpoilers: val }) },
-  setBlurThumbnails: (val) => { localStorage.setItem('orynt_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
-  setBlurTitles: (val) => { localStorage.setItem('orynt_blur_titles', String(val)); set({ blurTitles: val }) },
-  setBlurDescriptions: (val) => { localStorage.setItem('orynt_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
-  setKeepNextEpisodeVisible: (val) => { localStorage.setItem('orynt_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
-  setKeepFramesFor: (val) => { localStorage.setItem('orynt_keep_frames_for', val); set({ keepFramesFor: val }) },
-  setSavedFramesCount: (count) => { localStorage.setItem('orynt_saved_frames_count', String(count)); set({ savedFramesCount: count }) },
-  setPosterSize: (size) => { localStorage.setItem('orynt_poster_size', size); set({ posterSize: size }) },
-  setNextEpisodePrompt: (prompt) => { localStorage.setItem('orynt_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
+  setBlurSpoilers: (val) => {
+    localStorage.setItem('aurales_blur_spoilers', String(val))
+    localStorage.setItem('aurales_blur_thumbnails', String(val))
+    localStorage.setItem('aurales_blur_titles', String(val))
+    localStorage.setItem('aurales_blur_descriptions', String(val))
+    localStorage.setItem('aurales_keep_next_episode_visible', String(val))
+    set({
+      blurSpoilers: val,
+      blurThumbnails: val,
+      blurTitles: val,
+      blurDescriptions: val,
+      keepNextEpisodeVisible: val,
+    })
+  },
+  setBlurThumbnails: (val) => { localStorage.setItem('aurales_blur_thumbnails', String(val)); set({ blurThumbnails: val }) },
+  setBlurTitles: (val) => { localStorage.setItem('aurales_blur_titles', String(val)); set({ blurTitles: val }) },
+  setBlurDescriptions: (val) => { localStorage.setItem('aurales_blur_descriptions', String(val)); set({ blurDescriptions: val }) },
+  setKeepNextEpisodeVisible: (val) => { localStorage.setItem('aurales_keep_next_episode_visible', String(val)); set({ keepNextEpisodeVisible: val }) },
+  setPosterSize: (size) => { setProfileSetting('aurales_poster_size', size); set({ posterSize: size }) },
+  setNextEpisodePrompt: (prompt) => { localStorage.setItem('aurales_next_episode_prompt', prompt); set({ nextEpisodePrompt: prompt }) },
+  setHeroTrailerDelay: (seconds) => {
+    const safe = [0, 3, 5, 10, 15, 30].includes(seconds) ? seconds : 0
+    setProfileSetting('aurales_hero_trailer_delay', String(safe))
+    set({ heroTrailerDelay: safe })
+  },
+  setHomeHeroMode: (mode) => {
+    const safeMode: HomeHeroMode = mode === 'fixed' ? 'fixed' : 'dynamic'
+    setProfileSetting('aurales_home_hero_mode', safeMode)
+    set({ homeHeroMode: safeMode })
+  },
+  setHomeCardAnimations: (enabled) => {
+    setProfileSetting('aurales_home_card_animations', String(enabled))
+    set({ homeCardAnimations: enabled })
+  },
+  setFixedHeroSource: (source) => { setProfileSetting('aurales_fixed_hero_source', source); set({ fixedHeroSource: source }) },
+  setFixedHeroManualItem: (item) => {
+    if (item) setProfileSetting('aurales_fixed_hero_manual_item', JSON.stringify(item))
+    else localStorage.removeItem(profileStorageKey('aurales_fixed_hero_manual_item'))
+    set({ fixedHeroManualItem: item })
+  },
+  setResumePriorityOrder: (order) => {
+    const localIndex = order.indexOf('local')
+    localStorage.setItem('aurales_resume_local_priority_override', String(localIndex >= 0 && localIndex < order.length - 1))
+    localStorage.setItem('aurales_resume_priority', JSON.stringify(order)); set({ resumePriorityOrder: order })
+  },
 
-  setAccentColor: (color) => { localStorage.setItem('orynt_accent_color', color); set({ accentColor: color }) },
-  setDefaultStartPage: (page) => { localStorage.setItem('orynt_default_start_page', page); set({ defaultStartPage: page }) },
-  setShowRatingsOnCards: (show) => { localStorage.setItem('orynt_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
-  setDiscoveryRegion: (region) => { localStorage.setItem('orynt_discovery_region', region); set({ discoveryRegion: region }) },
-  setDiscoveryMinRating: (rating) => { localStorage.setItem('orynt_discovery_min_rating', String(rating)); set({ discoveryMinRating: rating }) },
-  setDiscoveryIncludeAdult: (include) => { localStorage.setItem('orynt_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
-  setHwdecMode: (mode) => { localStorage.setItem('orynt_hwdec_mode', mode); set({ hwdecMode: mode }) },
-  setIsolatedPlaybackMode: (value) => { localStorage.removeItem('orynt_isolated_playback'); set({ isolatedPlaybackMode: value }) },
-  setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('orynt_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
-  setIsolatedPlaybackResume: (value) => { localStorage.setItem('orynt_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
-  setCacheBufferSize: (size) => { localStorage.setItem('orynt_cache_buffer_size', size); set({ cacheBufferSize: size }) },
-  setAudioPassthrough: (val) => { localStorage.setItem('orynt_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
-  setAutoSkipSegments: (val) => { localStorage.setItem('orynt_auto_skip_segments', String(val)); set({ autoSkipSegments: val }) },
-  setSubtitleFontSize: (size) => { localStorage.setItem('orynt_sub_font_size', String(size)); set({ subtitleFontSize: size }) },
-  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('orynt_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity }) },
-  setVisibleHeroRatings: (ratings) => { localStorage.setItem('orynt_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
+  setAccentColor: (color) => { localStorage.setItem('aurales_accent_color', color); set({ accentColor: color }) },
+  setInterfaceTheme: () => { persistInterfaceTheme('cinematic'); set({ interfaceTheme: 'cinematic' }) },
+  setThemeBackground: (bg) => { localStorage.setItem('aurales_theme_background', bg); set({ themeBackground: bg }) },
+  setNavigationStyle: (style) => { localStorage.setItem('aurales_navigation_style', style); set({ navigationStyle: style }) },
+  setDefaultStartPage: (page) => { localStorage.setItem('aurales_default_start_page', page); set({ defaultStartPage: page }) },
+  setRowEntryCount: (count) => {
+    const safeCount: RowEntryCount = count === 10 || count === 20 || count === 25 ? count : 15
+    localStorage.setItem('aurales_row_entry_count', String(safeCount))
+    set({ rowEntryCount: safeCount })
+  },
+  setShowRatingsOnCards: (show) => { localStorage.setItem('aurales_show_ratings_on_cards', String(show)); set({ showRatingsOnCards: show }) },
+  setShowGenreOnCards: (show) => { localStorage.setItem('aurales_show_genre_on_cards', String(show)); set({ showGenreOnCards: show }) },
+  setPosterTrailerPreviews: (show) => { localStorage.setItem('aurales_poster_trailer_previews', String(show)); set({ posterTrailerPreviews: show }) },
+  setPosterTrailerHoverDelayMs: (delayMs) => {
+    const safe = [0, 250, 500, 750, 1000, 1500, 2000].includes(delayMs) ? delayMs : 500
+    localStorage.setItem('aurales_poster_trailer_hover_delay_ms', String(safe))
+    set({ posterTrailerHoverDelayMs: safe })
+  },
+  setPosterTrailerSound: (sound) => { localStorage.setItem('aurales_poster_trailer_sound', String(sound)); set({ posterTrailerSound: sound }) },
+  setTrailerVolume: (volume) => {
+    const safe = Number.isFinite(volume) ? Math.min(100, Math.max(0, Math.round(volume))) : 80
+    localStorage.setItem('aurales_trailer_volume', String(safe))
+    set({ trailerVolume: safe })
+  },
+  setDiscoveryRegion: (region) => { localStorage.setItem('aurales_discovery_region', region); invalidateCatalogData(); set({ discoveryRegion: region }) },
+  setDiscoveryMinRating: (rating) => { const safe = DISCOVERY_MIN_RATINGS.includes(rating as typeof DISCOVERY_MIN_RATINGS[number]) ? rating : 6; localStorage.setItem('aurales_discovery_min_rating', String(safe)); set({ discoveryMinRating: safe }) },
+  setDiscoveryIncludeAdult: (include) => { localStorage.setItem('aurales_discovery_include_adult', String(include)); set({ discoveryIncludeAdult: include }) },
+  setIsolatedPlaybackMode: (value) => { localStorage.removeItem('aurales_isolated_playback'); set({ isolatedPlaybackMode: value }) },
+  setIsolatedPlaybackHwdec: (mode) => { localStorage.setItem('aurales_isolated_hwdec', mode); set({ isolatedPlaybackHwdec: mode }) },
+  setIsolatedPlaybackResume: (value) => { localStorage.setItem('aurales_isolated_resume', String(value)); set({ isolatedPlaybackResume: value }) },
+  setVideoCacheMode: (mode) => { setProfileSetting('aurales_video_cache_mode', mode); set({ videoCacheMode: mode }) },
+  setAudioPassthrough: (val) => { localStorage.setItem('aurales_audio_passthrough', String(val)); set({ audioPassthrough: val }) },
+  setAutoSkipSegments: (val) => {
+    localStorage.setItem('aurales_auto_skip_segments', String(val))
+    localStorage.setItem('aurales_auto_skip_intro', String(val))
+    localStorage.setItem('aurales_auto_skip_credits', String(val))
+    set({ autoSkipSegments: val, autoSkipIntro: val, autoSkipCredits: val })
+  },
+  setShowSkipIntroButton: (val) => { localStorage.setItem('aurales_show_skip_intro_button', String(val)); set({ showSkipIntroButton: val }) },
+  setAutoSkipIntro: (val) => { localStorage.setItem('aurales_auto_skip_intro', String(val)); localStorage.setItem('aurales_auto_skip_segments', 'false'); set({ autoSkipIntro: val, autoSkipSegments: false }) },
+  setShowSkipCreditsButton: (val) => { localStorage.setItem('aurales_show_skip_credits_button', String(val)); set({ showSkipCreditsButton: val }) },
+  setAutoSkipCredits: (val) => { localStorage.setItem('aurales_auto_skip_credits', String(val)); localStorage.setItem('aurales_auto_skip_segments', 'false'); set({ autoSkipCredits: val, autoSkipSegments: false }) },
+  setAutoPlayNextEpisode: (val) => { localStorage.setItem('aurales_auto_play_next_episode', String(val)); set({ autoPlayNextEpisode: val }) },
+  setNextEpisodeCountdownSeconds: (seconds) => { localStorage.setItem('aurales_next_episode_countdown_seconds', String(seconds)); set({ nextEpisodeCountdownSeconds: seconds }) },
+  setScrubThumbnailPreviews: (val) => { localStorage.setItem('aurales_scrub_thumbnail_previews', String(val)); set({ scrubThumbnailPreviews: val }) },
+  setShowPlayerLoadingIndicator: (val) => { localStorage.setItem('aurales_show_player_loading_indicator', String(val)); set({ showPlayerLoadingIndicator: val }) },
+  setAutoPlayFirstStream: (val) => { localStorage.setItem('aurales_auto_play_first_stream', String(val)); set({ autoPlayFirstStream: val }) },
+  setAutomaticStreamRecovery: (val) => { localStorage.setItem('aurales_automatic_stream_recovery', String(val)); set({ automaticStreamRecovery: val }) },
+  setPlaybackPreloadMode: (mode) => {
+    localStorage.setItem('aurales_playback_preload_mode', mode)
+    localStorage.removeItem('aurales_preload_playback_sources')
+    set({ playbackPreloadMode: mode })
+  },
+  setSubtitleFontSize: (size) => { localStorage.setItem('aurales_sub_font_size', String(size)); set({ subtitleFontSize: size, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBgOpacity: (opacity) => { localStorage.setItem('aurales_sub_bg_opacity', opacity); set({ subtitleBgOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleColor: (color) => { localStorage.setItem('aurales_sub_color', color); set({ subtitleColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBorderStyle: (style) => { localStorage.setItem('aurales_sub_border_style', style); set({ subtitleBorderStyle: style, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitlePreset: (preset) => {
+    localStorage.setItem('aurales_sub_preset', preset)
+    const updates: Partial<AppState> = { subtitlePreset: preset }
+    if (preset === 'standard') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 1.4
+      updates.subtitleShadowOffset = 1.0
+      updates.subtitleShadowOpacity = 0.5
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    } else if (preset === 'boxed') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0.8'
+      updates.subtitleOutlineThickness = 0
+      updates.subtitleShadowOffset = 0
+      updates.subtitleShadowOpacity = 0
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'none'
+    } else if (preset === 'classic') {
+      updates.subtitleColor = '#FFFF00'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 1.4
+      updates.subtitleShadowOffset = 1.0
+      updates.subtitleShadowOpacity = 0.5
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    } else if (preset === 'minimal') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 0
+      updates.subtitleShadowOffset = 1.5
+      updates.subtitleShadowOpacity = 0.6
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = false
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'shadow'
+    } else if (preset === 'bold') {
+      updates.subtitleColor = '#FFFFFF'
+      updates.subtitleOutlineColor = '#000000'
+      updates.subtitleBgColor = '#000000'
+      updates.subtitleBgOpacity = '0'
+      updates.subtitleOutlineThickness = 2.0
+      updates.subtitleShadowOffset = 1.5
+      updates.subtitleShadowOpacity = 0.6
+      updates.subtitleTextBlur = 0.0
+      updates.subtitleBold = true
+      updates.subtitleItalic = false
+      updates.subtitleBorderStyle = 'outline'
+    }
+    if (updates.subtitleColor) localStorage.setItem('aurales_sub_color', updates.subtitleColor)
+    if (updates.subtitleOutlineColor) localStorage.setItem('aurales_sub_outline_color', updates.subtitleOutlineColor)
+    if (updates.subtitleBgColor) localStorage.setItem('aurales_sub_bg_color', updates.subtitleBgColor)
+    if (updates.subtitleBgOpacity) localStorage.setItem('aurales_sub_bg_opacity', updates.subtitleBgOpacity)
+    if (updates.subtitleOutlineThickness !== undefined) localStorage.setItem('aurales_sub_outline_thickness', String(updates.subtitleOutlineThickness))
+    if (updates.subtitleShadowOffset !== undefined) localStorage.setItem('aurales_sub_shadow_offset', String(updates.subtitleShadowOffset))
+    if (updates.subtitleShadowOpacity !== undefined) localStorage.setItem('aurales_sub_shadow_opacity', String(updates.subtitleShadowOpacity))
+    if (updates.subtitleTextBlur !== undefined) localStorage.setItem('aurales_sub_text_blur', String(updates.subtitleTextBlur))
+    if (updates.subtitleBold !== undefined) localStorage.setItem('aurales_sub_bold', String(updates.subtitleBold))
+    if (updates.subtitleItalic !== undefined) localStorage.setItem('aurales_sub_italic', String(updates.subtitleItalic))
+    if (updates.subtitleBorderStyle) localStorage.setItem('aurales_sub_border_style', updates.subtitleBorderStyle)
+    set(updates)
+  },
+  setSubtitleScale: (scale) => { localStorage.setItem('aurales_sub_scale', String(scale)); set({ subtitleScale: scale }) },
+  setSubtitleBold: (bold) => { localStorage.setItem('aurales_sub_bold', String(bold)); set({ subtitleBold: bold, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleItalic: (italic) => { localStorage.setItem('aurales_sub_italic', String(italic)); set({ subtitleItalic: italic, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleOutlineColor: (color) => { localStorage.setItem('aurales_sub_outline_color', color); set({ subtitleOutlineColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleBgColor: (color) => { localStorage.setItem('aurales_sub_bg_color', color); set({ subtitleBgColor: color, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleOutlineThickness: (thickness) => { localStorage.setItem('aurales_sub_outline_thickness', String(thickness)); set({ subtitleOutlineThickness: thickness, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleShadowOffset: (offset) => { localStorage.setItem('aurales_sub_shadow_offset', String(offset)); set({ subtitleShadowOffset: offset, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleShadowOpacity: (opacity) => { localStorage.setItem('aurales_sub_shadow_opacity', String(opacity)); set({ subtitleShadowOpacity: opacity, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleVerticalPosition: (pos) => { localStorage.setItem('aurales_sub_vertical_position', String(pos)); set({ subtitleVerticalPosition: pos }) },
+  setSubtitleAlignment: (align) => { localStorage.setItem('aurales_sub_alignment', align); set({ subtitleAlignment: align }) },
+  setSubtitleHorizontalMargin: (margin) => { localStorage.setItem('aurales_sub_horizontal_margin', String(margin)); set({ subtitleHorizontalMargin: margin }) },
+  setSubtitleTextBlur: (blur) => { localStorage.setItem('aurales_sub_text_blur', String(blur)); set({ subtitleTextBlur: blur, subtitlePreset: 'custom' }); localStorage.setItem('aurales_sub_preset', 'custom') },
+  setSubtitleScaleWithWindow: (scale) => { localStorage.setItem('aurales_sub_scale_with_window', String(scale)); set({ subtitleScaleWithWindow: scale }) },
+  setSubtitleAssOverride: (override) => { localStorage.setItem('aurales_sub_ass_override', override); set({ subtitleAssOverride: override }) },
+  resetSubtitleSettings: () => {
+    localStorage.removeItem('aurales_sub_preset')
+    localStorage.removeItem('aurales_sub_scale')
+    localStorage.removeItem('aurales_sub_bold')
+    localStorage.removeItem('aurales_sub_italic')
+    localStorage.removeItem('aurales_sub_outline_color')
+    localStorage.removeItem('aurales_sub_bg_color')
+    localStorage.removeItem('aurales_sub_outline_thickness')
+    localStorage.removeItem('aurales_sub_shadow_offset')
+    localStorage.removeItem('aurales_sub_shadow_opacity')
+    localStorage.removeItem('aurales_sub_vertical_position')
+    localStorage.removeItem('aurales_sub_alignment')
+    localStorage.removeItem('aurales_sub_horizontal_margin')
+    localStorage.removeItem('aurales_sub_text_blur')
+    localStorage.removeItem('aurales_sub_scale_with_window')
+    localStorage.removeItem('aurales_sub_ass_override')
+    localStorage.removeItem('aurales_sub_font_size')
+    localStorage.removeItem('aurales_sub_bg_opacity')
+    localStorage.removeItem('aurales_sub_color')
+    localStorage.removeItem('aurales_sub_border_style')
+    set({
+      subtitlePreset: 'standard',
+      subtitleScale: 1.0,
+      subtitleBold: false,
+      subtitleItalic: false,
+      subtitleOutlineColor: '#000000',
+      subtitleBgColor: '#000000',
+      subtitleOutlineThickness: 1.4,
+      subtitleShadowOffset: 1.0,
+      subtitleShadowOpacity: 0.5,
+      subtitleVerticalPosition: 100,
+      subtitleAlignment: 'center',
+      subtitleHorizontalMargin: 19,
+      subtitleTextBlur: 0.0,
+      subtitleScaleWithWindow: true,
+      subtitleAssOverride: 'scale_only',
+      subtitleFontSize: 24,
+      subtitleBgOpacity: '0',
+      subtitleColor: '#FFFFFF',
+      subtitleBorderStyle: 'outline'
+    })
+  },
+  setVisibleHeroRatings: (ratings) => { localStorage.setItem('aurales_visible_hero_ratings', JSON.stringify(ratings)); set({ visibleHeroRatings: ratings }) },
+  fanartApiKey: localStorage.getItem('fanart_api_key') || '',
+  setFanartApiKey: (key) => { localStorage.setItem('fanart_api_key', key); invalidateCatalogData(); set({ fanartApiKey: key }) },
   openrouterApiKey: localStorage.getItem('openrouter_api_key') || '',
   openrouterModel: localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash',
   setOpenrouterApiKey: (key) => { localStorage.setItem('openrouter_api_key', key); set({ openrouterApiKey: key }) },
   setOpenrouterModel: (model) => { localStorage.setItem('openrouter_model', model); set({ openrouterModel: model }) },
 
-  mpvCacheSecs: Number(localStorage.getItem('orynt_mpv_cache_secs') || '60'),
-  mpvNetworkTimeout: Number(localStorage.getItem('orynt_mpv_network_timeout') || '15'),
-  mpvCustomArgs: localStorage.getItem('orynt_mpv_custom_args') || '',
-  setMpvCacheSecs: (secs) => { localStorage.setItem('orynt_mpv_cache_secs', String(secs)); set({ mpvCacheSecs: secs }) },
-  setMpvNetworkTimeout: (secs) => { localStorage.setItem('orynt_mpv_network_timeout', String(secs)); set({ mpvNetworkTimeout: secs }) },
-  setMpvCustomArgs: (args) => { localStorage.setItem('orynt_mpv_custom_args', args); set({ mpvCustomArgs: args }) },
+  seekStepSeconds: loadNumberOption('aurales_seek_step_secs', 10, [5, 10, 15, 30, 60]),
+  setSeekStepSeconds: (secs) => { localStorage.setItem('aurales_seek_step_secs', String(secs)); set({ seekStepSeconds: secs }) },
   resetPlayerSettings: () => {
-    localStorage.setItem('orynt_hwdec_mode', 'auto')
-    localStorage.setItem('orynt_cache_buffer_size', 'default')
-    localStorage.setItem('orynt_mpv_cache_secs', '60')
-    localStorage.setItem('orynt_mpv_network_timeout', '15')
-    localStorage.setItem('orynt_mpv_custom_args', '')
+    localStorage.removeItem('aurales_hwdec_mode')
+    setProfileSetting('aurales_video_cache_mode', 'auto')
+    localStorage.removeItem('aurales_cache_buffer_size')
+    localStorage.removeItem('aurales_mpv_cache_secs')
+    localStorage.removeItem('aurales_mpv_network_timeout')
+    localStorage.removeItem('aurales_mpv_custom_args')
+    localStorage.removeItem('aurales_player_quality_profile')
+    localStorage.setItem('aurales_playback_preload_mode', 'smart')
+    localStorage.setItem('aurales_show_skip_intro_button', 'true')
+    localStorage.setItem('aurales_auto_skip_intro', 'false')
+    localStorage.setItem('aurales_show_skip_credits_button', 'true')
+    localStorage.setItem('aurales_auto_skip_credits', 'false')
+    localStorage.setItem('aurales_auto_play_next_episode', 'true')
+    localStorage.setItem('aurales_next_episode_countdown_seconds', '15')
+    localStorage.setItem('aurales_scrub_thumbnail_previews', 'true')
+    localStorage.setItem('aurales_show_player_loading_indicator', 'true')
+    localStorage.removeItem('aurales_preload_playback_sources')
     set({
-      hwdecMode: 'auto',
-      cacheBufferSize: 'default',
-      mpvCacheSecs: 60,
-      mpvNetworkTimeout: 15,
-      mpvCustomArgs: ''
+      videoCacheMode: 'auto',
+      playbackPreloadMode: 'smart',
+      showSkipIntroButton: true,
+      autoSkipIntro: false,
+      showSkipCreditsButton: true,
+      autoSkipCredits: false,
+      autoPlayNextEpisode: true,
+      nextEpisodeCountdownSeconds: 15,
+      scrubThumbnailPreviews: true,
+      showPlayerLoadingIndicator: true,
     })
   },
 
-  movieMetadataSource: (localStorage.getItem('orynt_movie_meta_src') || 'tmdb') as 'tmdb' | 'tvdb',
-  seriesMetadataSource: (localStorage.getItem('orynt_series_meta_src') || 'tvdb') as 'tvdb' | 'tmdb',
-  animeMetadataSource: (localStorage.getItem('orynt_anime_meta_src') || 'tvdb') as 'anilist' | 'mal' | 'kitsu' | 'tvdb' | 'tmdb',
+  // Image cache settings
+  imageQuality: (localStorage.getItem('aurales_image_quality') || 'balanced') as 'data-saver' | 'balanced' | 'high',
+  imageCacheSizeMb: loadNumberOption('aurales_image_cache_size_mb', 500, [100, 250, 500, 1000, 2000]),
+  imageKeepDays: loadNumberOption('aurales_image_keep_days', 3, [1, 3, 7, 14, 30]),
+  setImageQuality: (q) => { localStorage.setItem('aurales_image_quality', q); set({ imageQuality: q }) },
+  setImageCacheSizeMb: (mb) => {
+    localStorage.setItem('aurales_image_cache_size_mb', String(mb))
+    set({ imageCacheSizeMb: mb })
+    void import('../services/imageCache')
+      .then(({ configureImageCache }) => configureImageCache(mb, get().imageKeepDays))
+      .catch((error) => console.warn('[appStore] could not apply image cache size', error))
+  },
+  setImageKeepDays: (days) => {
+    localStorage.setItem('aurales_image_keep_days', String(days))
+    set({ imageKeepDays: days })
+    void import('../services/imageCache')
+      .then(({ configureImageCache }) => configureImageCache(get().imageCacheSizeMb, days))
+      .catch((error) => console.warn('[appStore] could not apply image cache retention', error))
+  },
+  hydrateProfileState: () => {
+    const progress = loadPersistedWatchProgress()
+    set({
+      homeRows: loadPersistedHomeRows() || DEFAULT_HOME_ROWS,
+      watchProgress: progress,
+      completedIds: buildCompletedIds(progress),
+      recentlyWatched: loadRecentlyViewed(),
+      preferredSubtitles: loadPersistedPreferredSubtitles(),
+      subtitleMode: loadPersistedSubtitleMode(),
+      preferredAudio: loadPersistedPreferredAudio(),
+      preferSdhSubtitles: localStorage.getItem(profileStorageKey('aurales_prefer_sdh_subtitles')) === 'true',
+      animeAudioMode: localStorage.getItem(profileStorageKey('aurales_anime_audio_mode')) === 'dub' ? 'dub' : 'sub',
+      posterSize: (getProfileSetting('aurales_poster_size') || 'default') as AppState['posterSize'],
+      heroTrailerDelay: loadProfileNumberOption('aurales_hero_trailer_delay', 3, [0, 3, 5, 10, 15, 30]),
+      homeHeroMode: getProfileSetting('aurales_home_hero_mode') === 'fixed' ? 'fixed' : 'dynamic',
+      homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
+      fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
+      fixedHeroManualItem: (() => { try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null } catch { return null } })(),
+    })
+  },
+
+  artProviders: normalizeArtProviderSettings(readStoredObject('aurales_art_providers')),
+  setArtProviders: (providers) => {
+    const normalized = normalizeArtProviderSettings(providers)
+    localStorage.setItem('aurales_art_providers', JSON.stringify(normalized))
+    invalidateCatalogData()
+    set({ artProviders: normalized })
+  },
+  customArtUrls: loadCustomArtUrls(),
+  setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
+  betterPosters: loadBetterPosterSettings(),
+  setBetterPosters: (settings) => {
+    localStorage.setItem('aurales_better_posters', JSON.stringify(settings))
+    invalidateCatalogData()
+    set({ betterPosters: settings })
+  },
+  // Primary providers are fixed to keep metadata behavior predictable.
+  movieMetadataSource: 'tmdb',
+  seriesMetadataSource: 'tvdb',
+  animeMetadataSource: 'tvdb',
   movieMetadataFallback: false,
   seriesMetadataFallback: false,
   animeMetadataFallback: false,
-  enableCommunityRatings: localStorage.getItem('orynt_community_ratings') !== 'false',
-  appManagedMetadata: localStorage.getItem('orynt_app_managed_metadata') !== 'false',
-  useAddonMetadataFallback: localStorage.getItem('orynt_addon_metadata_fallback') !== 'false',
-  preferTvdbAnimeSeasons: localStorage.getItem('orynt_tvdb_anime_seasons') !== 'false',
-  animeTitleLanguage: (localStorage.getItem('orynt_anime_title_language') || 'auto') as 'english' | 'romaji' | 'native' | 'auto',
-  hideUnairedAnimeSeasons: localStorage.getItem('orynt_hide_unaired_anime_seasons') !== 'false',
-  hideUnairedAnimeEpisodes: localStorage.getItem('orynt_hide_unaired_anime_eps') !== 'false',
-  includeAnimeSpecials: localStorage.getItem('orynt_include_anime_specials') === 'true',
-  ignoreAddonMetadataForAnime: localStorage.getItem('orynt_ignore_addon_meta_anime') !== 'false',
-  useGenericAnimeSeasonLabels: localStorage.getItem('orynt_generic_anime_season_labels') !== 'false',
-  avoidJapaneseSeasonNames: localStorage.getItem('orynt_avoid_jp_season_names') !== 'false',
-  setMovieMetadataSource: (src) => { localStorage.setItem('orynt_movie_meta_src', src); set({ movieMetadataSource: src }); get().clearAnimeCache() },
-  setSeriesMetadataSource: (src) => { localStorage.setItem('orynt_series_meta_src', src); set({ seriesMetadataSource: src }); get().clearAnimeCache() },
-  setAnimeMetadataSource: (src) => { localStorage.setItem('orynt_anime_meta_src', src); set({ animeMetadataSource: src }); get().clearAnimeCache() },
-  setMovieMetadataFallback: (val) => { localStorage.setItem('orynt_movie_meta_fb', String(val)); set({ movieMetadataFallback: val }); get().clearAnimeCache() },
-  setSeriesMetadataFallback: (val) => { localStorage.setItem('orynt_series_meta_fb', String(val)); set({ seriesMetadataFallback: val }); get().clearAnimeCache() },
-  setAnimeMetadataFallback: (val) => { localStorage.setItem('orynt_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
-  setEnableCommunityRatings: (val) => { localStorage.setItem('orynt_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
-  setAppManagedMetadata: (val) => { localStorage.setItem('orynt_app_managed_metadata', String(val)); set({ appManagedMetadata: val }) },
-  setUseAddonMetadataFallback: (val) => { localStorage.setItem('orynt_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
-  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('orynt_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
-  setAnimeTitleLanguage: (val) => { localStorage.setItem('orynt_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },
-  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('orynt_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }); get().clearAnimeCache() },
-  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('orynt_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }); get().clearAnimeCache() },
-  setIncludeAnimeSpecials: (val) => { localStorage.setItem('orynt_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }); get().clearAnimeCache() },
-  setIgnoreAddonMetadataForAnime: (val) => { localStorage.setItem('orynt_ignore_addon_meta_anime', String(val)); set({ ignoreAddonMetadataForAnime: val }) },
-  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('orynt_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }); get().clearAnimeCache() },
-  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('orynt_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }); get().clearAnimeCache() },
+  enableCommunityRatings: localStorage.getItem('aurales_community_ratings') !== 'false',
+  appManagedMetadata: localStorage.getItem('aurales_app_managed_metadata') !== 'false',
+  useAddonMetadataFallback: localStorage.getItem('aurales_addon_metadata_fallback') !== 'false',
+  preferTvdbAnimeSeasons: localStorage.getItem('aurales_tvdb_anime_seasons') !== 'false',
+  animeTitleLanguage: (localStorage.getItem('aurales_anime_title_language') || 'auto') as 'english' | 'romaji' | 'native' | 'auto',
+  hideUnairedAnimeSeasons: localStorage.getItem('aurales_hide_unaired_anime_seasons') !== 'false',
+  hideUnairedAnimeEpisodes: localStorage.getItem('aurales_hide_unaired_anime_eps') !== 'false',
+  includeAnimeSpecials: localStorage.getItem('aurales_include_anime_specials') === 'true',
+  ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',
+  useGenericAnimeSeasonLabels: localStorage.getItem('aurales_generic_anime_season_labels') !== 'false',
+  avoidJapaneseSeasonNames: localStorage.getItem('aurales_avoid_jp_season_names') !== 'false',
+  setMovieMetadataFallback: (val) => {
+    localStorage.setItem('aurales_movie_meta_fb', String(val)); set({ movieMetadataFallback: val })
+    void import('../services/metadata/metadataResolver').then(({ clearAppMetadataCache }) => clearAppMetadataCache()).catch((e) => console.warn('[appStore] clear movie metadata failed:', e))
+  },
+  setSeriesMetadataFallback: (val) => {
+    localStorage.setItem('aurales_series_meta_fb', String(val)); set({ seriesMetadataFallback: val })
+    void import('../services/metadata/metadataResolver').then(({ clearAppMetadataCache }) => clearAppMetadataCache()).catch((e) => console.warn('[appStore] clear series metadata failed:', e))
+  },
+  setAnimeMetadataFallback: (val) => { localStorage.setItem('aurales_anime_meta_fb', String(val)); set({ animeMetadataFallback: val }); get().clearAnimeCache() },
+  setEnableCommunityRatings: (val) => { localStorage.setItem('aurales_community_ratings', String(val)); set({ enableCommunityRatings: val }) },
+  setAppManagedMetadata: (val) => { localStorage.setItem('aurales_app_managed_metadata', String(val)); invalidateCatalogData(); set({ appManagedMetadata: val }) },
+  setUseAddonMetadataFallback: (val) => { localStorage.setItem('aurales_addon_metadata_fallback', String(val)); set({ useAddonMetadataFallback: val }) },
+  setPreferTvdbAnimeSeasons: (val) => { localStorage.setItem('aurales_tvdb_anime_seasons', String(val)); set({ preferTvdbAnimeSeasons: val }); get().clearAnimeCache() },
+  setAnimeTitleLanguage: (val) => { localStorage.setItem('aurales_anime_title_language', val); set({ animeTitleLanguage: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeSeasons: (val) => { localStorage.setItem('aurales_hide_unaired_anime_seasons', String(val)); set({ hideUnairedAnimeSeasons: val }); get().clearAnimeCache() },
+  setHideUnairedAnimeEpisodes: (val) => { localStorage.setItem('aurales_hide_unaired_anime_eps', String(val)); set({ hideUnairedAnimeEpisodes: val }); get().clearAnimeCache() },
+  setIncludeAnimeSpecials: (val) => { localStorage.setItem('aurales_include_anime_specials', String(val)); set({ includeAnimeSpecials: val }); get().clearAnimeCache() },
+  setIgnoreAddonMetadataForAnime: (val) => { localStorage.setItem('aurales_ignore_addon_meta_anime', String(val)); set({ ignoreAddonMetadataForAnime: val }) },
+  setUseGenericAnimeSeasonLabels: (val) => { localStorage.setItem('aurales_generic_anime_season_labels', String(val)); set({ useGenericAnimeSeasonLabels: val }); get().clearAnimeCache() },
+  setAvoidJapaneseSeasonNames: (val) => { localStorage.setItem('aurales_avoid_jp_season_names', String(val)); set({ avoidJapaneseSeasonNames: val }); get().clearAnimeCache() },
   clearAnimeCache: async () => {
     try {
       const { clearAnimeMetadataCache } = await import('../services/metadata/metadataResolver')
@@ -689,32 +1572,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) { console.warn('[appStore] clearAnimeCache failed:', e) }
   },
 
-  movieSearchEngine: localStorage.getItem('orynt_movie_search_engine') || 'tmdb',
-  seriesSearchEngine: localStorage.getItem('orynt_series_search_engine') || 'tvdb',
-  animeSeriesSearchEngine: localStorage.getItem('orynt_anime_series_search_engine') || 'mal',
-  animeMovieSearchEngine: localStorage.getItem('orynt_anime_movie_search_engine') || 'mal',
-  movieSearchEnabled: localStorage.getItem('orynt_movie_search_enabled') !== 'false',
-  seriesSearchEnabled: localStorage.getItem('orynt_series_search_enabled') !== 'false',
-  animeSeriesSearchEnabled: localStorage.getItem('orynt_anime_series_search_enabled') !== 'false',
-  animeMovieSearchEnabled: localStorage.getItem('orynt_anime_movie_search_enabled') !== 'false',
-  setMovieSearchEngine: (engine) => { localStorage.setItem('orynt_movie_search_engine', engine); set({ movieSearchEngine: engine }) },
-  setSeriesSearchEngine: (engine) => { localStorage.setItem('orynt_series_search_engine', engine); set({ seriesSearchEngine: engine }) },
-  setAnimeSeriesSearchEngine: (engine) => { localStorage.setItem('orynt_anime_series_search_engine', engine); set({ animeSeriesSearchEngine: engine }) },
-  setAnimeMovieSearchEngine: (engine) => { localStorage.setItem('orynt_anime_movie_search_engine', engine); set({ animeMovieSearchEngine: engine }) },
-  setMovieSearchEnabled: (val) => { localStorage.setItem('orynt_movie_search_enabled', String(val)); set({ movieSearchEnabled: val }) },
-  setSeriesSearchEnabled: (val) => { localStorage.setItem('orynt_series_search_enabled', String(val)); set({ seriesSearchEnabled: val }) },
-  setAnimeSeriesSearchEnabled: (val) => { localStorage.setItem('orynt_anime_series_search_enabled', String(val)); set({ animeSeriesSearchEnabled: val }) },
-  setAnimeMovieSearchEnabled: (val) => { localStorage.setItem('orynt_anime_movie_search_enabled', String(val)); set({ animeMovieSearchEnabled: val }) },
+  movieSearchEngine: localStorage.getItem('aurales_movie_search_engine') || 'tmdb',
+  seriesSearchEngine: localStorage.getItem('aurales_series_search_engine') || 'tvdb',
+  animeSeriesSearchEngine: localStorage.getItem('aurales_anime_series_search_engine') || 'mal',
+  animeMovieSearchEngine: localStorage.getItem('aurales_anime_movie_search_engine') || 'mal',
+  movieSearchEnabled: localStorage.getItem('aurales_movie_search_enabled') !== 'false',
+  seriesSearchEnabled: localStorage.getItem('aurales_series_search_enabled') !== 'false',
+  animeSeriesSearchEnabled: localStorage.getItem('aurales_anime_series_search_enabled') !== 'false',
+  animeMovieSearchEnabled: localStorage.getItem('aurales_anime_movie_search_enabled') !== 'false',
+  setMovieSearchEngine: (engine) => { localStorage.setItem('aurales_movie_search_engine', engine); set({ movieSearchEngine: engine }) },
+  setSeriesSearchEngine: (engine) => { localStorage.setItem('aurales_series_search_engine', engine); set({ seriesSearchEngine: engine }) },
+  setAnimeSeriesSearchEngine: (engine) => { localStorage.setItem('aurales_anime_series_search_engine', engine); set({ animeSeriesSearchEngine: engine }) },
+  setAnimeMovieSearchEngine: (engine) => { localStorage.setItem('aurales_anime_movie_search_engine', engine); set({ animeMovieSearchEngine: engine }) },
+  setMovieSearchEnabled: (val) => { localStorage.setItem('aurales_movie_search_enabled', String(val)); set({ movieSearchEnabled: val }) },
+  setSeriesSearchEnabled: (val) => { localStorage.setItem('aurales_series_search_enabled', String(val)); set({ seriesSearchEnabled: val }) },
+  setAnimeSeriesSearchEnabled: (val) => { localStorage.setItem('aurales_anime_series_search_enabled', String(val)); set({ animeSeriesSearchEnabled: val }) },
+  setAnimeMovieSearchEnabled: (val) => { localStorage.setItem('aurales_anime_movie_search_enabled', String(val)); set({ animeMovieSearchEnabled: val }) },
 
-  discordRichPresence: localStorage.getItem('orynt_discord_rpc') !== 'false',
-  setDiscordRichPresence: (enabled) => { localStorage.setItem('orynt_discord_rpc', String(enabled)); set({ discordRichPresence: enabled }) },
+  discordRichPresence: localStorage.getItem('aurales_discord_rpc') !== 'false',
+  setDiscordRichPresence: (enabled) => { localStorage.setItem('aurales_discord_rpc', String(enabled)); set({ discordRichPresence: enabled }) },
 
-  subtitleTranslationLang: localStorage.getItem('orynt_sub_translation_lang') || '',
-  subtitleTranslationEnabled: localStorage.getItem('orynt_sub_translation_enabled') === 'true',
-  translationCuesAhead: Number(localStorage.getItem('orynt_translation_cues_ahead') || '10'),
-  contextAwareTranslation: localStorage.getItem('orynt_context_aware_translation') !== 'false',
-  setSubtitleTranslationLang: (lang) => { localStorage.setItem('orynt_sub_translation_lang', lang); set({ subtitleTranslationLang: lang }) },
-  setSubtitleTranslationEnabled: (enabled) => { localStorage.setItem('orynt_sub_translation_enabled', String(enabled)); set({ subtitleTranslationEnabled: enabled }) },
-  setTranslationCuesAhead: (n) => { localStorage.setItem('orynt_translation_cues_ahead', String(n)); set({ translationCuesAhead: n }) },
-  setContextAwareTranslation: (val) => { localStorage.setItem('orynt_context_aware_translation', String(val)); set({ contextAwareTranslation: val }) },
+  subtitleTranslationLang: localStorage.getItem('aurales_sub_translation_lang') || loadPersistedPreferredSubtitles()[0] || '',
+  subtitleTranslationEnabled: localStorage.getItem('aurales_sub_translation_enabled') === 'true',
+  translationCuesAhead: loadNumberInRange('aurales_translation_cues_ahead', 10, 0, 50),
+  contextAwareTranslation: localStorage.getItem('aurales_context_aware_translation') !== 'false',
+  setSubtitleTranslationLang: (lang) => { localStorage.setItem('aurales_sub_translation_lang', lang); set({ subtitleTranslationLang: lang }) },
+  setSubtitleTranslationEnabled: (enabled) => { localStorage.setItem('aurales_sub_translation_enabled', String(enabled)); set({ subtitleTranslationEnabled: enabled }) },
+  setTranslationCuesAhead: (n) => { localStorage.setItem('aurales_translation_cues_ahead', String(n)); set({ translationCuesAhead: n }) },
+  setContextAwareTranslation: (val) => { localStorage.setItem('aurales_context_aware_translation', String(val)); set({ contextAwareTranslation: val }) },
 }))
+
+// Profile switching is intentionally lightweight: global runtime/network
+// configuration stays alive while profile-owned views immediately rehydrate.
+if (typeof window !== 'undefined') {
+  window.addEventListener(PROFILE_CHANGED_EVENT, () => useAppStore.getState().hydrateProfileState())
+}

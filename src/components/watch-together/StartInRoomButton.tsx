@@ -26,9 +26,10 @@ interface StartInRoomButtonProps {
     still?: string
   }
   className?: string
+  compact?: boolean
 }
 
-export default function StartInRoomButton({ media, episode, className = '' }: StartInRoomButtonProps) {
+export default function StartInRoomButton({ media, episode, className = '', compact = false }: StartInRoomButtonProps) {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const isHost = useWatchTogetherStore((s) => s.isHost)
 
@@ -64,36 +65,17 @@ export default function StartInRoomButton({ media, episode, className = '' }: St
     wsClient.selectMedia(roomMedia, roomEpisode)
   }
 
-  // No room — disabled state
-  if (!currentRoom) {
-    return (
-      <Button
-        variant="glass"
-        size="sm"
-        disabled
-        className={className}
-        icon={
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-        }
-      >
-        Create Room First
-      </Button>
-    )
-  }
+  // No room — the button only appears once a Watch Together room exists.
+  if (!currentRoom) return null
 
   // Guest — disabled with tooltip info
   if (!isHost) {
     return (
       <Button
-        variant="glass"
-        size="sm"
+        variant="secondary"
+        size={compact ? 'sm' : 'lg'}
         disabled
-        className={className}
+        className={`${compact ? '' : 'h-12 rounded-full px-4'} shadow-none ${className}`}
         title="Only the host can select media"
         icon={
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
@@ -102,7 +84,7 @@ export default function StartInRoomButton({ media, episode, className = '' }: St
           </svg>
         }
       >
-        Host Only
+        {compact ? 'Host only' : 'Host Only'}
       </Button>
     )
   }
@@ -110,10 +92,10 @@ export default function StartInRoomButton({ media, episode, className = '' }: St
   // Host — active button
   return (
     <Button
-      variant="primary"
-      size="sm"
+      variant="secondary"
+      size={compact ? 'sm' : 'lg'}
       onClick={handleSelect}
-      className={className}
+      className={`${compact ? '' : 'h-12 rounded-full px-4'} shadow-none ${className}`}
       icon={
         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
           <path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" />
@@ -121,7 +103,7 @@ export default function StartInRoomButton({ media, episode, className = '' }: St
         </svg>
       }
     >
-      Watch in Room
+      {compact ? 'Watch together' : 'Watch in Room'}
     </Button>
   )
 }

@@ -1,21 +1,32 @@
 import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
-import { appMediaToSearchResult, resolveMetadataBatch } from './metadata'
+import { cachedFetch } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { catalogCacheKey } from './cache/catalogCacheKeys'
+import { addonServerScope } from './cache/homeRowCacheKeys'
+import { cancelRequestGroup, coordinatedJson, type RequestPriority } from './network/requestCoordinator'
+import { recoverArtworkSource } from './imageCache'
+import { loadAddonCatalogNative, loadAddonMetaNative, nativeAddonCatalogAvailable } from './addonCatalogLoader'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
   url: string
   enabled: boolean
+  /** Local-only label. The manifest identity and name remain untouched. */
+  displayName?: string
 }
 
 const installedAddons: Map<string, InstalledAddon> = new Map()
+const ADDON_CATALOG_TIMEOUT_MS = 15_000
 
 export function syncAddonsFromStore(addons: InstalledAddon[]): void {
+  const currentIds = new Set(addons.map((addon) => addon.manifest.id))
+  for (const id of installedAddons.keys()) {
+    if (!currentIds.has(id)) installedAddons.delete(id)
+  }
   for (const addon of addons) {
-    if (!installedAddons.has(addon.manifest.id)) {
-      installedAddons.set(addon.manifest.id, addon)
-    }
+    installedAddons.set(addon.manifest.id, addon)
   }
 }
 
@@ -32,10 +43,15 @@ function addonSupportsResource(manifest: StremioAddonManifest, resourceName: str
 }
 
 export async function loadAddonManifest(url: string): Promise<StremioAddonManifest> {
-  const manifestUrl = url.endsWith('/manifest.json') ? url : `${url.replace(/\/$/, '')}/manifest.json`
-  const res = await fetch(manifestUrl)
-  if (!res.ok) throw new Error(`Failed to load addon manifest: ${res.status}`)
-  return await res.json()
+  const manifestUrl = addonEndpoint(url, '/manifest.json')
+  return coordinatedJson<StremioAddonManifest>(manifestUrl, {}, {
+    label: addonLabel(url),
+    kind: 'addon',
+    dedupeKey: `manifest:${baseUrl(url)}`,
+    priority: 'interactive',
+    timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+    retry: 'interactive-once',
+  })
 }
 
 export function installAddon(manifest: StremioAddonManifest, url: string): void {
@@ -55,7 +71,44 @@ export function getAddonById(addonId: string): InstalledAddon | undefined {
 }
 
 function baseUrl(addonUrl: string): string {
-  return addonUrl.replace(/\/manifest\.json$/, '').replace(/\/$/, '')
+  try {
+    const url = new URL(addonUrl)
+    url.hash = ''
+    url.pathname = url.pathname.replace(/\/manifest\.json$/i, '').replace(/\/$/, '')
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return addonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '')
+  }
+}
+
+function addonEndpoint(addonUrl: string, path: string): string {
+  const url = new URL(baseUrl(addonUrl))
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/${path.replace(/^\/+/, '')}`
+  return url.toString()
+}
+
+function addonAssetUrl(rawUrl: string, addonUrl: string): string {
+  const base = new URL(baseUrl(addonUrl))
+  const inheritedSearch = base.search
+  base.search = ''
+  base.pathname = `${base.pathname.replace(/\/$/, '')}/`
+  const resolved = new URL(rawUrl, base)
+  if (resolved.origin === base.origin && !resolved.search && inheritedSearch) resolved.search = inheritedSearch
+  return resolved.toString()
+}
+
+function addonLabel(addonUrl: string): string {
+  const installed = [...installedAddons.values()].find((addon) => baseUrl(addon.url) === baseUrl(addonUrl))
+  if (installed) return installed.displayName || installed.manifest.name
+  try { return new URL(addonUrl).hostname } catch { return 'Addon' }
+}
+
+function appManagedMetadataEnabled(): boolean {
+  return localStorage.getItem('aurales_app_managed_metadata') !== 'false'
+}
+
+export function getAddonConfigureUrl(addonUrl: string): string {
+  return addonEndpoint(addonUrl, '/configure')
 }
 
 function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined {
@@ -64,11 +117,11 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
   if (!trimmed || ['poster', 'landscape', 'square'].includes(trimmed)) return undefined
 
   if (trimmed.startsWith('//')) return `https:${trimmed}`
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return recoverArtworkSource(trimmed)
   if (trimmed.startsWith('/')) {
     try {
-      return new URL(trimmed, `${baseUrl(addonUrl)}/`).toString()
-    } catch {
+      return addonAssetUrl(trimmed, addonUrl)
+    } catch (_) {
       return undefined
     }
   }
@@ -76,7 +129,8 @@ function normalizeImageUrl(value: unknown, addonUrl: string): string | undefined
 }
 
 function firstString(...values: unknown[]): string | undefined {
-  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  const match = values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  return match?.trim()
 }
 
 function parseYear(meta: Record<string, unknown>): number | undefined {
@@ -107,17 +161,28 @@ function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: s
   const background = normalizeImageUrl(meta.background, addonUrl)
   const banner = normalizeImageUrl(meta.banner, addonUrl)
   const logo = normalizeImageUrl(meta.logo, addonUrl)
+  const declaredType = firstString(meta.type)?.toLowerCase()
+  const mediaType = declaredType === 'movie'
+    ? 'movie'
+    : declaredType === 'series' || declaredType === 'show' || declaredType === 'tv'
+      ? 'series'
+      : type === 'series' ? 'series' : 'movie'
+  const parsedRating = typeof meta.imdbRating === 'number'
+    ? meta.imdbRating
+    : typeof meta.imdbRating === 'string' && meta.imdbRating.trim() !== ''
+      ? Number(meta.imdbRating)
+      : Number.NaN
 
   return {
     id: String(meta.id || ''),
     title: firstString(meta.name, meta.title) || 'Unknown',
-    type: (firstString(meta.type) || type) as 'movie' | 'series',
+    type: mediaType,
     year: parseYear(meta),
     poster,
     backdrop: background || banner || (poster ? undefined : logo),
     logo,
     overview: firstString(meta.description, meta.overview),
-    rating: meta.imdbRating ? parseFloat(String(meta.imdbRating)) : undefined,
+    rating: Number.isFinite(parsedRating) && parsedRating >= 0 && parsedRating <= 10 ? parsedRating : undefined,
     imdbId: getImdbId(meta),
     tmdbId: getIdValue(meta, 'tmdb', 'tmdb_id', 'tmdbId'),
     tvdbId: getIdValue(meta, 'tvdb', 'tvdb_id', 'tvdbId'),
@@ -127,6 +192,10 @@ function mapMetaPreview(meta: Record<string, unknown>, type: string, addonUrl: s
     addonUrl,
     sourceAddonId: addonId,
     sourceAddonItemId: String(meta.id || ''),
+    // The catalog response is already the addon's authoritative metadata.
+    // Keep it with the card so its detail page can render immediately instead
+    // of fetching and parsing the exact same meta record a second time.
+    addonMeta: meta,
   }
 }
 
@@ -138,42 +207,85 @@ function catalogExtraPath(extra?: Record<string, string>): string {
   return parts.length ? `/${parts.join('&')}` : ''
 }
 
+async function fetchAddonCatalog(
+  addonUrl: string,
+  type: string,
+  catalogId: string,
+  extra?: Record<string, string>,
+  addonId?: string,
+  requestContext?: { cancelGroup?: string; priority?: RequestPriority },
+): Promise<SearchResult[]> {
+  const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
+
+  try {
+    let data: { metas?: Record<string, unknown>[] }
+    if (nativeAddonCatalogAvailable()) {
+      try {
+        data = { metas: await loadAddonCatalogNative(addonUrl, type, catalogId, extra, requestContext) as Record<string, unknown>[] }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error
+        console.warn('[addons] Native catalog load failed, using compatibility path:', error)
+        data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(addonEndpoint(addonUrl, path), {}, {
+          label: addonLabel(addonUrl),
+          kind: 'addon',
+          dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
+          priority: requestContext?.priority || 'visible',
+          cancelGroup: requestContext?.cancelGroup,
+          timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+          retry: 'interactive-once',
+        })
+      }
+    } else {
+      data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(addonEndpoint(addonUrl, path), {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `catalog:${type}:${catalogId}:${catalogExtraPath(extra)}`,
+        priority: requestContext?.priority || 'visible',
+        cancelGroup: requestContext?.cancelGroup,
+        timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+        retry: 'interactive-once',
+      })
+    }
+    const raw = ((data.metas || []) as unknown[]).filter((meta): meta is Record<string, unknown> => (
+      meta !== null && typeof meta === 'object' && !Array.isArray(meta) && Boolean((meta as Record<string, unknown>).id)
+    ))
+    const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
+    // Catalogs are previews. Resolving every result here used to turn one
+    // addon request into dozens of metadata/artwork calls before first paint.
+    // Visible cards and detail pages enrich only what the user can see.
+    return previews
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    return []
+  }
+}
+
 export async function getAddonCatalog(
   addonUrl: string,
   type: string,
   catalogId: string,
   extra?: Record<string, string>,
   addonId?: string,
+  _forceRefresh = false,
+  requestContext?: { cancelGroup?: string; priority?: RequestPriority },
 ): Promise<SearchResult[]> {
-  const path = `/catalog/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}${catalogExtraPath(extra)}.json`
-
-  try {
-    const res = await fetch(`${baseUrl(addonUrl)}${path}`)
-    if (!res.ok) throw new Error(`Addon catalog error: ${res.status}`)
-    const data = await res.json()
-    const raw = ((data.metas || []) as Record<string, unknown>[]).filter((m) => m.id)
-    const previews = raw.map((m) => mapMetaPreview(m, type, addonUrl, addonId))
-    const managed = localStorage.getItem('orynt_app_managed_metadata') !== 'false'
-    if (!managed) return previews
-    const resolved = await resolveMetadataBatch(raw.map((meta, index) => ({
-      addonId: addonId || addonUrl, addonUrl, addonType: String(meta.type || type), id: String(meta.id || ''),
-      title: previews[index].title, year: previews[index].year, imdbId: previews[index].imdbId,
-      tmdbId: Number(previews[index].tmdbId) || undefined, tvdbId: Number(previews[index].tvdbId) || undefined,
-      anilistId: Number(previews[index].anilistId) || undefined, malId: Number(previews[index].malId) || undefined,
-      rawAddonMeta: meta,
-    })))
-    const bySourceId = new Map(
-      resolved
-        .filter((item) => item.sourceMetadataProvider !== 'fallback_addon')
-        .map((item) => [item.sourceAddonItemId, item])
-    )
-    return previews.map((preview) => {
-      const item = bySourceId.get(preview.sourceAddonItemId)
-      return item ? appMediaToSearchResult(item, addonUrl) : preview
-    })
-  } catch {
-    return []
-  }
+  const key = catalogCacheKey({
+    scope: 'catalog',
+    id: catalogId,
+    mediaType: type,
+    provider: addonId || 'unknown',
+    source: addonServerScope(addonUrl),
+    filters: { extra: extra || {}, appManagedMetadata: appManagedMetadataEnabled() },
+    version: 3,
+  })
+  return cachedFetch(key, (cacheContext) => fetchAddonCatalog(addonUrl, type, catalogId, extra, addonId, {
+    ...requestContext,
+    priority: cacheContext?.background ? 'background' : requestContext?.priority,
+  }), {
+    category: CACHE_CATEGORIES.ADDON_CATALOG,
+    ttlSeconds: CACHE_TTLS.ADDON_CATALOG,
+    skipRefreshIf: (cached) => cached.length > 0 && typeof navigator !== 'undefined' && !navigator.onLine,
+  })
 }
 
 export async function getAddonStreams(
@@ -182,13 +294,57 @@ export async function getAddonStreams(
   id: string
 ): Promise<StreamResult[]> {
   try {
-    const res = await fetch(`${baseUrl(addonUrl)}/stream/${type}/${encodeURIComponent(id)}.json`)
-    if (!res.ok) return []
-    const data = await res.json()
+    const data = await coordinatedJson<{ streams?: StreamResult[] }>(addonEndpoint(addonUrl, `/stream/${type}/${encodeURIComponent(id)}.json`), {}, {
+      label: addonLabel(addonUrl),
+      kind: 'addon',
+      dedupeKey: `stream:${type}:${id}`,
+      priority: 'playback',
+      timeoutMs: 8_000,
+      retry: 'interactive-once',
+    })
     return (data.streams || []) as StreamResult[]
-  } catch {
+  } catch (_) {
     return []
   }
+}
+
+/**
+ * Strict stream fetch used by the preload scheduler. Unlike getAddonStreams,
+ * this preserves timeout/network/malformed-response failures so one bad addon
+ * can be measured and isolated without being mistaken for a valid empty result.
+ */
+export async function fetchAddonStreamsStrict(
+  addonUrl: string,
+  type: string,
+  id: string,
+  signal?: AbortSignal,
+  priority: RequestPriority = 'playback',
+): Promise<StreamResult[]> {
+  const group = signal ? `stream:${type}:${id}:${Math.random().toString(36).slice(2)}` : undefined
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new DOMException('Request cancelled', 'AbortError')
+  }
+  const cancel = () => { if (group) cancelRequestGroup(group) }
+  signal?.addEventListener('abort', cancel, { once: true })
+  let data: { streams?: unknown }
+  try {
+    data = await coordinatedJson<{ streams?: unknown }>(addonEndpoint(addonUrl, `/stream/${type}/${encodeURIComponent(id)}.json`), {}, {
+      label: addonLabel(addonUrl),
+      kind: 'addon',
+      dedupeKey: `stream:${type}:${id}`,
+      priority,
+      cancelGroup: group,
+      timeoutMs: 8_000,
+      retry: priority === 'background' ? 'none' : 'interactive-once',
+    })
+  } finally {
+    signal?.removeEventListener('abort', cancel)
+  }
+  if (data.streams != null && !Array.isArray(data.streams)) throw new Error('Malformed streams response')
+  return ((data.streams || []) as unknown[]).filter((stream): stream is StreamResult => Boolean(
+    stream && typeof stream === 'object' &&
+    ['url', 'externalUrl', 'ytId', 'infoHash'].some((key) => typeof (stream as Record<string, unknown>)[key] === 'string')
+  ))
 }
 
 export async function getAddonMeta(
@@ -197,11 +353,31 @@ export async function getAddonMeta(
   id: string
 ): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch(`${baseUrl(addonUrl)}/meta/${type}/${encodeURIComponent(id)}.json`)
-    if (!res.ok) return null
-    const data = await res.json()
-    return data.meta || null
-  } catch {
+    const key = `addon-meta:v2:${addonServerScope(addonUrl)}:${type}:${id}`
+    return await cachedFetch<Record<string, unknown>>(key, async () => {
+      if (nativeAddonCatalogAvailable()) {
+        try {
+          return await loadAddonMetaNative(addonUrl, type, id)
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error
+          console.warn('[addons] Native metadata load failed, using compatibility path:', error)
+        }
+      }
+      const data = await coordinatedJson<{ meta?: Record<string, unknown> }>(addonEndpoint(addonUrl, `/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`), {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `meta:${type}:${id}`,
+        priority: 'interactive',
+        timeoutMs: ADDON_CATALOG_TIMEOUT_MS,
+        retry: 'interactive-once',
+      })
+      if (!data.meta) throw new Error('Addon meta response is empty')
+      return data.meta as Record<string, unknown>
+    }, {
+      category: CACHE_CATEGORIES.DETAIL_PAGE,
+      ttlSeconds: CACHE_TTLS.DETAIL_PAGE,
+    })
+  } catch (_) {
     return null
   }
 }
@@ -209,29 +385,51 @@ export async function getAddonMeta(
 export async function getAddonSubtitles(
   addonUrl: string,
   type: string,
-  id: string
+  id: string,
+  priority: RequestPriority = 'playback',
 ): Promise<SubtitleResult[]> {
-  const url = `${baseUrl(addonUrl)}/subtitles/${type}/${encodeURIComponent(id)}.json`
-  const normalize = (tracks: SubtitleResult[]): SubtitleResult[] => tracks
-    .filter((track) => typeof track?.url === 'string' && track.url.length > 0)
-    .map((track) => {
+  const url = addonEndpoint(addonUrl, `/subtitles/${type}/${encodeURIComponent(id)}.json`)
+  const normalize = (tracks: unknown[]): SubtitleResult[] => tracks
+    .filter((track): track is Record<string, unknown> => Boolean(track) && typeof track === 'object')
+    .flatMap((track, index): SubtitleResult[] => {
+      const rawUrl = String(track.url || track.path || '').trim()
+      if (!rawUrl) return []
+      const lang = String(track.lang || track.language || track.languageCode || 'und').trim()
+      const label = String(track.label || track.title || track.name || '').trim() || undefined
       try {
-        return { ...track, url: new URL(track.url, `${baseUrl(addonUrl)}/`).toString() }
-      } catch {
-        return track
+        return [{
+          id: String(track.id || `addon-sub-${index}`),
+          url: addonAssetUrl(rawUrl, addonUrl),
+          lang,
+          label,
+        }]
+      } catch (_) {
+        return [{ id: String(track.id || `addon-sub-${index}`), url: rawUrl, lang, label }]
       }
     })
   try {
-    const res = await fetch(url)
-    if (!res.ok) return []
-    const data = await res.json()
-    return normalize((data.subtitles || []) as SubtitleResult[])
-  } catch {
+    return await cachedFetch<SubtitleResult[]>(`addon-subtitle:v2:${addonServerScope(addonUrl)}:${type}:${id}`, async (context) => {
+      const requestPriority = context?.background ? 'background' : priority
+      const data = await coordinatedJson<{ subtitles?: unknown[] }>(url, {}, {
+        label: addonLabel(addonUrl),
+        kind: 'addon',
+        dedupeKey: `subtitles:${type}:${id}`,
+        priority: requestPriority,
+        timeoutMs: 8_000,
+        retry: requestPriority === 'background' ? 'none' : 'interactive-once',
+      })
+      return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
+    }, {
+      category: CACHE_CATEGORIES.ADDON_SUBTITLE,
+      ttlSeconds: CACHE_TTLS.ADDON_SUBTITLE,
+      cacheEmptyResults: true,
+    })
+  } catch (_) {
     try {
       const body = await invoke<string>('http_get_text', { url })
       const data = JSON.parse(body)
-      return normalize((data.subtitles || []) as SubtitleResult[])
-    } catch {
+      return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
+    } catch (_) {
       return []
     }
   }
@@ -240,6 +438,12 @@ export async function getAddonSubtitles(
 export function getStreamAddons(type: string): InstalledAddon[] {
   return Array.from(installedAddons.values()).filter(
     (a) => a.enabled && addonSupportsResource(a.manifest, 'stream', type)
+  )
+}
+
+export function getSubtitleAddons(type: string): InstalledAddon[] {
+  return Array.from(installedAddons.values()).filter(
+    (a) => a.enabled && addonSupportsResource(a.manifest, 'subtitles', type)
   )
 }
 

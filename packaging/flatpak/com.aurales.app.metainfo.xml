@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.aurales.app</id>
+  <name>Aurales</name>
+  <summary>Discover, track, and play movies and series</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="com.aurales">
+    <name>Aurales contributors</name>
+  </developer>
+  <description>
+    <p>
+      Aurales is a desktop media hub with multi-provider watch tracking,
+      mood-based discovery, Stremio addon support, and native mpv playback.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.aurales.app.desktop</launchable>
+  <url type="homepage">https://github.com/Febsho/Aurales</url>
+  <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.5.0" date="2026-10-17">
+      <description>
+        <p>
+          Adds profiles, personalized discovery, smart collections, upcoming
+          releases, improved native playback, and Watch Together enhancements.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.8" date="2026-10-04">
+      <description>
+        <p>
+          Improves Windows player behavior when switching to another app and
+          updates chapter and seek preview controls.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.7" date="2026-10-03">
+      <description>
+        <p>
+          Fixes Home shelves that jump to the final card and refuse to scroll
+          when more than fifteen entries are available.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.6" date="2026-10-03">
+      <description>
+        <p>
+          Restores horizontal Home row scrolling and moves the SIMKL sync
+          snapshot to SQLite to avoid WebView storage quota failures.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.5" date="2026-10-03">
+      <description>
+        <p>
+          Improves personalized recommendations, restores home shelves and scroll
+          positions more reliably, and adds next-episode controls to playback.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.4" date="2026-10-02">
+      <description>
+        <p>
+          Improves SIMKL browser authorization and connection feedback,
+          simplifies Trakt setup, and makes watched checkmarks easier to see.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.1" date="2026-09-19">
+      <description>
+        <p>
+          Updates the SIMKL connection to activity-gated incremental sync,
+          preserves episode watch state, and avoids redundant full-library
+          refreshes during normal use.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-09-13">
+      <description>
+        <p>
+          Speeds up catalog and detail loading, improves artwork caching,
+          metadata, native playback, subtitle and audio selection, watch
+          tracking, and Settings reliability.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.9" date="2026-09-10">
+      <description>
+        <p>
+          Improves source selection after closing playback, native stream
+          ranking and recovery, Continue Watching, metadata loading, and
+          native player reliability.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.8" date="2026-09-08">
+      <description>
+        <p>
+          Improves direct addon metadata loading, anime detail artwork and
+          episode loading, Better Posters display priority, and series detail
+          layout and release-date filtering.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.7" date="2026-09-06">
+      <description>
+        <p>
+          Speeds up cold start and everyday navigation, improves anime
+          metadata, artwork, ratings, descriptions, and season switching,
+          rebuilds timeline thumbnail generation and live scrubbing, and
+          polishes Sidebar and Watch Together interactions.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.6" date="2026-09-05">
+      <description>
+        <p>
+          Makes Home and Discover scrolling smoother by preloading catalog
+          shelves and warming artwork in the native image cache, corrects
+          Simkl anime episode watched status, and improves account connection
+          flows for Trakt and TorBox.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.5" date="2026-08-30">
+      <description>
+        <p>
+          Adds an Upcoming page and Home shelf for tracking release dates,
+          keeps Continue Watching free of accidental starts and stale entries,
+          can automatically recover from a stream that stops playing back
+          healthily, and fixes detail-page hero artwork that could stay blank
+          after the image cache stalled.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.4" date="2026-08-30">
+      <description>
+        <p>
+          Fixes Aurales Sync storage quotas and safely batches uploads, restores
+          manual stream selection, improves retry behavior when sources are
+          temporarily unavailable, and makes trailer selection and release
+          playback more reliable.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.3" date="2026-08-30">
+      <description>
+        <p>
+          Adds isolated multi-profile syncing and a polished profile handoff,
+          improves account and Sync controls, and refines Dynamic Banner,
+          Feature-card, navigation, search, and detail-page presentation.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.2" date="2026-08-29">
+      <description>
+        <p>
+          Improves instant Home loading and daily Discover recommendations,
+          corrects watched-status and anime mapping behavior, and refines
+          detail controls, Fixed Focus motion, navigation, and release card
+          metadata.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.1" date="2026-08-29">
+      <description>
+        <p>
+          Refines Dynamic Banner and Fixed Focus heroes, shelf focus previews,
+          search metadata, native player controls and chapters, fullscreen and
+          playback recovery, Continue Watching, hero ratings, and Library
+          layout controls.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-08-23">
+      <description>
+        <p>
+          Introduces a refined responsive design system with fluid typography,
+          cinematic floating navigation, artwork-aware ambient colors,
+          consistent glass and interaction states, accessible custom controls,
+          scalable media shelves, and stronger cross-platform behavior.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.9" date="2026-08-23">
+      <description>
+        <p>
+          Adds a consistent responsive desktop layout from compact windows to
+          4K and ultrawide displays, adaptive navigation and player controls,
+          mpv picture-quality profiles, decoded-audio recovery, safer smart
+          stream fallback, and improved fixed Home shelf presentation.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.8" date="2026-08-09">
+      <description>
+        <p>
+          Adds ranked and feature poster rows, inline trailer previews, TorBox
+          debrid support, Stremio library synchronization, a redesigned Watch
+          Together experience, resilient personalized Discovery, and in-app
+          update installation for AppImage and standalone Flatpak packages.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.7" date="2026-08-08">
+      <description>
+        <p>
+          Adds local watchlists, multi-provider watched-state checks, themed
+          Watch Together improvements, player diagnostics, keyboard shortcuts,
+          and a redesigned search experience with cast and crew results.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.6" date="2026-07-29">
+      <description>
+        <p>
+          Improves release playback reliability and introduces coordinated,
+          cache-first network traffic for faster browsing and safer addon usage.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.5" date="2026-07-26">
+      <description>
+        <p>
+          Bundles the complete native Linux media runtime, improves NVIDIA
+          hybrid-GPU rendering, and repairs AniList desktop authentication.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.4" date="2026-07-26">
+      <description>
+        <p>Improves Linux playback, interface polish, and release packaging.</p>
+      </description>
+    </release>
+  </releases>
+</component>

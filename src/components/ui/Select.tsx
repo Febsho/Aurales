@@ -25,7 +25,7 @@ const Select = forwardRef<HTMLSelectElement, SelectProps>(
           </label>
         )}
         {description && (
-          <p className="text-xs text-white/40">{description}</p>
+          <p className="text-xs text-white/60">{description}</p>
         )}
         <div className="relative">
           <select
@@ -33,7 +33,7 @@ const Select = forwardRef<HTMLSelectElement, SelectProps>(
             id={selectId}
             className={[
               'w-full appearance-none bg-white/5 hover:bg-white/8 border rounded-xl text-sm text-white',
-              'transition-all duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+              'transition-all duration-[var(--duration-normal)] ease-expo',
               'focus:outline-none focus:bg-white/10 focus:border-white/20',
               'focus:shadow-[0_0_0_3px_rgba(255,255,255,0.05)]',
               'px-4 py-2.5 pr-10',
@@ -52,7 +52,7 @@ const Select = forwardRef<HTMLSelectElement, SelectProps>(
               </option>
             ))}
           </select>
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/60">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M6 9l6 6 6-6" />
             </svg>

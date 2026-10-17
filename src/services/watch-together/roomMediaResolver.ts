@@ -1,6 +1,7 @@
 import type { SearchResult, StreamResult } from '../../types'
 import type { RoomMedia, RoomEpisode } from './types'
 import { getAddonStreams, getStreamAddons } from '../addons'
+import { isPlayableStream } from '../streams/playableUrl'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,18 @@ function roomMediaToSearchResult(media: RoomMedia): SearchResult {
   }
 }
 
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++
+      results[index] = await mapper(items[index])
+    }
+  }))
+  return results
+}
+
 // ── Resolver ────────────────────────────────────────────────────────────────
 
 export async function resolveRoomMediaLocally(
@@ -65,22 +78,22 @@ export async function resolveRoomMediaLocally(
 
   const allStreams: Array<StreamResult & { addonId: string; addonName: string }> = []
 
-  const results = await Promise.allSettled(
-    streamAddons.map(async (addon) => {
+  const results = await mapLimit(streamAddons, 4, async (addon) => {
+    try {
       const streams = await getAddonStreams(addon.url, stremioType, stremioId)
-      return streams.map((s) => ({
-        ...s,
-        addonId: addon.manifest.id,
-        addonName: addon.manifest.name,
-      }))
-    }),
-  )
-
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      allStreams.push(...result.value)
+      return streams
+        .filter(isPlayableStream)
+        .map((s) => ({
+          ...s,
+          addonId: addon.manifest.id,
+          addonName: addon.manifest.name,
+        }))
+    } catch {
+      return []
     }
-  }
+  })
+
+  for (const result of results) allStreams.push(...result)
 
   const localMedia = roomMediaToSearchResult(roomMedia)
 

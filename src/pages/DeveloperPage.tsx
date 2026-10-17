@@ -3,8 +3,10 @@ import { invoke } from '@tauri-apps/api/core'
 import { getLogs, clearLogs, subscribeLogs, logEvent } from '../services/diagnostics'
 import { useAppStore } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
-import { launchEmbeddedPlayer } from '../services/player'
+import { getPlayerProperty, getPlayerSnapshot, launchEmbeddedPlayer } from '../services/player'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
+import { requestDiagnostics, type RequestDiagnostics } from '../services/network/requestCoordinator'
+import { getAppVersion } from '../services/updater'
 
 function hashUrl(value: string): string {
   let hash = 2166136261
@@ -22,6 +24,39 @@ interface MpvInfo {
   arch: string
 }
 
+interface ThumbnailDebugEvent {
+  atMs: number
+  elapsedMs?: number
+  stage: string
+  message: string
+}
+
+interface ThumbnailDebugState {
+  active: boolean
+  cacheKey?: string
+  cachePath?: string
+  outputDir?: string
+  currentStage: string
+  currentFfmpegStatus: string
+  currentThumbnailIndex?: number
+  generatedThumbnails: number
+  spriteCount: number
+  lastFfmpegCommand?: string
+  lastFfmpegStderr?: string
+  lastFfmpegExitCode?: string
+  lastFfmpegDurationMs?: number
+  generationStartedAtMs?: number
+  elapsedMs?: number
+  lastOutputPath?: string
+  lastOutputExists: boolean
+  lastOutputSize?: number
+  lastImageDimensions?: string
+  streamSeekable?: boolean
+  networkWaitSuspected: boolean
+  lastEvent?: string
+  events: ThumbnailDebugEvent[]
+}
+
 export default function DeveloperPage() {
   const [mpvInfo, setMpvInfo] = useState<MpvInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -29,7 +64,9 @@ export default function DeveloperPage() {
   const [testTitle, setTestTitle] = useState('Developer Test Playback')
   const [error, setError] = useState('')
   const [playbackState, setPlaybackState] = useState<any>(null)
+  const [thumbnailDebug, setThumbnailDebug] = useState<ThumbnailDebugState | null>(null)
   const [logEntries, setLogEntries] = useState(getLogs())
+  const [requests, setRequests] = useState<RequestDiagnostics>(() => requestDiagnostics())
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const store = useAppStore()
@@ -48,6 +85,11 @@ export default function DeveloperPage() {
       })
   }, [])
 
+  useEffect(() => {
+    const interval = setInterval(() => setRequests(requestDiagnostics()), 1_000)
+    return () => clearInterval(interval)
+  }, [])
+
   // Subscribe to log updates
   useEffect(() => {
     setLogEntries(getLogs())
@@ -59,47 +101,50 @@ export default function DeveloperPage() {
 
   // Poll current player properties if running
   useEffect(() => {
-    const interval = setInterval(async () => {
+    let cancelled = false
+    let polling = false
+    const poll = async () => {
+      if (cancelled || polling) return
+      polling = true
       try {
         if (store.isolatedPlaybackMode) {
           const state = await minimalMpvPlayer.getState()
-          setPlaybackState(state.running ? state : null)
+          if (!cancelled) setPlaybackState(state.running ? state : null)
           return
         }
-        const timePos = await invoke('mpv_get_property', { property: 'time-pos' })
-        const duration = await invoke('mpv_get_property', { property: 'duration' })
-        const volume = await invoke('mpv_get_property', { property: 'volume' })
-        const pause = await invoke('mpv_get_property', { property: 'pause' })
-        const buffering = await invoke('mpv_get_property', { property: 'buffering' })
-        const cacheBuffState = await invoke('mpv_get_property', { property: 'cache-buffering-state' })
-        const demuxerCacheDur = await invoke('mpv_get_property', { property: 'demuxer-cache-duration' })
-        const eofReached = await invoke('mpv_get_property', { property: 'eof-reached' })
-        const idleActive = await invoke('mpv_get_property', { property: 'idle-active' })
-        const coreIdle = await invoke('mpv_get_property', { property: 'core-idle' })
-
-        if (timePos !== null || duration !== null || buffering !== null) {
-          setPlaybackState({
-            timePos,
-            duration,
-            volume,
-            pause,
-            buffering,
-            cacheBuffState,
-            demuxerCacheDur,
-            eofReached,
-            idleActive,
-            coreIdle
-          })
+        const [snapshot, volume] = await Promise.all([getPlayerSnapshot(), getPlayerProperty('volume')])
+        if (cancelled) return
+        if (snapshot.timePos !== null || snapshot.duration !== null || snapshot.buffering !== null) {
+          setPlaybackState({ ...snapshot, volume })
         } else {
           setPlaybackState(null)
         }
-      } catch {
-        setPlaybackState(null)
+      } catch (_) {
+        if (!cancelled) setPlaybackState(null)
+      } finally {
+        polling = false
       }
-    }, 1000)
+    }
+    void poll()
+    const interval = setInterval(() => { void poll() }, 1000)
 
-    return () => clearInterval(interval)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [store.isolatedPlaybackMode])
+
+  useEffect(() => {
+    let cancelled = false
+    let polling = false
+    const loadThumbnailDebug = async () => {
+      if (cancelled || polling) return
+      polling = true
+      const state = await invoke<ThumbnailDebugState>('get_thumbnail_debug_state').catch(() => null)
+      if (!cancelled) setThumbnailDebug(state)
+      polling = false
+    }
+    void loadThumbnailDebug()
+    const interval = setInterval(() => { void loadThumbnailDebug() }, 1000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
 
   // Play Direct stream handler
   const handlePlayTestStream = async () => {
@@ -120,11 +165,8 @@ export default function DeveloperPage() {
           title: testTitle,
           startTime: 0,
           volume: 100,
-          hwdecMode: store.hwdecMode,
-          cacheBufferSize: store.cacheBufferSize,
-          mpvCacheSecs: store.mpvCacheSecs,
-          mpvNetworkTimeout: store.mpvNetworkTimeout,
-          mpvCustomArgs: store.mpvCustomArgs,
+          hwdecMode: 'auto',
+          videoCacheMode: store.videoCacheMode,
           viewport: {
             x: 0,
             y: 0,
@@ -146,18 +188,18 @@ export default function DeveloperPage() {
     const report = {
       os: mpvInfo?.os || 'unknown',
       arch: mpvInfo?.arch || 'unknown',
-      appVersion: 'v0.1.0',
+      appVersion: `v${getAppVersion()}`,
       mpvPath: mpvInfo?.path || 'Not Found',
       mpvArgs: {
-        hwdecMode: store.hwdecMode,
-        cacheBufferSize: store.cacheBufferSize,
-        mpvCacheSecs: store.mpvCacheSecs,
-        mpvNetworkTimeout: store.mpvNetworkTimeout,
-        mpvCustomArgs: store.mpvCustomArgs
+        hwdecMode: 'auto',
+        videoCacheMode: store.videoCacheMode,
+        autoHardwareDecoding: true
       },
       playbackState: playbackState || 'No active session',
+      thumbnailDebug: thumbnailDebug || 'No thumbnail debug state',
       events: logEntries.map(e => `[${e.timestamp}] [${e.prefix}] ${e.message}`),
       nativePlayerLogs,
+      requestDiagnostics: requests,
     }
 
     navigator.clipboard.writeText(JSON.stringify(report, null, 2))
@@ -175,7 +217,7 @@ export default function DeveloperPage() {
             <h1 className="text-3xl font-black tracking-tight text-white flex items-center gap-2">
               Developer Diagnostics
             </h1>
-            <p className="text-white/40 text-sm mt-1">Verify video player stability, properties, and system setup.</p>
+            <p className="text-white/60 text-sm mt-1">Verify video player stability, properties, and system setup.</p>
           </div>
           <button
             onClick={handleCopyReport}
@@ -194,6 +236,128 @@ export default function DeveloperPage() {
           </div>
         )}
 
+        <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-5">
+          <div>
+            <h2 className="text-lg font-black tracking-tight text-white">Request Traffic</h2>
+            <p className="text-white/60 text-sm mt-1">Privacy-safe counters only. URLs, searches, headers, and credentials are never recorded.</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              ['Cache hits', requests.cacheHits],
+              ['Cache misses', requests.cacheMisses],
+              ['Network calls', requests.networkCalls],
+              ['Deduplicated', requests.deduplicated],
+              ['Cancelled', requests.cancelled],
+              ['Queued', requests.queued],
+              ['Active', requests.active],
+              ['HTTP 429', requests.rateLimited],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-white/[0.05] bg-black/20 p-3">
+                <div className="text-label uppercase tracking-wider text-white/60">{label}</div>
+                <div className="mt-1 text-xl font-black text-white">{value}</div>
+              </div>
+            ))}
+          </div>
+          {requests.origins.length > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-white/[0.05]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-white/[0.03] text-white/60">
+                  <tr><th className="p-3">Provider / addon</th><th>Calls</th><th>Failures</th><th>Latency</th><th>State</th></tr>
+                </thead>
+                <tbody>
+                  {requests.origins.map((origin) => (
+                    <tr key={origin.label} className="border-t border-white/[0.04] text-white/70">
+                      <td className="p-3 font-semibold text-white/85">{origin.label}</td>
+                      <td>{origin.calls}</td>
+                      <td>{origin.failures}</td>
+                      <td>{origin.averageLatencyMs} ms</td>
+                      <td>{origin.cooldownUntil && origin.cooldownUntil > Date.now() ? 'Cooldown' : origin.consecutiveFailures ? `${origin.consecutiveFailures} recent failures` : 'Healthy'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black tracking-tight text-white">Thumbnail Pipeline</h2>
+              <p className="text-white/60 text-sm mt-1">Temporary timing view for ffmpeg, sprite, metadata, and cache state.</p>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+              thumbnailDebug?.active ? 'bg-amber-400/15 text-amber-200' : 'bg-emerald-400/15 text-emerald-200'
+            }`}>
+              {thumbnailDebug?.active ? 'Active' : 'Idle'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+            {[
+              ['Stage', thumbnailDebug?.currentStage || '-'],
+              ['ffmpeg', thumbnailDebug?.currentFfmpegStatus || '-'],
+              ['Index', thumbnailDebug?.currentThumbnailIndex ?? '-'],
+              ['Generated', thumbnailDebug?.generatedThumbnails ?? 0],
+              ['Sprites', thumbnailDebug?.spriteCount ?? 0],
+              ['Elapsed', thumbnailDebug?.elapsedMs != null ? `${thumbnailDebug.elapsedMs} ms` : '-'],
+              ['Last ffmpeg', thumbnailDebug?.lastFfmpegDurationMs != null ? `${thumbnailDebug.lastFfmpegDurationMs} ms` : '-'],
+              ['Seekable', thumbnailDebug?.streamSeekable == null ? 'unknown' : String(thumbnailDebug.streamSeekable)],
+              ['Network wait', thumbnailDebug?.networkWaitSuspected ? 'suspected' : 'no'],
+              ['Output exists', thumbnailDebug?.lastOutputExists ? 'yes' : 'no'],
+              ['Output size', thumbnailDebug?.lastOutputSize != null ? `${thumbnailDebug.lastOutputSize} bytes` : '-'],
+              ['Dimensions', thumbnailDebug?.lastImageDimensions || '-'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-white/[0.04] bg-black/20 px-3 py-2">
+                <div className="text-meta uppercase tracking-wider text-white/60">{label}</div>
+                <div className="mt-1 font-semibold text-white/80 break-all">{String(value)}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-2">
+              <div className="text-white/60 uppercase tracking-wider font-bold">Paths</div>
+              <pre className="max-h-36 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+{`Cache: ${thumbnailDebug?.cachePath || '-'}
+Output: ${thumbnailDebug?.outputDir || '-'}
+Last file: ${thumbnailDebug?.lastOutputPath || '-'}`}
+              </pre>
+            </div>
+            <div className="space-y-2">
+              <div className="text-white/60 uppercase tracking-wider font-bold">Last ffmpeg stderr</div>
+              <pre className="max-h-36 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+                {thumbnailDebug?.lastFfmpegStderr || '-'}
+              </pre>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-xs">
+            <div className="text-white/60 uppercase tracking-wider font-bold">Last ffmpeg command</div>
+            <pre className="max-h-28 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] p-3 text-white/65 whitespace-pre-wrap break-all">
+              {thumbnailDebug?.lastFfmpegCommand || '-'}
+            </pre>
+          </div>
+
+          <div className="space-y-2 text-xs">
+            <div className="text-white/60 uppercase tracking-wider font-bold">Recent thumbnail events</div>
+            <div className="max-h-56 overflow-auto rounded-xl bg-black/35 border border-white/[0.04] divide-y divide-white/[0.04]">
+              {(thumbnailDebug?.events || []).slice(-30).reverse().map((event, index) => (
+                <div key={`${event.atMs}-${index}`} className="p-2.5">
+                  <div className="flex items-center gap-2 text-white/60">
+                    <span>{event.elapsedMs != null ? `+${event.elapsedMs}ms` : event.atMs}</span>
+                    <span className="text-white/60 font-semibold">{event.stage}</span>
+                  </div>
+                  <div className="mt-1 text-white/70 break-all">{event.message}</div>
+                </div>
+              ))}
+              {(!thumbnailDebug?.events || thumbnailDebug.events.length === 0) && (
+                <div className="p-3 text-white/60">No thumbnail events yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
           {/* Left Column (System Info + MPV Config) */}
@@ -201,11 +365,11 @@ export default function DeveloperPage() {
             
             {/* System Info Card */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">System Specs</h3>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">System Specs</h3>
               <div className="space-y-3.5 text-sm">
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">App Version</span>
-                  <span className="font-semibold">v0.1.0</span>
+                  <span className="font-semibold">v{getAppVersion()}</span>
                 </div>
                 <div className="flex justify-between border-b border-white/5 pb-2">
                   <span className="text-white/50">OS Platform</span>
@@ -220,7 +384,7 @@ export default function DeveloperPage() {
 
             {/* MPV Binary Info */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">MPV Path Status</h3>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">MPV Path Status</h3>
               <div className="space-y-3.5 text-sm">
                 <div>
                   <span className="text-white/50 block mb-1">Resolved Executable</span>
@@ -243,7 +407,7 @@ export default function DeveloperPage() {
 
             {/* Play Test Stream */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">Direct stream test</h3>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">Direct stream test</h3>
               <div className="space-y-3.5">
                 <div>
                   <label className="text-xs text-white/50 block mb-1">Stream Direct URL</label>
@@ -288,40 +452,40 @@ export default function DeveloperPage() {
             
             {/* Live Playback Properties */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">Active MPV Session Properties</h3>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">Active MPV Session Properties</h3>
               {playbackState ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm font-medium">
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Timeline pos</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Timeline pos</span>
                     <span className="text-base text-accent font-black">{Math.round(playbackState.timePos ?? 0)}s</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Duration</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Duration</span>
                     <span className="text-base font-bold">{Math.round(playbackState.duration ?? 0)}s</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Volume</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Volume</span>
                     <span className="text-base font-bold">{playbackState.volume}%</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Paused</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Paused</span>
                     <span className="text-base font-bold capitalize">{String(playbackState.pause)}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Buffering</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Buffering</span>
                     <span className="text-base font-bold capitalize">{String(playbackState.buffering)}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Cache State</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Cache State</span>
                     <span className="text-base font-bold">{playbackState.cacheBuffState ?? 0}%</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5 col-span-2 sm:col-span-3">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Demuxer Cache Duration</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Demuxer Cache Duration</span>
                     <span className="text-base text-purple-300 font-bold">{Math.round(playbackState.demuxerCacheDur ?? 0)}s</span>
                   </div>
                 </div>
               ) : (
-                <div className="h-24 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/30 text-xs italic">
+                <div className="h-24 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/50 text-xs italic">
                   No video playback is currently active
                 </div>
               )}
@@ -330,7 +494,7 @@ export default function DeveloperPage() {
             {/* Watch Together Debug */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4">
               <div className="flex items-center justify-between border-b border-white/5 pb-3">
-                <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">Watch Together Debug</h3>
+                <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">Watch Together Debug</h3>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
@@ -369,47 +533,47 @@ export default function DeveloperPage() {
               {wtStore.currentRoom ? (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Room ID</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Room ID</span>
                     <span className="text-xs font-mono text-white/70 break-all">{wtStore.currentRoom.id.slice(0, 12)}...</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Room Code</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Room Code</span>
                     <span className="text-base font-bold text-accent">{wtStore.currentRoom.code}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Connection</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Connection</span>
                     <span className="text-base font-bold capitalize">{wtStore.connectionStatus}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Role</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Role</span>
                     <span className="text-base font-bold">{wtStore.isHost ? 'Host' : 'Guest'}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Participants</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Participants</span>
                     <span className="text-base font-bold">{wtStore.currentRoom.participants.length}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Playback</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Playback</span>
                     <span className="text-base font-bold capitalize">{wtStore.currentRoom.playback.status}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Media</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Media</span>
                     <span className="text-xs font-medium text-white/70 truncate block">{wtStore.currentRoom.selectedMedia?.title || 'None'}</span>
                   </div>
                   <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <span className="text-white/40 text-[10px] uppercase block tracking-wider">Time</span>
+                    <span className="text-white/60 text-meta uppercase block tracking-wider">Time</span>
                     <span className="text-base font-bold">{Math.floor(wtStore.currentRoom.playback.currentTime)}s</span>
                   </div>
                 </div>
               ) : (
-                <div className="h-16 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/30 text-xs italic">
+                <div className="h-16 flex items-center justify-center bg-black/25 rounded-xl border border-white/5 text-white/50 text-xs italic">
                   No Watch Together room active
                 </div>
               )}
 
               {/* Recent WS Events */}
               {wtStore.debugLog.length > 0 && (
-                <div className="bg-[#060608] rounded-xl border border-white/5 font-mono text-[11px] p-3 max-h-48 overflow-y-auto space-y-1 select-text">
+                <div className="bg-[#060608] rounded-xl border border-white/5 font-mono text-label p-3 max-h-48 overflow-y-auto space-y-1 select-text">
                   {wtStore.debugLog.slice(-50).map((entry, idx) => (
                     <div key={idx} className="leading-relaxed hover:bg-white/[0.02] px-1 rounded transition-colors">
                       <span className="text-white/20 mr-2">{new Date(entry.timestamp).toISOString().split('T')[1].slice(0, 8)}</span>
@@ -424,7 +588,7 @@ export default function DeveloperPage() {
             {/* Terminal Console Logs */}
             <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-4 flex flex-col h-[520px]">
               <div className="flex items-center justify-between border-b border-white/5 pb-3 flex-shrink-0">
-                <h3 className="text-sm font-bold uppercase tracking-wider text-white/45">Diagnostics logs (Last 50 Events)</h3>
+                <h3 className="text-sm font-bold uppercase tracking-wider text-white/60">Diagnostics logs (Last 50 Events)</h3>
                 <button
                   onClick={() => clearLogs()}
                   className="text-xs font-semibold text-red-400 hover:text-red-300 transition-colors cursor-pointer"
@@ -433,7 +597,7 @@ export default function DeveloperPage() {
                 </button>
               </div>
 
-              <div className="flex-1 min-h-0 bg-[#060608] rounded-xl border border-white/5 font-mono text-[11px] p-4 overflow-y-auto space-y-2 select-text selection:bg-accent/30 selection:text-white">
+              <div className="flex-1 min-h-0 bg-[#060608] rounded-xl border border-white/5 font-mono text-label p-4 overflow-y-auto space-y-2 select-text selection:bg-accent/30 selection:text-white">
                 {logEntries.length === 0 ? (
                   <div className="text-white/20 italic text-center pt-8">No diagnostics events logged yet.</div>
                 ) : (
@@ -443,7 +607,7 @@ export default function DeveloperPage() {
                       log.prefix === 'MPV DEBUG' ? 'text-blue-300' :
                       log.prefix === 'PLAYBACK SYNC DEBUG' ? 'text-purple-300' :
                       log.prefix === 'WATCH TOGETHER DEBUG' ? 'text-orange-300' :
-                      'text-white/40';
+                      'text-white/60';
 
                     return (
                       <div key={idx} className="leading-relaxed hover:bg-white/[0.02] px-1 rounded transition-colors">

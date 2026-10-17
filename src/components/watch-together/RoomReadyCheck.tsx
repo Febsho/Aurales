@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
 import Button from '../ui/Button'
@@ -6,6 +7,8 @@ export default function RoomReadyCheck() {
   const currentRoom = useWatchTogetherStore((s) => s.currentRoom)
   const isHost = useWatchTogetherStore((s) => s.isHost)
   const currentUserId = useWatchTogetherStore((s) => s.currentUserId)
+  const selectedLocalStream = useWatchTogetherStore((s) => s.selectedLocalStream)
+  const [resolving, setResolving] = useState(false)
 
   if (!currentRoom || !currentRoom.selectedMedia) return null
   if (currentRoom.playback.status === 'playing' || currentRoom.playback.status === 'paused') return null
@@ -13,17 +16,41 @@ export default function RoomReadyCheck() {
   const participants = currentRoom.participants
   const readyCount = participants.filter((p) => p.isReady).length
   const totalCount = participants.length
-  const allReady = readyCount === totalCount
+  // When the room doesn't require a ready check, the host can always start.
+  const allReady = !currentRoom.requireReadyCheck || readyCount === totalCount
   const me = participants.find((p) => p.id === currentUserId)
   const myReady = me?.isReady ?? false
+
+  const handleStartPlayback = async () => {
+    if (!selectedLocalStream) {
+      setResolving(true)
+      const found = await wsClient.autoResolveStream()
+      setResolving(false)
+      if (!found) return
+    }
+
+    if (allReady || totalCount <= 1) {
+      wsClient.play(0)
+    }
+  }
+
+  const handleForceStart = async () => {
+    if (!selectedLocalStream) {
+      setResolving(true)
+      const found = await wsClient.autoResolveStream()
+      setResolving(false)
+      if (!found) return
+    }
+    wsClient.play(0)
+  }
 
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Ready Check</h3>
+        <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Ready Check</h3>
         <span className={[
           'text-xs font-semibold px-2 py-0.5 rounded-md',
-          allReady ? 'bg-success/15 text-success' : 'bg-white/[0.06] text-white/50',
+          allReady ? 'bg-success/15 text-success' : 'watch-together-control text-white/50',
         ].join(' ')}>
           {readyCount}/{totalCount}
         </span>
@@ -36,11 +63,21 @@ export default function RoomReadyCheck() {
             key={p.id}
             className="flex items-center justify-between px-3 py-1.5 rounded-lg"
           >
-            <span className="text-xs text-white/60 truncate">
-              {p.name}
-              {p.id === currentUserId && <span className="text-white/25"> (you)</span>}
-            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="watch-together-avatar h-5 w-5 shrink-0 overflow-hidden rounded-md flex items-center justify-center text-meta font-bold text-white/50">
+                {p.avatar ? <img src={p.avatar} alt="" className="h-full w-full object-cover" /> : p.name.charAt(0).toUpperCase()}
+              </div>
+              <span className="text-xs text-white/60 truncate">
+                {p.name}
+                {p.id === currentUserId && <span className="text-white/25"> (you)</span>}
+              </span>
+            </div>
             <div className="flex items-center gap-1.5">
+              {p.sourceStatus === 'resolving' && <span className="text-meta text-warning">Finding source…</span>}
+              {p.sourceStatus === 'starting' && <span className="text-meta text-warning">Starting…</span>}
+              {p.sourceStatus === 'failed' && (
+                <span className="text-meta text-danger" title={p.sourceErrorCode || 'No playable local source'}>Source failed</span>
+              )}
               {p.isReady ? (
                 <svg className="w-4 h-4 text-success" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                   <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
@@ -63,22 +100,30 @@ export default function RoomReadyCheck() {
               variant="primary"
               size="sm"
               fullWidth
-              disabled={!allReady && totalCount > 1}
-              onClick={() => wsClient.play(0)}
+              disabled={resolving || (!allReady && totalCount > 1)}
+              onClick={handleStartPlayback}
               icon={
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
+                resolving ? (
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                )
               }
             >
-              Start Playback
+              {resolving ? 'Finding stream...' : 'Start Playback'}
             </Button>
             {!allReady && totalCount > 1 && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => wsClient.play(0)}
-                className="flex-shrink-0 text-white/40"
+                disabled={resolving}
+                onClick={handleForceStart}
+                className="flex-shrink-0 text-white/60"
               >
                 Force Start
               </Button>
@@ -89,6 +134,7 @@ export default function RoomReadyCheck() {
             variant={myReady ? 'ghost' : 'success'}
             size="sm"
             fullWidth
+            disabled={me?.sourceStatus === 'resolving' || me?.sourceStatus === 'failed'}
             onClick={() => wsClient.setReady(!myReady)}
             icon={
               myReady ? (
@@ -102,7 +148,7 @@ export default function RoomReadyCheck() {
               )
             }
           >
-            {myReady ? 'Unready' : 'Ready Up'}
+            {me?.sourceStatus === 'resolving' ? 'Finding local source…' : me?.sourceStatus === 'failed' ? 'No local source found' : myReady ? 'Unready' : 'Ready Up'}
           </Button>
         )}
       </div>

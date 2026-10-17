@@ -68,7 +68,7 @@ function ServiceCard({ title, videoURL, backgroundURL, isActive, onClick }: Serv
 
       {/* Title bottom label on hover */}
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-2 transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
-        <span className="text-[10px] font-bold text-white tracking-wider block text-center truncate">
+        <span className="text-meta font-bold text-white tracking-wider block text-center truncate">
           {title}
         </span>
       </div>

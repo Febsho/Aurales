@@ -1,6 +1,7 @@
 import type { SearchResult } from '../types'
 import { tmdbProvider } from './tmdb'
 import { tvdbProvider } from './tvdb'
+import { coordinatedJson } from './network/requestCoordinator'
 
 export type SearchEngineId = 'tmdb' | 'tvdb' | 'trakt' | 'mdblist' | 'tvmaze' | 'mal' | 'cinemeta'
 
@@ -10,19 +11,34 @@ export interface SearchEngine {
   supportsMovies: boolean
   supportsSeries: boolean
   supportsAnime: boolean
-  search: (query: string, type?: 'movie' | 'series') => Promise<SearchResult[]>
+  search: (query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }) => Promise<SearchResult[]>
 }
 
 const CINEMETA_URL = 'https://v3-cinemeta.strem.io'
 
-async function cinemetaSearch(query: string, type?: 'movie' | 'series'): Promise<SearchResult[]> {
+function credentialFingerprint(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+async function cinemetaSearch(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
   if (!type) {
-    const [movies, series] = await Promise.all([cinemetaSearch(query, 'movie'), cinemetaSearch(query, 'series')])
+    const [movies, series] = await Promise.all([cinemetaSearch(query, 'movie', context), cinemetaSearch(query, 'series', context)])
     return [...movies, ...series]
   }
-  const res = await fetch(`${CINEMETA_URL}/catalog/${type}/top/search=${encodeURIComponent(query)}.json`)
-  if (!res.ok) return []
-  const data = await res.json()
+  const data = await coordinatedJson<{ metas?: Record<string, unknown>[] }>(`${CINEMETA_URL}/catalog/${type}/top/search=${encodeURIComponent(query)}.json`, {}, {
+    label: 'Cinemeta',
+    kind: 'metadata',
+    dedupeKey: `search:${type}:${query.trim().toLowerCase()}`,
+    priority: 'interactive',
+    cancelGroup: context?.cancelGroup,
+    timeoutMs: 10_000,
+    retry: 'interactive-once',
+  })
   const metas = (data.metas || []) as Record<string, unknown>[]
   return metas.map((m) => ({
     id: (m.imdb_id || m.id) as string,
@@ -36,20 +52,29 @@ async function cinemetaSearch(query: string, type?: 'movie' | 'series'): Promise
   }))
 }
 
-async function traktSearch(query: string, type?: 'movie' | 'series'): Promise<SearchResult[]> {
+async function traktSearch(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
   const { getClientId } = await import('./trakt/auth')
   const clientId = getClientId()
   if (!clientId) return []
   const traktType = type === 'series' ? 'show' : type === 'movie' ? 'movie' : 'movie,show'
-  const res = await fetch(`https://api.trakt.tv/search/text?query=${encodeURIComponent(query)}&type=${traktType}&limit=20`, {
+  const data = await coordinatedJson<Record<string, unknown>[]>(`https://api.trakt.tv/search/text?query=${encodeURIComponent(query)}&type=${traktType}&limit=20`, {
     headers: {
       'Content-Type': 'application/json',
       'trakt-api-version': '2',
       'trakt-api-key': clientId,
     },
+  }, {
+    label: 'Trakt',
+    kind: 'metadata',
+    // Trakt's client ID is sent in a header, so coordinatedJson cannot include
+    // it in its URL-based request identity. Separate concurrent requests when
+    // the configured ID changes without retaining the credential itself.
+    dedupeKey: `search:${credentialFingerprint(clientId)}:${traktType}:${query.trim().toLowerCase()}`,
+    priority: 'interactive',
+    cancelGroup: context?.cancelGroup,
+    timeoutMs: 10_000,
+    retry: 'interactive-once',
   })
-  if (!res.ok) return []
-  const data = await res.json() as Record<string, unknown>[]
   const results: SearchResult[] = []
   for (const item of data) {
     const mediaType = item.type as string
@@ -71,10 +96,18 @@ async function traktSearch(query: string, type?: 'movie' | 'series'): Promise<Se
   return results
 }
 
-async function mdblistSearch(query: string): Promise<SearchResult[]> {
-  const res = await fetch(`https://mdblist.com/api/?apikey=${localStorage.getItem('mdblist_api_key') || ''}&s=${encodeURIComponent(query)}`)
-  if (!res.ok) return []
-  const data = await res.json()
+async function mdblistSearch(query: string, context?: { cancelGroup?: string }): Promise<SearchResult[]> {
+  const apiKey = localStorage.getItem('mdblist_api_key') || ''
+  const params = new URLSearchParams({ apikey: apiKey, s: query })
+  const data = await coordinatedJson<{ search?: Record<string, unknown>[] }>(`https://mdblist.com/api/?${params}`, {}, {
+    label: 'MDBList',
+    kind: 'metadata',
+    dedupeKey: `search:${credentialFingerprint(apiKey)}:${query.trim().toLowerCase()}`,
+    priority: 'interactive',
+    cancelGroup: context?.cancelGroup,
+    timeoutMs: 10_000,
+    retry: 'interactive-once',
+  })
   const results = (data.search || []) as Record<string, unknown>[]
   return results.map((m) => ({
     id: m.imdbid ? String(m.imdbid) : `mdblist-${m.id}`,
@@ -89,10 +122,16 @@ async function mdblistSearch(query: string): Promise<SearchResult[]> {
   }))
 }
 
-async function tvmazeSearch(query: string): Promise<SearchResult[]> {
-  const res = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`)
-  if (!res.ok) return []
-  const data = await res.json() as { show: Record<string, unknown>; score: number }[]
+async function tvmazeSearch(query: string, context?: { cancelGroup?: string }): Promise<SearchResult[]> {
+  const data = await coordinatedJson<{ show: Record<string, unknown>; score: number }[]>(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`, {}, {
+    label: 'TVmaze',
+    kind: 'metadata',
+    dedupeKey: `search:${query.trim().toLowerCase()}`,
+    priority: 'interactive',
+    cancelGroup: context?.cancelGroup,
+    timeoutMs: 10_000,
+    retry: 'interactive-once',
+  })
   return data.map((item) => {
     const show = item.show
     const externals = show.externals as Record<string, unknown> | undefined
@@ -110,52 +149,43 @@ async function tvmazeSearch(query: string): Promise<SearchResult[]> {
   })
 }
 
-async function malSearch(query: string): Promise<SearchResult[]> {
+async function malSearch(query: string, context?: { cancelGroup?: string }): Promise<SearchResult[]> {
   const mediaType = 'anime'
-  const res = await fetch(`https://api.jikan.moe/v4/${mediaType}?q=${encodeURIComponent(query)}&limit=20`)
-  if (!res.ok) return []
-  const data = await res.json()
+  const data = await coordinatedJson<{ data?: Record<string, unknown>[] }>(`https://api.jikan.moe/v4/${mediaType}?q=${encodeURIComponent(query)}&limit=20`, {}, {
+    label: 'Jikan',
+    kind: 'metadata',
+    dedupeKey: `search:${query.trim().toLowerCase()}`,
+    priority: 'interactive',
+    cancelGroup: context?.cancelGroup,
+    timeoutMs: 10_000,
+    retry: 'interactive-once',
+  })
   const results = (data.data || []) as Record<string, unknown>[]
-  const { resolveAnimeIds } = await import('./animeLists')
-  return Promise.all(results.map(async (m) => {
+  const resolved = results.map((m) => {
     const malId = m.mal_id as number
     const titles = m.titles as { type: string; title: string }[] | undefined
     const englishTitle = titles?.find((t) => t.type === 'English')?.title
     const defaultTitle = titles?.find((t) => t.type === 'Default')?.title
 
-    let imdbId: string | undefined
-    let tmdbId: number | undefined
-    let tvdbId: number | undefined
-    let anilistId: number | undefined
-    try {
-      const mapped = await resolveAnimeIds({ malId })
-      if (mapped) {
-        imdbId = mapped.imdbId
-        tmdbId = mapped.tmdbId
-        tvdbId = mapped.tvdbId
-        anilistId = mapped.anilistId
-      }
-    } catch { /* ignore */ }
-
     const isMovie = (m.type as string) === 'Movie'
-    const id = tvdbId ? `tvdb-${tvdbId}` : tmdbId ? `tmdb-${tmdbId}` : imdbId || `mal-${malId}`
+    const id = `mal-${malId}`
+    const poster = (m.images as Record<string, Record<string, string>>)?.jpg?.large_image_url || (m.images as Record<string, Record<string, string>>)?.jpg?.image_url
 
     return {
       id,
       title: englishTitle || defaultTitle || m.title as string,
       type: (isMovie ? 'movie' : 'series') as 'movie' | 'series',
       year: m.year as number | undefined,
-      poster: (m.images as Record<string, Record<string, string>>)?.jpg?.large_image_url || (m.images as Record<string, Record<string, string>>)?.jpg?.image_url,
+      poster,
       overview: m.synopsis as string | undefined,
       rating: m.score as number | undefined,
-      imdbId,
-      tmdbId,
-      tvdbId,
       malId,
-      anilistId,
+      isAnime: true,
       provider: 'mal',
     }
-  }))
+  })
+
+  return resolved
 }
 
 function filterByType(results: SearchResult[], type?: 'movie' | 'series'): SearchResult[] {
@@ -166,11 +196,11 @@ function filterByType(results: SearchResult[], type?: 'movie' | 'series'): Searc
 export const searchEngines: Record<SearchEngineId, SearchEngine> = {
   tmdb: {
     id: 'tmdb', name: 'TMDB Search', supportsMovies: true, supportsSeries: true, supportsAnime: false,
-    search: async (query, type) => filterByType(await tmdbProvider.search(query), type),
+    search: async (query, type, context) => tmdbProvider.search(query, type, context),
   },
   tvdb: {
     id: 'tvdb', name: 'TheTVDB Search', supportsMovies: false, supportsSeries: true, supportsAnime: false,
-    search: async (query) => tvdbProvider.search(query),
+    search: async (query, type, context) => tvdbProvider.search(query, type, context),
   },
   trakt: {
     id: 'trakt', name: 'Trakt Search', supportsMovies: true, supportsSeries: true, supportsAnime: false,
@@ -178,19 +208,19 @@ export const searchEngines: Record<SearchEngineId, SearchEngine> = {
   },
   mdblist: {
     id: 'mdblist', name: 'MDBList Search', supportsMovies: true, supportsSeries: true, supportsAnime: false,
-    search: async (query, type) => filterByType(await mdblistSearch(query), type),
+    search: async (query, type, context) => filterByType(await mdblistSearch(query, context), type),
   },
   tvmaze: {
     id: 'tvmaze', name: 'TVmaze Search', supportsMovies: false, supportsSeries: true, supportsAnime: false,
-    search: tvmazeSearch,
+    search: (query, _type, context) => tvmazeSearch(query, context),
   },
   mal: {
     id: 'mal', name: 'MAL (Jikan)', supportsMovies: true, supportsSeries: true, supportsAnime: true,
-    search: async (query, type) => filterByType(await malSearch(query), type),
+    search: async (query, type, context) => filterByType(await malSearch(query, context), type),
   },
   cinemeta: {
     id: 'cinemeta', name: 'Cinemeta', supportsMovies: true, supportsSeries: true, supportsAnime: false,
-    search: (query, type) => cinemetaSearch(query, type),
+    search: (query, type, context) => cinemetaSearch(query, type, context),
   },
 }
 

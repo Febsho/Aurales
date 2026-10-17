@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+/scratch/
 
 # Simkl local credentials (NEVER commit)
 src/config/simkl.local.ts

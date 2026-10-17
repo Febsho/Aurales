@@ -7,6 +7,7 @@ import type {
   RoomMedia,
   RoomEpisode,
   RoomStream,
+  LocalSourceStatus,
 } from '../services/watch-together/types'
 import type { StreamResult } from '../types'
 
@@ -18,7 +19,7 @@ function lsGet<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(LS_PREFIX + key)
     return raw !== null ? JSON.parse(raw) : fallback
-  } catch {
+  } catch (_) {
     return fallback
   }
 }
@@ -26,9 +27,14 @@ function lsGet<T>(key: string, fallback: T): T {
 function lsSet<T>(key: string, value: T): void {
   try {
     localStorage.setItem(LS_PREFIX + key, JSON.stringify(value))
-  } catch {
+  } catch (_) {
     // quota exceeded — silently ignore
   }
+}
+
+function loadSyncInterval(): number {
+  const value = Number(lsGet<unknown>('syncInterval', 1))
+  return Number.isFinite(value) && value >= 0.5 && value <= 15 ? value : 1
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -40,6 +46,22 @@ interface DebugLogEntry {
   data?: any
 }
 
+export interface LocalSourceCandidate {
+  stream: StreamResult
+  addonId: string
+  addonName: string
+  playableUrl: string
+  score: number
+  reasons: string[]
+}
+
+export interface PendingRoomSync {
+  time: number
+  isPlaying: boolean
+  serverTime: number
+  sequence: number
+}
+
 export interface WatchTogetherState {
   // Room
   currentRoom: WatchRoom | null
@@ -49,6 +71,15 @@ export interface WatchTogetherState {
 
   // Local state
   selectedLocalStream: { stream: StreamResult; addonId: string; addonName: string } | null
+  localSourceCandidates: LocalSourceCandidate[]
+  activeSourceIndex: number
+  sourceResolutionGeneration: number
+  localSourceStatus: LocalSourceStatus
+  localSourceError: string | null
+  pendingSync: PendingRoomSync | null
+  lastAppliedSyncSequence: number
+  serverClockOffsetMs: number
+  roundTripTimeMs: number
   isHost: boolean
   errors: string[]
   debugLog: DebugLogEntry[]
@@ -71,6 +102,15 @@ export interface WatchTogetherState {
   setRoomPanelOpen: (open: boolean) => void
   toggleRoomPanel: () => void
   setSelectedLocalStream: (stream: WatchTogetherState['selectedLocalStream']) => void
+  beginSourceResolution: () => number
+  setLocalSourceCandidates: (generation: number, candidates: LocalSourceCandidate[]) => boolean
+  setManualLocalSource: (candidate: LocalSourceCandidate) => void
+  advanceLocalSource: () => LocalSourceCandidate | null
+  setLocalSourceStatus: (status: LocalSourceStatus, error?: string | null) => void
+  clearLocalSource: () => void
+  queuePendingSync: (sync: PendingRoomSync) => boolean
+  markPendingSyncApplied: (sequence: number) => void
+  updateServerTiming: (offsetMs: number, roundTripTimeMs: number) => void
   setIsHost: (host: boolean) => void
   addError: (error: string) => void
   clearErrors: () => void
@@ -99,6 +139,8 @@ export interface WatchTogetherState {
 // ── Store ───────────────────────────────────────────────────────────────────
 
 const MAX_DEBUG_LOG = 200
+const MAX_ROOM_CHAT_MESSAGES = 500
+const MAX_ROOM_ERRORS = 50
 
 export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   // Room
@@ -109,32 +151,116 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
 
   // Local state
   selectedLocalStream: null,
+  localSourceCandidates: [],
+  activeSourceIndex: -1,
+  sourceResolutionGeneration: 0,
+  localSourceStatus: 'idle',
+  localSourceError: null,
+  pendingSync: null,
+  lastAppliedSyncSequence: -1,
+  serverClockOffsetMs: 0,
+  roundTripTimeMs: 0,
   isHost: false,
   errors: [],
   debugLog: [],
 
   // Settings (loaded from localStorage)
-  serverUrl: lsGet('serverUrl', 'ws://localhost:9876'),
+  serverUrl: lsGet('serverUrl', 'wss://aurales.febsho.me/ws'),
   defaultNickname: lsGet('defaultNickname', ''),
   defaultControlMode: lsGet<'host_only' | 'everyone'>('defaultControlMode', 'host_only'),
   requireReadyCheck: lsGet('requireReadyCheck', true),
   showChat: lsGet('showChat', true),
   autoCopyInvite: lsGet('autoCopyInvite', true),
-  driftThreshold: lsGet('driftThreshold', 2),
-  syncInterval: lsGet('syncInterval', 5),
+  driftThreshold: lsGet('driftThreshold', 1),
+  syncInterval: loadSyncInterval(),
   allowGuestDifferentStream: lsGet('allowGuestDifferentStream', false),
 
   // Actions
-  setCurrentRoom: (room) => set({ currentRoom: room }),
+  setCurrentRoom: (room) => set({
+    currentRoom: room
+      ? { ...room, chat: room.chat.slice(-MAX_ROOM_CHAT_MESSAGES) }
+      : null,
+  }),
   setCurrentUserId: (id) => set({ currentUserId: id }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setRoomPanelOpen: (open) => set({ roomPanelOpen: open }),
   toggleRoomPanel: () => set((s) => ({ roomPanelOpen: !s.roomPanelOpen })),
   setSelectedLocalStream: (stream) => set({ selectedLocalStream: stream }),
+  beginSourceResolution: () => {
+    const generation = get().sourceResolutionGeneration + 1
+    set({
+      sourceResolutionGeneration: generation,
+      localSourceCandidates: [],
+      activeSourceIndex: -1,
+      selectedLocalStream: null,
+      localSourceStatus: 'resolving',
+      localSourceError: null,
+    })
+    return generation
+  },
+  setLocalSourceCandidates: (generation, candidates) => {
+    if (get().sourceResolutionGeneration !== generation) return false
+    const first = candidates[0]
+    set({
+      localSourceCandidates: candidates,
+      activeSourceIndex: first ? 0 : -1,
+      selectedLocalStream: first ? { stream: first.stream, addonId: first.addonId, addonName: first.addonName } : null,
+      localSourceStatus: first ? 'ready' : 'failed',
+      localSourceError: first ? null : 'SOURCE_UNAVAILABLE',
+    })
+    return true
+  },
+  setManualLocalSource: (candidate) => set({
+    sourceResolutionGeneration: get().sourceResolutionGeneration + 1,
+    localSourceCandidates: [candidate],
+    activeSourceIndex: 0,
+    selectedLocalStream: { stream: candidate.stream, addonId: candidate.addonId, addonName: candidate.addonName },
+    localSourceStatus: 'ready',
+    localSourceError: null,
+  }),
+  advanceLocalSource: () => {
+    const state = get()
+    const nextIndex = state.activeSourceIndex + 1
+    const next = state.localSourceCandidates[nextIndex]
+    if (!next) {
+      set({ selectedLocalStream: null, localSourceStatus: 'failed', localSourceError: 'ALL_SOURCES_FAILED' })
+      return null
+    }
+    set({
+      activeSourceIndex: nextIndex,
+      selectedLocalStream: { stream: next.stream, addonId: next.addonId, addonName: next.addonName },
+      localSourceStatus: 'starting',
+      localSourceError: null,
+    })
+    return next
+  },
+  setLocalSourceStatus: (status, error = null) => set({ localSourceStatus: status, localSourceError: error }),
+  clearLocalSource: () => set((state) => ({
+    sourceResolutionGeneration: state.sourceResolutionGeneration + 1,
+    localSourceCandidates: [],
+    activeSourceIndex: -1,
+    selectedLocalStream: null,
+    localSourceStatus: 'idle',
+    localSourceError: null,
+    pendingSync: null,
+    lastAppliedSyncSequence: -1,
+  })),
+  queuePendingSync: (sync) => {
+    const state = get()
+    const newest = Math.max(state.lastAppliedSyncSequence, state.pendingSync?.sequence ?? -1)
+    if (sync.sequence <= newest) return false
+    set({ pendingSync: sync })
+    return true
+  },
+  markPendingSyncApplied: (sequence) => set((state) => ({
+    lastAppliedSyncSequence: Math.max(state.lastAppliedSyncSequence, sequence),
+    pendingSync: state.pendingSync?.sequence === sequence ? null : state.pendingSync,
+  })),
+  updateServerTiming: (serverClockOffsetMs, roundTripTimeMs) => set({ serverClockOffsetMs, roundTripTimeMs }),
   setIsHost: (host) => set({ isHost: host }),
 
   addError: (error) =>
-    set((s) => ({ errors: [...s.errors, error] })),
+    set((s) => ({ errors: [...s.errors, error].slice(-MAX_ROOM_ERRORS) })),
   clearErrors: () => set({ errors: [] }),
 
   addDebugLog: (entry) =>
@@ -174,8 +300,9 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
     set({ driftThreshold: val })
   },
   setSyncInterval: (val) => {
-    lsSet('syncInterval', val)
-    set({ syncInterval: val })
+    const interval = Number.isFinite(val) ? Math.min(15, Math.max(0.5, val)) : 1
+    lsSet('syncInterval', interval)
+    set({ syncInterval: interval })
   },
   setAllowGuestDifferentStream: (val) => {
     lsSet('allowGuestDifferentStream', val)
@@ -208,10 +335,11 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
   addChatMessage: (message) =>
     set((s) => {
       if (!s.currentRoom) return s
+      const chat = [...s.currentRoom.chat, message]
       return {
         currentRoom: {
           ...s.currentRoom,
-          chat: [...s.currentRoom.chat, message],
+          chat: chat.length > MAX_ROOM_CHAT_MESSAGES ? chat.slice(-MAX_ROOM_CHAT_MESSAGES) : chat,
         },
       }
     }),
@@ -229,8 +357,8 @@ export const useWatchTogetherStore = create<WatchTogetherState>((set, get) => ({
         currentRoom: {
           ...s.currentRoom,
           selectedMedia: media ?? s.currentRoom.selectedMedia,
-          selectedEpisode: episode ?? s.currentRoom.selectedEpisode,
-          selectedStream: stream ?? s.currentRoom.selectedStream,
+          selectedEpisode: media ? episode : s.currentRoom.selectedEpisode,
+          selectedStream: media ? stream : (stream ?? s.currentRoom.selectedStream),
         },
       }
     }),

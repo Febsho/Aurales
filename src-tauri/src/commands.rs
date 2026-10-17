@@ -1,129 +1,303 @@
+use crate::core::addon_catalog::{self, LoadAddonCatalogRequest, LoadAddonCatalogResponse};
+use crate::core::addon_meta::{self, LoadAddonMetaRequest, LoadAddonMetaResponse};
+use crate::core::anime::{
+    self, AnimeEpisodeResolution, AnimeEpisodeResolutionRequest, AnimeSeasonTitle,
+    AnimeSeasonTitleRequest, AnimeStructureRequest, AnimeStructureValidation, AnimeTitleSelection,
+    AnimeTitleSelectionRequest,
+};
+use crate::core::anime_lookup::{
+    self, LookupAnimeMappingsRequest, LookupAnimeMappingsResponse, ResolveAnimeIdsRequest,
+    ResolveAnimeIdsResponse,
+};
+use crate::core::anime_season::{self, LoadAnimeSeasonRequest};
+use crate::core::cache;
+use crate::core::cache::CacheEntry;
+use crate::core::catalog;
+use crate::core::catalog::{AddonRecord, HomeRow};
+use crate::core::detail_page::{
+    self, DetailPageCoordinator, LoadDetailPageRequest, LoadDetailPageResponse,
+};
+use crate::core::discord;
+use crate::core::metadata::{self, AppMediaItem, MetadataLookup, NormalizeProviderMetadataRequest};
+use crate::core::platform;
+use crate::core::player;
+use crate::core::providers;
+use crate::core::request;
+use crate::core::request::ProxyResponse;
+use crate::core::request::StreamProbeResponse;
+use crate::core::server::{
+    self, ConnectionTestResult, RefreshResult, SaveServerConnectionRequest, ServerCatalog,
+    ServerCatalogItem, ServerConnection, ServerStream, ServerStreamRequest,
+};
+use crate::core::settings;
+use crate::core::settings::Setting;
+use crate::core::stream_candidates::{
+    self, LoadStreamCandidatesRequest, LoadStreamCandidatesResponse,
+};
+use crate::core::streams::{self, RankStreamCandidatesRequest, RankStreamCandidatesResponse};
+use crate::core::subtitles;
+use crate::core::sync;
+use crate::core::sync::{SyncBatchRequest, SyncBatchResponse, WatchProgress};
 use crate::db::Database;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use crate::libmpv_player::{self, LibMpvPlayer};
+use serde::Serialize;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Mutex, OnceLock};
-use tauri::{Manager, State};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicIsize;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
+use tauri::{Emitter, Manager, State};
 
-// ─── Discord Rich Presence (local IPC) ──────────────────────────────────────
-
-static DISCORD_PIPE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
-
-fn discord_pipe() -> &'static Mutex<Option<std::fs::File>> {
-    DISCORD_PIPE.get_or_init(|| Mutex::new(None))
-}
-
-const DISCORD_APP_ID: &str = "1514350347227893951";
-
-fn discord_ipc_encode(opcode: u32, payload: &str) -> Vec<u8> {
-    let len = payload.len() as u32;
-    let mut buf = Vec::with_capacity(8 + payload.len());
-    buf.extend_from_slice(&opcode.to_le_bytes());
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(payload.as_bytes());
-    buf
-}
-
-fn discord_ipc_connect() -> Result<(), String> {
-    use std::io::{Read, Write};
-
-    let mut guard = discord_pipe().lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Ok(());
-    }
-
-    let pipe_path = r"\\.\pipe\discord-ipc-0";
-    let mut pipe = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(pipe_path)
-        .map_err(|e| format!("Discord not running or IPC unavailable: {}", e))?;
-
-    let handshake = serde_json::json!({
-        "v": 1,
-        "client_id": DISCORD_APP_ID
-    })
-    .to_string();
-
-    pipe.write_all(&discord_ipc_encode(0, &handshake))
-        .map_err(|e| format!("Failed to send Discord handshake: {}", e))?;
-
-    // Read response (DISPATCH with READY event)
-    let mut header = [0u8; 8];
-    pipe.read_exact(&mut header)
-        .map_err(|e| format!("Failed to read Discord handshake response: {}", e))?;
-    let response_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-    let mut body = vec![0u8; response_len];
-    pipe.read_exact(&mut body)
-        .map_err(|e| format!("Failed to read Discord response body: {}", e))?;
-
-    *guard = Some(pipe);
-    Ok(())
-}
-
-fn discord_ipc_set_activity(activity: serde_json::Value) -> Result<(), String> {
-    use std::io::Write;
-
-    discord_ipc_connect()?;
-    let mut guard = discord_pipe().lock().map_err(|e| e.to_string())?;
-    let pipe = guard
-        .as_mut()
-        .ok_or_else(|| "Discord IPC not connected".to_string())?;
-
-    let nonce = format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
-
-    let payload = serde_json::json!({
-        "cmd": "SET_ACTIVITY",
-        "args": {
-            "pid": std::process::id(),
-            "activity": activity
-        },
-        "nonce": nonce
-    })
-    .to_string();
-
-    if let Err(e) = pipe.write_all(&discord_ipc_encode(1, &payload)) {
-        *guard = None;
-        return Err(format!("Failed to send Discord activity: {}", e));
-    }
-
-    // Drain response (we don't need it but must read to keep pipe healthy)
-    // Use non-blocking approach — set pipe to NOWAIT, read what's there, restore
-    #[cfg(target_os = "windows")]
-    {
-        use std::io::Read;
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
-        use windows::Win32::Foundation::HANDLE;
-        let handle = HANDLE(pipe.as_raw_handle());
-        let mut mode = PIPE_NOWAIT;
-        unsafe { let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None); }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let mut drain = [0u8; 4096];
-        let _ = pipe.read(&mut drain);
-        let mut mode = PIPE_WAIT;
-        unsafe { let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None); }
-    }
-
-    Ok(())
-}
-
-fn discord_ipc_clear_activity() -> Result<(), String> {
-    discord_ipc_set_activity(serde_json::json!(null))
-}
-
-fn discord_ipc_disconnect() {
-    if let Ok(mut guard) = discord_pipe().lock() {
-        *guard = None;
-    }
+#[tauri::command]
+pub async fn list_server_connections(
+    db: State<'_, Database>,
+) -> Result<Vec<ServerConnection>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::list_connections(&db))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn discord_set_activity(
+pub async fn save_server_connection(
+    request: SaveServerConnectionRequest,
+    db: State<'_, Database>,
+) -> Result<ServerConnection, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::save_connection(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn remove_server_connection(
+    connection_id: String,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::remove_connection(&db, &connection_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_server_connection_enabled(
+    connection_id: String,
+    enabled: bool,
+    db: State<'_, Database>,
+) -> Result<ServerConnection, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::set_enabled(&db, &connection_id, enabled))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn test_server_connection(
+    request: SaveServerConnectionRequest,
+    db: State<'_, Database>,
+) -> Result<ConnectionTestResult, String> {
+    let db = db.inner().clone();
+    Ok(
+        tokio::task::spawn_blocking(move || server::test_connection(Some(&db), request))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+}
+
+#[tauri::command]
+pub async fn refresh_server_catalog(
+    connection_id: String,
+    db: State<'_, Database>,
+) -> Result<RefreshResult, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::refresh_catalog(&db, &connection_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_server_catalogs(db: State<'_, Database>) -> Result<Vec<ServerCatalog>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::list_catalogs(&db))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_server_catalog_items(
+    connection_id: String,
+    catalog_id: String,
+    max_items: Option<usize>,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        server::catalog_items(&db, &connection_id, &catalog_id, max_items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn search_server_catalogs(
+    query: String,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::search_catalogs(&db, &query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_server_streams(
+    request: ServerStreamRequest,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerStream>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::streams(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_detail_page(
+    request: LoadDetailPageRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadDetailPageResponse, String> {
+    detail_page::load_detail_page(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub async fn load_anime_season(
+    request: LoadAnimeSeasonRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadDetailPageResponse, String> {
+    anime_season::load_anime_season(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub async fn rank_stream_candidates(
+    request: RankStreamCandidatesRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<RankStreamCandidatesResponse, String> {
+    streams::rank_stream_candidates(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_stream_candidates(
+    request: LoadStreamCandidatesRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadStreamCandidatesResponse, String> {
+    stream_candidates::load_stream_candidates(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_addon_catalog(
+    request: LoadAddonCatalogRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadAddonCatalogResponse, String> {
+    addon_catalog::load_addon_catalog(&coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn load_addon_meta(
+    request: LoadAddonMetaRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LoadAddonMetaResponse, String> {
+    addon_meta::load_addon_meta(&coordinator, request).await
+}
+
+/// Compatibility adapter for the frontend metadata normalizer. It deliberately
+/// owns no provider/network/cache work; those remain on their legacy paths
+/// until their behavior has separate parity coverage.
+#[tauri::command]
+pub fn normalize_provider_metadata(
+    request: NormalizeProviderMetadataRequest,
+) -> Result<AppMediaItem, String> {
+    Ok(metadata::normalize_provider_metadata(request))
+}
+
+#[tauri::command]
+pub fn validate_anime_tvdb_structure(
+    request: AnimeStructureRequest,
+) -> Result<AnimeStructureValidation, String> {
+    Ok(anime::validate_structure(request))
+}
+
+#[tauri::command]
+pub fn select_anime_title(
+    request: AnimeTitleSelectionRequest,
+) -> Result<AnimeTitleSelection, String> {
+    Ok(anime::select_title(request))
+}
+
+#[tauri::command]
+pub fn resolve_anime_season_title(
+    request: AnimeSeasonTitleRequest,
+) -> Result<AnimeSeasonTitle, String> {
+    Ok(anime::resolve_season_title(request))
+}
+
+/// Compatibility adapter for deterministic Fribb cour/episode arithmetic.
+/// The frontend still owns its browser-worker-backed Fribb index and retains a
+/// local fallback while provider/network mapping is migrated separately.
+#[tauri::command]
+pub fn resolve_anime_episode_mapping(
+    request: AnimeEpisodeResolutionRequest,
+) -> Result<Option<AnimeEpisodeResolution>, String> {
+    Ok(anime::resolve_episode_mapping(request))
+}
+
+#[tauri::command]
+pub async fn lookup_anime_mappings(
+    request: LookupAnimeMappingsRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<LookupAnimeMappingsResponse, String> {
+    anime_lookup::lookup_anime_mappings(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub async fn resolve_anime_ids(
+    request: ResolveAnimeIdsRequest,
+    db: State<'_, Database>,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<ResolveAnimeIdsResponse, String> {
+    anime_lookup::resolve_anime_ids(&coordinator, &db, request).await
+}
+
+#[tauri::command]
+pub fn sync_password_store(email: String, password: String) -> Result<(), String> {
+    sync::store_password(email, password)
+}
+
+#[tauri::command]
+pub fn sync_password_load(email: String) -> Result<Option<String>, String> {
+    sync::load_password(email)
+}
+
+#[tauri::command]
+pub fn sync_password_delete(email: String) -> Result<(), String> {
+    sync::delete_password(email)
+}
+
+#[tauri::command]
+pub async fn sync_batch(
+    request: SyncBatchRequest,
+    coordinator: State<'_, DetailPageCoordinator>,
+) -> Result<SyncBatchResponse, String> {
+    sync::sync_batch(&coordinator, request).await
+}
+
+// Async + spawn_blocking: these commands do blocking pipe I/O. As sync
+// commands they ran on the webview main thread, so a stale Discord pipe
+// froze the entire app (reproducibly on pause, which re-sets presence).
+#[tauri::command]
+pub async fn discord_set_activity(
     details: Option<String>,
     state: Option<String>,
     large_image: Option<String>,
@@ -134,57 +308,32 @@ pub fn discord_set_activity(
     end_timestamp: Option<u64>,
     activity_type: Option<u32>,
 ) -> Result<(), String> {
-    let mut activity = serde_json::json!({});
-
-    // 0=Playing, 1=Streaming, 2=Listening, 3=Watching, 5=Competing
-    activity["type"] = serde_json::json!(activity_type.unwrap_or(0));
-
-    if let Some(d) = details {
-        activity["details"] = serde_json::json!(d);
-    }
-    if let Some(s) = state {
-        activity["state"] = serde_json::json!(s);
-    }
-
-    let mut assets = serde_json::json!({});
-    if let Some(li) = large_image {
-        assets["large_image"] = serde_json::json!(li);
-    }
-    if let Some(lt) = large_text {
-        assets["large_text"] = serde_json::json!(lt);
-    }
-    if let Some(si) = small_image {
-        assets["small_image"] = serde_json::json!(si);
-    }
-    if let Some(st) = small_text {
-        assets["small_text"] = serde_json::json!(st);
-    }
-    if assets != serde_json::json!({}) {
-        activity["assets"] = assets;
-    }
-
-    let mut timestamps = serde_json::json!({});
-    if let Some(ts) = start_timestamp {
-        timestamps["start"] = serde_json::json!(ts);
-    }
-    if let Some(ts) = end_timestamp {
-        timestamps["end"] = serde_json::json!(ts);
-    }
-    if timestamps != serde_json::json!({}) {
-        activity["timestamps"] = timestamps;
-    }
-
-    discord_ipc_set_activity(activity)
+    let activity = discord::Activity {
+        details,
+        state,
+        large_image,
+        large_text,
+        small_image,
+        small_text,
+        start_timestamp,
+        end_timestamp,
+        activity_type,
+    };
+    tauri::async_runtime::spawn_blocking(move || discord::set_activity(activity))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn discord_clear_activity() -> Result<(), String> {
-    discord_ipc_clear_activity()
+pub async fn discord_clear_activity() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(discord::clear_activity)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn discord_disconnect() -> Result<(), String> {
-    discord_ipc_disconnect();
+    discord::disconnect();
     Ok(())
 }
 
@@ -200,26 +349,9 @@ pub fn discord_disconnect() -> Result<(), String> {
 // Result: the host is a ghost — mouse events fall through to WebView2 and
 // JavaScript controls work correctly.
 
+#[cfg(target_os = "windows")]
 static MPV_HOST_ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
 static MPV_PIPE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static SIMKL_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
-static ANILIST_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-struct SimklCallbackGuard;
-
-impl Drop for SimklCallbackGuard {
-    fn drop(&mut self) {
-        SIMKL_CALLBACK_ACTIVE.store(false, Ordering::SeqCst);
-    }
-}
-
-struct AnilistCallbackGuard;
-
-impl Drop for AnilistCallbackGuard {
-    fn drop(&mut self) {
-        ANILIST_CALLBACK_ACTIVE.store(false, Ordering::SeqCst);
-    }
-}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn transparent_host_proc(
@@ -252,11 +384,48 @@ unsafe extern "system" fn transparent_host_proc(
     }
 }
 
+enum NativePlayerBackend {
+    Process {
+        child: Child,
+        ipc_path: String,
+        writer: Option<Arc<Mutex<std::fs::File>>>,
+    },
+    LibMpv {
+        player: Arc<LibMpvPlayer>,
+    },
+}
+
+/// Launch-time options that cannot change on a live libmpv instance. A new
+/// launch request may only reuse the running player when these match.
+#[derive(Clone, PartialEq)]
+struct LibMpvLaunchConfig {
+    hwdec_mode: Option<String>,
+    video_cache_mode: Option<String>,
+    mpv_custom_args: Option<String>,
+}
+
 struct NativePlayerState {
     host_hwnd: isize,
-    child: Child,
-    ipc_path: String,
-    writer: Option<std::fs::File>,
+    video_hwnd: isize,
+    session_id: String,
+    backend: NativePlayerBackend,
+    launch_config: Option<LibMpvLaunchConfig>,
+}
+
+impl NativePlayerState {
+    fn process_child_mut(&mut self) -> Option<&mut Child> {
+        match &mut self.backend {
+            NativePlayerBackend::Process { child, .. } => Some(child),
+            NativePlayerBackend::LibMpv { .. } => None,
+        }
+    }
+
+    fn process_pid(&self) -> Option<u32> {
+        match &self.backend {
+            NativePlayerBackend::Process { child, .. } => Some(child.id()),
+            NativePlayerBackend::LibMpv { .. } => None,
+        }
+    }
 }
 
 static NATIVE_PLAYER: OnceLock<Mutex<Option<NativePlayerState>>> = OnceLock::new();
@@ -275,322 +444,193 @@ fn player_debug_state() -> &'static Mutex<PlayerDebugState> {
     PLAYER_DEBUG_STATE.get_or_init(|| Mutex::new(PlayerDebugState::default()))
 }
 
-fn player_debug_log(message: impl Into<String>) {
-    let message = message.into();
+pub(crate) fn player_debug_log(message: impl Into<String>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let message_str = message.into();
+    let message = format!(
+        "[{:02}:{:02}:{:02}.{:03}] {}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60,
+        now.subsec_millis(),
+        message_str
+    );
     eprintln!("{}", message);
     if let Ok(mut state) = player_debug_state().lock() {
-        state.logs.push(message);
+        state.logs.push(message.clone());
         if state.logs.len() > 2_000 {
             state.logs.drain(..500);
         }
     }
-}
-
-fn stable_stream_hash(value: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("aurales-player-debug.log"))
+    {
+        let _ = writeln!(file, "{}", message);
+    }
 }
 
 fn native_player_state() -> &'static Mutex<Option<NativePlayerState>> {
     NATIVE_PLAYER.get_or_init(|| Mutex::new(None))
 }
 
-static PROPERTY_CACHE: OnceLock<std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>> = OnceLock::new();
+fn player_lifecycle_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
-fn get_property_cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>> {
+pub(crate) fn is_current_player_session(session_id: &str) -> bool {
+    native_player_state()
+        .lock()
+        .map(|state| {
+            state
+                .as_ref()
+                .map(|player| player.session_id == session_id)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+static PROPERTY_CACHE: OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
+> = OnceLock::new();
+
+fn get_property_cache(
+) -> &'static std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>> {
     PROPERTY_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Setting {
-    pub key: String,
-    pub value: String,
+pub(crate) fn cache_mpv_property(session_id: &str, name: String, value: serde_json::Value) {
+    let Ok(state) = native_player_state().lock() else {
+        return;
+    };
+    if !state
+        .as_ref()
+        .map(|player| player.session_id == session_id)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if let Ok(mut cache) = get_property_cache().write() {
+        cache.insert(name, value);
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct WatchProgress {
-    pub id: String,
-    pub media_type: String,
-    pub media_id: String,
-    pub season: Option<i32>,
-    pub episode: Option<i32>,
-    pub progress_seconds: f64,
-    pub duration_seconds: f64,
-    pub completed: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct HomeRow {
-    pub id: String,
-    pub title: String,
-    pub addon_id: Option<String>,
-    pub catalog_type: Option<String>,
-    pub catalog_id: Option<String>,
-    pub layout: String,
-    pub enabled: bool,
-    pub sort_order: i32,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct AddonRecord {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub url: String,
-    pub manifest_json: String,
-    pub enabled: bool,
+pub(crate) fn clear_player_if_session(session_id: &str) -> Result<(), String> {
+    let player = {
+        let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+        if state
+            .as_ref()
+            .is_some_and(|player| player.session_id == session_id)
+        {
+            state.take()
+        } else {
+            None
+        }
+    };
+    if let Some(mut player) = player {
+        if let NativePlayerBackend::LibMpv { player: libmpv } = &mut player.backend {
+            #[cfg(target_os = "linux")]
+            crate::linux_render_surface::detach(libmpv);
+        }
+        cleanup_player_windows(player.host_hwnd, player.video_hwnd);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub fn get_setting(key: String, db: State<Database>) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
-        row.get(0)
-    })
-    .ok()
+    settings::get_setting(&db, key)
 }
 
 #[tauri::command]
 pub fn set_setting(key: String, value: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-        [&key, &value],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    settings::set_setting(&db, key, value)
 }
 
 #[tauri::command]
 pub fn get_all_settings(db: State<Database>) -> Vec<Setting> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT key, value FROM settings").unwrap();
-    stmt.query_map([], |row| {
-        Ok(Setting {
-            key: row.get(0)?,
-            value: row.get(1)?,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    settings::get_all_settings(&db)
 }
 
 #[tauri::command]
 pub fn save_watch_progress(progress: WatchProgress, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO watch_progress (id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
-        rusqlite::params![
-            progress.id,
-            progress.media_type,
-            progress.media_id,
-            progress.season,
-            progress.episode,
-            progress.progress_seconds,
-            progress.duration_seconds,
-            progress.completed as i32,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    sync::save_watch_progress(&db, progress)
 }
 
 #[tauri::command]
 pub fn get_watch_progress(media_id: String, db: State<Database>) -> Option<WatchProgress> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row(
-        "SELECT id, media_type, media_id, season, episode, progress_seconds, duration_seconds, completed FROM watch_progress WHERE media_id = ?1 ORDER BY updated_at DESC LIMIT 1",
-        [&media_id],
-        |row| {
-            Ok(WatchProgress {
-                id: row.get(0)?,
-                media_type: row.get(1)?,
-                media_id: row.get(2)?,
-                season: row.get(3)?,
-                episode: row.get(4)?,
-                progress_seconds: row.get(5)?,
-                duration_seconds: row.get(6)?,
-                completed: row.get::<_, i32>(7)? != 0,
-            })
-        },
-    )
-    .ok()
+    sync::get_watch_progress(&db, media_id)
 }
 
 #[tauri::command]
 pub fn save_home_rows(rows: Vec<HomeRow>, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM home_rows", [])
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        conn.execute(
-            "INSERT INTO home_rows (id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                row.id,
-                row.title,
-                row.addon_id,
-                row.catalog_type,
-                row.catalog_id,
-                row.layout,
-                row.enabled as i32,
-                row.sort_order,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    catalog::save_home_rows(&db, rows)
 }
 
 #[tauri::command]
 pub fn get_home_rows(db: State<Database>) -> Vec<HomeRow> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id, title, addon_id, catalog_type, catalog_id, layout, enabled, sort_order FROM home_rows ORDER BY sort_order")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(HomeRow {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            addon_id: row.get(2)?,
-            catalog_type: row.get(3)?,
-            catalog_id: row.get(4)?,
-            layout: row.get(5)?,
-            enabled: row.get::<_, i32>(6)? != 0,
-            sort_order: row.get(7)?,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    catalog::get_home_rows(&db)
 }
 
 #[tauri::command]
 pub fn save_addon(addon: AddonRecord, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO addons (id, name, version, url, manifest_json, enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![
-            addon.id,
-            addon.name,
-            addon.version,
-            addon.url,
-            addon.manifest_json,
-            addon.enabled as i32,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    catalog::save_addon(&db, addon)
 }
 
 #[tauri::command]
 pub fn remove_addon(addon_id: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM addons WHERE id = ?1", [&addon_id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    catalog::remove_addon(&db, addon_id)
 }
 
 #[tauri::command]
 pub fn get_addons(db: State<Database>) -> Vec<AddonRecord> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id, name, version, url, manifest_json, enabled FROM addons")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(AddonRecord {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            version: row.get(2)?,
-            url: row.get(3)?,
-            manifest_json: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    catalog::get_addons(&db)
 }
 
 #[tauri::command]
 pub fn cache_metadata(key: String, data: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata_cache (cache_key, data_json, cached_at) VALUES (?1, ?2, datetime('now'))",
-        [&key, &data],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::metadata_set(&db, key, data)
 }
 
 #[tauri::command]
 pub fn get_cached_metadata(key: String, db: State<Database>) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row(
-        "SELECT data_json FROM metadata_cache WHERE cache_key = ?1",
-        [&key],
-        |row| row.get(0),
-    )
-    .ok()
+    cache::metadata_get(&db, key)
 }
 
 #[tauri::command]
 pub fn clear_cache(db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM metadata_cache", [])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::clear_metadata(&db)
 }
 
 #[tauri::command]
-pub fn save_app_metadata(
+pub async fn save_app_metadata(
     media_json: String,
     addon_id: String,
     addon_item_id: String,
     media_type: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Result<(), String> {
-    let media: serde_json::Value = serde_json::from_str(&media_json).map_err(|e| e.to_string())?;
-    let id = media.get("id").and_then(|v| v.as_str()).ok_or("Missing media id")?;
-    let title = media.get("title").and_then(|v| v.as_str()).ok_or("Missing media title")?;
-    let updated_at = media.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("");
-    let text = |key: &str| media.get(key).and_then(|v| v.as_str());
-    let integer = |key: &str| media.get(key).and_then(|v| v.as_i64());
-    let real = |key: &str| media.get(key).and_then(|v| v.as_f64());
-    let genres = media.get("genres").map(|v| v.to_string()).unwrap_or_else(|| "[]".into());
-    let provider = text("sourceMetadataProvider").unwrap_or("fallback_addon");
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO app_media (id, media_type, title, original_title, localized_title, year, overview, poster, backdrop, logo, genres_json, runtime, rating, age_rating, language, country, tmdb_id, tvdb_id, imdb_id, trakt_id, simkl_id, anilist_id, mal_id, source_metadata_provider, source_addon_id, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
-        rusqlite::params![id, media_type, title, text("originalTitle"), text("localizedTitle"), integer("year"), text("overview"), text("poster"), text("backdrop"), text("logo"), genres, integer("runtime"), real("rating"), text("ageRating"), text("language"), text("country"), integer("tmdbId"), integer("tvdbId"), text("imdbId"), integer("traktId"), integer("simklId"), integer("anilistId"), integer("malId"), provider, addon_id, media_json, updated_at]
-    ).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [id]).map_err(|e| e.to_string())?;
-    if let Some(seasons) = media.get("seasons").and_then(|v| v.as_array()) {
-        for season in seasons {
-            let season_id = season.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            tx.execute("INSERT OR REPLACE INTO app_seasons (id, local_media_id, season_number, title, overview, poster, episode_count, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![season_id, id, season.get("seasonNumber").and_then(|v| v.as_i64()), season.get("title").and_then(|v| v.as_str()), season.get("overview").and_then(|v| v.as_str()), season.get("poster").and_then(|v| v.as_str()), season.get("episodeCount").and_then(|v| v.as_i64()), season.to_string(), updated_at]).map_err(|e| e.to_string())?;
-            if let Some(episodes) = season.get("episodes").and_then(|v| v.as_array()) {
-                for episode in episodes {
-                    tx.execute("INSERT OR REPLACE INTO app_episodes (id, local_media_id, season_id, season_number, episode_number, absolute_episode_number, title, overview, still, air_date, runtime, tmdb_id, tvdb_id, anilist_id, raw_json, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![episode.get("id").and_then(|v| v.as_str()), id, season_id, episode.get("seasonNumber").and_then(|v| v.as_i64()), episode.get("episodeNumber").and_then(|v| v.as_i64()), episode.get("absoluteEpisodeNumber").and_then(|v| v.as_i64()), episode.get("title").and_then(|v| v.as_str()), episode.get("overview").and_then(|v| v.as_str()), episode.get("still").and_then(|v| v.as_str()), episode.get("airDate").and_then(|v| v.as_str()), episode.get("runtime").and_then(|v| v.as_i64()), episode.get("tmdbId").and_then(|v| v.as_i64()), episode.get("tvdbId").and_then(|v| v.as_i64()), episode.get("anilistId").and_then(|v| v.as_i64()), episode.to_string(), updated_at]).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-    let mapping_id = format!("{}:{}", addon_id, addon_item_id);
-    tx.execute("INSERT OR REPLACE INTO addon_media_mappings (id, addon_id, addon_item_id, local_media_id, media_type, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,COALESCE((SELECT created_at FROM addon_media_mappings WHERE id=?1),datetime('now')),datetime('now'))", rusqlite::params![mapping_id, addon_id, addon_item_id, id, media_type]).map_err(|e| e.to_string())?;
-    let log_id = format!("{}:{}:{}", addon_id, addon_item_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-    tx.execute("INSERT INTO metadata_resolution_log (id, addon_id, addon_item_id, local_media_id, status, reason, created_at) VALUES (?1,?2,?3,?4,?5,?6,datetime('now'))", rusqlite::params![log_id, addon_id, addon_item_id, id, if provider == "fallback_addon" { "fallback" } else { "resolved" }, provider]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        metadata::save_persisted_metadata(&db, media_json, addon_id, addon_item_id, media_type)
+    })
+    .await
+    .map_err(|e| format!("Metadata save task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_app_metadata_for_addon(addon_id: String, addon_item_id: String, db: State<Database>) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    conn.query_row("SELECT m.raw_json FROM app_media m JOIN addon_media_mappings a ON a.local_media_id=m.id WHERE a.addon_id=?1 AND a.addon_item_id=?2", rusqlite::params![addon_id, addon_item_id], |row| row.get(0)).ok()
+pub fn get_app_metadata_for_addon(
+    addon_id: String,
+    addon_item_id: String,
+    db: State<'_, Database>,
+) -> Option<String> {
+    metadata::get_persisted_for_addon(&db, addon_id, addon_item_id)
 }
 
 #[tauri::command]
@@ -600,180 +640,70 @@ pub fn get_app_metadata_by_ids(
     tmdb_id: Option<i64>,
     tvdb_id: Option<i64>,
     anilist_id: Option<i64>,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Option<String> {
-    let conn = db.conn.lock().unwrap();
-    
-    // 1. Try by id first
-    if let Some(ref id_str) = id {
-        if let Ok(json) = conn.query_row(
-            "SELECT raw_json FROM app_media WHERE id = ?1",
-            [id_str],
-            |row| row.get::<_, String>(0)
-        ) {
-            return Some(json);
-        }
-    }
-    
-    // 2. Try by imdb_id
-    if let Some(ref imdb) = imdb_id {
-        if !imdb.is_empty() {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-                [imdb],
-                |row| row.get::<_, String>(0)
-            ) {
-                return Some(json);
-            }
-        }
-    }
-    
-    // 3. Try by tmdb_id
-    if let Some(tmdb) = tmdb_id {
-        if tmdb > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
-                [tmdb],
-                |row| row.get::<_, String>(0)
-            ) {
-                return Some(json);
-            }
-        }
-    }
-    
-    // 4. Try by tvdb_id
-    if let Some(tvdb) = tvdb_id {
-        if tvdb > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
-                [tvdb],
-                |row| row.get::<_, String>(0)
-            ) {
-                return Some(json);
-            }
-        }
-    }
-    
-    // 5. Try by anilist_id
-    if let Some(anilist) = anilist_id {
-        if anilist > 0 {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
-                [anilist],
-                |row| row.get::<_, String>(0)
-            ) {
-                return Some(json);
-            }
-        }
-    }
-    
-    None
+    metadata::get_persisted_by_ids(
+        &db,
+        &MetadataLookup {
+            id,
+            imdb_id,
+            tmdb_id,
+            tvdb_id,
+            anilist_id,
+        },
+    )
 }
 
 #[tauri::command]
-pub fn get_app_metadata_by_ids_batch(
-    items: Vec<serde_json::Value>,
-    db: State<Database>,
-) -> Vec<Option<String>> {
-    let conn = db.conn.lock().unwrap();
-    items.iter().map(|item| {
-        let id = item.get("id").and_then(|v| v.as_str());
-        let imdb_id = item.get("imdbId").and_then(|v| v.as_str());
-        let tmdb_id = item.get("tmdbId").and_then(|v| v.as_i64());
-        let tvdb_id = item.get("tvdbId").and_then(|v| v.as_i64());
-        let anilist_id = item.get("anilistId").and_then(|v| v.as_i64());
-
-        if let Some(id_str) = id {
-            if let Ok(json) = conn.query_row(
-                "SELECT raw_json FROM app_media WHERE id = ?1",
-                [id_str],
-                |row| row.get::<_, String>(0)
-            ) { return Some(json); }
-        }
-        if let Some(imdb) = imdb_id {
-            if !imdb.is_empty() {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE imdb_id = ?1",
-                    [imdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
-            }
-        }
-        if let Some(tmdb) = tmdb_id {
-            if tmdb > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE tmdb_id = ?1",
-                    [tmdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
-            }
-        }
-        if let Some(tvdb) = tvdb_id {
-            if tvdb > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE tvdb_id = ?1",
-                    [tvdb],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
-            }
-        }
-        if let Some(anilist) = anilist_id {
-            if anilist > 0 {
-                if let Ok(json) = conn.query_row(
-                    "SELECT raw_json FROM app_media WHERE anilist_id = ?1",
-                    [anilist],
-                    |row| row.get::<_, String>(0)
-                ) { return Some(json); }
-            }
-        }
-        None
-    }).collect()
+pub async fn get_app_metadata_by_ids_batch(
+    items: Vec<MetadataLookup>,
+    db: State<'_, Database>,
+) -> Result<Vec<Option<String>>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::get_persisted_by_ids_batch(&db, items))
+        .await
+        .map_err(|e| format!("Metadata lookup task failed: {e}"))
 }
 
 #[tauri::command]
-pub fn delete_app_metadata(
+pub async fn delete_app_metadata(
     addon_id: String,
     addon_item_id: String,
-    db: State<Database>,
+    db: State<'_, Database>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-
-    let local_media_id: Option<String> = tx.query_row(
-        "SELECT local_media_id FROM addon_media_mappings WHERE addon_id = ?1 AND addon_item_id = ?2",
-        rusqlite::params![addon_id, addon_item_id],
-        |row| row.get(0)
-    ).ok();
-
-    if let Some(id) = local_media_id {
-        tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM anime_season_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM anime_episode_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM app_media WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM addon_media_mappings WHERE local_media_id = ?1", [&id]).map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        metadata::delete_persisted_metadata(&db, addon_id, addon_item_id)
+    })
+    .await
+    .map_err(|e| format!("Metadata delete task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn hard_reset_anime_metadata(local_media_id: String, db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_seasons WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM app_episodes WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM anime_season_mappings WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM anime_episode_mappings WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM metadata_resolution_log WHERE local_media_id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.execute("UPDATE app_media SET raw_json = NULL, updated_at = NULL WHERE id = ?1", [&local_media_id]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+pub async fn hard_reset_anime_metadata(
+    local_media_id: String,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::hard_reset_anime_metadata(&db, local_media_id))
+        .await
+        .map_err(|e| format!("Anime metadata reset task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn clear_app_metadata(db: State<Database>) -> Result<(), String> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute_batch("DELETE FROM app_episodes; DELETE FROM app_seasons; DELETE FROM addon_media_mappings; DELETE FROM app_media; DELETE FROM metadata_resolution_log;").map_err(|e| e.to_string())
+pub async fn clear_app_metadata(db: State<'_, Database>) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::clear_persisted_metadata(&db))
+        .await
+        .map_err(|e| format!("Metadata clear task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn clear_anime_app_metadata(db: State<'_, Database>) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || metadata::clear_persisted_anime_metadata(&db))
+        .await
+        .map_err(|e| format!("Anime metadata clear task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -800,6 +730,7 @@ pub fn launch_mpv(
     if let Some(s) = start_time {
         args.push(format!("--start={}", s));
     }
+    args.push("--".to_string());
     args.push(url);
 
     let shell = app.shell();
@@ -809,56 +740,139 @@ pub fn launch_mpv(
         }
     }
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("mpv.exe"));
-            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
-            candidates.push(dir.join("binaries").join("mpv.exe"));
-            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
-        }
-    }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("mpv-x86_64-pc-windows-msvc.exe"),
-    );
-
-    for candidate in candidates {
-        if candidate.exists() {
-            Command::new(&candidate)
-                .args(&args)
-                .spawn()
-                .map_err(|e| format!("Failed to launch mpv at {}: {}", candidate.display(), e))?;
-            return Ok(());
-        }
+    if let Some(mpv) = player::find_mpv() {
+        Command::new(&mpv)
+            .args(&args)
+            .spawn()
+            .map_err(|e| format!("Failed to launch mpv at {}: {}", mpv.display(), e))?;
+        return Ok(());
     }
 
-    Err("Failed to launch mpv: bundled mpv executable was not found next to Aurales. Reinstall with the NSIS setup exe or copy mpv.exe beside aurales-app.exe.".to_string())
+    Err("Failed to launch mpv: no mpv executable was found (bundled or on PATH). Reinstall Aurales or install mpv.".to_string())
 }
 
-fn mpv_candidates() -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("mpv.exe"));
-            candidates.push(dir.join("mpv-x86_64-pc-windows-msvc.exe"));
-            candidates.push(dir.join("binaries").join("mpv.exe"));
-            candidates.push(dir.join("binaries").join("mpv-x86_64-pc-windows-msvc.exe"));
-        }
-    }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("binaries")
-            .join("mpv-x86_64-pc-windows-msvc.exe"),
-    );
-    candidates
+// Resolves a YouTube video to direct stream URLs via the bundled yt-dlp
+// (1080p video + audio; yt-dlp handles YouTube's anti-bot measures and keeps
+// itself current). Returns the printed URLs: [video] or [video, audio].
+#[tauri::command]
+pub async fn ytdlp_resolve(
+    video_id: String,
+    max_height: Option<u32>,
+) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || player::resolve_ytdlp(video_id, max_height))
+        .await
+        .map_err(|e| format!("yt-dlp task failed: {e}"))?
 }
 
-fn find_mpv() -> Option<PathBuf> {
-    mpv_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
+/// Reuse a live libmpv instance for a new stream instead of tearing it down.
+/// Returns Ok(true) when the running player took over playback of `url`;
+/// Ok(false) means the caller must do a full stop + relaunch (no live libmpv
+/// player, launch options differ, or the in-place swap failed).
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn try_reuse_libmpv_player(
+    _app: &tauri::AppHandle,
+    url: &str,
+    title: Option<&str>,
+    start_time: Option<f64>,
+    volume: Option<f64>,
+    config: &LibMpvLaunchConfig,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<bool, String> {
+    let (player, host_hwnd, video_hwnd, session_id) = {
+        let state = native_player_state().lock().map_err(|e| e.to_string())?;
+        match state.as_ref() {
+            Some(current) => match &current.backend {
+                NativePlayerBackend::LibMpv { player }
+                    if !player.is_destroyed() && current.launch_config.as_ref() == Some(config) =>
+                {
+                    (
+                        Arc::clone(player),
+                        current.host_hwnd,
+                        current.video_hwnd,
+                        current.session_id.clone(),
+                    )
+                }
+                _ => return Ok(false),
+            },
+            None => return Ok(false),
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let _ = (host_hwnd, video_hwnd);
+
+    // Stale observed values (duration, tracks, eof) belong to the old file.
+    if let Ok(mut cache) = get_property_cache().write() {
+        cache.clear();
+    }
+
+    // Per-file options: `start` only applies to the next loadfile; the rest
+    // are plain runtime properties.
+    let set = |name: &str, value: serde_json::Value| {
+        if let Err(error) =
+            player.command("set", &[serde_json::Value::String(name.to_string()), value])
+        {
+            player_debug_log(format!("[PLAYER REUSE] set {} failed: {}", name, error));
+        }
+    };
+    set(
+        "start",
+        serde_json::Value::String(match start_time.filter(|value| *value > 0.0) {
+            Some(seconds) => seconds.to_string(),
+            None => "none".to_string(),
+        }),
+    );
+    set(
+        "force-media-title",
+        serde_json::Value::String(title.unwrap_or("").to_string()),
+    );
+    set("pause", serde_json::Value::String("no".to_string()));
+    if let Some(v) = volume {
+        set(
+            "volume",
+            serde_json::Value::String(v.max(0.0).min(130.0).to_string()),
+        );
+    }
+
+    if let (Some(w), Some(h)) = (width, height) {
+        if w > 0 && h > 0 {
+            #[cfg(target_os = "windows")]
+            libmpv_player::resize_video_child(
+                host_hwnd,
+                video_hwnd,
+                x.unwrap_or(0),
+                y.unwrap_or(0),
+                w,
+                h,
+            );
+            #[cfg(target_os = "linux")]
+            crate::linux_render_surface::resize(_app, x.unwrap_or(0), y.unwrap_or(0), w, h)?;
+        }
+    }
+
+    player_debug_log(format!(
+        "[PLAYER START] session={} stream={} backend=libmpv reuse=in-place",
+        session_id,
+        player::stable_stream_hash(url)
+    ));
+
+    if let Err(error) = player.command(
+        "loadfile",
+        &[
+            serde_json::Value::String(url.to_string()),
+            serde_json::Value::String("replace".to_string()),
+        ],
+    ) {
+        player_debug_log(format!(
+            "[PLAYER REUSE] loadfile failed, falling back to full relaunch: {}",
+            error
+        ));
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -869,36 +883,98 @@ pub fn launch_embedded_mpv(
     start_time: Option<f64>,
     volume: Option<f64>,
     hwdec_mode: Option<String>,
-    cache_buffer_size: Option<String>,
-    mpv_cache_secs: Option<u32>,
-    mpv_network_timeout: Option<u32>,
+    video_cache_mode: Option<String>,
     mpv_custom_args: Option<String>,
-    _x: Option<i32>,
-    _y: Option<i32>,
-    _width: Option<i32>,
-    _height: Option<i32>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
 ) -> Result<(), String> {
-    stop_embedded_mpv()?;
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
+    // Deduplicate rapid double-launches (React re-running the mount effect
+    // fires two identical launches ~20ms apart; the second used to kill the
+    // just-spawned mpv and start another one).
+    {
+        static LAST_LAUNCH: OnceLock<Mutex<(String, std::time::Instant)>> = OnceLock::new();
+        let guard = LAST_LAUNCH.get_or_init(|| {
+            Mutex::new((
+                String::new(),
+                std::time::Instant::now() - std::time::Duration::from_secs(60),
+            ))
+        });
+        if let Ok(mut last) = guard.lock() {
+            if last.0 == url && last.1.elapsed() < std::time::Duration::from_millis(700) {
+                let running = native_player_state()
+                    .lock()
+                    .map(|state| state.is_some())
+                    .unwrap_or(false);
+                if running {
+                    player_debug_log("[PLAYER START] duplicate launch within 700ms ignored");
+                    return Ok(());
+                }
+                player_debug_log(
+                    "[PLAYER START] duplicate launch window hit but no player is running; continuing",
+                );
+            }
+            *last = (url.clone(), std::time::Instant::now());
+        }
+    }
+
+    // Fast path: a live libmpv instance with identical launch options can
+    // swap files in place (loadfile replace) — no teardown, no window flash,
+    // no GPU/hwdec re-init between episodes or sources.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let launch_config = LibMpvLaunchConfig {
+            hwdec_mode: hwdec_mode.clone(),
+            video_cache_mode: video_cache_mode.clone(),
+            mpv_custom_args: mpv_custom_args.clone(),
+        };
+        if try_reuse_libmpv_player(
+            &app,
+            &url,
+            title.as_deref(),
+            start_time,
+            volume,
+            &launch_config,
+            x,
+            y,
+            width,
+            height,
+        )? {
+            return Ok(());
+        }
+    }
+
+    stop_embedded_mpv_inner()?;
 
     #[cfg(target_os = "windows")]
     let hwnd = main_window_hwnd(&app)?;
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    // Linux uses libmpv's Render API inside GTK and does not require a native
+    // X11 window ID. Keep a non-zero host marker for shared player state.
+    let hwnd = 1;
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let hwnd: isize = {
-        return Err("Embedded mpv playback is only implemented on Windows right now.".to_string());
+        return Err("Embedded mpv playback is only implemented on Windows and Linux.".to_string());
     };
 
     launch_mpv_with_window(
+        app,
         hwnd,
         url,
         title,
         start_time,
         volume,
         hwdec_mode,
-        cache_buffer_size,
-        mpv_cache_secs,
-        mpv_network_timeout,
+        video_cache_mode,
         mpv_custom_args,
+        x,
+        y,
+        width,
+        height,
     )
 }
 
@@ -930,16 +1006,22 @@ pub fn launch_minimal_mpv(
     start_time: Option<f64>,
     hwdec_mode: Option<String>,
 ) -> Result<MinimalPlayerInfo, String> {
-    stop_embedded_mpv()?;
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
+    stop_embedded_mpv_inner()?;
 
-    let mpv = find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
-    let stream_hash = stable_stream_hash(&url);
+    let mpv =
+        player::find_mpv().ok_or_else(|| "Bundled mpv executable was not found.".to_string())?;
+    let stream_hash = player::stable_stream_hash(&url);
     let session_id = format!(
         "minimal-{}-{}",
         std::process::id(),
         MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
     );
-    let hwdec = if hwdec_mode.as_deref() == Some("no") { "no" } else { "auto-safe" };
+    let hwdec = if hwdec_mode.as_deref() == Some("no") {
+        "no"
+    } else {
+        "auto-safe"
+    };
 
     let mut args = vec![
         "--force-window=yes".to_string(),
@@ -962,6 +1044,7 @@ pub fn launch_minimal_mpv(
     if let Some(value) = start_time.filter(|value| *value > 0.0) {
         args.push(format!("--start={}", value));
     }
+    args.push("--".to_string());
     args.push(url);
 
     player_debug_log(format!(
@@ -983,9 +1066,14 @@ pub fn launch_minimal_mpv(
         let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
         *state = Some(NativePlayerState {
             host_hwnd: 0,
-            child,
-            ipc_path: session_id.clone(),
-            writer: None,
+            video_hwnd: 0,
+            session_id: session_id.clone(),
+            backend: NativePlayerBackend::Process {
+                child,
+                ipc_path: session_id.clone(),
+                writer: None,
+            },
+            launch_config: None,
         });
     }
     {
@@ -1004,7 +1092,10 @@ pub fn launch_minimal_mpv(
         let stderr_session = session_id.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
             }
         });
@@ -1014,7 +1105,10 @@ pub fn launch_minimal_mpv(
         let stdout_session = session_id.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
             }
         });
@@ -1030,37 +1124,64 @@ pub fn launch_minimal_mpv(
                 Err(_) => return,
             };
             let Some(player) = state.as_mut() else { return };
-            if player.ipc_path != monitor_identity {
+            if player.session_id != monitor_identity {
                 return;
             }
-            match player.child.try_wait() {
+            let Some(child) = player.process_child_mut() else {
+                return;
+            };
+            match child.try_wait() {
                 Ok(Some(status)) => {
                     *state = None;
                     Some(format!("{}", status))
                 }
                 Ok(None) => None,
-                Err(error) => Some(format!("wait-error: {}", error)),
+                Err(error) => {
+                    let reap = if child.kill().is_ok() {
+                        child.wait().ok().map(|status| format!("reaped: {status}"))
+                    } else {
+                        None
+                    };
+                    *state = None;
+                    Some(format!("wait-error: {}; {:?}", error, reap))
+                }
             }
         };
         if let Some(status) = exit {
-            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            player_debug_log(format!(
+                "[PLAYER EXIT] session={} status={}",
+                monitor_session, status
+            ));
             return;
         }
     });
 
-    Ok(MinimalPlayerInfo { session_id, pid, stream_hash })
+    Ok(MinimalPlayerInfo {
+        session_id,
+        pid,
+        stream_hash,
+    })
 }
 
 #[tauri::command]
-pub fn minimal_mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+pub fn minimal_mpv_command(
+    command: String,
+    args: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
     let _ = args;
-    player_debug_log(format!("[PLAYER CONTROL IGNORED] command={} reason=ipc-disabled-in-isolation", command));
+    player_debug_log(format!(
+        "[PLAYER CONTROL IGNORED] command={} reason=ipc-disabled-in-isolation",
+        command
+    ));
     Err("Player controls are disabled in isolated playback. Use mpv's native controls.".to_string())
 }
 
 #[tauri::command]
 pub fn stop_minimal_mpv(reason: Option<String>) -> Result<(), String> {
-    player_debug_log(format!("[PLAYER STOP CALLED] reason={}", reason.unwrap_or_else(|| "unspecified".to_string())));
+    player_debug_log(format!(
+        "[PLAYER STOP CALLED] reason={}",
+        reason.unwrap_or_else(|| "unspecified".to_string())
+    ));
     stop_embedded_mpv()
 }
 
@@ -1068,7 +1189,10 @@ pub fn stop_minimal_mpv(reason: Option<String>) -> Result<(), String> {
 pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> {
     let (running, pid) = {
         let state = native_player_state().lock().map_err(|e| e.to_string())?;
-        (state.is_some(), state.as_ref().map(|player| player.child.id()))
+        (
+            state.is_some(),
+            state.as_ref().and_then(|player| player.process_pid()),
+        )
     };
     let debug = player_debug_state().lock().map_err(|e| e.to_string())?;
     Ok(MinimalPlayerStateResponse {
@@ -1082,26 +1206,43 @@ pub fn get_minimal_player_state() -> Result<MinimalPlayerStateResponse, String> 
 
 #[tauri::command]
 pub fn get_embedded_player_running() -> Result<bool, String> {
-    Ok(native_player_state().lock().map_err(|e| e.to_string())?.is_some())
+    Ok(native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .is_some())
+}
+
+#[tauri::command]
+pub fn get_embedded_player_session_id() -> Result<Option<String>, String> {
+    Ok(native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .map(|player| player.session_id.clone()))
 }
 
 #[tauri::command]
 pub fn get_player_debug_logs() -> Result<Vec<String>, String> {
-    Ok(player_debug_state().lock().map_err(|e| e.to_string())?.logs.clone())
+    Ok(player_debug_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .logs
+        .clone())
 }
 
 #[tauri::command]
 pub fn clear_player_debug_logs() -> Result<(), String> {
-    player_debug_state().lock().map_err(|e| e.to_string())?.logs.clear();
+    player_debug_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .logs
+        .clear();
     Ok(())
 }
 
 #[tauri::command]
 pub fn select_local_video_file() -> Option<String> {
-    rfd::FileDialog::new()
-        .add_filter("Video", &["mkv", "mp4", "webm", "avi", "mov", "m4v", "ts"])
-        .pick_file()
-        .map(|path| path.to_string_lossy().into_owned())
+    platform::select_local_video_file()
 }
 
 #[cfg(target_os = "windows")]
@@ -1115,6 +1256,628 @@ fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     Ok(hwnd.0 as isize)
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+struct WindowBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    maximized: bool,
+}
+
+#[cfg(target_os = "windows")]
+static PLAYER_WINDOWED_BOUNDS: OnceLock<Mutex<Option<WindowBounds>>> = OnceLock::new();
+
+/// Windows can redraw a caption over the transparent WebView when focus moves
+/// to another application. Refresh the decorationless frame without changing
+/// the window's z-order or activating it.
+#[cfg(target_os = "windows")]
+pub fn repair_native_player_window_frame(app: tauri::AppHandle) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+    };
+
+    let hwnd = HWND(main_window_hwnd(&app)? as *mut _);
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if (style & WS_CAPTION.0 as isize) != 0 {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION.0 as isize));
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            )
+            .map_err(|e| format!("Failed to refresh player window frame: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Fullscreen handling for the transparent, decorationless player window.
+/// Native physical coordinates avoid work-area/taskbar and DPI restore bugs.
+#[tauri::command]
+pub fn set_native_player_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowPlacement, GetWindowRect, IsZoomed, SetWindowPos, ShowWindow,
+            HWND_NOTOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            SW_MAXIMIZE, SW_RESTORE, WINDOWPLACEMENT,
+        };
+
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        let hwnd = HWND(main_window_hwnd(&app)? as *mut _);
+        let bounds = PLAYER_WINDOWED_BOUNDS.get_or_init(|| Mutex::new(None));
+        let mut saved = bounds.lock().map_err(|e| e.to_string())?;
+
+        if fullscreen {
+            if saved.is_none() {
+                let mut rect = RECT::default();
+                let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+                if maximized {
+                    let mut placement = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    unsafe { GetWindowPlacement(hwnd, &mut placement) }
+                        .map_err(|e| format!("Failed to read maximized window bounds: {e}"))?;
+                    rect = placement.rcNormalPosition;
+                } else {
+                    unsafe { GetWindowRect(hwnd, &mut rect) }
+                        .map_err(|e| format!("Failed to read window bounds: {e}"))?;
+                }
+                *saved = Some(WindowBounds {
+                    x: rect.left,
+                    y: rect.top,
+                    width: rect.right - rect.left,
+                    height: rect.bottom - rect.top,
+                    maximized,
+                });
+                // SetWindowPos only changes the restore rectangle while a window
+                // is maximized. Restore it first so monitor-sized fullscreen is
+                // applied to the visible HWND.
+                let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+            }
+
+            // Enter the actual OS/Tauri fullscreen state. The native bounds
+            // below only compensate for transparent borderless Windows windows.
+            main.set_fullscreen(true)
+                .map_err(|e| format!("Failed to enter OS fullscreen: {e}"))?;
+
+            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            unsafe { GetMonitorInfoW(monitor, &mut info) }
+                .ok()
+                .map_err(|e| format!("Failed to read monitor bounds: {e}"))?;
+            let rect = info.rcMonitor;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    // Keep the fullscreen geometry without raising this transparent
+                    // WebView above other apps on Alt-Tab. The video is a separate
+                    // native window below it; TOPMOST leaves only the controls
+                    // visible over windows such as Steam.
+                    SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .map_err(|e| format!("Failed to enter fullscreen: {e}"))?;
+        } else {
+            main.set_fullscreen(false)
+                .map_err(|e| format!("Failed to leave OS fullscreen: {e}"))?;
+            if let Some(rect) = saved.take() {
+                let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        Some(HWND_NOTOPMOST),
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                        SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    )
+                }
+                .map_err(|e| format!("Failed to restore window: {e}"))?;
+                if rect.maximized {
+                    let _ = unsafe { ShowWindow(hwnd, SW_MAXIMIZE) };
+                }
+            }
+        }
+
+        repair_native_player_window_frame(app.clone())?;
+
+        // mpv renders in a separate native HWND, so size it from the exact
+        // Win32 client rectangle instead of delayed WebView/DPI dimensions.
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) }
+            .map_err(|e| format!("Failed to read fullscreen client bounds: {e}"))?;
+        let video_hwnd = native_player_state()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .as_ref()
+            .map(|state| state.video_hwnd)
+            .unwrap_or(0);
+        if video_hwnd != 0 {
+            libmpv_player::resize_video_child(
+                hwnd.0 as isize,
+                video_hwnd,
+                0,
+                0,
+                client.right - client.left,
+                client.bottom - client.top,
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        // Let GTK request fullscreen through the active display backend. This
+        // maps to xdg_toplevel on Wayland and EWMH on X11, so no compositor-
+        // specific positioning or XWayland fallback is required.
+        main.set_fullscreen(fullscreen)
+            .map_err(|e| format!("Failed to change Linux fullscreen state: {e}"))?;
+        crate::linux_render_surface::resize(&app, 0, 0, 0, 0)?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main Aurales window was not found.".to_string())?;
+        main.set_fullscreen(fullscreen)
+            .map_err(|e| format!("Failed to change fullscreen state: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_embedded_player_supported(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return main_window_hwnd(&app).is_ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return app.get_webview_window("main").is_some() && libmpv_player::find_libmpv().is_some();
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+fn apply_custom_libmpv_args(
+    player: &LibMpvPlayer,
+    custom: Option<String>,
+    option_log: &mut Vec<String>,
+) {
+    let Some(custom) = custom else {
+        return;
+    };
+
+    let parts: Vec<String> = custom.split_whitespace().map(str::to_string).collect();
+    let mut index = 0;
+    while index < parts.len() {
+        let arg = &parts[index];
+        index += 1;
+
+        #[cfg(target_os = "windows")]
+        if arg == "--ao" || arg == "-ao" {
+            if index < parts.len() {
+                index += 1;
+            }
+            player_debug_log("[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi");
+            continue;
+        }
+        #[cfg(target_os = "windows")]
+        if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] ignored custom audio output arg: {}",
+                arg
+            ));
+            continue;
+        }
+
+        let Some(trimmed) = arg.strip_prefix("--") else {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] ignored unsupported custom arg: {}",
+                arg
+            ));
+            continue;
+        };
+
+        let (name, value) = if let Some((name, value)) = trimmed.split_once('=') {
+            (name.to_string(), value.to_string())
+        } else if let Some(name) = trimmed.strip_prefix("no-") {
+            (name.to_string(), "no".to_string())
+        } else if index < parts.len() && !parts[index].starts_with('-') {
+            let value = parts[index].clone();
+            index += 1;
+            (trimmed.to_string(), value)
+        } else {
+            (trimmed.to_string(), "yes".to_string())
+        };
+
+        option_log.push(format!("--{}={}", name, value));
+        if let Err(error) = player.set_option(&name, &value) {
+            player_debug_log(format!(
+                "[PLAYER CONFIG] custom option --{} failed: {}",
+                name, error
+            ));
+        }
+    }
+}
+
+fn cleanup_player_windows(host_hwnd: isize, video_hwnd: isize) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+
+        let orig = MPV_HOST_ORIG_PROC.swap(0, Ordering::SeqCst);
+        if orig != 0 {
+            let target = if video_hwnd != 0 {
+                video_hwnd
+            } else {
+                host_hwnd
+            };
+            if target != 0 {
+                unsafe {
+                    SetWindowLongPtrW(HWND(target as *mut _), GWLP_WNDPROC, orig);
+                }
+            }
+        }
+        libmpv_player::destroy_video_child(video_hwnd);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = host_hwnd;
+        libmpv_player::destroy_video_child(video_hwnd);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let _ = (host_hwnd, video_hwnd);
+}
+
+fn launch_mpv_with_window(
+    app: tauri::AppHandle,
+    hwnd: isize,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    volume: Option<f64>,
+    hwdec_mode: Option<String>,
+    video_cache_mode: Option<String>,
+    mpv_custom_args: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<(), String> {
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (
+            hwnd,
+            app,
+            url,
+            title,
+            start_time,
+            volume,
+            hwdec_mode,
+            video_cache_mode,
+            mpv_custom_args,
+            x,
+            y,
+            width,
+            height,
+        );
+        return Err("Embedded mpv playback is only implemented on Windows and Linux.".to_string());
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let launch_config = LibMpvLaunchConfig {
+            hwdec_mode: hwdec_mode.clone(),
+            video_cache_mode: video_cache_mode.clone(),
+            mpv_custom_args: mpv_custom_args.clone(),
+        };
+
+        if let Ok(mut cache) = get_property_cache().write() {
+            cache.clear();
+        }
+
+        let libmpv = libmpv_player::find_libmpv().ok_or_else(|| {
+            let candidates = libmpv_player::libmpv_candidates()
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Failed to launch embedded mpv: libmpv was not found. Expected one of: {}",
+                candidates
+            )
+        })?;
+
+        let session_id = format!(
+            "libmpv-{}-{}",
+            std::process::id(),
+            MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
+        );
+        let hwdec = match hwdec_mode.as_deref() {
+            Some("no") => "no",
+            Some("d3d11va") => "d3d11va",
+            Some("nvdec") => "nvdec",
+            Some("vaapi") => "vaapi",
+            Some("videotoolbox") => "videotoolbox",
+            _ => "auto-safe",
+        };
+        let cache_secs = 60;
+        let requested_network_timeout = 60;
+        // Torrent-backed HTTP gateways can accept the TCP/TLS connection
+        // immediately while taking longer to produce the first byte for a
+        // cold stream. A 15 second timeout made every cold source look broken
+        // on Linux, even though retrying the same URL succeeded moments later.
+        #[cfg(target_os = "linux")]
+        let network_timeout = requested_network_timeout.max(60);
+        #[cfg(not(target_os = "linux"))]
+        let network_timeout = requested_network_timeout;
+        let (max_bytes, max_back_bytes) = ("150MiB", "75MiB");
+        let (cache_on_disk, effective_cache_secs, effective_max_bytes, effective_max_back_bytes) =
+            match video_cache_mode.as_deref() {
+                // Store the seekable stream cache on disk rather than retaining a
+                // feature-length stream in RAM.
+                // Disk cache should make seeking resilient without eagerly
+                // downloading a feature-length remote stream in the background.
+                Some("disk") => ("yes", 1_800, "1GiB", "512MiB"),
+                // Auto keeps disk-backed seeking, but limits its working set to
+                // reduce write activity and heat on portable devices.
+                Some("auto") => ("yes", cache_secs, "256MiB", "128MiB"),
+                _ => ("no", cache_secs, max_bytes, max_back_bytes),
+            };
+        let video_x = x.unwrap_or(0);
+        let video_y = y.unwrap_or(0);
+        let video_width = width.unwrap_or(1).max(1);
+        let video_height = height.unwrap_or(1).max(1);
+        #[cfg(target_os = "windows")]
+        let video_hwnd =
+            libmpv_player::create_video_child(hwnd, video_x, video_y, video_width, video_height)?;
+        #[cfg(target_os = "linux")]
+        let video_hwnd = 0;
+        let player = match LibMpvPlayer::create(&libmpv, session_id.clone()) {
+            Ok(player) => player,
+            Err(error) => {
+                libmpv_player::destroy_video_child(video_hwnd);
+                return Err(error);
+            }
+        };
+
+        player_debug_log(format!(
+            "[PLAYER START] session={} stream={} hwdec={} backend=libmpv dll={}",
+            session_id,
+            player::stable_stream_hash(&url),
+            hwdec,
+            libmpv.display()
+        ));
+
+        let mut option_log: Vec<String> = Vec::new();
+        {
+            // Options that only exist in some libmpv versions. `--osc` and
+            // `--ytdl` are declared by mpv's builtin Lua scripts, and mpv 0.41
+            // dropped them from the option table entirely, so setting them
+            // fails with "option not found" on newer runtimes (the Flatpak
+            // ships 0.41, the AppImage still ships 0.34). Both are redundant
+            // next to `--load-scripts=no`, so a failure here is never fatal.
+            for (name, value) in [("osc", "no"), ("ytdl", "no")] {
+                option_log.push(format!("--{}={}", name, value));
+                if let Err(error) = player.set_option(name, value) {
+                    player_debug_log(format!(
+                        "[PLAYER CONFIG] skipped --{}={} ({})",
+                        name, value, error
+                    ));
+                }
+            }
+
+            let mut set_option = |name: &str, value: String| -> Result<(), String> {
+                option_log.push(format!("--{}={}", name, value));
+                player
+                    .set_option(name, &value)
+                    .map_err(|error| format!("--{}={}: {}", name, value, error))
+            };
+
+            #[cfg(target_os = "windows")]
+            set_option("wid", video_hwnd.to_string())?;
+            #[cfg(target_os = "windows")]
+            set_option("force-window", "immediate".to_string())?;
+            set_option("osd-bar", "no".to_string())?;
+            set_option("config", "no".to_string())?;
+            set_option("load-scripts", "no".to_string())?;
+            set_option("cursor-autohide", "1000".to_string())?;
+            set_option("input-default-bindings", "no".to_string())?;
+            set_option("input-builtin-bindings", "no".to_string())?;
+            set_option("hwdec", hwdec.to_string())?;
+            #[cfg(target_os = "windows")]
+            set_option("vo", "gpu-next".to_string())?;
+            #[cfg(target_os = "linux")]
+            set_option("vo", "libmpv".to_string())?;
+            #[cfg(target_os = "windows")]
+            {
+                set_option("gpu-api", "d3d11".to_string())?;
+                set_option("d3d11-flip", "no".to_string())?;
+            }
+            set_option("vd-lavc-dr", "yes".to_string())?;
+            set_option("terminal", "no".to_string())?;
+            set_option(
+                "log-file",
+                std::env::temp_dir()
+                    .join("aurales-mpv.log")
+                    .display()
+                    .to_string(),
+            )?;
+            set_option("msg-level", "all=info".to_string())?;
+            #[cfg(target_os = "windows")]
+            set_option("ao", "wasapi".to_string())?;
+            #[cfg(target_os = "linux")]
+            set_option("ao", "pipewire,pulse,alsa".to_string())?;
+            set_option("term-osd-bar", "no".to_string())?;
+            set_option("term-status-msg", "".to_string())?;
+            set_option("keep-open", "no".to_string())?;
+            set_option("sub-fix-timing", "yes".to_string())?;
+            set_option("demuxer-mkv-subtitle-preroll", "yes".to_string())?;
+            set_option("cache", "yes".to_string())?;
+            set_option("cache-on-disk", cache_on_disk.to_string())?;
+            // Start as soon as mpv has a decodable frame. The cache continues
+            // to fill in the background, rather than making a cold stream wait
+            // for its initial readahead target before playback is visible.
+            set_option("cache-pause-initial", "no".to_string())?;
+            set_option("cache-secs", effective_cache_secs.to_string())?;
+            set_option("demuxer-max-bytes", effective_max_bytes.to_string())?;
+            set_option(
+                "demuxer-max-back-bytes",
+                effective_max_back_bytes.to_string(),
+            )?;
+            set_option(
+                "demuxer-readahead-secs",
+                (effective_cache_secs / 2).to_string(),
+            )?;
+            set_option("demuxer-seekable-cache", "yes".to_string())?;
+            set_option("network-timeout", network_timeout.to_string())?;
+            set_option("hr-seek", "yes".to_string())?;
+            set_option("hr-seek-framedrop", "yes".to_string())?;
+            set_option(
+                "stream-lavf-o",
+                "reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay_max=10".to_string(),
+            )?;
+            set_option("subs-with-matching-audio", "no".to_string())?;
+            set_option("secondary-sub-visibility", "no".to_string())?;
+            set_option("sub-auto", "fuzzy".to_string())?;
+
+            if let Some(t) = title {
+                set_option("force-media-title", t)?;
+            }
+            if let Some(s) = start_time.filter(|value| *value > 0.0) {
+                set_option("start", s.to_string())?;
+            }
+            if let Some(v) = volume {
+                set_option("volume", v.max(0.0).min(130.0).to_string())?;
+            }
+
+            // These are deliberately best-effort: older bundled libmpv builds
+            // may not expose them, but current builds can keep video running
+            // after a hardware-decoder failure and keep playback alive when an
+            // audio device disappears. Neither changes media quality.
+            for (name, value) in [
+                ("hwdec-software-fallback", "1"),
+                ("audio-fallback-to-null", "yes"),
+            ] {
+                option_log.push(format!("--{}={}", name, value));
+                if let Err(error) = player.set_option(name, value) {
+                    player_debug_log(format!(
+                        "[PLAYER CONFIG] skipped optional --{}={} ({})",
+                        name, value, error
+                    ));
+                }
+            }
+        }
+
+        apply_custom_libmpv_args(&player, mpv_custom_args, &mut option_log);
+        player_debug_log(format!("[PLAYER ARGS] {}", option_log.join(" ")));
+
+        if let Err(error) = player.initialize() {
+            player.shutdown();
+            libmpv_player::destroy_video_child(video_hwnd);
+            return Err(error);
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = crate::linux_render_surface::attach(
+            &app,
+            Arc::clone(&player),
+            video_x,
+            video_y,
+            video_width,
+            video_height,
+        ) {
+            player_debug_log(format!("[LINUX RENDER] initialization failed: {error}"));
+            player.shutdown();
+            return Err(error);
+        }
+        player.request_log_messages("warn");
+        player_debug_log("[THUMBNAILS] timeline previews use the independent ffmpeg sprite worker");
+        player.observe_properties(&[
+            "time-pos",
+            "duration",
+            "volume",
+            "pause",
+            "track-list",
+            "sub-text",
+            "buffering",
+            "cache-buffering-state",
+            "demuxer-cache-duration",
+            "eof-reached",
+            "idle-active",
+            "core-idle",
+            "secondary-sub-text",
+            "secondary-sub-start",
+            "secondary-sub-end",
+            "sub-start",
+            "sub-end",
+            "chapter-list",
+        ]);
+        // Register the session before loadfile can produce asynchronous
+        // property/ready events. The event loop drops events from sessions
+        // that are no longer the active player.
+        {
+            let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
+            *state = Some(NativePlayerState {
+                host_hwnd: hwnd,
+                video_hwnd,
+                session_id: session_id.clone(),
+                backend: NativePlayerBackend::LibMpv {
+                    player: Arc::clone(&player),
+                },
+                launch_config: Some(launch_config),
+            });
+        }
+        player.start_event_loop(app);
+        if let Err(error) = player.command("loadfile", &[serde_json::Value::String(url)]) {
+            let _ = clear_player_if_session(&session_id);
+            player.shutdown();
+            return Err(error);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(any())]
 fn launch_mpv_with_window(
     hwnd: isize,
     url: String,
@@ -1126,6 +1889,10 @@ fn launch_mpv_with_window(
     mpv_cache_secs: Option<u32>,
     mpv_network_timeout: Option<u32>,
     mpv_custom_args: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
 ) -> Result<(), String> {
     {
         if let Ok(mut cache) = get_property_cache().write() {
@@ -1133,7 +1900,7 @@ fn launch_mpv_with_window(
         }
     }
 
-    let mpv = find_mpv().ok_or_else(|| {
+    let mpv = player::find_mpv().ok_or_else(|| {
         "Failed to launch embedded mpv: bundled mpv executable was not found. Reinstall with the NSIS setup exe.".to_string()
     })?;
 
@@ -1153,7 +1920,7 @@ fn launch_mpv_with_window(
     };
 
     let cache_secs = mpv_cache_secs.unwrap_or(60);
-    let network_timeout = mpv_network_timeout.unwrap_or(15);
+    let network_timeout = mpv_network_timeout.unwrap_or(60);
 
     let (max_bytes, max_back_bytes) = match cache_buffer_size.as_deref() {
         Some("large") => ("256MiB", "128MiB"),
@@ -1167,16 +1934,44 @@ fn launch_mpv_with_window(
         "--osc=no".to_string(),
         "--osd-bar=no".to_string(),
         "--no-config".to_string(),
+        // This mpv build bundles Lua scripts (ytdl_hook, auto_profiles,
+        // osc/menu) that run even with --no-config. Inside the app they
+        // malfunction ("client removed during hook handling" on every
+        // launch), and scripts react to pause events — a wedged script
+        // client deadlocks mpv's core. Standalone bisection (2026-07-05)
+        // proved audio/codecs/D3D11/--wid embedding all pause/resume fine
+        // on this machine without scripts; the app needs none of them.
+        "--load-scripts=no".to_string(),
+        "--no-ytdl".to_string(),
         "--cursor-autohide=1000".to_string(),
         "--input-default-bindings=no".to_string(),
         "--input-builtin-bindings=no".to_string(),
         format!("--hwdec={}", hwdec),
+        // NOTE (2026-07-05): pause/resume wedges in this embedded setup with
+        // EVERY renderer (gpu-next, gpu, direct3d — direct3d doesn't even
+        // display under the transparent webview) and every AO/hwdec/script
+        // combination, while all of them work standalone incl. --wid into a
+        // plain host window. The composited transparent-overlay architecture
+        // itself is the trigger; no mpv option fixes it. gpu-next/d3d11 is
+        // the best-behaved (correct display, occasional wedge handled by the
+        // watchdog + auto-restart). Real fix: in-process libmpv migration.
         "--vo=gpu-next".to_string(),
         "--gpu-api=d3d11".to_string(),
+        "--d3d11-flip=no".to_string(),
         "--vd-lavc-dr=yes".to_string(),
         format!("--input-ipc-server={}", ipc_path),
-        "--terminal=yes".to_string(),
-        "--msg-level=all=warn".to_string(),
+        // terminal=no: mpv must never block writing terminal output into our
+        // stdout/stderr pipes (a full pipe stalls mpv's core). Diagnostics
+        // come from --log-file instead, which mpv writes itself.
+        "--terminal=no".to_string(),
+        format!(
+            "--log-file={}",
+            std::env::temp_dir().join("aurales-mpv.log").display()
+        ),
+        "--msg-level=all=info".to_string(),
+        // WASAPI is fine — standalone pause/resume passes on it; and this
+        // mpv build doesn't ship a dsound AO anyway.
+        "--ao=wasapi".to_string(),
         "--term-osd-bar=no".to_string(),
         "--term-status-msg=".to_string(),
         "--keep-open=no".to_string(),
@@ -1187,9 +1982,11 @@ fn launch_mpv_with_window(
         format!("--demuxer-max-bytes={}", max_bytes),
         format!("--demuxer-max-back-bytes={}", max_back_bytes),
         format!("--demuxer-readahead-secs={}", cache_secs / 2),
+        "--demuxer-seekable-cache=yes".to_string(),
         format!("--network-timeout={}", network_timeout),
         "--hr-seek=yes".to_string(),
-        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".to_string(),
+        "--hr-seek-framedrop=yes".to_string(),
+        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay_max=10".to_string(),
         "--subs-with-matching-audio=no".to_string(),
         "--secondary-sub-visibility=no".to_string(),
         "--sub-auto=fuzzy".to_string(),
@@ -1206,13 +2003,34 @@ fn launch_mpv_with_window(
     }
 
     if let Some(custom) = mpv_custom_args {
+        let mut skip_next = false;
         for arg in custom.split_whitespace() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if arg == "--ao" || arg == "-ao" {
+                skip_next = true;
+                player_debug_log(
+                    "[PLAYER CONFIG] ignored custom --ao; embedded player uses wasapi,dsound"
+                        .to_string(),
+                );
+                continue;
+            }
+            if arg.starts_with("--ao=") || arg.starts_with("-ao=") {
+                player_debug_log(format!(
+                    "[PLAYER CONFIG] ignored custom audio output arg: {}",
+                    arg
+                ));
+                continue;
+            }
             if !arg.is_empty() {
                 args.push(arg.to_string());
             }
         }
     }
 
+    args.push("--".to_string());
     args.push(url);
 
     let mut child = Command::new(&mpv)
@@ -1228,15 +2046,24 @@ fn launch_mpv_with_window(
     player_debug_log(format!(
         "[PLAYER START] session={} stream={} hwdec={} args=embedded-buffered",
         normal_session,
-        stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
+        player::stable_stream_hash(args.last().map(String::as_str).unwrap_or_default()),
         hwdec
+    ));
+    // Full argument list (minus the stream URL) — shows which settings-derived
+    // flags (passthrough, custom args, cache sizes) were actually in effect.
+    player_debug_log(format!(
+        "[PLAYER ARGS] {}",
+        args[..args.len().saturating_sub(1)].join(" ")
     ));
 
     if let Some(stderr) = stderr {
         let stderr_session = normal_session.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV STDERR] session={} {}", stderr_session, line));
             }
         });
@@ -1246,7 +2073,10 @@ fn launch_mpv_with_window(
         let stdout_session = normal_session.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
                 player_debug_log(format!("[MPV OUTPUT] session={} {}", stdout_session, line));
             }
         });
@@ -1271,7 +2101,12 @@ fn launch_mpv_with_window(
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let Some(player) = state.as_mut() else { continue };
+            // No player at all means this session was stopped/killed — exit
+            // instead of looping forever (the old `continue` leaked threads
+            // and swallowed the PLAYER EXIT log for killed sessions).
+            let Some(player) = state.as_mut() else {
+                return;
+            };
             if player.ipc_path != monitor_ipc_path {
                 return;
             }
@@ -1281,11 +2116,26 @@ fn launch_mpv_with_window(
                     Some(status.to_string())
                 }
                 Ok(None) => None,
-                Err(error) => Some(format!("wait-error: {}", error)),
+                Err(error) => {
+                    let reap = if player.child.kill().is_ok() {
+                        player
+                            .child
+                            .wait()
+                            .ok()
+                            .map(|status| format!("reaped: {status}"))
+                    } else {
+                        None
+                    };
+                    *state = None;
+                    Some(format!("wait-error: {}; {:?}", error, reap))
+                }
             }
         };
         if let Some(status) = exit {
-            player_debug_log(format!("[PLAYER EXIT] session={} status={}", monitor_session, status));
+            player_debug_log(format!(
+                "[PLAYER EXIT] session={} status={}",
+                monitor_session, status
+            ));
             return;
         }
     });
@@ -1316,15 +2166,16 @@ fn launch_mpv_with_window(
             Err(_) => return,
         };
 
+        let writer = Arc::new(Mutex::new(file));
+
         if let Ok(mut state_lock) = native_player_state().lock() {
             if let Some(player) = state_lock.as_mut() {
                 if player.ipc_path == ipc_path_clone {
-                    player.writer = file.try_clone().ok();
+                    player.writer = Some(Arc::clone(&writer));
                 }
             }
         }
 
-        let mut writer = file;
         let observe_cmds = [
             r#"{"command":["observe_property",1,"time-pos"]}"#,
             r#"{"command":["observe_property",2,"duration"]}"#,
@@ -1338,9 +2189,17 @@ fn launch_mpv_with_window(
             r#"{"command":["observe_property",10,"eof-reached"]}"#,
             r#"{"command":["observe_property",11,"idle-active"]}"#,
             r#"{"command":["observe_property",12,"core-idle"]}"#,
+            r#"{"command":["observe_property",13,"secondary-sub-text"]}"#,
+            r#"{"command":["observe_property",14,"secondary-sub-start"]}"#,
+            r#"{"command":["observe_property",15,"secondary-sub-end"]}"#,
+            r#"{"command":["observe_property",16,"sub-start"]}"#,
+            r#"{"command":["observe_property",17,"sub-end"]}"#,
         ];
-        for cmd in observe_cmds {
-            let _ = writeln!(writer, "{}", cmd);
+        if let Ok(mut writer_guard) = writer.lock() {
+            for cmd in observe_cmds {
+                let _ = writeln!(writer_guard, "{}", cmd);
+            }
+            let _ = writer_guard.flush();
         }
 
         let reader = std::io::BufReader::new(reader_file);
@@ -1348,19 +2207,102 @@ fn launch_mpv_with_window(
         for line_res in reader.lines() {
             let line = match line_res {
                 Ok(l) => l,
-                Err(_) => break,
+                Err(e) => {
+                    player_debug_log(format!("[MPV IPC] reader error: {}", e));
+                    break;
+                }
             };
+            // Any line from mpv proves its IPC thread is alive — feed the
+            // hang watchdog.
+            LAST_IPC_LINE_MS.store(epoch_ms(), Ordering::SeqCst);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                if json.get("event").and_then(|v| v.as_str()) == Some("property-change") {
-                    if let (Some(name), Some(data)) = (
-                        json.get("name").and_then(|v| v.as_str()),
-                        json.get("data").cloned(),
-                    ) {
-                        if let Ok(mut cache) = get_property_cache().write() {
-                            cache.insert(name.to_string(), data);
+                match json.get("event").and_then(|v| v.as_str()) {
+                    Some("property-change") => {
+                        if let (Some(name), Some(data)) = (
+                            json.get("name").and_then(|v| v.as_str()),
+                            json.get("data").cloned(),
+                        ) {
+                            if let Ok(mut cache) = get_property_cache().write() {
+                                cache.insert(name.to_string(), data);
+                            }
                         }
                     }
+                    // Core lifecycle events (pause/unpause/seek/playback-restart/
+                    // end-file/...) are rare and pinpoint what mpv actually did
+                    // with our commands.
+                    Some(_) => {
+                        player_debug_log(format!("[MPV EVENT] {}", line));
+                    }
+                    None => {}
                 }
+                // Surface command failures — replies carry "error" != "success".
+                if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
+                    if err != "success" {
+                        player_debug_log(format!("[MPV IPC ERROR] {}", line));
+                    }
+                }
+            }
+        }
+        player_debug_log("[MPV IPC] reader disconnected — commands can no longer reach mpv");
+    });
+
+    // ── Hang watchdog ──────────────────────────────────────────────────────
+    // mpv is embedded as a cross-process child window (`--wid`), which ties
+    // its input queue to the main window's. If mpv's window thread hangs,
+    // the next input interaction freezes the ENTIRE app. A hung mpv cannot
+    // be detected from the UI thread (it's the one that freezes), so this
+    // background thread pings mpv over IPC and kills the process when it
+    // stops responding — killing it detaches the queues and unfreezes the UI.
+    let watchdog_session = normal_session.clone();
+    let watchdog_ipc_path = ipc_path.clone();
+    LAST_IPC_LINE_MS.store(epoch_ms(), Ordering::SeqCst);
+    std::thread::spawn(move || {
+        // Grace period so slow stream startup is never treated as a hang.
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+
+            let writer_opt = {
+                let mut state = match native_player_state().lock() {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+                let Some(player) = state.as_mut() else { return };
+                if player.ipc_path != watchdog_ipc_path {
+                    return; // a newer session took over
+                }
+
+                let silent_ms = epoch_ms().saturating_sub(LAST_IPC_LINE_MS.load(Ordering::SeqCst));
+                if silent_ms > 8_000 {
+                    player_debug_log(format!(
+                        "[PLAYER WATCHDOG] session={} mpv unresponsive for {}ms — killing process to unfreeze the app",
+                        watchdog_session, silent_ms
+                    ));
+                    if player.child.kill().is_ok() {
+                        if let Err(error) = player.child.wait() {
+                            player_debug_log(format!(
+                                "[PLAYER WATCHDOG] session={} reap failed: {}",
+                                watchdog_session, error
+                            ));
+                        }
+                    }
+                    *state = None;
+                    return;
+                }
+                player.writer.as_ref().map(Arc::clone)
+            };
+
+            // Ping so a healthy-but-paused mpv keeps producing IPC lines.
+            // Detached thread + try_lock: if the pipe is clogged the blocked
+            // write parks here instead of wedging the watchdog loop.
+            if let Some(writer) = writer_opt {
+                std::thread::spawn(move || {
+                    use std::io::Write;
+                    if let Ok(mut guard) = writer.try_lock() {
+                        let _ = writeln!(guard, r#"{{"command":["get_property","pid"]}}"#);
+                        let _ = guard.flush();
+                    }
+                });
             }
         }
     });
@@ -1368,37 +2310,243 @@ fn launch_mpv_with_window(
     Ok(())
 }
 
+// Async + spawn_blocking: the pipe write blocks if mpv stops draining its
+// IPC pipe (hung decoder/audio device). As a sync command that blocked the
+// webview main thread and froze the whole app.
 #[tauri::command]
-pub fn mpv_command(command: String, args: Option<Vec<serde_json::Value>>) -> Result<(), String> {
-    use std::io::Write;
+pub async fn mpv_command(
+    command: String,
+    args: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Write;
 
-    let payload = serde_json::json!({
-        "command": std::iter::once(serde_json::Value::String(command))
-            .chain(args.unwrap_or_default())
-            .collect::<Vec<_>>()
-    });
+        let args = args.unwrap_or_default();
+        let command_name = command.clone();
+        let payload = serde_json::json!({
+            "command": std::iter::once(serde_json::Value::String(command))
+                .chain(args.clone())
+                .collect::<Vec<_>>()
+        });
 
-    let writer_opt = {
-        let state = native_player_state().lock().map_err(|e| e.to_string())?;
-        match state.as_ref() {
-            Some(player) => player.writer.as_ref().and_then(|w| w.try_clone().ok()),
-            None => return Err("No player is running".to_string()),
+        enum Target {
+            LibMpv(Arc<LibMpvPlayer>),
+            Ipc {
+                writer: Option<Arc<Mutex<std::fs::File>>>,
+                ipc_path: String,
+            },
         }
-    };
 
-    if let Some(mut writer) = writer_opt {
-        if let Err(e) = writeln!(writer, "{}", payload) {
-            if let Ok(mut state) = native_player_state().lock() {
-                if let Some(player) = state.as_mut() {
-                    player.writer = None;
+        let target = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Target::LibMpv(Arc::clone(player)),
+                    NativePlayerBackend::Process {
+                        writer, ipc_path, ..
+                    } => Target::Ipc {
+                        writer: writer.as_ref().map(Arc::clone),
+                        ipc_path: ipc_path.clone(),
+                    },
+                },
+                None => return Err("No player is running".to_string()),
+            }
+        };
+
+        // Commands are rare (user actions), so logging them is cheap and
+        // makes "the command never arrived" bugs visible in Player Logs.
+        player_debug_log(format!("[MPV CMD] {}", payload));
+
+        match target {
+            Target::LibMpv(player) => {
+                // Stop ThumbFast from scheduling more preview work before a
+                // user seek. `clear` only cancels its timers and is immediate;
+                // do not use `stop` here because writing to the helper socket
+                // can wait on a wedged decoder and delay the real seek.
+                if command_name == "seek" {
+                    let _ = player.command(
+                        "script-message-to",
+                        &[
+                            serde_json::Value::String("thumbfast".to_string()),
+                            serde_json::Value::String("clear".to_string()),
+                        ],
+                    );
+                }
+                player.command(&command_name, &args)
+            }
+            Target::Ipc { writer, ipc_path } => {
+                if let Some(writer) = writer {
+                    let write_result =
+                        writer
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|mut writer_guard| {
+                                writeln!(writer_guard, "{}", payload)
+                                    .and_then(|_| writer_guard.flush())
+                                    .map_err(|e| e.to_string())
+                            });
+
+                    if let Err(e) = write_result {
+                        player_debug_log(format!("[MPV CMD] write failed: {}", e));
+                        if let Ok(mut state) = native_player_state().lock() {
+                            if let Some(player) = state.as_mut() {
+                                if let NativePlayerBackend::Process {
+                                    ipc_path: current_ipc_path,
+                                    writer,
+                                    ..
+                                } = &mut player.backend
+                                {
+                                    if *current_ipc_path == ipc_path {
+                                        *writer = None;
+                                    }
+                                }
+                            }
+                        }
+                        return Err(format!("Failed to send mpv command: {}", e));
+                    }
+                    Ok(())
+                } else {
+                    player_debug_log("[MPV CMD] dropped: IPC writer not ready");
+                    Err("mpv IPC not ready yet".to_string())
                 }
             }
-            return Err(format!("Failed to send mpv command: {}", e));
         }
-        return Ok(());
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
-    Err("mpv IPC not ready yet".to_string())
+#[tauri::command]
+pub async fn request_player_thumbnail(time: f64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !time.is_finite() || time < 0.0 {
+            return Err("Invalid thumbnail time".to_string());
+        }
+
+        let player = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Arc::clone(player),
+                    NativePlayerBackend::Process { .. } => {
+                        return Err(
+                            "Timeline thumbnails require the embedded libmpv player.".to_string()
+                        )
+                    }
+                },
+                None => return Err("No player is running".to_string()),
+            }
+        };
+
+        let target = player.client_target();
+        player.command(
+            "script-message-to",
+            &[
+                serde_json::Value::String("thumbfast".to_string()),
+                serde_json::Value::String("thumb".to_string()),
+                serde_json::Value::String(format!("{:.3}", time)),
+                serde_json::Value::String(String::new()),
+                serde_json::Value::String(String::new()),
+                serde_json::Value::String(target),
+            ],
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn clear_player_thumbnail() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let player = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(player) => match &player.backend {
+                    NativePlayerBackend::LibMpv { player } => Some(Arc::clone(player)),
+                    NativePlayerBackend::Process { .. } => None,
+                },
+                None => None,
+            }
+        };
+
+        if let Some(player) = player {
+            let _ = player.command(
+                "script-message-to",
+                &[
+                    serde_json::Value::String("thumbfast".to_string()),
+                    // `clear` only cancels the pending ThumbFast request. It
+                    // does not wait on the helper decoder, so releasing the
+                    // timeline can never hold up the actual playback seek.
+                    serde_json::Value::String("clear".to_string()),
+                ],
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn start_thumbnail_generation(
+    app: tauri::AppHandle,
+    request: crate::thumbnails::ThumbnailStartRequest,
+) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::start_thumbnail_generation(app, request)
+    })
+    .await
+    .map_err(|e| format!("Thumbnail start task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_thumbnail_metadata(
+    app: tauri::AppHandle,
+    cache_key: String,
+) -> Result<Option<crate::thumbnails::ThumbnailMetadata>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::get_thumbnail_metadata(app, cache_key)
+    })
+    .await
+    .map_err(|e| format!("Thumbnail metadata task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_or_queue_scrub_thumbnail(
+    app: tauri::AppHandle,
+    request: crate::thumbnails::ScrubThumbnailRequest,
+) -> Result<crate::thumbnails::ScrubThumbnailResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnails::get_or_queue_scrub_thumbnail(app, request)
+    })
+    .await
+    .map_err(|e| format!("Scrub thumbnail task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn prefetch_thumbnail_sprite(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::thumbnails::prefetch_thumbnail_sprite(path))
+        .await
+        .map_err(|e| format!("Thumbnail sprite prefetch task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_seekr_preview(
+    request: crate::seekr::SeekrPreviewRequest,
+) -> Result<Option<crate::seekr::SeekrPreviewData>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::seekr::get_preview(request))
+        .await
+        .map_err(|error| format!("Seekr preview task failed: {error}"))
+}
+
+#[tauri::command]
+pub fn clear_seekr_preview(request: crate::seekr::SeekrPreviewRequest) {
+    crate::seekr::clear_preview(request)
+}
+
+#[tauri::command]
+pub fn get_thumbnail_debug_state() -> crate::thumbnails::ThumbnailDebugState {
+    crate::thumbnails::get_thumbnail_debug_state()
 }
 
 #[tauri::command]
@@ -1411,11 +2559,105 @@ pub fn mpv_get_property(property: String) -> Result<serde_json::Value, String> {
     Ok(serde_json::Value::Null)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSnapshot {
+    pub time_pos: Option<f64>,
+    pub duration: Option<f64>,
+    pub paused: Option<bool>,
+    pub buffering: Option<bool>,
+    pub cache_buffering_state: Option<f64>,
+    pub demuxer_cache_duration: Option<f64>,
+    pub eof_reached: Option<bool>,
+    pub idle_active: Option<bool>,
+    pub core_idle: Option<bool>,
+}
+
+/// Returns the high-frequency playback state under one cache read and one IPC
+/// call. libmpv keeps PROPERTY_CACHE current through observed property events.
+#[tauri::command]
+pub fn get_player_snapshot() -> Result<PlayerSnapshot, String> {
+    let cache = get_property_cache().read().map_err(|e| e.to_string())?;
+    let number = |name: &str| cache.get(name).and_then(serde_json::Value::as_f64);
+    let boolean = |name: &str| cache.get(name).and_then(serde_json::Value::as_bool);
+    Ok(PlayerSnapshot {
+        time_pos: number("time-pos"),
+        duration: number("duration"),
+        paused: boolean("pause"),
+        buffering: boolean("buffering"),
+        cache_buffering_state: number("cache-buffering-state"),
+        demuxer_cache_duration: number("demuxer-cache-duration"),
+        eof_reached: boolean("eof-reached"),
+        idle_active: boolean("idle-active"),
+        core_idle: boolean("core-idle"),
+    })
+}
+
 /// Resize mpv's child HWND to fill (x, y, width, height) within the host window.
 ///
 /// mpv does NOT auto-resize when its parent window is resized (child windows
 /// never do on Win32).  We find mpv's window by matching the mpv process ID
 /// among the host's child windows, then call SetWindowPos to move/resize it.
+#[tauri::command]
+pub fn resize_embedded_mpv(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let (host_hwnd, video_hwnd) = {
+            let state = native_player_state().lock().map_err(|e| e.to_string())?;
+            match state.as_ref() {
+                Some(s) => (s.host_hwnd, s.video_hwnd),
+                None => return Ok(()),
+            }
+        };
+        if host_hwnd == 0 || video_hwnd == 0 {
+            return Ok(());
+        }
+
+        let host = HWND(host_hwnd as *mut _);
+        let (w, h) = if width > 0 && height > 0 {
+            (width, height)
+        } else {
+            let mut rect = RECT::default();
+            unsafe {
+                let _ = GetClientRect(host, &mut rect);
+            }
+            (rect.right - rect.left, rect.bottom - rect.top)
+        };
+        if w > 0 && h > 0 {
+            libmpv_player::resize_video_child(host_hwnd, video_hwnd, x, y, w, h);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let running = native_player_state()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if running {
+            crate::linux_render_surface::resize(&app, x, y, width, height)?;
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let _ = (app, x, y, width, height);
+
+    #[cfg(target_os = "windows")]
+    let _ = app;
+
+    Ok(())
+}
+
+#[cfg(any())]
 #[tauri::command]
 pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1424,7 +2666,7 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
         use windows::Win32::Foundation::{HWND, LPARAM, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
             EnumChildWindows, GetClientRect, GetWindowThreadProcessId, SetWindowPos,
-            SWP_NOACTIVATE, SWP_NOZORDER,
+            SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER,
         };
 
         let (host_hwnd, mpv_pid) = {
@@ -1487,6 +2729,22 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
         if ctx.hwnd != 0 {
             let mpv_hwnd = HWND(ctx.hwnd as *mut _);
             unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, SWP_FRAMECHANGED,
+                    WS_CLIPSIBLINGS,
+                };
+                // WS_CLIPSIBLINGS: the transparent WebView2 overlay is a
+                // SIBLING of mpv's child window. Without sibling clipping,
+                // every webview repaint (pause icon, controls) invalidates
+                // mpv's window, forcing paused-frame redraws — the observed
+                // deadlock trigger when paused.
+                let style = GetWindowLongPtrW(mpv_hwnd, GWL_STYLE);
+                if style != 0 && (style as u32) & WS_CLIPSIBLINGS.0 == 0 {
+                    SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, style | WS_CLIPSIBLINGS.0 as isize);
+                }
+                // SWP_ASYNCWINDOWPOS: mpv's window lives on another process's
+                // thread. Without this flag SetWindowPos waits synchronously
+                // on that thread and freezes our UI thread if mpv is hung.
                 let _ = SetWindowPos(
                     mpv_hwnd,
                     None, // HWND_TOP equivalent (no z-order change with SWP_NOZORDER)
@@ -1494,7 +2752,7 @@ pub fn resize_embedded_mpv(x: i32, y: i32, width: i32, height: i32) -> Result<()
                     y,
                     w,
                     h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_FRAMECHANGED,
                 );
             }
         }
@@ -1520,23 +2778,37 @@ pub fn setup_player_click_through() -> Result<(), String> {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
 
-        let host_hwnd = {
+        let target_hwnd = {
             let state = native_player_state().lock().map_err(|e| e.to_string())?;
-            state.as_ref().map(|s| s.host_hwnd).unwrap_or(0)
+            state
+                .as_ref()
+                .map(|s| {
+                    if s.video_hwnd != 0 {
+                        s.video_hwnd
+                    } else {
+                        s.host_hwnd
+                    }
+                })
+                .unwrap_or(0)
         };
 
-        if host_hwnd != 0 && MPV_HOST_ORIG_PROC.load(Ordering::SeqCst) == 0 {
-            // Safety: host_hwnd came from Tauri's hwnd() which is a valid HWND
-            // for the lifetime of the main window.
-            let prev = unsafe {
-                SetWindowLongPtrW(
-                    HWND(host_hwnd as *mut _),
+        if target_hwnd != 0 {
+            let current_proc = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+                    HWND(target_hwnd as *mut _),
                     GWLP_WNDPROC,
-                    transparent_host_proc as *const () as isize,
                 )
             };
-            if prev != 0 {
-                MPV_HOST_ORIG_PROC.store(prev, Ordering::SeqCst);
+
+            let transparent_proc = transparent_host_proc as *const () as isize;
+
+            if current_proc != 0 && current_proc != transparent_proc {
+                let prev = unsafe {
+                    SetWindowLongPtrW(HWND(target_hwnd as *mut _), GWLP_WNDPROC, transparent_proc)
+                };
+                if prev != 0 && prev != transparent_proc {
+                    MPV_HOST_ORIG_PROC.store(prev, Ordering::SeqCst);
+                }
             }
         }
     }
@@ -1545,22 +2817,54 @@ pub fn setup_player_click_through() -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_embedded_mpv() -> Result<(), String> {
-    let mut state = native_player_state().lock().map_err(|e| e.to_string())?;
-    if let Some(mut player) = state.take() {
-        // Restore the original WndProc before killing mpv so the Tauri main
-        // window is left in a clean state for the next playback session.
-        #[cfg(target_os = "windows")]
-        {
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
-            let orig = MPV_HOST_ORIG_PROC.swap(0, Ordering::SeqCst);
-            if orig != 0 {
-                unsafe {
-                    SetWindowLongPtrW(HWND(player.host_hwnd as *mut _), GWLP_WNDPROC, orig);
+    let _lifecycle = player_lifecycle_lock().lock().map_err(|e| e.to_string())?;
+    stop_embedded_mpv_inner()
+}
+
+fn stop_embedded_mpv_inner() -> Result<(), String> {
+    let player = native_player_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take();
+    if let Some(mut player) = player {
+        let session_id = player.session_id.clone();
+        let host_hwnd = player.host_hwnd;
+        let video_hwnd = player.video_hwnd;
+        match &mut player.backend {
+            NativePlayerBackend::LibMpv { player } => {
+                #[cfg(target_os = "linux")]
+                crate::linux_render_surface::detach(player);
+                cleanup_player_windows(host_hwnd, video_hwnd);
+                player_debug_log(format!(
+                    "[PLAYER EXIT] session={} status=terminated-by-stop",
+                    session_id
+                ));
+                player.shutdown();
+            }
+            NativePlayerBackend::Process { child, .. } => {
+                cleanup_player_windows(host_hwnd, video_hwnd);
+                player_debug_log(format!(
+                    "[PLAYER EXIT] session={} pid={} status=killed-by-stop",
+                    session_id,
+                    child.id()
+                ));
+                if let Err(error) = child.kill() {
+                    player_debug_log(format!(
+                        "[PLAYER STOP] session={} kill failed: {}",
+                        session_id, error
+                    ));
+                }
+                // Taking the player state stops its monitor thread from
+                // calling try_wait. Reap the child here so a successfully
+                // killed mpv process cannot remain a zombie until app exit.
+                if let Err(error) = child.wait() {
+                    player_debug_log(format!(
+                        "[PLAYER STOP] session={} wait failed: {}",
+                        session_id, error
+                    ));
                 }
             }
         }
-        let _ = player.child.kill();
     }
     Ok(())
 }
@@ -1571,311 +2875,364 @@ pub fn stop_embedded_mpv() -> Result<(), String> {
 // the Rust process (no browser origin header) rather than from the WebView.
 // This is identical in spirit to how Simkl auth is handled via ureq.
 
-#[derive(Serialize, Deserialize)]
-pub struct PmdbProxyResponse {
-    pub status: u16,
-    pub ok: bool,
-    /// Raw response body as a string. The JS side JSON.parse()s it.
-    pub body: String,
-}
-
 #[tauri::command]
 pub async fn pmdb_request(
     method: String,
     url: String,
     api_key: String,
     body: Option<String>,
-) -> Result<PmdbProxyResponse, String> {
-    let method = method.to_uppercase();
-    let api_key = api_key.trim().to_string();
+) -> Result<ProxyResponse, String> {
+    let (method, api_key) = request::normalize_pmdb_request(method, api_key);
 
-    tokio::task::spawn_blocking(move || -> Result<PmdbProxyResponse, String> {
-        let req = ureq::request(&method, &url)
-            .set("Authorization", &format!("Bearer {}", api_key))
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json");
-
-        let response = match &body {
-            Some(b) => req.send_string(b),
-            None => req.call(),
-        };
-
-        match response {
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: true,
-                    body: text,
-                })
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let text = resp.into_string().unwrap_or_default();
-                Ok(PmdbProxyResponse {
-                    status,
-                    ok: false,
-                    body: text,
-                })
-            }
-            Err(other) => Err(format!("Network error contacting PMDB: {other}")),
-        }
-    })
-    .await
-    .map_err(|e| format!("PMDB request task panicked: {e}"))?
+    tokio::task::spawn_blocking(move || request::pmdb_request(method, url, api_key, body))
+        .await
+        .map_err(|e| format!("PMDB request task panicked: {e}"))?
 }
 
-fn validate_http_url(url: &str) -> Result<(), String> {
-    if url.starts_with("https://") || url.starts_with("http://") {
-        Ok(())
-    } else {
-        Err("Only HTTP(S) subtitle URLs are supported.".to_string())
+// ─── TorBox proxy (bypasses WebView CORS) ───────────────────────────────────
+
+#[tauri::command]
+pub async fn torbox_request(
+    method: String,
+    path: String,
+    token: Option<String>,
+    body: Option<String>,
+    content_type: Option<String>,
+) -> Result<ProxyResponse, String> {
+    let (method, path, token, content_type) =
+        request::normalize_torbox_request(method, path, token, content_type)?;
+
+    tokio::task::spawn_blocking(move || {
+        request::torbox_request(method, path, token, body, content_type)
+    })
+    .await
+    .map_err(|error| format!("TorBox request task failed: {error}"))?
+}
+
+// How this copy of Aurales was installed, so the UI knows whether the built-in
+// updater can actually install anything.
+//
+// The Flatpak is assembled from the .deb bundle, so its binary carries the
+// bundler's Debian marker. The updater therefore routes the downloaded
+// AppImage through `dpkg -i` and bails out with "invalid updater binary
+// format" — and even if the format matched, /app is read-only inside the
+// sandbox. Flatpak installs update through `flatpak update` instead.
+#[tauri::command]
+pub fn install_kind() -> &'static str {
+    platform::install_kind()
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlatpakUpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+    stage: &'static str,
+}
+
+static FLATPAK_UPDATE_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct FlatpakUpdateGuard;
+
+impl Drop for FlatpakUpdateGuard {
+    fn drop(&mut self) {
+        FLATPAK_UPDATE_IN_PROGRESS.store(false, Ordering::Release);
     }
+}
+
+struct PartialUpdateFile(std::path::PathBuf);
+
+impl Drop for PartialUpdateFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Downloads and reinstalls a standalone Flatpak bundle without blocking the
+/// WebView. The sandbox cannot modify /app, so installation is delegated to
+/// the host through flatpak-spawn after the bundle has been downloaded into
+/// the app cache (which is host-visible below ~/.var/app).
+#[tauri::command]
+pub async fn install_flatpak_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
+    if platform::install_kind() != "flatpak" {
+        return Err("The Flatpak update path is only available inside Flatpak.".to_string());
+    }
+    FLATPAK_UPDATE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "A Flatpak update is already in progress.".to_string())?;
+    let update_guard = FlatpakUpdateGuard;
+
+    let url = platform::flatpak_release_asset_url(&version)?;
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve the update cache: {error}"))?
+        .join("updates");
+    let bundle_path = cache_dir.join(format!("Aurales_{version}_amd64.flatpak"));
+    let worker_app = app.clone();
+    let worker_bundle = bundle_path.clone();
+    let worker_partial = bundle_path.with_extension("flatpak.part");
+    const MAX_FLATPAK_UPDATE_BYTES: u64 = 256 * 1024 * 1024;
+
+    let _update_guard =
+        tokio::task::spawn_blocking(move || -> Result<FlatpakUpdateGuard, String> {
+            use std::io::{Read, Write};
+
+            // Keep the global guard in the blocking worker. Dropping the command
+            // future cannot cancel spawn_blocking, so releasing it in the async
+            // caller would allow another request to overwrite this download.
+            let _update_guard = update_guard;
+
+            std::fs::create_dir_all(&cache_dir)
+                .map_err(|error| format!("Failed to prepare the update cache: {error}"))?;
+            let _ = std::fs::remove_file(&worker_partial);
+            let _partial_file = PartialUpdateFile(worker_partial.clone());
+            let _ = worker_app.emit(
+                "flatpak-update-progress",
+                FlatpakUpdateProgress {
+                    downloaded: 0,
+                    total: None,
+                    stage: "downloading",
+                },
+            );
+
+            let response = ureq::get(&url)
+                .timeout(std::time::Duration::from_secs(300))
+                .set("Accept", "application/octet-stream")
+                .set("User-Agent", "Aurales-Updater")
+                .call()
+                .map_err(|error| format!("Failed to download the Flatpak update: {error}"))?;
+            let total = response
+                .header("Content-Length")
+                .and_then(|value| value.parse::<u64>().ok());
+            if total.is_some_and(|size| size > MAX_FLATPAK_UPDATE_BYTES) {
+                return Err("The Flatpak update exceeds the 256 MiB download limit.".to_string());
+            }
+            let mut reader = response.into_reader();
+            let mut output = std::fs::File::create(&worker_partial)
+                .map_err(|error| format!("Failed to create the update bundle: {error}"))?;
+            let mut buffer = [0_u8; 128 * 1024];
+            let mut downloaded = 0_u64;
+            loop {
+                let count = reader
+                    .read(&mut buffer)
+                    .map_err(|error| format!("Failed while downloading the update: {error}"))?;
+                if count == 0 {
+                    break;
+                }
+                if downloaded.saturating_add(count as u64) > MAX_FLATPAK_UPDATE_BYTES {
+                    drop(output);
+                    let _ = std::fs::remove_file(&worker_partial);
+                    return Err(
+                        "The Flatpak update exceeds the 256 MiB download limit.".to_string()
+                    );
+                }
+                output
+                    .write_all(&buffer[..count])
+                    .map_err(|error| format!("Failed to save the update bundle: {error}"))?;
+                downloaded += count as u64;
+                let _ = worker_app.emit(
+                    "flatpak-update-progress",
+                    FlatpakUpdateProgress {
+                        downloaded,
+                        total,
+                        stage: "downloading",
+                    },
+                );
+            }
+            output
+                .sync_all()
+                .map_err(|error| format!("Failed to finish the update download: {error}"))?;
+            drop(output);
+            if downloaded == 0 {
+                let _ = std::fs::remove_file(&worker_partial);
+                return Err("The downloaded Flatpak bundle was empty.".to_string());
+            }
+            std::fs::rename(&worker_partial, &worker_bundle)
+                .map_err(|error| format!("Failed to finalize the update bundle: {error}"))?;
+
+            let _ = worker_app.emit(
+                "flatpak-update-progress",
+                FlatpakUpdateProgress {
+                    downloaded,
+                    total: Some(downloaded),
+                    stage: "installing",
+                },
+            );
+            let install = Command::new("flatpak-spawn")
+                .args([
+                    "--host",
+                    "flatpak",
+                    "install",
+                    "--user",
+                    "-y",
+                    "--reinstall",
+                ])
+                .arg(&worker_bundle)
+                .output()
+                .map_err(|error| format!("Failed to start the host Flatpak installer: {error}"))?;
+            let _ = std::fs::remove_file(&worker_bundle);
+            if !install.status.success() {
+                let stderr = String::from_utf8_lossy(&install.stderr).trim().to_string();
+                return Err(if stderr.is_empty() {
+                    format!("Flatpak installation failed with {}.", install.status)
+                } else {
+                    format!("Flatpak installation failed: {stderr}")
+                });
+            }
+            Ok(_update_guard)
+        })
+        .await
+        .map_err(|error| format!("Flatpak update task failed: {error}"))??;
+
+    // Start the newly installed deployment after this sandbox has exited.
+    Command::new("flatpak-spawn")
+        .args([
+            "--host",
+            "sh",
+            "-c",
+            "sleep 1; flatpak run com.aurales.app >/dev/null 2>&1 &",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("The update was installed, but restart failed: {error}"))?;
+    app.exit(0);
+    Ok(())
+}
+
+// Fetches the latest GitHub release (tag, name, body markdown) so the update
+// prompt can show real patch notes. Uses the same build-time PAT as the
+// updater since the repo is private.
+#[tauri::command]
+pub async fn github_release_notes() -> Result<String, String> {
+    tokio::task::spawn_blocking(request::github_release_notes)
+        .await
+        .map_err(|e| format!("GitHub release task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn ytproxy_port() -> Result<u16, String> {
+    crate::ytproxy::ensure_started().await
+}
+
+// Innertube player API call routed through the ytproxy agent so the returned
+// stream URLs are bound to the same IP family the proxy fetches chunks with.
+#[tauri::command]
+pub async fn innertube_player(body: String, user_agent: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || request::innertube_player(body, user_agent))
+        .await
+        .map_err(|e| format!("Innertube task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn http_get_text(url: String) -> Result<String, String> {
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get(&url)
-            .set("Accept", "application/json, text/plain, */*")
-            .call()
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("HTTP request task failed: {e}"))?
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::get_text(url))
+        .await
+        .map_err(|e| format!("HTTP request task failed: {e}"))?
+}
+
+// Lightweight warm-up for a prepared direct stream: a small ranged GET (many
+// CDNs reject HEAD) measures first-byte/transfer responsiveness and resolves
+// the final redirect without pulling a meaningful portion of the media.
+#[tauri::command]
+pub async fn http_probe_stream(
+    url: String,
+    timeout_ms: Option<u64>,
+) -> Result<StreamProbeResponse, String> {
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::probe_stream(url, timeout_ms))
+        .await
+        .map_err(|e| format!("Stream probe task failed: {e}"))?
 }
 
 #[tauri::command]
-pub async fn openrouter_chat(api_key: String, request_body: serde_json::Value) -> Result<String, String> {
-    let api_key = api_key.trim().to_string();
-    if api_key.is_empty() {
-        return Err("OpenRouter API key is required.".to_string());
-    }
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://openrouter.ai/api/v1/chat/completions")
-            .set("Authorization", &format!("Bearer {api_key}"))
-            .set("Content-Type", "application/json")
-            .set("HTTP-Referer", "https://github.com/itsrenoria/aurales")
-            .set("X-Title", "Aurales Media Player")
-            .send_json(request_body)
-            .map_err(|error| read_ureq_error("OpenRouter", error))?;
-        response
-            .into_string()
-            .map_err(|error| format!("Failed to read OpenRouter response: {error}"))
-    })
-    .await
-    .map_err(|error| format!("OpenRouter request task failed: {error}"))?
+pub async fn http_request(
+    method: String,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+) -> Result<String, String> {
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || request::request_text(method, url, headers, body))
+        .await
+        .map_err(|e| format!("HTTP request task failed: {e}"))?
 }
 
-fn safe_subtitle_name(file_name: &str) -> String {
-    let cleaned: String = file_name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "subtitle.srt".to_string()
-    } else {
-        cleaned
-    }
+#[tauri::command]
+pub async fn openrouter_chat(
+    api_key: String,
+    request_body: serde_json::Value,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || request::openrouter_chat(api_key, request_body))
+        .await
+        .map_err(|error| format!("OpenRouter request task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn download_subtitle(url: String, file_name: String) -> Result<String, String> {
-    use std::io::Read;
-    validate_http_url(&url)?;
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get(&url)
-            .set("Accept", "text/vtt, application/x-subrip, text/plain, */*")
-            .call()
-            .map_err(|e| format!("Subtitle download failed: {e}"))?;
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024)
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("Failed to read subtitle: {e}"))?;
-        if bytes.is_empty() {
-            return Err("Subtitle provider returned an empty file.".to_string());
-        }
-        let dir = std::env::temp_dir().join("aurales-subtitles");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
-        let path = dir.join(format!(
-            "{}-{}",
-            chrono::Utc::now().timestamp_millis(),
-            safe_subtitle_name(&file_name)
-        ));
-        std::fs::write(&path, bytes).map_err(|e| format!("Failed to cache subtitle: {e}"))?;
-        Ok(path.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|e| format!("Subtitle download task failed: {e}"))?
+    request::validate_http_url(&url)?;
+    tokio::task::spawn_blocking(move || subtitles::download(url, file_name))
+        .await
+        .map_err(|e| format!("Subtitle download task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn write_temp_subtitle(content: String, extension: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        if content.trim().is_empty() {
-            return Err("Translated subtitle content is empty.".to_string());
-        }
-        let extension: String = extension
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .take(5)
-            .collect();
-        let extension = if extension.is_empty() {
-            "srt"
-        } else {
-            extension.as_str()
-        };
-        let dir = std::env::temp_dir().join("aurales-subtitles");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create subtitle cache: {e}"))?;
-        let path = dir.join(format!(
-            "translated-{}.{}",
-            chrono::Utc::now().timestamp_millis(),
-            extension
-        ));
-        std::fs::write(&path, content.as_bytes())
-            .map_err(|e| format!("Failed to write translated subtitle: {e}"))?;
-        Ok(path.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|e| format!("Subtitle write task failed: {e}"))?
-}
-
-fn validate_subtitle_cache_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let cache_dir = std::env::temp_dir().join("aurales-subtitles");
-    let candidate = std::path::PathBuf::from(path);
-    if candidate.parent() == Some(cache_dir.as_path()) {
-        Ok(candidate)
-    } else {
-        Err("Subtitle file is outside Aurales' temporary cache.".to_string())
-    }
+    tokio::task::spawn_blocking(move || subtitles::write_temp(content, extension))
+        .await
+        .map_err(|e| format!("Subtitle write task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn read_temp_subtitle(path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let path = validate_subtitle_cache_path(&path)?;
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read subtitle cache: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Subtitle read task failed: {e}"))?
+    tokio::task::spawn_blocking(move || subtitles::read_temp(path))
+        .await
+        .map_err(|e| format!("Subtitle read task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn update_temp_subtitle(path: String, content: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let path = validate_subtitle_cache_path(&path)?;
-        std::fs::write(path, content.as_bytes())
-            .map_err(|e| format!("Failed to update subtitle cache: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Subtitle update task failed: {e}"))?
+    tokio::task::spawn_blocking(move || subtitles::update_temp(path, content))
+        .await
+        .map_err(|e| format!("Subtitle update task failed: {e}"))?
+}
+
+/// Extracts a single embedded subtitle stream from `url` to SRT text using
+/// ffmpeg. `sub_index` is the RELATIVE subtitle-stream index (0 = first subtitle
+/// track), mapped as `0:s:<sub_index>` — mapping by absolute stream index is
+/// unreliable across sources and can select a non-subtitle stream. Used to
+/// pre-translate embedded subtitles ahead of playback.
+#[tauri::command]
+pub async fn extract_embedded_subtitle(url: String, sub_index: u32) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || subtitles::extract_embedded(url, sub_index))
+        .await
+        .map_err(|e| format!("Subtitle extract task failed: {e}"))?
 }
 
 // ─── Simkl OAuth commands ─────────────────────────────────────────────────────
 
-fn read_ureq_error(provider: &str, err: ureq::Error) -> String {
-    match err {
-        ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
-            if body.is_empty() {
-                format!("{provider} request failed: HTTP {status}")
-            } else {
-                format!("{provider} request failed: HTTP {status}: {body}")
-            }
-        }
-        other => format!("{provider} request failed: {other}"),
-    }
-}
-
 #[tauri::command]
 pub async fn request_simkl_pin(client_id: String) -> Result<String, String> {
-    let client_id = client_id.trim().to_string();
-    if client_id.is_empty() {
-        return Err("SIMKL client ID is required".to_string());
-    }
-
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::get("https://api.simkl.com/oauth/pin")
-            .query("client_id", &client_id)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| read_ureq_error("Simkl PIN request", e))?;
-
-        let body = response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl PIN response body: {}", e))?;
-        let data: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse Simkl PIN response: {e}: {body}"))?;
-
-        if data.get("result").and_then(|v| v.as_str()) != Some("OK") {
-            return Err(format!("Simkl PIN request failed: {body}"));
-        }
-
-        Ok(body)
-    })
-    .await
-    .map_err(|e| format!("Simkl PIN request task panicked: {}", e))?
+    tokio::task::spawn_blocking(move || providers::request_simkl_pin(client_id))
+        .await
+        .map_err(|e| format!("Simkl PIN request task panicked: {}", e))?
 }
 
 #[tauri::command]
 pub async fn check_simkl_pin(user_code: String, client_id: String) -> Result<String, String> {
-    let user_code = user_code.trim().to_string();
-    let client_id = client_id.trim().to_string();
-    if user_code.is_empty() {
-        return Err("SIMKL user code is required".to_string());
-    }
-    if client_id.is_empty() {
-        return Err("SIMKL client ID is required".to_string());
-    }
+    tokio::task::spawn_blocking(move || providers::check_simkl_pin(user_code, client_id))
+        .await
+        .map_err(|e| format!("Simkl PIN check task panicked: {}", e))?
+}
 
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let url = format!("https://api.simkl.com/oauth/pin/{user_code}");
-        let response = ureq::get(&url)
-            .query("client_id", &client_id)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| read_ureq_error("Simkl PIN check", e))?;
-
-        let body = response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl PIN check response body: {}", e))?;
-        let data: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse Simkl PIN check response: {e}: {body}"))?;
-
-        if data.get("result").and_then(|v| v.as_str()) == Some("OK")
-            && data.get("access_token").and_then(|v| v.as_str()).is_some()
-        {
-            return Ok(serde_json::json!({
-                "status": "approved",
-                "access_token": data.get("access_token").and_then(|v| v.as_str()).unwrap_or_default(),
-                "token_type": "Bearer",
-                "scope": data.get("scope").and_then(|v| v.as_str()).unwrap_or_default(),
-            })
-            .to_string());
-        }
-
-        Ok(serde_json::json!({
-            "status": "pending",
-            "message": data.get("message").and_then(|v| v.as_str()).unwrap_or("Waiting for Simkl approval."),
-        })
-        .to_string())
-    })
-    .await
-    .map_err(|e| format!("Simkl PIN check task panicked: {}", e))?
+#[tauri::command]
+pub async fn fetch_simkl_user(access_token: String, client_id: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || providers::fetch_simkl_user(access_token, client_id))
+        .await
+        .map_err(|e| format!("Simkl user fetch task panicked: {}", e))?
 }
 
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for Simkl's
@@ -1885,66 +3242,12 @@ pub async fn check_simkl_pin(user_code: String, client_id: String) -> Result<Str
 /// ready when Simkl redirects back.
 #[tauri::command]
 pub async fn start_simkl_callback_server() -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    if SIMKL_CALLBACK_ACTIVE
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("Simkl authorization is already waiting for a browser callback. Finish the open Simkl tab or wait a moment before trying again.".to_string());
-    }
-    let _guard = SimklCallbackGuard;
-
-    let listener = TcpListener::bind("127.0.0.1:42814")
-        .await
-        .map_err(|e| format!("Failed to bind Simkl callback port 42814: {}", e))?;
-
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), listener.accept())
-            .await
-            .map_err(|_| "Timed out waiting for Simkl OAuth callback.".to_string())?
-            .map_err(|e| format!("Failed to accept Simkl OAuth callback: {}", e))?;
-
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Failed to read Simkl callback request: {}", e))?;
-
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let code = parse_oauth_code(&request)
-        .ok_or_else(|| "Simkl OAuth callback did not contain a 'code' parameter".to_string())?;
-
-    // Respond with a friendly page so the user knows they can close the tab.
-    let html = concat!(
-        "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
-        "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
-        "<h2>Connected to Simkl!</h2>",
-        "<p>You can close this tab and return to Aurales.</p>",
-        "</body></html>",
-    );
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html,
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-
-    Ok(code)
+    providers::wait_for_simkl_callback().await
 }
 
-fn parse_oauth_code(request: &str) -> Option<String> {
-    // First line of an HTTP request: "GET /path?code=xxxx&state=... HTTP/1.1"
-    let first_line = request.lines().next()?;
-    let path = first_line.split_whitespace().nth(1)?;
-    let query = path.split('?').nth(1)?;
-    for param in query.split('&') {
-        if let Some(value) = param.strip_prefix("code=") {
-            return Some(value.to_string());
-        }
-    }
-    None
+#[tauri::command]
+pub async fn cancel_simkl_callback_server() -> Result<(), String> {
+    providers::cancel_simkl_callback().await
 }
 
 /// Exchanges a Simkl authorization code for an access token.
@@ -1959,38 +3262,35 @@ pub async fn exchange_simkl_token(
     client_id: String,
     redirect_uri: String,
 ) -> Result<String, String> {
-    // Resolved at compile time — will be None if the env var was absent.
-    const CLIENT_SECRET: Option<&str> = option_env!("SIMKL_CLIENT_SECRET");
-    let client_secret = CLIENT_SECRET
-        .ok_or_else(|| {
-            "SIMKL_CLIENT_SECRET was not set at build time. \
-             Rebuild the app with the env var exported to enable Simkl login."
-                .to_string()
-        })?
-        .to_string();
-
-    let body = serde_json::json!({
-        "code":          code,
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "redirect_uri":  redirect_uri,
-        "grant_type":    "authorization_code"
-    })
-    .to_string();
-
-    // ureq is a blocking HTTP client — run it outside the async executor.
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://api.simkl.com/oauth/token")
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json")
-            .send_string(&body)
-            .map_err(|e| format!("Simkl token exchange request failed: {}", e))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read Simkl token response body: {}", e))
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_simkl_token(code, client_id, redirect_uri)
     })
     .await
     .map_err(|e| format!("Simkl token exchange task panicked: {}", e))?
+}
+
+#[tauri::command]
+pub async fn exchange_simkl_v2_token(
+    code: String,
+    client_id: String,
+    redirect_uri: String,
+    code_verifier: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_simkl_v2_token(code, client_id, redirect_uri, code_verifier)
+    })
+    .await
+    .map_err(|e| format!("Simkl AUTH V2 token exchange task panicked: {e}"))?
+}
+
+#[tauri::command]
+pub async fn refresh_simkl_v2_token(
+    refresh_token: String,
+    client_id: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || providers::refresh_simkl_v2_token(refresh_token, client_id))
+        .await
+        .map_err(|e| format!("Simkl AUTH V2 refresh task panicked: {e}"))?
 }
 
 /// Opens the Simkl OAuth authorisation URL in the user's default browser.
@@ -1998,53 +3298,73 @@ pub async fn exchange_simkl_token(
 #[allow(deprecated)] // tauri-plugin-shell::Shell::open is deprecated in favour of
                      // tauri-plugin-opener; switch once opener is added to Cargo.toml.
 pub fn open_simkl_auth(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell()
-        .open(&url, None)
-        .map_err(|e| format!("Failed to open Simkl auth URL in browser: {}", e))
+    request::validate_http_url(&url)?;
+    // Some Linux browser launchers keep the `open` process alive until the
+    // browser window closes. Never let that block the Tauri command queue:
+    // OAuth/device-code polling must be able to continue while the browser is
+    // still open.
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_shell::ShellExt;
+        if let Err(error) = app.shell().open(&url, None) {
+            log::error!("Failed to open authorization URL in browser: {error}");
+        }
+    });
+    Ok(())
 }
 
 /// Starts a one-shot TCP server on 127.0.0.1:42814 and waits for AniList's
 /// OAuth redirect. Returns the `code` query parameter from the redirect URL.
 #[tauri::command]
-pub async fn start_anilist_callback_server() -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+pub async fn start_anilist_callback_server(provider: String) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
 
-    if ANILIST_CALLBACK_ACTIVE
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("AniList authorization is already waiting for a browser callback. Finish the open AniList tab or wait a moment before trying again.".to_string());
+    if provider != "anilist" && provider != "mdblist" {
+        return Err("Unsupported OAuth callback provider.".to_string());
     }
-    let _guard = AnilistCallbackGuard;
+    let (listener, _guard, mut cancel) = providers::begin_anilist_callback(&provider).await?;
 
-    let listener = TcpListener::bind("127.0.0.1:42814")
-        .await
-        .map_err(|e| format!("Failed to bind AniList callback port 42814: {}", e))?;
+    let mut stream = providers::accept_oauth_callback(
+        &listener,
+        &mut cancel,
+        120,
+        "Timed out waiting for OAuth callback.",
+        "Failed to accept OAuth callback",
+    )
+    .await?;
 
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), listener.accept())
-            .await
-            .map_err(|_| "Timed out waiting for AniList OAuth callback.".to_string())?
-            .map_err(|e| format!("Failed to accept AniList OAuth callback: {}", e))?;
+    let request = providers::read_oauth_callback(&mut stream, "AniList", &mut cancel).await?;
+    let callback_code = providers::parse_oauth_code(&request);
+    let callback_state = providers::parse_oauth_param(&request, "state");
+    let callback_error = providers::parse_oauth_param(&request, "error");
+    if provider == "mdblist" && (callback_code.is_some() || callback_error.is_some()) {
+        providers::write_oauth_success_response(&mut stream, "Authorization received").await;
+        return Ok(serde_json::json!({
+            "code": callback_code,
+            "state": callback_state,
+            "error": callback_error,
+        })
+        .to_string());
+    }
+    if let Some(token) = providers::parse_oauth_param(&request, "access_token") {
+        providers::write_oauth_success_response(&mut stream, "Connected!").await;
+        return Ok(token);
+    }
+    if let Some(code) = callback_code {
+        providers::write_oauth_success_response(&mut stream, "Authorization received").await;
+        return Ok(code);
+    }
 
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Failed to read AniList callback request: {}", e))?;
-
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let code = parse_oauth_code(&request)
-        .ok_or_else(|| "AniList OAuth callback did not contain a 'code' parameter".to_string())?;
-
-    // Respond with a friendly page so the user knows they can close the tab.
     let html = concat!(
         "<html><head><meta charset=\"utf-8\"><title>Aurales</title></head>",
+        "<script>",
+        "const params = new URLSearchParams(location.hash.slice(1));",
+        "const token = params.get('access_token');",
+        "if (token) fetch('/token?access_token=' + encodeURIComponent(token)).then(() => {",
+        "document.body.innerHTML = '<h2>Connected!</h2><p>You can close this tab and return to Aurales.</p>';",
+        "});",
+        "</script>",
         "<body style=\"font-family:sans-serif;text-align:center;padding:60px\">",
-        "<h2>Connected to AniList!</h2>",
-        "<p>You can close this tab and return to Aurales.</p>",
+        "<h2>Finishing connection...</h2>",
         "</body></html>",
     );
     let response = format!(
@@ -2054,61 +3374,55 @@ pub async fn start_anilist_callback_server() -> Result<String, String> {
     );
     let _ = stream.write_all(response.as_bytes()).await;
 
-    Ok(code)
+    let mut stream = providers::accept_oauth_callback(
+        &listener,
+        &mut cancel,
+        15,
+        "Timed out waiting for AniList access token relay.",
+        "Failed to accept AniList token relay",
+    )
+    .await?;
+
+    let request =
+        providers::read_oauth_callback(&mut stream, "AniList token relay", &mut cancel).await?;
+    let token = providers::parse_oauth_param(&request, "access_token")
+        .ok_or_else(|| "AniList OAuth callback did not contain an access token.".to_string())?;
+    providers::write_oauth_success_response(&mut stream, "Connected!").await;
+    Ok(token)
+}
+
+#[tauri::command]
+pub async fn cancel_anilist_callback_server(provider: String) -> Result<(), String> {
+    providers::cancel_anilist_callback(&provider).await
 }
 
 /// Exchanges an AniList authorization code for an access token.
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn exchange_anilist_token(
     code: String,
     client_id: String,
-    client_secret: String,
     redirect_uri: String,
 ) -> Result<String, String> {
-    let client_id = client_id.trim().to_string();
-    let client_secret = client_secret.trim().to_string();
-    let redirect_uri = redirect_uri.trim().to_string();
-    let code = code.trim().to_string();
-
-    if client_id.is_empty() {
-        return Err("AniList client ID is required".to_string());
-    }
-    if client_secret.is_empty() {
-        return Err("AniList client secret is required".to_string());
-    }
-
-    // ureq is a blocking HTTP client — run it outside the async executor.
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let response = ureq::post("https://anilist.co/api/v2/oauth/token")
-            .set("Content-Type", "application/x-www-form-urlencoded")
-            .set("Accept", "application/json")
-            .send_form(&[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client_id),
-                ("client_secret", &client_secret),
-                ("redirect_uri", &redirect_uri),
-                ("code", &code),
-            ])
-            .map_err(|e| format!("AniList token exchange request failed: {}", e))?;
-        response
-            .into_string()
-            .map_err(|e| format!("Failed to read AniList token response body: {}", e))
+    tokio::task::spawn_blocking(move || {
+        providers::exchange_anilist_token(code, client_id, redirect_uri)
     })
     .await
     .map_err(|e| format!("AniList token exchange task panicked: {}", e))?
 }
 
-// ─── Cache Entries ──────────────────────────────────────────────────────────
+#[cfg(test)]
+mod anilist_callback_tests {
+    use crate::core::providers::parse_oauth_code;
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct CacheEntry {
-    pub key: String,
-    pub value: String,
-    pub category: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
-    pub updated_at: String,
+    #[test]
+    fn parses_authorization_callback_code() {
+        let request = "GET /?code=abc%2B123 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(parse_oauth_code(request).as_deref(), Some("abc+123"));
+    }
 }
+
+// ─── Cache Entries ──────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn cache_entry_set(
@@ -2118,135 +3432,61 @@ pub fn cache_entry_set(
     ttl_seconds: Option<i64>,
     db: State<Database>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let expires_at = ttl_seconds.map(|ttl| {
-        format!(
-            "{}",
-            chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::seconds(ttl))
-                .unwrap_or_else(chrono::Utc::now)
-                .format("%Y-%m-%d %H:%M:%S")
-        )
-    });
-    conn.execute(
-        "INSERT OR REPLACE INTO cache_entries (key, value, category, expires_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
-        rusqlite::params![key, value, category, expires_at],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    cache::entry_set(&db, key, value, category, ttl_seconds)
 }
 
 #[tauri::command]
 pub fn cache_entry_get(key: String, db: State<Database>) -> Option<CacheEntry> {
-    let conn = db.conn.lock().ok()?;
-    conn.query_row(
-        "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
-        rusqlite::params![key],
-        |row| {
-            Ok(CacheEntry {
-                key: row.get(0)?,
-                value: row.get(1)?,
-                category: row.get(2)?,
-                created_at: row.get(3)?,
-                expires_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        },
-    )
-    .ok()
+    cache::entry_get(&db, key)
 }
 
 #[tauri::command]
 pub fn cache_entry_get_many(keys: Vec<String>, db: State<Database>) -> Vec<CacheEntry> {
-    let conn = match db.conn.lock() {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let mut results = Vec::new();
-    for key in &keys {
-        if let Ok(entry) = conn.query_row(
-            "SELECT key, value, category, created_at, expires_at, updated_at FROM cache_entries WHERE key = ?1",
-            rusqlite::params![key],
-            |row| {
-                Ok(CacheEntry {
-                    key: row.get(0)?,
-                    value: row.get(1)?,
-                    category: row.get(2)?,
-                    created_at: row.get(3)?,
-                    expires_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            },
-        ) {
-            results.push(entry);
-        }
-    }
-    results
+    cache::entry_get_many(&db, keys)
+}
+
+#[tauri::command]
+pub fn cache_entry_delete(
+    key: String,
+    expected_value: String,
+    db: State<Database>,
+) -> Result<(), String> {
+    cache::entry_delete(&db, key, expected_value)
+}
+
+#[tauri::command]
+pub fn cache_entry_delete_many(
+    entries: Vec<cache::CacheEntryDelete>,
+    db: State<Database>,
+) -> Result<(), String> {
+    cache::entry_delete_many(&db, entries)
 }
 
 #[tauri::command]
 pub fn cache_entry_clear_category(category: String, db: State<Database>) -> Result<u64, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let count = conn
-        .execute(
-            "DELETE FROM cache_entries WHERE category = ?1",
-            rusqlite::params![category],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(count as u64)
+    let cleared = cache::clear_category(&db, category.clone())?;
+    if category == "anime_mapping" {
+        anime_lookup::clear_memory_cache();
+    }
+    Ok(cleared)
 }
 
 #[tauri::command]
 pub fn cache_entry_clear_expired(db: State<Database>) -> Result<u64, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let count = conn
-        .execute(
-            "DELETE FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            rusqlite::params![],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(count as u64)
+    cache::clear_expired(&db)
 }
 
 #[tauri::command]
 pub fn cache_entry_stats(db: State<Database>) -> Result<serde_json::Value, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cache_entries", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    let expired: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let mut stmt = conn
-        .prepare("SELECT category, COUNT(*) FROM cache_entries GROUP BY category")
-        .map_err(|e| e.to_string())?;
-    let by_category: std::collections::HashMap<String, i64> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(serde_json::json!({
-        "totalEntries": total,
-        "expiredEntries": expired,
-        "byCategory": by_category,
-    }))
+    cache::stats(&db)
 }
 
 #[tauri::command]
 pub fn get_mpv_info() -> Result<serde_json::Value, String> {
-    let path = find_mpv().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "Not Found".to_string());
-    let candidates: Vec<String> = mpv_candidates().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
-    Ok(serde_json::json!({
-        "path": path,
-        "candidates": candidates,
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-    }))
+    Ok(player::diagnostics(
+        player::find_mpv(),
+        libmpv_player::find_libmpv(),
+        player::mpv_candidates(),
+        libmpv_player::libmpv_candidates(),
+    ))
 }

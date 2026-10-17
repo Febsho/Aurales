@@ -1,49 +1,510 @@
-import React, { useState, useEffect, useCallback, memo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Volume2, VolumeX } from 'lucide-react'
 import type { SearchResult } from '../types'
-import { applySearchResultArt } from '../services/artwork'
+import { applyInitialArtworkPreference, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { getTmdbHeroCast, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { getTrailerSource, preloadTrailerSource, type TrailerSource } from '../services/trailers'
+import { cachedImage } from '../services/imageCache'
+import { useAppStore } from '../stores/appStore'
 import RatingsStrip from './RatingsStrip'
+import { nativeTrailerPlayerSupported } from '../services/player'
 import { Button } from './ui'
+import { waitForContinueWatchingSettled } from '../services/cache/homeStartupCoordinator'
+import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
+
+const HeroMpvTrailer = React.lazy(() => import('./HeroMpvTrailer'))
+const TrailerPreview = React.lazy(() => import('./TrailerPreview'))
 
 interface HeroSectionProps {
   items: SearchResult[]
   isSmall?: boolean
+  fixed?: boolean
+  onActiveBackdropChange?: (url: string | undefined) => void
+  enableTrailers?: boolean
+  onActiveImageSettled?: () => void
 }
 
-function HeroSection({ items, isSmall = false }: HeroSectionProps) {
+function preloadImage(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(url)
+    img.onerror = reject
+    img.src = url
+  })
+}
+
+const MAX_TRACKED_BACKDROPS = 100
+function rememberBackdrop(urls: Set<string>, url: string): Set<string> {
+  const next = new Set(urls)
+  next.delete(url)
+  next.add(url)
+  while (next.size > MAX_TRACKED_BACKDROPS) {
+    const oldest = next.values().next().value as string | undefined
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  return next
+}
+
+function usableBackdrop(item?: SearchResult, highResolution = false): string | undefined {
+  if (!item?.backdrop || item.backdrop === item.poster) return undefined
+  const artwork = item.backdrop
+  if (!highResolution) return artwork
+  try {
+    const url = new URL(artwork)
+    if (url.hostname === 'image.tmdb.org') {
+      url.pathname = url.pathname.replace(/\/t\/p\/(?:w\d+|original)\//, '/t/p/original/')
+      return url.toString()
+    }
+  } catch { /* preserve provider URL */ }
+  return artwork
+}
+
+function isUsableLoadedBackdrop(image: HTMLImageElement, allowPortrait = false): boolean {
+  if (image.naturalWidth < 320 || image.naturalHeight < 160) return false
+  if (!allowPortrait && image.naturalWidth / image.naturalHeight < 1.2) return false
+
+  // Some artwork hosts return a successful, decodable black/transparent
+  // placeholder instead of an HTTP error. Detect only effectively empty
+  // images; genuinely dark artwork still has visible luminance variation.
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = 16
+    canvas.height = 9
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return true
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    let opaque = 0
+    let minLuma = 255
+    let maxLuma = 0
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      if (pixels[offset + 3] < 16) continue
+      opaque += 1
+      const luma = pixels[offset] * 0.2126 + pixels[offset + 1] * 0.7152 + pixels[offset + 2] * 0.0722
+      minLuma = Math.min(minLuma, luma)
+      maxLuma = Math.max(maxLuma, luma)
+    }
+    return opaque >= 36 && !(maxLuma < 8 && maxLuma - minLuma < 3)
+  } catch {
+    // Direct cross-origin retries may not allow canvas inspection. A decoded,
+    // landscape-sized image is still preferable to rejecting valid artwork.
+    return true
+  }
+}
+
+function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropChange, enableTrailers = true, onActiveImageSettled }: HeroSectionProps) {
   const navigate = useNavigate()
+  const linuxReducedEffects = document.documentElement.dataset.platform === 'linux'
+  const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
   const [activeIndex, setActiveIndex] = useState(0)
+  // Keep the currently displayed slide stable.  Artwork providers resolve
+  // asynchronously and may return a different backdrop/logo than the catalog
+  // supplied; applying that result halfway through a slide looks like the hero
+  // rapidly changes to another title.
+  const [presentedItem, setPresentedItem] = useState<SearchResult>(() => items[0])
+  const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => usableBackdrop(items[0], fixed))
+  const [directBackdropRetries, setDirectBackdropRetries] = useState<Set<string>>(() => new Set())
+  const loadedBackdropsRef = useRef<Set<string>>(new Set())
   const [logoError, setLogoError] = useState(false)
+  const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
+  const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
+  // Parents may derive a new array during an unrelated render.  Its identity
+  // should not restart the carousel unless the actual set of hero items changed.
+  const itemSetKey = useMemo(() => items.map((item) => String(item.id)).join('|'), [items])
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
+  const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
+  const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
+  const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+  const preferredAudio = useAppStore((s) => s.preferredAudio)
+  const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
+  const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
+  const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
+  const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+  const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
+  const [heroTrailerPlaying, setHeroTrailerPlaying] = useState(false)
+  const [heroTrailerMuted, setHeroTrailerMuted] = useState(true)
+  // True while the embedded mpv trailer renders frames — the slide's backdrop
+  // must stop painting so the video shows through the transparent webview.
+  const [heroMpvVisible, setHeroMpvVisible] = useState(false)
+  const [startupEnrichmentReady, setStartupEnrichmentReady] = useState(false)
+
+  useEffect(() => {
+    if (!heroTrailerPlaying && heroMpvVisible) setHeroMpvVisible(false)
+  }, [heroTrailerPlaying, heroMpvVisible])
+
+  useEffect(() => {
+    let cancelled = false
+    waitForContinueWatchingSettled().then(() => { if (!cancelled) setStartupEnrichmentReady(true) })
+    return () => { cancelled = true }
+  }, [])
 
   const goTo = useCallback(
-    (i: number) => setActiveIndex(((i % count) + count) % count),
+    (i: number) => {
+      setHeroMpvVisible(false)
+      setHeroTrailerPlaying(false)
+      setHeroTrailer(null)
+      setActiveIndex(((i % count) + count) % count)
+    },
     [count],
   )
 
+  const handleBrokenBackdrop = useCallback((url: string) => {
+    onActiveImageSettled?.()
+
+    // A fixed Hero often contains only one item, so advancing cannot recover
+    // from a dead catalog/provider backdrop. Keep the Hero visual by falling
+    // back to its poster while a verified landscape upgrade resolves.
+    if (presentedItem.poster && presentedItem.poster !== url) {
+      setPresentedBackdrop(presentedItem.poster)
+      return
+    }
+
+    if (count > 1) goTo(activeIndex + 1)
+    else setPresentedBackdrop(undefined)
+  }, [activeIndex, count, goTo, onActiveImageSettled, presentedItem.poster])
+
+  // A custom-protocol image request can occasionally remain pending without
+  // firing load or error. Retry the source URL, then leave the broken slide,
+  // so startup can never remain on an empty black Hero indefinitely.
+  useEffect(() => {
+    const url = presentedBackdrop
+    if (!url || loadedBackdropsRef.current.has(url)) return
+    const retryingDirectly = directBackdropRetries.has(url)
+    const timer = window.setTimeout(() => {
+      if (loadedBackdropsRef.current.has(url)) return
+      if (!retryingDirectly) {
+        setDirectBackdropRetries((current) => {
+          return rememberBackdrop(current, url)
+        })
+      } else {
+        handleBrokenBackdrop(url)
+      }
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [directBackdropRetries, handleBrokenBackdrop, presentedBackdrop])
+
   useEffect(() => {
     setLogoError(false)
+    setHeroTrailerMuted(true)
   }, [activeIndex])
 
   useEffect(() => {
     setActiveIndex(0)
-  }, [items])
+  }, [itemSetKey])
+
+  const [scrolledAway, setScrolledAway] = useState(false)
+  const scrolledAwayRef = useRef(false)
 
   useEffect(() => {
     if (count <= 1) return
-    const id = setInterval(() => setActiveIndex((prev) => (prev + 1) % count), 8000)
+    if (scrolledAway) return
+    if (heroTrailerPlaying) return
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') setActiveIndex((prev) => (prev + 1) % count)
+    }, 8000)
     return () => clearInterval(id)
-  }, [count])
+  }, [count, scrolledAway, heroTrailerPlaying])
 
-  if (!items.length) return null
+  // Scroll blur: listen to the scroll container (closest overflow-y parent).
+  // Keep the frame-by-frame visual update out of React: re-rendering the whole
+  // hero for every scroll tick is much more expensive than changing two CSS
+  // custom properties on the already-mounted artwork. WebKitGTK's fallback
+  // renderer cannot animate a full-bleed image filter smoothly, so Linux only
+  // tracks the threshold used to pause the carousel.
+  useEffect(() => {
+    if (isSmall) return
+    const el = heroRef.current
+    if (!el) return
+    const scrollParent = el.closest('[class*="overflow-y"]') as HTMLElement | null
+    if (!scrollParent) return
 
-  const displayItems = items.map(applySearchResultArt)
-  const item = displayItems[activeIndex]
-  const type = item.type === 'series' ? 'series' : 'movie'
+    let frame = 0
+    const update = () => {
+      frame = 0
+      const t = scrollParent.scrollTop
+      if (!linuxReducedEffects && !cinematic) {
+        const progress = Math.min(t / 400, 1)
+        el.style.setProperty('--hero-scroll-blur', `${progress * 20}px`)
+        el.style.setProperty('--hero-scroll-scale', String(1 + progress * 0.05))
+      }
+      const nextScrolledAway = t > 100
+      if (nextScrolledAway !== scrolledAwayRef.current) {
+        scrolledAwayRef.current = nextScrolledAway
+        setScrolledAway(nextScrolledAway)
+      }
+    }
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(update)
+    }
+    scrollParent.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      scrollParent.removeEventListener('scroll', onScroll)
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [isSmall, linuxReducedEffects, cinematic])
+
+  // Upgrade backdrops to highest-voted from TMDB images endpoint
+  const [upgradedBackdrops, setUpgradedBackdrops] = useState<Record<string, string>>({})
+  const [providerArt, setProviderArt] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
+
+  // Resolve the visible logo immediately. Fixed heroes never advance to a new
+  // slide, so the old "apply enrichment on the next appearance" behavior left
+  // them permanently using the catalog's lower-quality wordmark while the
+  // details page used the configured artwork provider.
+  useEffect(() => {
+    if (!appManagedMetadata) return
+    let cancelled = false
+    const key = String(presentedItem.id)
+
+    resolveArtFromProviders(
+      presentedItem.type === 'series' ? 'series' : 'movie',
+      {
+        tmdbId: presentedItem.tmdbId,
+        tvdbId: presentedItem.tvdbId,
+        imdbId: presentedItem.imdbId,
+      },
+      presentedItem.isAnime,
+    ).then(async (art) => {
+      if (!art.logo || cancelled) return
+      await preloadImage(art.logo).catch(() => undefined)
+      if (cancelled) return
+
+      setProviderArt((current) => ({ ...current, [key]: { ...current[key], ...art } }))
+      setPresentedItem((current) => {
+        if (String(current.id) !== key) return current
+        const withPreferredLogo = applySearchResultArt({ ...current, logo: art.logo })
+        return withPreferredLogo.logo === current.logo ? current : withPreferredLogo
+      })
+      setLogoError(false)
+    }).catch(() => undefined)
+
+    return () => { cancelled = true }
+  }, [
+    presentedItem.id,
+    presentedItem.tmdbId,
+    presentedItem.tvdbId,
+    presentedItem.imdbId,
+    presentedItem.isAnime,
+    presentedItem.type,
+    artProviderKey,
+    fanartApiKey,
+    customArtKey,
+    appManagedMetadata,
+  ])
+
+  // The visible title never waits behind enrichment for the rest of the
+  // carousel. Resolve its verified landscape directly; only adjacent/future
+  // slides use the serialized metadata queue.
+  useEffect(() => {
+    if (!appManagedMetadata) return
+    const activeId = presentedItem.id
+    const activeTmdbId = presentedItem.tmdbId
+    const activeType = presentedItem.type
+    const tmdbId = activeTmdbId || (/^tmdb[-:]/i.test(String(activeId || '')) ? String(activeId).replace(/^tmdb[-:]/i, '') : undefined)
+    if (!tmdbId || upgradedBackdrops[String(activeId)]) return
+    let cancelled = false
+    getTmdbLandscapeBackdrop(activeType === 'series' ? 'series' : 'movie', tmdbId)
+      .then((url) => {
+        if (cancelled || !url) return
+        setUpgradedBackdrops((current) => ({ ...current, [String(activeId)]: url }))
+        setPresentedBackdrop(url)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [presentedItem.id, presentedItem.tmdbId, presentedItem.type, upgradedBackdrops, appManagedMetadata])
+
+  useEffect(() => {
+    if (!appManagedMetadata) return
+    let cancelled = false
+    const toFetch = items.filter((itm) => {
+      const tmdbId = itm.tmdbId || (/^tmdb[-:]/i.test(String(itm.id)) ? String(itm.id).replace(/^tmdb[-:]/i, '') : undefined)
+      return tmdbId && String(itm.id) !== String(presentedItem.id) && !upgradedBackdrops[String(itm.id)]
+    })
+    toFetch.forEach((itm) => {
+      const tmdbId = itm.tmdbId || String(itm.id).replace(/^tmdb[-:]/i, '')
+      const t = itm.type === 'series' ? 'series' : 'movie'
+      scheduleTask(metadataTaskQueue, {
+        id: `hero-backdrop:${itm.id}`,
+        dedupKey: `hero-backdrop:${itm.id}`,
+        priority: 'low',
+        group: 'metadata',
+        execute: () => getTmdbLandscapeBackdrop(t, tmdbId),
+      })
+        .then((url) => {
+          if (!cancelled && url) {
+            preloadImage(url)
+              .then(() => {
+                if (!cancelled) {
+                  setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+                }
+              })
+              .catch(() => {
+                if (!cancelled) {
+                  setUpgradedBackdrops((prev) => ({ ...prev, [String(itm.id)]: url }))
+                }
+              })
+          }
+        })
+        .catch(() => {})
+    })
+    return () => { cancelled = true }
+  }, [items, presentedItem.id, upgradedBackdrops, appManagedMetadata])
+
+  useEffect(() => {
+    if (!startupEnrichmentReady || !appManagedMetadata) return
+    let cancelled = false
+    setProviderArt({})
+    items.filter((itm) => String(itm.id) !== String(presentedItem.id)).forEach((itm) => {
+      const key = String(itm.id)
+      scheduleTask(metadataTaskQueue, {
+        id: `hero-art:${key}`,
+        dedupKey: `hero-art:${key}`,
+        priority: 'idle',
+        group: 'metadata',
+        execute: () => resolveArtFromProviders(
+          itm.type === 'series' ? 'series' : 'movie',
+          { tmdbId: itm.tmdbId, tvdbId: itm.tvdbId, imdbId: itm.imdbId },
+          itm.isAnime,
+        ),
+      }).then(async (art) => {
+        if (!cancelled) {
+          const preloads = []
+          if (art.backdrop) preloads.push(preloadImage(art.backdrop).catch(() => {}))
+          if (art.poster) preloads.push(preloadImage(art.poster).catch(() => {}))
+          await Promise.all(preloads)
+
+          if (!cancelled) {
+            setProviderArt((prev) => ({ ...prev, [key]: art }))
+          }
+        }
+      }).catch(() => undefined)
+    })
+    return () => { cancelled = true }
+  }, [items, presentedItem.id, artProviderKey, fanartApiKey, startupEnrichmentReady, appManagedMetadata])
+
+  const displayItems = useMemo(() => items.map((raw) => {
+    const art = providerArt[String(raw.id)]
+    const initial = applyInitialArtworkPreference(raw, raw.type, Boolean(raw.isAnime))
+    return applySearchResultArt(art ? { ...initial, ...art } : initial)
+  }), [items, providerArt])
+  useEffect(() => {
+    const nextItem = displayItems[activeIndex]
+    if (nextItem) {
+      setPresentedItem(nextItem)
+      setPresentedBackdrop(upgradedBackdrops[String(nextItem.id)] || usableBackdrop(nextItem, fixed))
+    }
+  // Deliberately do not depend on displayItems or upgradedBackdrops: artwork
+  // arriving while this slide is visible is saved for its next appearance,
+  // rather than swapped in over the current hero.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, itemSetKey])
+
+  // Catalogs occasionally label a poster as a backdrop. Once TMDB has supplied
+  // its verified landscape artwork, replace the active slide instead of waiting
+  // for the carousel to return to it.
+  useEffect(() => {
+    const upgraded = upgradedBackdrops[String(presentedItem.id)]
+    if (upgraded && upgraded !== presentedBackdrop) setPresentedBackdrop(upgraded)
+  }, [presentedItem.id, presentedBackdrop, upgradedBackdrops])
+
+  const itemId = presentedItem.id
+  const itemTmdbId = presentedItem.tmdbId
+  const itemImdbId = presentedItem.imdbId
+  const itemTitle = presentedItem.title
+  const itemYear = presentedItem.year
+  const type = presentedItem.type === 'series' ? 'series' : 'movie'
+
+  // Report active backdrop to parent for blurred background
+  useEffect(() => {
+    if (!onActiveBackdropChange || isSmall) return
+    const activeItem = presentedItem
+    if (!activeItem) { onActiveBackdropChange(undefined); return }
+    const backdrop = presentedBackdrop || usableBackdrop(activeItem, fixed)
+    onActiveBackdropChange(backdrop)
+  }, [presentedItem, presentedBackdrop, customArtKey, isSmall, fixed, onActiveBackdropChange])
+
+  // Fetch top 3 cast for the active hero item
+  useEffect(() => {
+    if (!startupEnrichmentReady || !appManagedMetadata) return
+    const tmdbId = itemTmdbId || (/^tmdb[-:]/i.test(String(itemId)) ? String(itemId).replace(/^tmdb[-:]/i, '') : undefined)
+    if (!tmdbId) { setCast([]); return }
+
+    let cancelled = false
+    getTmdbHeroCast(type, tmdbId)
+      .then((c) => { if (!cancelled) setCast(c) })
+      .catch(() => { if (!cancelled) setCast([]) })
+    return () => { cancelled = true }
+  }, [itemId, itemTmdbId, type, startupEnrichmentReady, appManagedMetadata])
+
+  useEffect(() => {
+    if (!enableTrailers || heroTrailerDelay <= 0 || scrolledAway) {
+      setHeroTrailer(null)
+      setHeroTrailerPlaying(false)
+      return
+    }
+
+    const tmdbId = itemTmdbId || (/^tmdb[-:]/i.test(String(itemId)) ? String(itemId).replace(/^tmdb[-:]/i, '') : undefined)
+    let cancelled = false
+    setHeroTrailer(null)
+    setHeroTrailerPlaying(false)
+    setHeroTrailerMuted(true)
+
+    const timer = window.setTimeout(() => {
+      getTrailerSource({
+        type,
+        tmdbId,
+        imdbId: itemImdbId,
+        title: itemTitle,
+        year: itemYear,
+        language: trailerLanguage,
+      }).then((trailer) => {
+        if (!cancelled && trailer) {
+          setHeroTrailer(trailer)
+          setHeroTrailerPlaying(true)
+        }
+      }).catch(() => undefined)
+    }, heroTrailerDelay * 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      setHeroTrailerPlaying(false)
+    }
+  }, [enableTrailers, itemId, itemTmdbId, itemImdbId, itemTitle, itemYear, type, heroTrailerDelay, trailerLanguage, scrolledAway])
+
+  useEffect(() => {
+    if (!enableTrailers) return
+    if (heroTrailerDelay <= 0) return
+    if (!displayItems.length) return
+    displayItems.slice(activeIndex, activeIndex + 3).forEach((candidate) => {
+      const candidateTmdbId = candidate.tmdbId || (/^tmdb[-:]/i.test(String(candidate.id)) ? String(candidate.id).replace(/^tmdb[-:]/i, '') : undefined)
+      if (!candidateTmdbId && !candidate.imdbId) return
+      preloadTrailerSource({
+        type: candidate.type === 'series' ? 'series' : 'movie',
+        tmdbId: candidateTmdbId,
+        imdbId: candidate.imdbId,
+        title: candidate.title,
+        year: candidate.year,
+        language: trailerLanguage,
+      })
+    })
+  }, [activeIndex, displayItems, enableTrailers, heroTrailerDelay, trailerLanguage])
+
+  const item = presentedItem
+  if (!items.length || !item) return null
 
   const sharedState = {
     poster: item.poster,
     backdrop: item.backdrop,
+    logo: item.logo,
     title: item.title,
     year: item.year,
     rating: item.rating,
@@ -51,171 +512,320 @@ function HeroSection({ items, isSmall = false }: HeroSectionProps) {
     imdbId: 'imdbId' in item ? item.imdbId : undefined,
     addonUrl: 'addonUrl' in item ? item.addonUrl : undefined,
     provider: 'provider' in item ? item.provider : undefined,
+    isAnime: item.isAnime,
   }
 
-  const nav = () =>
-    navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: sharedState })
+  const nav = (autoPlay = false) =>
+    navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...sharedState, autoPlay } })
+
+  const genreStr = item.genres?.[0] || ''
+  const ratingLabel = item.rating ? `R` : ''
+  const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
+
+  // The fixed cinematic Home divides the viewport between the banner and the
+  // active shelf. CSS owns that calculation so it can respond to both 1080p TV
+  // windows and high-density 4K displays without a 1440p-specific cap.
+  const heroHeight = isSmall
+    ? '380px'
+    : cinematic
+      ? (fixed ? 'var(--fixed-cinematic-hero-height, clamp(580px, 74vh, 900px))' : 'clamp(520px, 68vh, 820px)')
+      : 'clamp(550px, 85vh, 1200px)'
+
+  const maskGradient = fixed && cinematic
+    ? 'linear-gradient(to bottom, black 0%, black 58%, rgba(0,0,0,.86) 72%, transparent 100%)'
+    : 'linear-gradient(to bottom, black 80%, rgba(0,0,0,0.5) 92%, transparent 100%)'
+  const fixedStaticDetails = fixed && cinematic && !isSmall && !homeCardAnimations
 
   return (
     <div
-      className={`relative w-full overflow-hidden select-none group ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
-      style={isSmall ? { height: '380px' } : { height: 'clamp(550px, calc(100vh - 270px), 1200px)' }}
+      ref={heroRef}
+      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      style={{ height: heroHeight }}
     >
-      {/* Backdrop slides — only render adjacent slides for performance */}
-      {displayItems.map((itm, i) => {
-        const isAdjacentSlide = i === activeIndex || i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count
-        if (!isAdjacentSlide) return null
-        return (
-          <div
-            key={`${itm.id ?? i}-${i}`}
-            className="absolute inset-0 transition-opacity duration-1000 ease-in-out"
-            style={{ opacity: i === activeIndex ? 1 : 0, pointerEvents: 'none' }}
-          >
-            {itm.backdrop ? (
-              <img
-                src={itm.backdrop.replace('/w780/', '/original/').replace('/w1280/', '/original/')}
-                alt=""
-                className="absolute inset-0 w-full h-full object-cover"
-                style={{ objectPosition: 'center 20%' }}
-                draggable={false}
-                loading={i === activeIndex ? 'eager' : 'lazy'}
-              />
-            ) : itm.poster ? (
-              <>
-                <img
-                  src={itm.poster}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125"
-                  draggable={false}
-                />
-                <div className="absolute inset-0 bg-black/50" />
-              </>
-            ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
-            )}
-          </div>
-        )
-      })}
-
-      {/* Cinematic gradients — heavier bottom fade */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/20 to-transparent" />
-
-      {/* Prev / Next */}
-      {count > 1 && (
-        <>
-          <button
-            onClick={() => goTo(activeIndex - 1)}
-            className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
-            aria-label="Previous"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <button
-            onClick={() => goTo(activeIndex + 1)}
-            className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
-            aria-label="Next"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </>
+      {!isSmall ? (
+        <div
+          className={`absolute inset-0 pointer-events-none ${cinematic ? 'cinematic-hero-artwork' : ''}`}
+          style={{ maskImage: maskGradient, WebkitMaskImage: maskGradient }}
+        >
+          {renderBackdrops()}
+        </div>
+      ) : renderBackdrops()}
+      {(!(fixed && cinematic && !isSmall) || fixedStaticDetails) && renderOverlay()}
+      {enableTrailers && heroTrailerPlaying && heroTrailer && !isSmall && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            setHeroTrailerMuted((value) => !value)
+          }}
+          className="absolute right-6 top-6 z-30 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white/75 shadow-xl backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white"
+          aria-label={heroTrailerMuted ? 'Unmute hero trailer' : 'Mute hero trailer'}
+          title={heroTrailerMuted ? 'Unmute trailer' : 'Mute trailer'}
+        >
+          {heroTrailerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+        </button>
       )}
-
-      {/* Content — bottom-left */}
-      <div className={`absolute bottom-0 left-0 right-0 z-10 px-8 ${isSmall ? 'pb-8' : 'pb-12'}`}>
-        {/* Meta badges */}
-        <div className={`flex items-center gap-2.5 ${isSmall ? 'mb-2' : 'mb-3'}`}>
-          {item.type && (
-            <span className="px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-[0.15em] bg-white/10 text-white/80 border border-white/10">
-              {item.type}
-            </span>
-          )}
-          {item.year && <span className="text-sm text-white/50 font-medium">{item.year}</span>}
-          {item.rating && (
-            <span className="flex items-center gap-1 text-sm text-yellow-400/90 font-bold">
-              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 20 20">
-                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-              </svg>
-              {item.rating.toFixed(1)}
-            </span>
-          )}
-        </div>
-
-        {/* Title */}
-        <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-4 min-h-[60px]'} flex items-end`}>
-          {item.logo && !logoError ? (
-            <img
-              src={item.logo}
-              alt={item.title}
-              className={`${isSmall ? 'max-h-[65px]' : 'max-h-[110px] md:max-h-[140px]'} max-w-[90%] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
-              onError={() => setLogoError(true)}
-              draggable={false}
-            />
-          ) : (
-            <h1 className={`${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
-              {item.title}
-            </h1>
-          )}
-        </div>
-
-        <RatingsStrip
-          mediaType={type}
-          imdbId={item.imdbId}
-          tmdbId={item.tmdbId}
-          tvdbId={item.tvdbId}
-          className={isSmall ? 'mb-2.5' : 'mb-4'}
-        />
-
-        {/* Overview */}
-        {item.overview && (
-          <p className={`text-white/55 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-4' : 'text-[15px] line-clamp-2 mb-6'}`}>
-            {item.overview}
-          </p>
-        )}
-
-        {/* Actions + dots */}
-        <div className="flex items-center gap-3">
-          <Button
-            variant="white"
-            size={isSmall ? 'md' : 'lg'}
-            onClick={nav}
-            icon={
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            }
-          >
-            Play
-          </Button>
-          <Button variant="glass" size={isSmall ? 'md' : 'lg'} onClick={nav}>
-            More Info
-          </Button>
-
-          {count > 1 && (
-            <div className="flex items-center gap-1.5 ml-auto">
-              {items.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => goTo(i)}
-                  className={[
-                    'rounded-full transition-all duration-300 cursor-pointer',
-                    i === activeIndex
-                      ? 'w-7 h-2 bg-white'
-                      : 'w-2 h-2 bg-white/25 hover:bg-white/50',
-                  ].join(' ')}
-                  aria-label={`Go to slide ${i + 1}`}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   )
+
+  function renderBackdrops() {
+    return (
+      <>
+        {displayItems.map((itm, i) => {
+          const isAdjacentSlide = i === activeIndex || (startupEnrichmentReady && (i === (activeIndex + 1) % count || i === ((activeIndex - 1) + count) % count))
+          if (!isAdjacentSlide) return null
+          const slideItem = i === activeIndex ? presentedItem : itm
+          const backdropUrl = i === activeIndex ? presentedBackdrop : (upgradedBackdrops[String(slideItem.id)] || usableBackdrop(slideItem, fixed))
+          const cachedBackdropUrl = backdropUrl ? cachedImage(backdropUrl) : undefined
+          const retryingDirectly = i === activeIndex || Boolean(backdropUrl && directBackdropRetries.has(backdropUrl))
+          return (
+            <div
+              key={`${itm.id ?? i}-${i}`}
+              className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${fixed && cinematic ? 'fixed-hero-backdrop' : ''}`}
+              style={{
+                opacity: i === activeIndex ? 1 : 0,
+                pointerEvents: 'none',
+                filter: !linuxReducedEffects && !cinematic ? 'blur(var(--hero-scroll-blur, 0px))' : undefined,
+                transform: !linuxReducedEffects && !cinematic ? 'scale(var(--hero-scroll-scale, 1))' : undefined,
+                transition: 'opacity 1s ease-in-out',
+              }}
+            >
+              <div className={`absolute inset-0 transition-opacity duration-300 ${heroMpvVisible && i === activeIndex ? 'opacity-0' : 'opacity-100'}`}>
+                {backdropUrl ? (
+                  <img
+                    src={retryingDirectly ? backdropUrl : cachedBackdropUrl}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ objectPosition: 'center 20%' }}
+                    draggable={false}
+                    loading={i === activeIndex ? 'eager' : 'lazy'}
+                    decoding="async"
+                    fetchPriority={i === activeIndex ? 'high' : 'auto'}
+                    onLoad={i === activeIndex ? (event) => {
+                      const isPosterFallback = backdropUrl === slideItem.poster
+                      if (!isUsableLoadedBackdrop(event.currentTarget, isPosterFallback)) {
+                        if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
+                          setDirectBackdropRetries((current) => {
+                            return rememberBackdrop(current, backdropUrl)
+                          })
+                          return
+                        }
+                        handleBrokenBackdrop(backdropUrl)
+                        return
+                      }
+                      loadedBackdropsRef.current = rememberBackdrop(loadedBackdropsRef.current, backdropUrl)
+                      onActiveImageSettled?.()
+                    } : undefined}
+                    onError={i === activeIndex ? () => {
+                      if (!retryingDirectly && cachedBackdropUrl !== backdropUrl) {
+                        setDirectBackdropRetries((current) => {
+                          return rememberBackdrop(current, backdropUrl)
+                        })
+                        return
+                      }
+                      handleBrokenBackdrop(backdropUrl)
+                    } : undefined}
+                  />
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface" />
+                )}
+              </div>
+              {enableTrailers && i === activeIndex && heroTrailerPlaying && heroTrailer && (useNativeTrailerPlayer ? (
+                <React.Suspense fallback={null}><HeroMpvTrailer
+                  trailer={heroTrailer}
+                  muted={heroTrailerMuted}
+                  className="pointer-events-none absolute inset-0"
+                  onPlayingChange={setHeroMpvVisible}
+                  onEnded={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
+                  onUnavailable={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                    setHeroMpvVisible(false)
+                  }}
+                /></React.Suspense>
+              ) : (
+                <React.Suspense fallback={null}><TrailerPreview
+                  trailer={heroTrailer}
+                  title={slideItem.title}
+                  muted={heroTrailerMuted}
+                  eager
+                  highQuality
+                  showShade={false}
+                  placeholderUrl={backdropUrl}
+                  className="pointer-events-none absolute inset-0"
+                  onEnded={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                  }}
+                  onUnavailable={() => {
+                    setHeroTrailerPlaying(false)
+                    setHeroTrailer(null)
+                  }}
+                /></React.Suspense>
+              ))}
+            </div>
+          )
+        })}
+
+        {/* Cinematic gradients */}
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
+      </>
+    )
+  }
+
+  function renderOverlay() {
+    return (
+      <>
+        {/* Prev / Next */}
+        {count > 1 && (
+          <>
+            <button
+              onClick={() => goTo(activeIndex - 1)}
+              className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              aria-label="Previous"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(activeIndex + 1)}
+              className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              aria-label="Next"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </>
+        )}
+
+        {/* Content — bottom-left */}
+        <div className={`hero-content-overlay absolute bottom-0 left-0 right-0 z-10 ${fixed && !cinematic && !isSmall ? 'fixed-default-hero-content' : ''} ${fixedStaticDetails ? 'fixed-cinematic-static-content' : ''} ${isSmall || cinematic ? 'px-8 pb-8' : 'px-6 pb-14'}`}>
+          {/* Title */}
+          <div className={`${isSmall ? 'mb-2.5 min-h-[40px]' : 'mb-3 min-h-[60px]'} flex items-end`}>
+            {item.logo && !logoError ? (
+              <img
+                src={cachedImage(item.logo)}
+                alt={item.title}
+                className={`hero-title-logo ${isSmall ? 'max-h-14 max-w-[70%]' : 'max-h-[150px] md:max-h-[190px] max-w-[90%]'} w-auto object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]`}
+                onError={() => setLogoError(true)}
+                draggable={false}
+              />
+            ) : (
+              <h1 className={`hero-title-text ${isSmall ? 'text-4xl' : 'text-6xl'} font-bold drop-shadow-xl leading-[1.05] tracking-tight max-w-2xl`}>
+                {item.title}
+              </h1>
+            )}
+          </div>
+
+          {/* Year · Genre · Rating */}
+          {metaLine && (
+            <p className={`text-white/50 font-medium tracking-wide ${isSmall ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+              {metaLine}
+            </p>
+          )}
+
+          {/* Compact colored rating badges */}
+          <RatingsStrip
+            mediaType={type}
+            imdbId={item.imdbId}
+            tmdbId={item.tmdbId}
+            tvdbId={item.tvdbId}
+            malId={item.malId}
+            className={isSmall ? 'mb-2.5' : 'mb-3'}
+            compact
+          />
+
+          {/* Overview */}
+          {item.overview && (
+            <p className={`text-white/60 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-sm line-clamp-2 mb-4'}`}>
+              {item.overview}
+            </p>
+          )}
+
+          {/* Actor avatars */}
+          {!isSmall && cast.length > 0 && (
+            <div className="flex items-center gap-3 mb-6">
+              <div className="flex -space-x-2">
+                {cast.map((actor) => (
+                  <div key={actor.name} className="w-10 h-10 rounded-full border-2 border-black/60 overflow-hidden bg-surface-elevated flex-shrink-0">
+                    {actor.photo ? (
+                      <img src={cachedImage(actor.photo)} alt={actor.name} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/60">
+                        {actor.name.charAt(0)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <span className="text-sm text-white/50 font-medium truncate max-w-md">
+                {cast.map((a) => a.name).join(', ')}
+              </span>
+            </div>
+          )}
+
+          {/* Actions + dots */}
+          <div className="flex items-end gap-3">
+            {!isSmall ? (
+              <div className="home-hero-actions">
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  className="home-hero-details-action"
+                  icon={<svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                  onClick={() => nav(false)}
+                >
+                  Go to Details
+                </Button>
+              </div>
+            ) : (
+              <Button variant="white" size="md" onClick={() => nav(false)}>
+                Go to {type === 'movie' ? 'Movie' : 'Series'}
+              </Button>
+            )}
+
+            {count > 1 && (
+              <div
+                className="hero-dots"
+                role="tablist"
+                aria-label={`Featured titles, ${activeIndex + 1} of ${count}`}
+              >
+                <div
+                  className="hero-dots__track"
+                  // Centre the active dot inside the 7-dot window, clamping at
+                  // both ends so the rail never scrolls past its own content.
+                  style={{
+                    transform: `translateX(-${
+                      Math.min(Math.max(activeIndex - 3, 0), Math.max(count - 7, 0)) * 0.875
+                    }rem)`,
+                  }}
+                >
+                  {items.map((_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => goTo(i)}
+                      className="hero-dots__dot"
+                      data-active={i === activeIndex}
+                      role="tab"
+                      aria-selected={i === activeIndex}
+                      aria-label={`Go to slide ${i + 1} of ${count}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </>
+    )
+  }
 }
 
 export default React.memo(HeroSection)

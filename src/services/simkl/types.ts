@@ -12,6 +12,9 @@ export interface SimklToken {
   accessToken: string
   tokenType: string
   scope: string
+  refreshToken?: string
+  /** Unix time in milliseconds; V2 access tokens are short-lived. */
+  expiresAt?: number
 }
 
 export interface SimklPinAuth {
@@ -25,6 +28,14 @@ export interface SimklAccount {
   id: string
   username: string
   avatar?: string
+}
+
+export interface SimklCustomList {
+  id: string
+  name: string
+  mediaType?: SimklMediaType
+  itemCount?: number
+  privacy?: 'public' | 'unlisted' | 'private'
 }
 
 export interface SimklConnectionStatus {
@@ -70,11 +81,14 @@ export interface SimklWatchlistItem {
   malId?: number
   poster?: string
   backdrop?: string
+  overview?: string
   status: SimklWatchStatus
   addedAt?: string
   watchedAt?: string
   watchedEpisodes?: SimklEpisode[]
   userRating?: number
+  watchedEpisodesCount?: number
+  totalEpisodesCount?: number
 }
 
 export interface SimklMapping {
@@ -100,6 +114,12 @@ export interface SimklEpisode {
   season: number
   episode: number
   watchedAt?: string
+  /**
+   * Simkl's native anime season numbering can differ from TVDB's. The
+   * `full_anime_seasons` history response includes this canonical mapping.
+   */
+  tvdbSeason?: number
+  tvdbEpisode?: number
 }
 
 export interface SimklShow {
@@ -120,6 +140,7 @@ export interface SimklShow {
 export interface SimklApiItem {
   movie?: SimklApiMediaItem
   show?: SimklApiMediaItem
+  tv?: SimklApiMediaItem
   anime?: SimklApiMediaItem
   last_watched_at?: string
   watched_episodes_count?: number
@@ -142,6 +163,8 @@ export interface SimklApiMediaItem {
   }
   poster?: string
   fanart?: string
+  overview?: string
+  description?: string
 }
 
 // ─── Scrobble types ────────────────────────────────────────────────────────────

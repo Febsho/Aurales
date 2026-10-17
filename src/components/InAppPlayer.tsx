@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import type { SubtitleResult } from '../types'
-import { formatTime } from '../services/player'
+import { formatTime, openRouterChat, shouldMarkWatched } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -10,18 +11,28 @@ import {
   scrobbleStop as traktScrobbleStop,
   buildMovieScrobble,
   buildEpisodeScrobble,
-  buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
-import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
+import { saveAniListProgressMapped } from '../services/anilist'
+import { lookupTmdbId, savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
+import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
+import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
+import { withRequestTimeout } from '../services/network/timeout'
+import { readBoundedResponseText } from '../services/network/boundedResponse'
 import {
   play as wtPlay,
   pause as wtPause,
   seek as wtSeek,
+  reportLocalPlayback as wtReportLocalPlayback,
+  clearLocalPlayback as wtClearLocalPlayback,
   sendBuffering as wtSendBuffering,
-  sendSyncState as wtSendSyncState,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
+import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
+import { recordPlaybackSample } from '../services/viewingActivity'
+import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
+import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 
 interface InAppPlayerProps {
   url: string
@@ -34,11 +45,17 @@ interface InAppPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
+  onPlaybackError?: (message: string, positionSeconds?: number) => void
+  onPlaybackStarted?: () => void
+  onReportBad?: () => void
+  onNextEpisode?: (season: number, episode: number) => void
+  nextEpisodeHint?: { season: number; episode: number }
 }
 
 interface AudioTrackInfo {
   id: string
   label: string
+  language?: string
   index: number
   enabled: boolean
 }
@@ -48,6 +65,33 @@ interface PreparedSubtitle {
   url: string
   lang: string
   label: string
+  forced: boolean
+}
+
+const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
+
+async function readSubtitleText(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Subtitle response has no readable body')
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_SUBTITLE_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('Subtitle exceeded the 10 MiB limit')
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }
 
 function srtToVtt(input: string): string {
@@ -55,10 +99,123 @@ function srtToVtt(input: string): string {
   return normalized.trimStart().startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother }: InAppPlayerProps) {
+async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?: number; season?: number; episode?: number }> {
+  const tmdbId = item.tmdbId
+  if (!item.isAnime || item.contentType !== 'series' || item.tvdbId == null || item.season == null || item.episode == null) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+
+  try {
+    const { mapTvdbEpisodeToAnimeProviders, shouldFlattenPmdbAnimeEpisodes } = await import('../services/animeLists')
+    const mapped = await mapTvdbEpisodeToAnimeProviders(item.tvdbId, item.season, item.episode)
+    if (!mapped?.tmdbId) return { tmdbId, season: item.season, episode: item.episode }
+    return await shouldFlattenPmdbAnimeEpisodes(item.tvdbId, mapped.tmdbId)
+      ? { tmdbId: mapped.tmdbId, season: 1, episode: mapped.episode }
+      : { tmdbId: mapped.tmdbId, season: mapped.season, episode: mapped.episode }
+  } catch (_) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+}
+
+async function fetchSubtitleText(url: string, signal?: AbortSignal): Promise<string> {
+  const controller = new AbortController()
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+  const timeout = window.setTimeout(() => {
+    controller.abort(new DOMException('Subtitle request timed out', 'TimeoutError'))
+  }, 15_000)
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    if (response.ok) return await readSubtitleText(response)
+  } catch (_) { /* use the native HTTP fallback below */ }
+  finally {
+    window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', onAbort)
+  }
+  if (signal?.aborted) throw signal.reason || new DOMException('Subtitle request cancelled', 'AbortError')
+  if ((window as any).__TAURI_INTERNALS__) return await invoke<string>('http_get_text', { url })
+  throw new Error('Could not fetch source subtitle content')
+}
+
+async function requestSubtitleTranslation(apiKey: string, model: string, content: string, language: string): Promise<string> {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const blocks = normalized.split(/\n{2,}/)
+  const cues = blocks.map((block, blockIndex) => {
+    const lines = block.split('\n')
+    const timelineIndex = lines.findIndex((line) => line.includes('-->'))
+    return timelineIndex < 0 ? null : {
+      blockIndex,
+      lines,
+      timelineIndex,
+      text: lines.slice(timelineIndex + 1).join('\n').trim(),
+    }
+  }).filter((cue): cue is NonNullable<typeof cue> => Boolean(cue?.text))
+
+  if (cues.length === 0) throw new Error('No subtitle cues were found in this track')
+
+  for (let offset = 0; offset < cues.length; offset += 30) {
+    const batch = cues.slice(offset, offset + 30)
+    const requestBody = {
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content: `Translate subtitle dialogue into natural ${language}. Return only a valid JSON array of translated strings in the same order and with exactly the same number of items. Preserve line breaks and simple formatting tags. Do not include timestamps, explanations, or markdown fences.`,
+        },
+        { role: 'user', content: JSON.stringify(batch.map((cue) => cue.text)) },
+      ],
+    }
+
+    let raw: string
+    if ((window as any).__TAURI_INTERNALS__) {
+      raw = await openRouterChat(apiKey, requestBody)
+    } else {
+      raw = await withRequestTimeout(30_000, async (signal) => {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'X-Title': 'Aurales Media Player' },
+          body: JSON.stringify(requestBody),
+          signal,
+        })
+        if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
+        return readBoundedResponseText(response, 16 * 1024 * 1024, 'OpenRouter response')
+      }, 'Subtitle translation request timed out')
+    }
+
+    const payload = JSON.parse(raw)
+    const answer = String(payload.choices?.[0]?.message?.content || '').trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+    const arrayStart = answer.indexOf('[')
+    const arrayEnd = answer.lastIndexOf(']')
+    const translated = JSON.parse(arrayStart >= 0 && arrayEnd > arrayStart ? answer.slice(arrayStart, arrayEnd + 1) : answer)
+    if (!Array.isArray(translated) || translated.length !== batch.length || translated.some((item) => typeof item !== 'string')) {
+      throw new Error('The translation model returned an invalid subtitle batch')
+    }
+
+    batch.forEach((cue, index) => {
+      blocks[cue.blockIndex] = [...cue.lines.slice(0, cue.timelineIndex + 1), translated[index]].join('\n')
+    })
+  }
+
+  return blocks.join('\n\n')
+}
+
+export default function InAppPlayer({ url, title, subtitle, subtitles = [], playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
+  useEffect(() => {
+    setRequestPlaybackActive(true)
+    return () => setRequestPlaybackActive(false)
+  }, [])
   const videoRef = useRef<HTMLVideoElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedTimeRef = useRef(0)
+  const lastAniListPlaybackSaveRef = useRef(0)
+  const lastPmdbPlaybackSaveRef = useRef(0)
+  const playbackStartedRef = useRef(false)
+  const playbackRunRef = useRef(0)
+  const translatedSubtitleUrlsRef = useRef<Set<string>>(new Set())
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -66,12 +223,71 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [controlsVisible, setControlsVisible] = useState(true)
+  const [nextEpisode, setNextEpisode] = useState<NextEpInfo | null>(null)
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
+  const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const changePlaybackSpeed = (speed: number) => {
+    setPlaybackSpeed(speed)
+    setShowSpeedMenu(false)
+    if (videoRef.current) videoRef.current.playbackRate = speed
+  }
+
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
+  const scrobblePmdb = useAppStore((s) => s.scrobblePmdb)
+  const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
+  const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
+  const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
+  const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
+  const canSkipEpisode = Boolean(onNextEpisode)
+  const nextEpisodeHintSeason = nextEpisodeHint?.season
+  const nextEpisodeHintEpisode = nextEpisodeHint?.episode
+
+  useEffect(() => {
+    if (!canSkipEpisode || playbackItem?.contentType !== 'series' || playbackItem.season == null || playbackItem.episode == null) return
+    let cancelled = false
+    const hintedEpisode = nextEpisodeHintEpisode == null
+      ? null
+      : { season: nextEpisodeHintSeason!, episode: nextEpisodeHintEpisode, title: `Episode ${nextEpisodeHintEpisode}` }
+    setNextEpisode(hintedEpisode)
+    void (async () => {
+      let tmdbId = playbackItem.tmdbId
+      if (!tmdbId && playbackItem.imdbId) {
+        try { tmdbId = (await lookupTmdbId('imdb', playbackItem.imdbId))?.tmdbId } catch (_) { /* No verified next episode. */ }
+      }
+      if (!tmdbId || cancelled) return
+      const next = await fetchNextEpisodeFromTmdb(tmdbId, playbackItem.season!, playbackItem.episode! + 1)
+      if (!cancelled) setNextEpisode(next || hintedEpisode)
+    })()
+    return () => { cancelled = true }
+  }, [canSkipEpisode, playbackItem?.tmdbId, playbackItem?.imdbId, playbackItem?.contentType, playbackItem?.season, playbackItem?.episode, nextEpisodeHintSeason, nextEpisodeHintEpisode])
+
+  // This player is portaled next to #root. Hide the application shell while it
+  // is active so top navigation, search affordances, and window-level controls
+  // cannot render above the fallback player on systems without X11/XWayland.
+  useLayoutEffect(() => {
+    const root = document.getElementById('root')
+    document.documentElement.classList.add('full-player-active')
+    if (root) {
+      root.style.visibility = 'hidden'
+      root.style.pointerEvents = 'none'
+    }
+    return () => {
+      document.documentElement.classList.remove('full-player-active')
+      if (root) {
+        root.style.visibility = ''
+        root.style.pointerEvents = ''
+      }
+    }
+  }, [])
 
   const [showTranslateModal, setShowTranslateModal] = useState(false)
   const [translatingSub, setTranslatingSub] = useState(false)
@@ -80,7 +296,84 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
   const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
   const openrouterModel = useAppStore((s) => s.openrouterModel)
 
+  const sendMdblistScrobble = (action: 'start' | 'pause' | 'stop', progress: number) => {
+    if (!playbackItem || !mdblistApiKey) return
+    const progressPct = Math.round(progress * 10000) / 100
+    const effectiveAction = mdblistPlaybackAction(action, progressPct, scrobbleMdblistEnabled, mdblistSaveResumePosition)
+    if (!effectiveAction) return
+    scrobbleMdblist(
+      effectiveAction,
+      playbackItem.tmdbId,
+      playbackItem.contentType === 'movie' ? 'movie' : 'series',
+      progressPct,
+      playbackItem.season,
+      playbackItem.episode,
+      playbackItem.imdbId,
+      playbackItem.tvdbId
+    ).then(() => {
+      if (scrobbleMdblistEnabled && !mdblistSaveResumePosition && progressPct < 80 && action !== 'start') {
+        return scrobbleMdblist('clear', playbackItem.tmdbId,
+          playbackItem.contentType === 'movie' ? 'movie' : 'series', progressPct,
+          playbackItem.season, playbackItem.episode, playbackItem.imdbId, playbackItem.tvdbId)
+      }
+    }).catch(() => {})
+  }
+
+  // Playback startup is keyed only by URL so changing provider preferences or
+  // callbacks does not reload the video. Keep those inputs fresh for delayed
+  // play/error handlers instead of closing over the first render.
+  const playbackStartupRef = useRef({
+    playbackItem,
+    startTime,
+    volume,
+    scrobbleSimkl,
+    scrobbleTrakt,
+    onPlaybackError,
+    sendMdblistScrobble,
+  })
+  playbackStartupRef.current = {
+    playbackItem,
+    startTime,
+    volume,
+    scrobbleSimkl,
+    scrobbleTrakt,
+    onPlaybackError,
+    sendMdblistScrobble,
+  }
+
+  const saveAniListScrobble = (progress: number) => {
+    if (!playbackItem || !scrobbleAnilist || !playbackItem.isAnime) return
+    saveAniListProgressMapped(playbackItem, progress).catch(() => {})
+  }
+
+  // The primary progress provider controls the UI source only. Every enabled
+  // account keeps receiving playback state, including PMDB in the WebView
+  // fallback player (which previously lagged behind the native player).
+  const syncPmdbPlayback = (time: number, dur: number, allowScrobble = false) => {
+    if (!playbackItem || !pmdbApiKey || dur <= 0) return
+    const progress = time / dur
+    const mediaType = playbackItem.contentType === 'series' ? 'tv' : 'movie'
+    resolvePmdbPlaybackEpisode(playbackItem).then((target) => {
+      if (allowScrobble && scrobblePmdb && target.tmdbId && progress >= 0.9 && dur >= 180) {
+        return scrobblePMDB(target.tmdbId, mediaType, target.season, target.episode)
+      }
+      if (pmdbSaveResumePosition) {
+        return savePMDBPlaybackProgress(
+          target.tmdbId,
+          mediaType,
+          target.season,
+          target.episode,
+          Math.floor(time * 1000),
+          Math.floor(dur * 1000),
+          playbackItem.imdbId,
+        ).then(() => undefined)
+      }
+    }).catch(() => {})
+  }
+
   const handleTranslateSubtitle = async (langCode: string, langName: string) => {
+    const playbackRun = playbackRunRef.current
+    const isCurrentRun = () => playbackRun === playbackRunRef.current
     if (selectedSubtitle === 'off') return
     const trackIdx = Number(selectedSubtitle)
     const track = preparedSubtitles[trackIdx]
@@ -89,56 +382,26 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = [], play
     setTranslatingSub(true)
     setTranslationError('')
     try {
-      const res = await fetch(track.url)
-      if (!res.ok) throw new Error('Could not fetch source subtitle content')
-      const text = await res.text()
+      const text = await fetchSubtitleText(track.url)
+      if (!isCurrentRun()) return
 
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${openrouterApiKey}`,
-          'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-          'X-Title': 'Aurales Media Player',
-        },
-        body: JSON.stringify({
-          model: openrouterModel || 'google/gemini-2.5-flash',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an expert subtitle translator. You are translating a WebVTT or SRT subtitle file into ${langName}.
-             
-IMPORTANT RULES:
-1. Translate all dialogue lines into natural, fluent ${langName}, preserving emotional tone and character context.
-2. Keep all WebVTT/SRT timing formatting, timestamps, cue IDs, and metadata structure EXACTLY identical.
-3. Do NOT translate timestamps, numbers, or technical keys.
-4. Output ONLY the translated file content. Do NOT wrap output in markdown blocks (like \`\`\`vtt or \`\`\`srt). Do not include any explanations, warnings, or intro/outro text.`
-            },
-            {
-              role: 'user',
-              content: text
-            }
-          ]
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`)
-      }
-
-      const data = await response.json()
-      let translatedText = data.choices?.[0]?.message?.content || ''
-      if (!translatedText) throw new Error('Received empty translation response')
-
-      translatedText = translatedText.replace(/```(vtt|srt|webvtt)?/gi, '').replace(/```/g, '').trim()
+      const translatedText = await requestSubtitleTranslation(
+        openrouterApiKey,
+        openrouterModel || 'google/gemini-2.5-flash',
+        text,
+        langName,
+      )
+      if (!isCurrentRun()) return
 
       const blob = new Blob([srtToVtt(translatedText)], { type: 'text/vtt' })
       const objectUrl = URL.createObjectURL(blob)
+      translatedSubtitleUrlsRef.current.add(objectUrl)
 
       const newTrack: PreparedSubtitle = {
         id: `ai-translated-${langCode}-${Date.now()}`,
         url: objectUrl,
         lang: langCode,
+        forced: false,
         label: `✨ AI Translated (${langName})`
       }
 
@@ -149,6 +412,7 @@ IMPORTANT RULES:
       if (videoRef.current) {
         const video = videoRef.current
         setTimeout(() => {
+          if (!isCurrentRun()) return
           Array.from(video.textTracks).forEach((t, idx) => {
             t.mode = idx === newIndex ? 'showing' : 'disabled'
           })
@@ -157,10 +421,11 @@ IMPORTANT RULES:
 
       setShowTranslateModal(false)
     } catch (err: any) {
+      if (!isCurrentRun()) return
       console.error('AI Subtitle Translation error:', err)
       setTranslationError(err?.message || 'Translation failed')
     } finally {
-      setTranslatingSub(false)
+      if (isCurrentRun()) setTranslatingSub(false)
     }
   }
 
@@ -171,11 +436,11 @@ IMPORTANT RULES:
       : playbackItem.localId
 
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
-    const isCompleted = completedFlag || progressPct >= 85
+    const isCompleted = completedFlag || shouldMarkWatched(progressPct)
 
     useAppStore.getState().setWatchProgress(key, {
       id: key,
-      mediaType: playbackItem.mediaType === 'show' ? 'series' : playbackItem.mediaType,
+      mediaType: playbackItem.contentType === 'series' ? (playbackItem.mediaType === 'anime' ? 'anime' : 'series') : 'movie',
       mediaId: playbackItem.localId,
       title: playbackItem.title,
       poster,
@@ -186,6 +451,10 @@ IMPORTANT RULES:
       durationSeconds: Math.floor(dur),
       completed: isCompleted,
       updatedAt: new Date().toISOString(),
+      imdbId: playbackItem.imdbId,
+      tmdbId: playbackItem.tmdbId,
+      malId: playbackItem.malId,
+      anilistId: playbackItem.anilistId,
     })
   }
 
@@ -193,7 +462,7 @@ IMPORTANT RULES:
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     hideTimerRef.current = setTimeout(() => {
-      if (!videoRef.current?.paused) setControlsVisible(false)
+      setControlsVisible(false)
     }, 2600)
   }
 
@@ -207,71 +476,165 @@ IMPORTANT RULES:
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
+    const translatedSubtitleUrls = translatedSubtitleUrlsRef.current
+    const playbackRun = ++playbackRunRef.current
+    const isCurrentRun = () => playbackRun === playbackRunRef.current
     setLoading(true)
     setError('')
+    setTranslatingSub(false)
+    setTranslationError('')
     setPaused(false)
-    video.volume = volume
+    playbackStartedRef.current = false
+    lastAniListPlaybackSaveRef.current = 0
+    lastPmdbPlaybackSaveRef.current = 0
+    video.volume = playbackStartupRef.current.volume
     video.muted = false
     video.load()
     const playTimer = setTimeout(() => {
+      if (!isCurrentRun()) return
       video.play().then(() => {
+        if (!isCurrentRun()) return
+        const startup = playbackStartupRef.current
         setPaused(false)
-        if (startTime && startTime > 0) {
-          video.currentTime = startTime
+        if (startup.startTime && startup.startTime > 0) {
+          video.currentTime = startup.startTime
         }
-        if (playbackItem) {
-          const startProgress = startTime && video.duration > 0 ? startTime / video.duration : 0
-          if (scrobbleSimkl) {
-            onSimklPlaybackStart(playbackItem, startProgress).catch(() => {})
+        if (startup.playbackItem) {
+          const startProgress = startup.startTime && video.duration > 0 ? startup.startTime / video.duration : 0
+          if (startup.scrobbleSimkl) {
+            onSimklPlaybackStart(startup.playbackItem, startProgress).catch(() => {})
           }
-          if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
+          if (startup.scrobbleTrakt && isTraktAuthenticated() && startup.playbackItem.imdbId) {
             const startProgressPct = Math.round(startProgress * 10000) / 100
-            const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
-              ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, startProgressPct)
-              : buildMovieScrobble(playbackItem.imdbId, startProgressPct)
+            const traktPayload = startup.playbackItem.contentType === 'series' && startup.playbackItem.season != null && startup.playbackItem.episode != null
+              ? buildEpisodeScrobble(startup.playbackItem.imdbId, startup.playbackItem.season, startup.playbackItem.episode, startProgressPct)
+              : buildMovieScrobble(startup.playbackItem.imdbId, startProgressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
           }
+          startup.sendMdblistScrobble('start', startProgress)
         }
-      }).catch(() => setPaused(true))
+      }).catch(() => {
+        if (!isCurrentRun()) return
+        const message = 'The embedded WebView player could not start this stream.'
+        setPaused(true)
+        setError(message)
+        playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
+      })
     }, 50)
-    return () => clearTimeout(playTimer)
+    const startupTimer = setTimeout(() => {
+      if (!isCurrentRun() || playbackStartedRef.current) return
+      const message = 'The embedded WebView player did not receive a playable video frame. Trying another stream…'
+      setLoading(false)
+      setPaused(true)
+      setError(message)
+      playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
+    }, 15_000)
+    return () => {
+      // Effects clean up before the next URL run starts; invalidate this run
+      // without consulting a mutable ref value from the cleanup closure.
+      playbackRunRef.current = playbackRun + 1
+      clearTimeout(playTimer)
+      clearTimeout(startupTimer)
+      for (const objectUrl of translatedSubtitleUrls) URL.revokeObjectURL(objectUrl)
+      translatedSubtitleUrls.clear()
+    }
   }, [url])
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     const objectUrls: string[] = []
-
-    Promise.all(subtitles.map(async (track, index): Promise<PreparedSubtitle> => {
+    const prepared = new Array<PreparedSubtitle>(subtitles.length)
+    let cursor = 0
+    const loadWorker = async () => {
+      while (!cancelled) {
+        const index = cursor++
+        if (index >= subtitles.length) return
+        const track = subtitles[index]
       const fallback = {
         id: track.id || `sub-${index}`,
         url: track.url,
         lang: track.lang || 'und',
-        label: track.label || track.lang || `Subtitle ${index + 1}`,
+        label: `${getLanguageNameFromTrack(track.lang)} · ${track.source === 'addon' ? (track.addonName || 'Addon') : 'Stream'}`,
+        forced: /\bforced\b/i.test(track.label || ''),
       }
 
       try {
-        const res = await fetch(track.url)
-        if (!res.ok) return fallback
-        const text = await res.text()
+        const text = await fetchSubtitleText(track.url, controller.signal)
+        if (cancelled) {
+          prepared[index] = fallback
+          continue
+        }
         const blob = new Blob([srtToVtt(text)], { type: 'text/vtt' })
         const objectUrl = URL.createObjectURL(blob)
         objectUrls.push(objectUrl)
-        return { ...fallback, url: objectUrl }
-      } catch {
-        return fallback
+        prepared[index] = { ...fallback, url: objectUrl }
+      } catch (_) {
+        prepared[index] = fallback
       }
-    })).then((tracks) => {
-      if (!cancelled) setPreparedSubtitles(tracks)
+      }
+    }
+
+    void Promise.all(Array.from({ length: Math.min(4, subtitles.length) }, loadWorker)).then(() => {
+      if (!cancelled) setPreparedSubtitles(prepared)
     })
 
     return () => {
       cancelled = true
+      controller.abort()
       objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl))
     }
   }, [subtitles])
 
+  // ── Auto-select subtitle track by language priority ──
+  useEffect(() => {
+    let cancelled = false
+    let selectionTimer: ReturnType<typeof setTimeout> | undefined
+    const { preferredSubtitles: preferredSubs = ['en'], subtitleMode, preferSdhSubtitles } = useAppStore.getState()
+    if (preparedSubtitles.length === 0) return
+    const selectedAudioTrack = audioTracks.find((track) => String(track.index) === selectedAudio)
+    const selection = selectStartupSubtitle({
+      tracks: preparedSubtitles.map((track, index) => ({ ...track, index })),
+      preferred: preferredSubs,
+      preferSdh: preferSdhSubtitles,
+      mode: subtitleMode,
+      selectedAudioLanguage: selectedAudioTrack?.language,
+      normalize: getLanguageCodeFromTrack,
+    })
+    if (selection.kind === 'off') {
+      setSelectedSubtitle('off')
+      if (videoRef.current) Array.from(videoRef.current.textTracks).forEach((track) => { track.mode = 'disabled' })
+      return
+    }
+    if (selection.kind === 'track') {
+      const bestIdx = selection.track.index
+      setSelectedSubtitle(String(bestIdx))
+      if (videoRef.current) {
+        selectionTimer = setTimeout(() => {
+          if (cancelled || !videoRef.current) return
+          Array.from(videoRef.current.textTracks).forEach((t, idx) => {
+            t.mode = idx === bestIdx ? 'showing' : 'disabled'
+          })
+        }, 100)
+      }
+    }
+    return () => {
+      cancelled = true
+      if (selectionTimer) clearTimeout(selectionTimer)
+    }
+  }, [audioTracks, preparedSubtitles, selectedAudio])
+
   // ── Watch Together sync ───────────────────────────────────────────────────
   const wtIgnoreNextEvent = useRef(false)
+  const wtIgnoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressNextWatchTogetherEvent = () => {
+    wtIgnoreNextEvent.current = true
+    if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+    wtIgnoreTimerRef.current = setTimeout(() => {
+      wtIgnoreNextEvent.current = false
+      wtIgnoreTimerRef.current = null
+    }, 750)
+  }
 
   useEffect(() => {
     const wtState = useWatchTogetherStore.getState()
@@ -280,37 +643,54 @@ IMPORTANT RULES:
     resetDriftState()
 
     const onSyncRequest = (e: Event) => {
-      const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number }
+      const { time, isPlaying, sequence } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number; sequence?: number }
       const video = videoRef.current
       if (!video) return
 
       const { driftThreshold } = useWatchTogetherStore.getState()
       const { shouldSeek, targetTime } = shouldCorrectDrift(
         video.currentTime,
-        { currentTime: time, isPlaying, lastUpdatedAt: Date.now() },
+        { currentTime: time, isPlaying, lastUpdatedAt: (e as CustomEvent).detail.sentAt },
         driftThreshold,
-        3000,
+        1000,
       )
 
       if (shouldSeek) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
         video.currentTime = targetTime
         markCorrectionApplied()
       }
 
       if (isPlaying && video.paused) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
+        setPaused(false)
+        wtReportLocalPlayback(video.currentTime, true)
         video.play().catch(() => {})
       } else if (!isPlaying && !video.paused) {
-        wtIgnoreNextEvent.current = true
+        suppressNextWatchTogetherEvent()
+        setPaused(true)
+        wtReportLocalPlayback(video.currentTime, false)
         video.pause()
       }
+      if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
     }
 
     window.addEventListener('wt:sync_request', onSyncRequest)
+
+    // Feed the live position to the watch-together sync loop so the host
+    // broadcasts real progress instead of the last event timestamp.
+    const reportTimer = setInterval(() => {
+      const video = videoRef.current
+      if (!video || !useWatchTogetherStore.getState().currentRoom) return
+      wtReportLocalPlayback(video.currentTime, !video.paused)
+    }, 250)
+
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)
+      if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+      clearInterval(reportTimer)
       resetDriftState()
+      wtClearLocalPlayback()
     }
   }, [])
 
@@ -318,7 +698,7 @@ IMPORTANT RULES:
     const video = videoRef.current
     const wt = useWatchTogetherStore.getState()
     if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    if (wtIgnoreNextEvent.current) return
     wtPlay(video.currentTime)
   }
 
@@ -326,16 +706,8 @@ IMPORTANT RULES:
     const video = videoRef.current
     const wt = useWatchTogetherStore.getState()
     if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
+    if (wtIgnoreNextEvent.current) return
     wtPause(video.currentTime)
-  }
-
-  const wtSendSeek = () => {
-    const video = videoRef.current
-    const wt = useWatchTogetherStore.getState()
-    if (!video || !wt.currentRoom) return
-    if (wtIgnoreNextEvent.current) { wtIgnoreNextEvent.current = false; return }
-    wtSeek(video.currentTime)
   }
 
   const refreshAudioTracks = () => {
@@ -348,7 +720,8 @@ IMPORTANT RULES:
 
     const next = Array.from(tracks).map((track, index) => ({
       id: track.id || String(index),
-      label: track.label || track.language || `Audio ${index + 1}`,
+      label: track.label || getLanguageNameFromTrack(track.language) || `Audio ${index + 1}`,
+      language: track.language,
       index,
       enabled: track.enabled,
     }))
@@ -356,6 +729,20 @@ IMPORTANT RULES:
       tracks[0].enabled = true
       next[0].enabled = true
     }
+
+    // Auto-select audio by language priority
+    const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
+    const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+    const bestIdx = selectPreferredLanguageTrack(
+      Array.from(tracks).map((track, index) => ({ lang: track.language, index })),
+      audioPreferences,
+      getLanguageCodeFromTrack,
+    )?.index ?? -1
+    if (bestIdx !== -1) {
+      Array.from(tracks).forEach((t, idx) => { t.enabled = idx === bestIdx })
+      next.forEach((t, idx) => { t.enabled = idx === bestIdx })
+    }
+
     setAudioTracks(next)
     setSelectedAudio(String(next.find((track) => track.enabled)?.index ?? 0))
   }
@@ -377,11 +764,12 @@ IMPORTANT RULES:
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
             const progressPct = Math.round(progress * 10000) / 100
-            const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+            const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
               : buildMovieScrobble(playbackItem.imdbId, progressPct)
             traktScrobbleStart(traktPayload).catch(() => {})
           }
+          sendMdblistScrobble('start', progress)
         }
       }).catch(() => {
         setError('The embedded WebView player could not start this stream. Pick another stream if this does not retry.')
@@ -398,11 +786,12 @@ IMPORTANT RULES:
         }
         if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
           const progressPct = Math.round(progress * 10000) / 100
-          const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+          const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
             ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
             : buildMovieScrobble(playbackItem.imdbId, progressPct)
           traktScrobblePause(traktPayload).catch(() => {})
         }
+        sendMdblistScrobble('pause', progress)
       }
     }
   }
@@ -414,19 +803,21 @@ IMPORTANT RULES:
       const cur = video ? video.currentTime : 0
       const dur = video ? video.duration || 0 : 0
       saveLocalProgress(cur, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
           : buildMovieScrobble(playbackItem.imdbId, progressPct)
         traktScrobbleStop(traktPayload).catch(() => {})
       }
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
+      }
+      saveAniListScrobble(progress)
+      syncPmdbPlayback(cur, dur, true)
+      sendMdblistScrobble('stop', progress)
+      if (progress >= 0.8) {
+        import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
       }
     }
     onClose()
@@ -439,19 +830,21 @@ IMPORTANT RULES:
       const cur = video ? video.currentTime : 0
       const dur = video ? video.duration || 0 : 0
       saveLocalProgress(cur, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
         const progressPct = Math.round(progress * 10000) / 100
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, progressPct)
           : buildMovieScrobble(playbackItem.imdbId, progressPct)
         traktScrobbleStop(traktPayload).catch(() => {})
       }
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
+      }
+      saveAniListScrobble(progress)
+      syncPmdbPlayback(cur, dur, true)
+      sendMdblistScrobble('stop', progress)
+      if (progress >= 0.8) {
+        import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
       }
     }
     onPickAnother()
@@ -460,33 +853,50 @@ IMPORTANT RULES:
   const handleEnded = () => {
     if (playbackItem) {
       const dur = videoRef.current ? videoRef.current.duration || 0 : 0
+      recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: dur, durationSeconds: dur, playing: false, completed: true })
       saveLocalProgress(dur, dur, true)
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, 1).catch(() => {})
       }
       if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
-        const traktPayload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+        const traktPayload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
           ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, 100)
           : buildMovieScrobble(playbackItem.imdbId, 100)
         traktScrobbleStop(traktPayload).catch(() => {})
       }
+      saveAniListScrobble(1)
+      syncPmdbPlayback(dur, dur, true)
+      sendMdblistScrobble('stop', 1)
+      import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
     }
   }
 
   const seekBy = (seconds: number) => {
     const video = videoRef.current
     if (!video) return
-    video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds))
+    const targetTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds))
+    video.currentTime = targetTime
     showControlsTemporarily()
-    wtSendSeek()
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) wtSeek(targetTime)
   }
 
   const seekTo = (value: string) => {
     const video = videoRef.current
     if (!video) return
-    video.currentTime = Number(value)
+    const targetTime = Number(value)
+    video.currentTime = targetTime
     showControlsTemporarily()
-    wtSendSeek()
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) wtSeek(targetTime)
+  }
+
+  const seekFromTimelinePointer = (clientX: number, track: HTMLElement) => {
+    if (!Number.isFinite(duration) || duration <= 0) return
+    const bounds = track.getBoundingClientRect()
+    if (bounds.width <= 0) return
+    const progress = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width))
+    seekTo(String(progress * duration))
   }
 
   const changeVolume = (value: string) => {
@@ -523,15 +933,24 @@ IMPORTANT RULES:
 
   const handleTimeUpdate = (time: number, dur: number) => {
     setCurrentTime(time)
-    if (Math.abs(time - lastSavedTimeRef.current) >= 2) {
+    if (playbackItem) recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: time, durationSeconds: dur, playing: !videoRef.current?.paused, completed: dur > 0 && time / dur >= 0.85 })
+    if (Math.abs(time - lastSavedTimeRef.current) >= 15) {
       lastSavedTimeRef.current = time
       saveLocalProgress(time, dur, false)
+    }
+    if (playbackItem && scrobbleAnilist && playbackItem.isAnime && dur > 0 && time - lastAniListPlaybackSaveRef.current >= 60) {
+      lastAniListPlaybackSaveRef.current = time
+      saveAniListProgressMapped(playbackItem, time / dur).catch(() => {})
+    }
+    if (time - lastPmdbPlaybackSaveRef.current >= 60) {
+      lastPmdbPlaybackSaveRef.current = time
+      syncPmdbPlayback(time, dur)
     }
   }
 
   return (
     <div
-      className={`fixed inset-0 z-[60] bg-black text-white ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
+      className={`fixed inset-0 z-[10000] bg-black text-white ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
       onMouseMove={showControlsTemporarily}
       onClick={showControlsTemporarily}
     >
@@ -542,14 +961,21 @@ IMPORTANT RULES:
         playsInline
         autoPlay
         onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
-        onPause={() => { setPaused(true); setControlsVisible(true); wtSendPause() }}
+        onPause={() => { setPaused(true); showControlsTemporarily(); wtSendPause() }}
         onWaiting={() => { setLoading(true); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
           setLoading(false)
-          const video = videoRef.current
-          if (video?.paused) video.play().catch(() => setPaused(true))
         }}
-        onPlaying={() => { setLoading(false); setPaused(false); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0) }}
+        onPlaying={() => {
+          setLoading(false)
+          setPaused(false)
+          if (!playbackStartedRef.current) {
+            playbackStartedRef.current = true
+            onPlaybackStarted?.()
+          }
+          const wt = useWatchTogetherStore.getState()
+          if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0)
+        }}
         onTimeUpdate={(event) => handleTimeUpdate(event.currentTarget.currentTime, event.currentTarget.duration || 0)}
         onLoadedMetadata={(event) => {
           setDuration(event.currentTarget.duration || 0)
@@ -560,8 +986,10 @@ IMPORTANT RULES:
         }}
         onEnded={handleEnded}
         onError={() => {
+          const message = 'This stream could not be played by the embedded WebView player. Pick another stream or use a direct HTTP/HLS source.'
           setLoading(false)
-          setError('This stream could not be played by the embedded WebView player. Pick another stream or use a direct HTTP/HLS source.')
+          setError(message)
+          onPlaybackError?.(message, videoRef.current?.currentTime)
         }}
       >
         <source src={url} />
@@ -575,6 +1003,11 @@ IMPORTANT RULES:
           />
         ))}
       </video>
+
+      {/* Watch Together overlays */}
+      {isInWatchTogether && (
+        <PlayerChatOverlay visible={controlsVisible} onInteraction={showControlsTemporarily} />
+      )}
 
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -604,7 +1037,7 @@ IMPORTANT RULES:
 
         <div className="text-right">
           <h2 className="font-bold text-lg">{title}</h2>
-          {subtitle && <p className="text-xs text-white/55 uppercase tracking-[0.2em]">{subtitle}</p>}
+          {subtitle && <p className="text-xs text-white/60 uppercase tracking-[0.2em]">{subtitle}</p>}
         </div>
       </div>
 
@@ -616,26 +1049,84 @@ IMPORTANT RULES:
 
       <div className={`absolute inset-x-0 bottom-0 p-7 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
         <div className="flex items-center gap-3 text-xs text-white/70 mb-4">
-          <span>{formatTime(currentTime)}</span>
-          <input type="range" min="0" max={duration || 0} value={currentTime} onChange={(event) => seekTo(event.target.value)} className="w-full accent-white" />
-          <span>{duration ? formatTime(duration) : '--:--'}</span>
+          <span className="tabular-nums">{formatTime(currentTime)}</span>
+          <div
+            className="relative flex-1 h-1.5 group cursor-pointer transition-[height] duration-150 hover:h-2.5"
+            onPointerDown={(event) => seekFromTimelinePointer(event.clientX, event.currentTarget)}
+          >
+            <div className="pointer-events-none absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
+            <div className="pointer-events-none absolute inset-y-0 left-0 rounded-full bg-white/90" style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }} />
+            <div
+              className="pointer-events-none absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ left: `calc(${duration > 0 ? (currentTime / duration) * 100 : 0}% - 6px)` }}
+            />
+            <input type="range" min="0" max={duration || 0} step="0.1" value={currentTime} onChange={(event) => seekTo(event.target.value)} className="absolute inset-0 z-10 w-full h-6 -top-2.5 opacity-0 cursor-pointer" />
+          </div>
+          <span className="tabular-nums">{duration ? formatTime(duration) : '--:--'}</span>
         </div>
 
         <div className="flex items-center justify-between gap-6">
           <div className="flex items-center gap-4">
-            <button onClick={() => seekBy(-10)} className="text-white/75 hover:text-white">-10</button>
-            <button onClick={togglePlay} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center">
+            <button onClick={() => seekBy(-10)} title="Back 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
+            <button onClick={togglePlay} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors">
               {paused ? (
-                <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                <svg className="w-7 h-7 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
               ) : (
                 <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
               )}
             </button>
-            <button onClick={() => seekBy(10)} className="text-white/75 hover:text-white">+10</button>
+            <button onClick={() => seekBy(10)} title="Forward 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
+                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
+              </svg>
+            </button>
+            {nextEpisode && onNextEpisode && !isInWatchTogether && (
+              <button
+                type="button"
+                onClick={() => { handleClose(); onNextEpisode(nextEpisode.season, nextEpisode.episode) }}
+                aria-label={`Skip to next episode, season ${nextEpisode.season} episode ${nextEpisode.episode}`}
+                title={`Next episode · S${nextEpisode.season} E${nextEpisode.episode}`}
+                className="grid h-8 w-8 place-items-center rounded-full bg-white/10 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+              >
+                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
+              </button>
+            )}
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="relative">
+              {showSpeedMenu && (
+                <div className="absolute bottom-full mb-2 left-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
+                  {SPEED_OPTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => changePlaybackSpeed(s)}
+                      className={`w-full px-4 py-1.5 text-xs font-semibold text-left transition-colors ${
+                        playbackSpeed === s ? 'text-accent bg-white/10' : 'text-white/70 hover:text-white hover:bg-white/8'
+                      }`}
+                    >
+                      {s === 1 ? 'Normal' : `${s}x`}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setShowSpeedMenu((v) => !v)}
+                title="Playback speed"
+                className={`px-3 py-2 rounded-xl text-sm font-bold transition-colors ${
+                  playbackSpeed !== 1 ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-black/80 text-white border border-white/15 hover:bg-white/10'
+                }`}
+              >
+                {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+              </button>
+            </div>
             <select value={selectedAudio} onChange={(event) => changeAudio(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
               {audioTracks.length > 0 ? audioTracks.map((track) => (
                 <option key={track.id} value={track.index}>{track.label}</option>

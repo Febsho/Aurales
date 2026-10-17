@@ -1,11 +1,16 @@
 import type { SearchResult } from '../types'
 import type { PlaybackItem } from './simkl/playback'
+import { invoke } from '@tauri-apps/api/core'
 import { resolveAnimeIds, mapAniListEpisodeToTvdb } from './animeLists'
 import { getTmdbApiKey } from './apiKeys'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
+import { readBoundedResponseJson } from './network/boundedResponse'
 import type { TvdbEpisodeMappingInput } from './anime-mapping'
 
 const API_URL = 'https://graphql.anilist.co'
+const ANILIST_HTTP_TIMEOUT_MS = 15_000
+const MAX_ANILIST_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_ANILIST_TMDB_RESPONSE_BYTES = 1024 * 1024
 const TOKEN_KEY = 'anilist_token'
 const ACCOUNT_KEY = 'anilist_account'
 
@@ -13,8 +18,73 @@ const entriesCache: Map<string, { data: AniEntry[]; timestamp: number }> = new M
 const mediaIdCache: Map<number, number> = new Map()
 const progressCache = new Map<number, { data: AniListProgress | null; timestamp: number }>()
 const progressPending = new Map<number, Promise<AniListProgress | null>>()
+const MAX_ANILIST_CACHE_ENTRIES = 500
+const NEGATIVE_TITLE_SEARCH_TTL_MS = 5 * 60_000
 let trackedProgressCache: { data: AniListProgress[]; timestamp: number } | null = null
 let trackedProgressPending: Promise<AniListProgress[]> | null = null
+const EXACT_EPISODE_MARKS_KEY = 'anilist_exact_episode_marks'
+// AniList is currently operating at a degraded 30 requests/minute limit. Keep
+// a little margin for clock drift and its separate burst limiter.
+const ANILIST_REQUEST_SPACING_MS = 2_100
+let anilistRequestQueue: Promise<void> = Promise.resolve()
+let anilistNextRequestAt = 0
+
+class AniListRateLimitError extends Error {
+  retryAfterMs: number
+
+  constructor(retryAfterMs = 3000) {
+    super('AniList is temporarily rate-limiting requests. Please wait a moment and try again.')
+    this.name = 'AniListRateLimitError'
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForCurrentRequest(ms: number, isCurrent: () => boolean): Promise<void> {
+  const deadline = Date.now() + Math.max(0, ms)
+  while (Date.now() < deadline) {
+    if (!isCurrent()) throw new Error('AniList connection changed before the request could retry.')
+    await wait(Math.min(1_000, deadline - Date.now()))
+  }
+  if (!isCurrent()) throw new Error('AniList connection changed before the request could retry.')
+}
+
+async function fetchAniListJson(url: string, init: RequestInit): Promise<{ response: Response; data: any }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new DOMException('AniList request timed out', 'TimeoutError')), ANILIST_HTTP_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal })
+    const data = await readBoundedResponseJson<any>(response, MAX_ANILIST_RESPONSE_BYTES, 'AniList response').catch(() => null)
+    return { response, data }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/** AniList applies one account/IP rate limit across every query. Serialize all
+ * calls so Home, Discovery, account sync, and detail pages cannot flood it at
+ * startup. Keep the queue alive when an individual request fails. */
+function queueAniListRequest<T>(request: () => Promise<T>, isCurrent: () => boolean = () => true): Promise<T> {
+  const queued = anilistRequestQueue.then(async () => {
+    // Account changes invalidate queued requests. Skip them before the rate
+    // limit delay so an old account's backlog cannot stall the new session.
+    if (!isCurrent()) throw new Error('AniList connection changed before the request started.')
+    while (anilistNextRequestAt > Date.now()) {
+      await wait(Math.min(1_000, anilistNextRequestAt - Date.now()))
+      if (!isCurrent()) throw new Error('AniList connection changed before the request started.')
+    }
+    try {
+      return await request()
+    } finally {
+      anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + ANILIST_REQUEST_SPACING_MS)
+    }
+  })
+  anilistRequestQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
 
 export type AniListStatus = 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'PAUSED' | 'DROPPED' | 'REPEATING'
 
@@ -48,6 +118,8 @@ interface AniMedia {
   idMal?: number
   episodes?: number
   seasonYear?: number
+  description?: string
+  genres?: string[]
   bannerImage?: string
   coverImage?: { extraLarge?: string; large?: string }
   title?: { userPreferred?: string; english?: string; romaji?: string }
@@ -65,6 +137,41 @@ export interface AniListProgress {
   mediaId: number
   progress: number
   status?: AniListStatus
+  updatedAt?: number
+  /** Total episodes of the media (null/0 when AniList doesn't know, e.g. ongoing). */
+  episodes?: number
+  /** Number of completed rewatches. */
+  repeat?: number
+}
+
+/** Rich AniList list entry with everything the sync needs (req 1). */
+export interface AniListFullEntry {
+  mediaId: number
+  idMal?: number
+  status?: AniListStatus
+  progress: number
+  repeat: number
+  score?: number
+  updatedAt?: number
+  episodes?: number
+  title: string
+  titles: { userPreferred?: string; english?: string; romaji?: string; native?: string }
+  seasonYear?: number
+  poster?: string
+  backdrop?: string
+}
+
+let fullListCache: { data: AniListFullEntry[]; timestamp: number } | null = null
+let fullListPending: Promise<AniListFullEntry[]> | null = null
+let anilistAuthGeneration = 0
+
+export interface AniListExactEpisodeMark {
+  localId: string
+  season: number
+  episode: number
+  anilistEpisode: number
+  markedAt: string
+  watched?: boolean
 }
 
 export const ANILIST_LIST_SOURCES: { id: string; label: string; layout: 'poster' | 'landscape' }[] = [
@@ -82,15 +189,19 @@ export function getAniListToken(): string {
 
 export function setAniListToken(token: string): void {
   const clean = token.trim()
+  const previous = getAniListToken()
+  if (clean === previous) return
+  anilistAuthGeneration++
   if (clean) localStorage.setItem(TOKEN_KEY, clean)
   else localStorage.removeItem(TOKEN_KEY)
+  clearAniListProgressCaches()
 }
 
 export function getStoredAniListAccount(): AniListAccount | null {
   try {
     const raw = localStorage.getItem(ACCOUNT_KEY)
     return raw ? JSON.parse(raw) as AniListAccount : null
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -104,23 +215,173 @@ export function isAniListConnected(): boolean {
   return Boolean(getAniListToken())
 }
 
-async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
-  const token = getAniListToken()
-  if (requireAuth && !token) throw new Error('AniList token is missing')
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ query, variables }),
-  })
-  const data = await res.json().catch(() => null)
-  if (!res.ok || data?.errors?.length) {
-    const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
-    throw new Error(message)
+function exactMarkKey(mark: Pick<AniListExactEpisodeMark, 'localId' | 'season' | 'episode'>): string {
+  return `${mark.localId}:${mark.season}:${mark.episode}`
+}
+
+function readExactEpisodeMarks(): AniListExactEpisodeMark[] {
+  try {
+    const raw = localStorage.getItem(EXACT_EPISODE_MARKS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed as AniListExactEpisodeMark[] : []
+  } catch (_) {
+    return []
   }
-  return data.data as T
+}
+
+function writeExactEpisodeMarks(marks: AniListExactEpisodeMark[]): void {
+  localStorage.setItem(EXACT_EPISODE_MARKS_KEY, JSON.stringify(marks))
+}
+
+export function hasAnyAniListExactEpisodeMarks(localId: string): boolean {
+  return readExactEpisodeMarks().some((mark) => mark.localId === localId)
+}
+
+export function isAniListEpisodeMarkedExact(localId: string, season: number, episode: number): boolean {
+  const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().some((mark) => exactMarkKey(mark) === key && mark.watched !== false)
+}
+
+export function hasAniListEpisodeExactState(localId: string, season: number, episode: number): boolean {
+  const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().some((mark) => exactMarkKey(mark) === key)
+}
+
+export function getAniListEpisodeExactState(localId: string, season: number, episode: number): AniListExactEpisodeMark | null {
+  const key = exactMarkKey({ localId, season, episode })
+  return readExactEpisodeMarks().find((mark) => exactMarkKey(mark) === key) || null
+}
+
+export function markAniListEpisodeExact(localId: string, season: number, episode: number, anilistEpisode: number): void {
+  const key = exactMarkKey({ localId, season, episode })
+  const next = readExactEpisodeMarks().filter((mark) => exactMarkKey(mark) !== key)
+  next.push({ localId, season, episode, anilistEpisode, markedAt: new Date().toISOString(), watched: true })
+  writeExactEpisodeMarks(next)
+}
+
+export function unmarkAniListEpisodeExact(localId: string, season: number, episode: number): void {
+  const key = exactMarkKey({ localId, season, episode })
+  const marks = readExactEpisodeMarks()
+  const previous = marks.find((mark) => exactMarkKey(mark) === key)
+  const next = marks.filter((mark) => exactMarkKey(mark) !== key)
+  next.push({ localId, season, episode, anilistEpisode: previous?.anilistEpisode ?? episode, markedAt: new Date().toISOString(), watched: false })
+  writeExactEpisodeMarks(next)
+}
+
+export async function anilistRequest<T>(query: string, variables?: Record<string, unknown>, requireAuth = true): Promise<T> {
+  const token = getAniListToken()
+  const authGeneration = anilistAuthGeneration
+  if (requireAuth && !token) throw new Error('AniList token is missing')
+  const assertAuthCurrent = () => {
+    if (token && (authGeneration !== anilistAuthGeneration || getAniListToken() !== token)) {
+      throw new Error('AniList connection changed before the request completed.')
+    }
+  }
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+  const body = JSON.stringify({ query, variables })
+  return queueAniListRequest(async () => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assertAuthCurrent()
+      let data: any
+      try {
+        const { response: res, data: responseData } = await fetchAniListJson(API_URL, { method: 'POST', headers, body })
+        data = responseData
+        const remaining = Number(res.headers.get('x-ratelimit-remaining'))
+        const resetSeconds = Number(res.headers.get('x-ratelimit-reset'))
+        if (remaining === 0 && Number.isFinite(resetSeconds)) {
+          anilistNextRequestAt = Math.max(anilistNextRequestAt, resetSeconds * 1000)
+        }
+        if (res.status === 429) {
+          const retrySeconds = Number(res.headers.get('retry-after'))
+          throw new AniListRateLimitError(Number.isFinite(retrySeconds) && retrySeconds > 0 ? retrySeconds * 1000 : 3000)
+        }
+        if (!res.ok || data?.errors?.length) {
+          const message = data?.errors?.[0]?.message || `AniList request failed (${res.status})`
+          if (res.status === 429 || /too many requests/i.test(message)) throw new AniListRateLimitError()
+          throw new Error(message)
+        }
+      } catch (error) {
+        if (error instanceof AniListRateLimitError) {
+          anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + error.retryAfterMs)
+          if (attempt === 0) {
+            await waitForCurrentRequest(error.retryAfterMs, () => !token || (authGeneration === anilistAuthGeneration && getAniListToken() === token))
+            continue
+          }
+          throw error
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/failed to fetch|networkerror|load failed|timed? ?out|timeout|abort/i.test(message)) throw error
+        try {
+          const raw = await invoke<string>('http_request', { method: 'POST', url: API_URL, headers, body })
+          data = JSON.parse(raw)
+        } catch (nativeError) {
+          const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError)
+          if (/\b429\b|too many requests/i.test(nativeMessage)) {
+            const rateLimitError = new AniListRateLimitError()
+            anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + rateLimitError.retryAfterMs)
+            if (attempt === 0) {
+              await waitForCurrentRequest(rateLimitError.retryAfterMs, () => !token || (authGeneration === anilistAuthGeneration && getAniListToken() === token))
+              continue
+            }
+            throw rateLimitError
+          }
+          throw new Error('Could not reach AniList. Check your connection and try again.')
+        }
+        if (data?.errors?.length) {
+          const message = data.errors[0]?.message || 'AniList returned an error'
+          if (/too many requests/i.test(message)) {
+            const rateLimitError = new AniListRateLimitError()
+            anilistNextRequestAt = Math.max(anilistNextRequestAt, Date.now() + rateLimitError.retryAfterMs)
+            if (attempt === 0) {
+              await waitForCurrentRequest(rateLimitError.retryAfterMs, () => !token || (authGeneration === anilistAuthGeneration && getAniListToken() === token))
+              continue
+            }
+            throw rateLimitError
+          }
+          throw new Error(message)
+        }
+      }
+      assertAuthCurrent()
+      return data.data as T
+    }
+    throw new AniListRateLimitError()
+  }, () => !token || (authGeneration === anilistAuthGeneration && getAniListToken() === token))
+}
+
+function cleanAniListDescription(value?: string): string | undefined {
+  if (!value) return undefined
+  const decoded = value
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&(amp|lt|gt|quot|#39|#x27);/gi, (entity) => ({
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&#x27;': "'",
+    }[entity.toLowerCase()] || entity))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return decoded || undefined
+}
+
+export function clearAniListProgressCaches(): void {
+  entriesCache.clear()
+  progressCache.clear()
+  progressPending.clear()
+  trackedProgressCache = null
+  trackedProgressPending = null
+  fullListCache = null
+  fullListPending = null
+  titleSearchCache.clear()
+  // A manual provider sync means AniList is the source of truth. Remove local
+  // exact mark/unmark overrides left by previous dropdown actions so they
+  // cannot permanently mask newer remote progress.
+  localStorage.removeItem(EXACT_EPISODE_MARKS_KEY)
 }
 
 export async function fetchAniListViewer(): Promise<AniListAccount> {
@@ -132,6 +393,99 @@ export async function fetchAniListViewer(): Promise<AniListAccount> {
   const account = { id: data.Viewer.id, name: data.Viewer.name, avatar: data.Viewer.avatar?.medium }
   saveAniListAccount(account)
   return account
+}
+
+const titleSearchCache = new Map<string, { value: number | null; expiresAt: number }>()
+const titleSearchPending = new Map<string, Promise<number | null>>()
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V): void {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > MAX_ANILIST_CACHE_ENTRIES) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
+function normalizeTitleForMatch(value: string): string {
+  // Preserve CJK and other non-Latin titles. ASCII-only normalization turns
+  // those names into an empty string, making every AniList candidate appear
+  // to be an exact match and allowing a wrong ID to mark unrelated episodes.
+  return value.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+/**
+ * Last-resort AniList id resolution by title search (req 3). Only accepts
+ * confident matches so remakes/sequels/seasons aren't confused: an exact
+ * normalized-title match, or a partial match confirmed by release year. Returns
+ * null when ambiguous — a wrong match would falsely mark episodes watched.
+ */
+export async function searchAniListMediaId(title: string, year?: number): Promise<number | null> {
+  const clean = title?.trim()
+  if (!clean) return null
+  const normalizedTitle = normalizeTitleForMatch(clean)
+  if (!normalizedTitle) return null
+  const cacheKey = `${normalizedTitle}|${year ?? ''}`
+  const cached = titleSearchCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) {
+    setBounded(titleSearchCache, cacheKey, cached)
+    return cached.value
+  }
+  if (cached) titleSearchCache.delete(cacheKey)
+  const pending = titleSearchPending.get(cacheKey)
+  if (pending) return pending
+
+  const request = (async () => {
+   try {
+    const data = await anilistRequest<{ Page?: { media?: { id: number; seasonYear?: number; format?: string; title?: { romaji?: string; english?: string; native?: string; userPreferred?: string }; synonyms?: string[] }[] } }>(`
+      query Search($search: String) {
+        Page(perPage: 8) {
+          media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
+            id seasonYear format
+            title { romaji english native userPreferred }
+            synonyms
+          }
+        }
+      }
+    `, { search: clean }, false)
+
+    const media = data.Page?.media || []
+    const target = normalizedTitle
+    let best: { id: number; score: number } | null = null
+    for (const m of media) {
+      const names = [m.title?.romaji, m.title?.english, m.title?.native, m.title?.userPreferred, ...(m.synonyms || [])]
+        .filter((n): n is string => Boolean(n))
+      const exact = names.some((n) => normalizeTitleForMatch(n) === target)
+      let score = 0
+      if (exact) {
+        score = 100
+      } else {
+        const contains = names.some((n) => { const nn = normalizeTitleForMatch(n); return nn.length > 3 && (nn.includes(target) || target.includes(nn)) })
+        if (!contains) continue
+        score = 60
+      }
+      if (year != null && m.seasonYear != null) score += Math.abs(m.seasonYear - year) <= 1 ? 10 : -25
+      if (m.format === 'TV' || m.format === 'TV_SHORT' || m.format === 'ONA' || m.format === 'MOVIE') score += 5
+      if (!best || score > best.score) best = { id: m.id, score }
+    }
+    // Require high confidence: exact title, or a partial match confirmed by year.
+    const result = best && best.score >= 70 ? best.id : null
+    setBounded(titleSearchCache, cacheKey, {
+      value: result,
+      expiresAt: result == null ? Date.now() + NEGATIVE_TITLE_SEARCH_TTL_MS : Number.POSITIVE_INFINITY,
+    })
+    if (import.meta.env.DEV) console.log(`[anilist-search] "${clean}" (${year ?? '?'}) → ${result ?? 'no confident match'}`)
+    return result
+  } catch (e) {
+    if (import.meta.env.DEV) console.warn('[anilist-search] failed:', e)
+    return null
+   }
+  })().finally(() => {
+    if (titleSearchPending.get(cacheKey) === request) titleSearchPending.delete(cacheKey)
+  })
+  titleSearchPending.set(cacheKey, request)
+  return request
 }
 
 export async function resolveAniListMediaId(item: { anilistId?: unknown; malId?: unknown }): Promise<number | null> {
@@ -149,7 +503,7 @@ export async function resolveAniListMediaId(item: { anilistId?: unknown; malId?:
     }
   `, { malId: mal }, false)
   const result = data.Media?.id ?? null
-  if (result) mediaIdCache.set(mal, result)
+  if (result) setBounded(mediaIdCache, mal, result)
   return result
 }
 
@@ -165,34 +519,54 @@ export async function addToAniListPlanning(anilistId?: number | string, malId?: 
   entriesCache.clear()
 }
 
+export async function setAniListStatus(status: AniListStatus, anilistId?: number | string, malId?: number | string): Promise<void> {
+  if (!isAniListConnected()) return
+  const mediaId = await resolveAniListMediaId({ anilistId, malId })
+  if (!mediaId) throw new Error('Could not resolve AniList media ID')
+  await anilistRequest(`
+    mutation SetStatus($mediaId: Int, $status: MediaListStatus) {
+      SaveMediaListEntry(mediaId: $mediaId, status: $status) { id }
+    }
+  `, { mediaId, status })
+  entriesCache.clear()
+  progressCache.delete(mediaId)
+  trackedProgressCache = null
+  fullListCache = null
+}
+
 export async function removeFromAniListList(anilistId?: number | string, malId?: number | string): Promise<void> {
   if (!isAniListConnected()) return
   const mediaId = await resolveAniListMediaId({ anilistId, malId })
   if (!mediaId) return
-  const data = await anilistRequest<{ MediaList?: { id: number } }>(`
+  // Viewer-scoped lookup via Media.mediaListEntry (root MediaList isn't scoped).
+  const data = await anilistRequest<{ Media?: { mediaListEntry?: { id: number } } }>(`
     query GetEntry($mediaId: Int) {
-      MediaList(mediaId: $mediaId) { id }
+      Media(id: $mediaId, type: ANIME) { mediaListEntry { id } }
     }
   `, { mediaId })
-  if (!data.MediaList?.id) return
+  const entryId = data.Media?.mediaListEntry?.id
+  if (!entryId) return
   await anilistRequest(`
     mutation DeleteEntry($id: Int) {
       DeleteMediaListEntry(id: $id) { deleted }
     }
-  `, { id: data.MediaList.id })
+  `, { id: entryId })
   entriesCache.clear()
+  progressCache.delete(mediaId)
+  trackedProgressCache = null
 }
 
 export async function isInAniListList(anilistId?: number | string, malId?: number | string): Promise<boolean> {
   if (!isAniListConnected()) return false
   const mediaId = await resolveAniListMediaId({ anilistId, malId })
   if (!mediaId) return false
-  const data = await anilistRequest<{ MediaList?: { id: number } }>(`
+  // Viewer-scoped lookup via Media.mediaListEntry (root MediaList isn't scoped).
+  const data = await anilistRequest<{ Media?: { mediaListEntry?: { id: number } } }>(`
     query GetEntry($mediaId: Int) {
-      MediaList(mediaId: $mediaId) { id }
+      Media(id: $mediaId, type: ANIME) { mediaListEntry { id } }
     }
   `, { mediaId })
-  return Boolean(data.MediaList?.id)
+  return Boolean(data.Media?.mediaListEntry?.id)
 }
 
 export async function getAniListProgress(anilistId?: number | string, malId?: number | string): Promise<AniListProgress | null> {
@@ -204,21 +578,35 @@ export async function getAniListProgress(anilistId?: number | string, malId?: nu
   const existing = progressPending.get(mediaId)
   if (existing) return existing
 
-  const request = anilistRequest<{ MediaList?: { mediaId?: number; progress?: number; status?: AniListStatus } }>(`
+  // Use Media.mediaListEntry (authenticated-user scoped), NOT the root
+  // MediaList(mediaId:) query — the latter isn't scoped to the viewer without a
+  // userId and returns an arbitrary/other user's entry for the same media.
+  const request: Promise<AniListProgress | null> = anilistRequest<{ Media?: { id?: number; episodes?: number; mediaListEntry?: { status?: AniListStatus; progress?: number; repeat?: number; updatedAt?: number } } }>(`
       query GetProgress($mediaId: Int) {
-        MediaList(mediaId: $mediaId) { mediaId progress status }
+        Media(id: $mediaId, type: ANIME) {
+          id episodes
+          mediaListEntry { status progress repeat updatedAt }
+        }
       }
     `, { mediaId })
-    .then((data) => data.MediaList ? {
-      mediaId: data.MediaList.mediaId || mediaId,
-      progress: Math.max(0, Number(data.MediaList.progress) || 0),
-      status: data.MediaList.status,
-    } : null)
     .then((data) => {
-      progressCache.set(mediaId, { data, timestamp: Date.now() })
+      const listEntry = data.Media?.mediaListEntry
+      return listEntry ? {
+        mediaId,
+        progress: Math.max(0, Number(listEntry.progress) || 0),
+        status: listEntry.status,
+        updatedAt: listEntry.updatedAt,
+        episodes: data.Media?.episodes,
+        repeat: Math.max(0, Number(listEntry.repeat) || 0),
+      } : null
+    })
+    .then((data) => {
+      setBounded(progressCache, mediaId, { data, timestamp: Date.now() })
       return data
     })
-    .finally(() => progressPending.delete(mediaId))
+    .finally(() => {
+      if (progressPending.get(mediaId) === request) progressPending.delete(mediaId)
+    })
 
   progressPending.set(mediaId, request)
   return request
@@ -229,31 +617,237 @@ export async function getAniListTrackedProgress(): Promise<AniListProgress[]> {
   if (trackedProgressCache && Date.now() - trackedProgressCache.timestamp < 30_000) return trackedProgressCache.data
   if (trackedProgressPending) return trackedProgressPending
 
-  trackedProgressPending = (async () => {
-    const viewer = getStoredAniListAccount() || await fetchAniListViewer()
-    const statuses: AniListStatus[] = ['CURRENT', 'COMPLETED', 'PAUSED', 'DROPPED', 'REPEATING']
-    const groups = await Promise.all(statuses.map((status) => getAniListEntries(viewer.name, status)))
-    const items = groups.flatMap((entries) => entries.map((entry) => ({
-      mediaId: entry.media?.id || 0,
-      progress: Math.max(0, Number(entry.progress) || 0),
-      status: entry.status,
-    }))).filter((entry) => entry.mediaId > 0)
+  const request: Promise<AniListProgress[]> = (async () => {
+    // Back the tracked-progress view with the full MediaListCollection so callers
+    // get episode counts and repeat data (needed for accurate COMPLETED detection).
+    const full = await getAniListFullList()
+    const items: AniListProgress[] = full
+      .filter((entry) => entry.status !== 'PLANNING')
+      .map((entry) => ({
+        mediaId: entry.mediaId,
+        progress: entry.progress,
+        status: entry.status,
+        updatedAt: entry.updatedAt,
+        episodes: entry.episodes,
+        repeat: entry.repeat,
+      }))
     trackedProgressCache = { data: items, timestamp: Date.now() }
     return items
-  })().finally(() => { trackedProgressPending = null })
+  })().finally(() => {
+    if (trackedProgressPending === request) trackedProgressPending = null
+  })
 
-  return trackedProgressPending
+  trackedProgressPending = request
+  return request
+}
+
+/**
+ * Fetch the viewer's complete anime MediaListCollection in one request — every
+ * status, with media id, MAL id, status, progress, repeat, score, updatedAt,
+ * total episodes, and titles (req 1). Cached for 30s; force bypasses the cache.
+ */
+export async function getAniListFullList(force = false): Promise<AniListFullEntry[]> {
+  if (!isAniListConnected()) return []
+  if (!force && fullListCache && Date.now() - fullListCache.timestamp < 30_000) return fullListCache.data
+  if (!force && fullListPending) return fullListPending
+
+  const run = (async () => {
+    const viewer = getStoredAniListAccount() || await fetchAniListViewer()
+    const data = await anilistRequest<{ MediaListCollection?: { lists?: { entries?: (AniEntry & { repeat?: number; score?: number })[] }[] } }>(`
+      query FullList($userName: String) {
+        MediaListCollection(userName: $userName, type: ANIME) {
+          lists {
+            entries {
+              id
+              status
+              progress
+              repeat
+              score
+              updatedAt
+              media {
+                id
+                idMal
+                episodes
+                seasonYear
+                bannerImage
+                coverImage { extraLarge large }
+                title { userPreferred english romaji native }
+              }
+            }
+          }
+        }
+      }
+    `, { userName: viewer.name })
+
+    const raw = data.MediaListCollection?.lists?.flatMap((list) => list.entries || []) || []
+    const entries: AniListFullEntry[] = raw
+      .filter((entry) => entry.media?.id)
+      .map((entry) => {
+        const media = entry.media!
+        return {
+          mediaId: media.id,
+          idMal: media.idMal,
+          status: entry.status,
+          progress: Math.max(0, Number(entry.progress) || 0),
+          repeat: Math.max(0, Number((entry as { repeat?: number }).repeat) || 0),
+          score: (entry as { score?: number }).score,
+          updatedAt: entry.updatedAt,
+          episodes: media.episodes,
+          title: mediaTitle(media),
+          titles: {
+            userPreferred: media.title?.userPreferred,
+            english: media.title?.english,
+            romaji: media.title?.romaji,
+            native: (media.title as { native?: string } | undefined)?.native,
+          },
+          seasonYear: media.seasonYear,
+          poster: media.coverImage?.extraLarge || media.coverImage?.large,
+          backdrop: media.bannerImage,
+        }
+      })
+    fullListCache = { data: entries, timestamp: Date.now() }
+    return entries
+  })()
+
+  if (!force) {
+    const request: Promise<AniListFullEntry[]> = run.finally(() => {
+      if (fullListPending === request) fullListPending = null
+    })
+    fullListPending = request
+    return request
+  }
+  return run
+}
+
+/**
+ * An AniList entry counts as "fully watched" (title-level) when it is COMPLETED,
+ * has at least one rewatch, or its progress covers all known episodes. REPEATING
+ * implies it was completed at least once. PAUSED/DROPPED/CURRENT partials are not
+ * title-watched but still carry episode progress used elsewhere.
+ */
+function isEntryFullyWatched(entry: AniListFullEntry): boolean {
+  if (entry.status === 'COMPLETED' || entry.status === 'REPEATING') return true
+  if (entry.repeat > 0) return true
+  if (entry.episodes && entry.episodes > 0 && entry.progress >= entry.episodes) return true
+  return false
+}
+
+/**
+ * Watched-key list for the fast title-level watched cache (watchedCacheStore).
+ * Emits anilist:/mal: keys for every fully-watched entry plus resolved
+ * tmdb:/tvdb:/imdb: keys so anime completed on AniList is recognised across the
+ * app regardless of which id a given catalog item carries.
+ */
+export async function getAniListWatchedTitleKeys(): Promise<string[]> {
+  if (!isAniListConnected()) return []
+  const list = await getAniListFullList()
+  const watched = list.filter(isEntryFullyWatched)
+  const keys = new Set<string>()
+
+  // Resolve external ids with limited concurrency (resolveAnimeIds is cached, so
+  // repeat runs are cheap). Failures are non-fatal — anilist:/mal: keys remain.
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < watched.length) {
+      const entry = watched[cursor++]
+      keys.add(`anilist:${entry.mediaId}`)
+      if (entry.idMal) keys.add(`mal:${entry.idMal}`)
+      try {
+        const ids = await resolveAnimeIds({ anilistId: entry.mediaId, malId: entry.idMal })
+        if (ids?.tmdbId) keys.add(`tmdb:${ids.tmdbId}`)
+        if (ids?.tvdbId) keys.add(`tvdb:${ids.tvdbId}`)
+        if (ids?.imdbId) keys.add(`imdb:${ids.imdbId}`)
+      } catch (_) { /* keep anilist/mal keys */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(6, watched.length) }, worker))
+  return [...keys]
+}
+
+export interface AniListSyncReport {
+  found: number
+  matched: number
+  episodesImported: number
+  unmatched: { anilistId: number; title: string }[]
+  errors: string[]
+}
+
+/**
+ * Manual "Sync from AniList": pulls the full list, resolves each entry to local
+ * ids, populates the watched-key cache, and returns a detailed report (req 9).
+ * Emits development logging for every entry, resolution, and failure (req 7).
+ */
+export async function syncAniListWatchedHistory(): Promise<AniListSyncReport> {
+  const report: AniListSyncReport = { found: 0, matched: 0, episodesImported: 0, unmatched: [], errors: [] }
+  if (!isAniListConnected()) { report.errors.push('AniList is not connected'); return report }
+
+  try {
+    clearAniListProgressCaches()
+    const list = await getAniListFullList(true)
+    report.found = list.length
+    console.log(`[anilist-sync] Fetched ${list.length} AniList entries`)
+
+    const keys = new Set<string>()
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < list.length) {
+        const entry = list[cursor++]
+        report.episodesImported += entry.progress
+        const fully = isEntryFullyWatched(entry)
+        let method = 'anilist-id'
+        let resolvedLocal: string | undefined
+        try {
+          const ids = await resolveAnimeIds({ anilistId: entry.mediaId, malId: entry.idMal })
+          if (ids?.tmdbId) { resolvedLocal = `tmdb-${ids.tmdbId}`; method = 'fribb-map' }
+          else if (ids?.tvdbId) { resolvedLocal = `tvdb-${ids.tvdbId}`; method = 'fribb-map' }
+          else if (ids?.imdbId) { resolvedLocal = ids.imdbId; method = 'fribb-map' }
+          if (resolvedLocal) {
+            report.matched++
+            if (fully) {
+              keys.add(`anilist:${entry.mediaId}`)
+              if (entry.idMal) keys.add(`mal:${entry.idMal}`)
+              if (ids?.tmdbId) keys.add(`tmdb:${ids.tmdbId}`)
+              if (ids?.tvdbId) keys.add(`tvdb:${ids.tvdbId}`)
+              if (ids?.imdbId) keys.add(`imdb:${ids.imdbId}`)
+            }
+          } else {
+            report.unmatched.push({ anilistId: entry.mediaId, title: entry.title })
+          }
+        } catch (e) {
+          report.errors.push(`${entry.title}: ${e instanceof Error ? e.message : String(e)}`)
+          report.unmatched.push({ anilistId: entry.mediaId, title: entry.title })
+        }
+        console.log(`[anilist-sync] entry anilist=${entry.mediaId} mal=${entry.idMal ?? '-'} "${entry.title}" status=${entry.status} progress=${entry.progress}/${entry.episodes ?? '?'} → local=${resolvedLocal ?? 'UNMATCHED'} via=${resolvedLocal ? method : 'none'} watched=${fully}`)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker))
+
+    if (keys.size > 0) {
+      const { useWatchedCacheStore } = await import('../stores/watchedCacheStore')
+      useWatchedCacheStore.getState().addWatchedKeys(keys)
+    }
+    console.log(`[anilist-sync] Done: found=${report.found} matched=${report.matched} episodes=${report.episodesImported} unmatched=${report.unmatched.length} errors=${report.errors.length}`)
+  } catch (e) {
+    report.errors.push(e instanceof Error ? e.message : String(e))
+    console.error('[anilist-sync] Sync failed:', e)
+  }
+  return report
 }
 
 export async function saveAniListProgress(item: PlaybackItem, progressRatio: number): Promise<void> {
   if (!isAniListConnected()) return
   const mediaId = await resolveAniListMediaId(item)
   if (!mediaId) return
-  const episode = toNumber(item.episode)
+  const episode = item.contentType === 'movie' ? 1 : toNumber(item.episode)
   if (!episode) return
   const media = await getAniListMedia(mediaId)
   const totalEpisodes = media?.episodes ?? 0
-  const status: AniListStatus = totalEpisodes > 0 && (episode >= totalEpisodes || progressRatio >= 0.9) ? 'COMPLETED' : 'CURRENT'
+  // AniList treats a COMPLETED status as every episode watched, so playback of
+  // episode 1 must stay CURRENT even when that episode is nearly finished.
+  // A series is complete only after its final known episode is nearly finished.
+  const status: AniListStatus = item.contentType === 'movie'
+    ? (progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT')
+    : totalEpisodes > 0 && episode >= totalEpisodes && progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT'
   await anilistRequest(`
     mutation SaveProgress($mediaId: Int, $progress: Int, $status: MediaListStatus) {
       SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) { id }
@@ -269,8 +863,13 @@ export async function saveAniListProgressMapped(
   progressRatio: number,
 ): Promise<void> {
   if (!isAniListConnected()) return
+  // AniList has no per-title resume position: writing `progress: episode`
+  // means that episode is watched. Playback updates must therefore wait for
+  // the same completion threshold used by the local player. Manual watched
+  // actions call saveAniListProgress directly and are intentionally unaffected.
+  if (!Number.isFinite(progressRatio) || progressRatio < 0.85) return
 
-  if (item.tvdbId && item.localId && item.season != null && item.episode != null) {
+  if (item.contentType === 'series' && item.tvdbId && item.localId && item.season != null && item.episode != null) {
     try {
       const epInput: TvdbEpisodeMappingInput = {
         localMediaId: item.localId,
@@ -285,7 +884,9 @@ export async function saveAniListProgressMapped(
         if (mediaId && episode) {
           const media = await getAniListMedia(mediaId)
           const totalEpisodes = media?.episodes ?? 0
-          const status: AniListStatus = totalEpisodes > 0 && (episode >= totalEpisodes || progressRatio >= 0.9) ? 'COMPLETED' : 'CURRENT'
+          // See saveAniListProgress: never mark a whole series complete merely
+          // because the currently playing episode reached its end.
+          const status: AniListStatus = totalEpisodes > 0 && episode >= totalEpisodes && progressRatio >= 0.9 ? 'COMPLETED' : 'CURRENT'
           await anilistRequest(`
             mutation SaveProgress($mediaId: Int, $progress: Int, $status: MediaListStatus) {
               SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) { id }
@@ -308,78 +909,88 @@ export async function saveAniListProgressMapped(
 export async function getAniListContinueWatching(): Promise<AniListContinueItem[]> {
   const viewer = getStoredAniListAccount() || await fetchAniListViewer()
   const entries = await getAniListEntries(viewer.name, 'CURRENT')
-  const items = await Promise.all(entries.map(async (entry): Promise<AniListContinueItem | null> => {
-    const media = entry.media
-    if (!media?.id) return null
-    const total = media.episodes || 0
-    const progress = entry.progress || 0
-    if (total > 0 && progress >= total) return null
-    const nextEpisode = progress + 1
-    const durationSeconds = 24 * 60
+  const items = new Array<AniListContinueItem | null>(entries.length)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < entries.length) {
+      const index = cursor++
+      const entry = entries[index]
+      const media = entry.media
+      if (!media?.id) { items[index] = null; continue }
+      const total = media.episodes || 0
+      const progress = entry.progress || 0
+      if (total > 0 && progress >= total) { items[index] = null; continue }
+      const nextEpisode = progress + 1
+      const durationSeconds = 24 * 60
 
-    let mediaId = `anilist-${media.id}`
-    let seasonNum = 1
-    let episodeNum = nextEpisode
-    let tmdbId: number | undefined
+      let mediaId = `anilist-${media.id}`
+      let seasonNum = 1
+      let episodeNum = nextEpisode
+      let tmdbId: number | undefined
 
-    try {
-      const mapped = await mapAniListEpisodeToTvdb(media.id, nextEpisode)
-      if (mapped) {
-        mediaId = `tvdb-${mapped.tvdbId}`
-        seasonNum = mapped.season
-        episodeNum = mapped.episode
-      }
-      const idMap = await resolveAnimeIds({ anilistId: media.id, malId: media.idMal })
-      if (idMap?.tmdbId) tmdbId = idMap.tmdbId
-      if (!mapped && idMap?.tvdbId) {
-        mediaId = `tvdb-${idMap.tvdbId}`
-        if (idMap.tvdbSeason != null && idMap.tvdbSeason > 0) {
-          seasonNum = idMap.tvdbSeason
-          if (idMap.tvdbEpOffset != null) {
-            episodeNum = nextEpisode - idMap.tvdbEpOffset
-            if (episodeNum <= 0) episodeNum = nextEpisode
+      try {
+        const mapped = await mapAniListEpisodeToTvdb(media.id, nextEpisode)
+        if (mapped) {
+          mediaId = `tvdb-${mapped.tvdbId}`
+          seasonNum = mapped.season
+          episodeNum = mapped.episode
+        }
+        const idMap = await resolveAnimeIds({ anilistId: media.id, malId: media.idMal })
+        if (idMap?.tmdbId) tmdbId = idMap.tmdbId
+        if (!mapped && idMap?.tvdbId) {
+          mediaId = `tvdb-${idMap.tvdbId}`
+          if (idMap.tvdbSeason != null && idMap.tvdbSeason > 0) {
+            seasonNum = idMap.tvdbSeason
+            if (idMap.tvdbEpOffset != null) {
+              episodeNum = nextEpisode - idMap.tvdbEpOffset
+              if (episodeNum <= 0) episodeNum = nextEpisode
+            }
           }
         }
-      }
-    } catch { /* ignore */ }
+      } catch (_) { /* ignore */ }
 
-    let poster: string | undefined
-    let backdrop: string | undefined
-    if (tmdbId) {
-      const tmdbApiKey = getTmdbApiKey()
-      if (tmdbApiKey) {
-        try {
-          const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${tmdbApiKey}`)
-          if (res.ok) {
-            const tmdbData = await res.json()
-            if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
-            if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
-          }
-        } catch { /* ignore */ }
+      let poster: string | undefined
+      let backdrop: string | undefined
+      if (tmdbId) {
+        const tmdbApiKey = getTmdbApiKey()
+        if (tmdbApiKey) {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 8_000)
+          try {
+            const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${tmdbApiKey}`, { signal: controller.signal })
+            if (res.ok) {
+              const tmdbData = await readBoundedResponseJson<Record<string, any>>(res, MAX_ANILIST_TMDB_RESPONSE_BYTES, 'TMDB response')
+              if (tmdbData.poster_path) poster = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
+              if (tmdbData.backdrop_path) backdrop = `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
+            }
+          } catch (_) { /* ignore */ }
+          finally { clearTimeout(timeout) }
+        }
       }
+      if (!poster) poster = media.coverImage?.extraLarge || media.coverImage?.large
+      if (!backdrop) backdrop = media.bannerImage
+
+      items[index] = {
+        id: `${mediaId}-${seasonNum}-${episodeNum}`,
+        mediaId,
+        mediaType: 'series',
+        title: mediaTitle(media),
+        subtitle: `S${seasonNum}E${episodeNum}`,
+        poster,
+        backdrop,
+        season: seasonNum,
+        episode: episodeNum,
+        progressSeconds: 0,
+        durationSeconds,
+        progressPct: total > 0 ? Math.min(99, (progress / total) * 100) : 0,
+        tmdbId,
+        malId: media.idMal,
+        anilistId: media.id,
+        updatedAt: entry.updatedAt ? new Date(entry.updatedAt * 1000).toISOString() : new Date(0).toISOString(),
+      } satisfies AniListContinueItem
     }
-    if (!poster) poster = media.coverImage?.extraLarge || media.coverImage?.large
-    if (!backdrop) backdrop = media.bannerImage
-
-    return {
-      id: `${mediaId}-${seasonNum}-${episodeNum}`,
-      mediaId,
-      mediaType: 'series',
-      title: mediaTitle(media),
-      subtitle: `S${seasonNum}E${episodeNum}`,
-      poster,
-      backdrop,
-      season: seasonNum,
-      episode: episodeNum,
-      progressSeconds: 0,
-      durationSeconds,
-      progressPct: total > 0 ? Math.min(99, (progress / total) * 100) : 0,
-      tmdbId,
-      malId: media.idMal,
-      anilistId: media.id,
-      updatedAt: entry.updatedAt ? new Date(entry.updatedAt * 1000).toISOString() : new Date(0).toISOString(),
-    } satisfies AniListContinueItem
-  }))
+  }
+  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, worker))
   const filtered = items
     .filter((item): item is AniListContinueItem => item !== null)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -398,7 +1009,17 @@ export async function getAniListContinueWatching(): Promise<AniListContinueItem[
 export async function getAniListList(status: AniListStatus | string): Promise<SearchResult[]> {
   const viewer = getStoredAniListAccount() || await fetchAniListViewer()
   const entries = await getAniListEntries(viewer.name, status as AniListStatus)
-  const results = await Promise.all(entries.map((entry) => anilistEntryToSearchResult(entry)))
+  const results = new Array<SearchResult | null>(entries.length)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < entries.length) {
+      const index = cursor++
+      results[index] = await anilistEntryToSearchResult(entries[index])
+    }
+  }
+  // Each item may resolve external IDs through other providers; don't fan out
+  // hundreds of mapping requests for a large AniList list at once.
+  await Promise.all(Array.from({ length: Math.min(6, entries.length) }, worker))
   return results.filter((item): item is SearchResult => item !== null)
 }
 
@@ -425,7 +1046,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     }
     if (mapped?.imdbId) imdbId = mapped.imdbId
     if (mapped?.tmdbId) tmdbId = mapped.tmdbId
-  } catch { /* ignore */ }
+  } catch (_) { /* ignore */ }
 
   const anilistPoster = media.coverImage?.extraLarge || media.coverImage?.large
   const anilistBackdrop = media.bannerImage
@@ -435,6 +1056,8 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     title: mediaTitle(media),
     type: 'series',
     year: media.seasonYear,
+    overview: cleanAniListDescription(media.description),
+    genres: media.genres,
     poster: anilistPoster,
     backdrop: anilistBackdrop,
     provider,
@@ -443,6 +1066,7 @@ async function anilistEntryToSearchResult(entry: AniEntry): Promise<SearchResult
     tvdbId,
     malId: media.idMal,
     anilistId: media.id,
+    isAnime: true,
   }
 }
 
@@ -477,6 +1101,8 @@ async function getAniListEntries(userName: string, status: AniListStatus): Promi
               idMal
               episodes
               seasonYear
+              description(asHtml: false)
+              genres
               bannerImage
               coverImage { extraLarge large }
               title { userPreferred english romaji }
@@ -487,7 +1113,7 @@ async function getAniListEntries(userName: string, status: AniListStatus): Promi
     }
   `, { userName, status })
   const result = data.MediaListCollection?.lists?.flatMap((list) => list.entries || []) || []
-  entriesCache.set(cacheKey, { data: result, timestamp: now })
+  setBounded(entriesCache, cacheKey, { data: result, timestamp: now })
   return result
 }
 

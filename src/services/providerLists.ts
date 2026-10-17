@@ -1,7 +1,7 @@
 import type { HomeRowConfig, SearchResult } from '../types'
 import { getAniListList, getStoredAniListAccount } from './anilist'
 import { getCollection, getWatchlist } from './trakt/sync'
-import { getListItems as getTraktListItems } from './trakt/lists'
+import { getListItems as getTraktListItems, getPublicListItems as getTraktPublicListItems, getUserLists, searchTraktPopularLists } from './trakt/lists'
 import {
   getPMDBListItems,
   getPMDBLists,
@@ -11,15 +11,26 @@ import {
   type PMDBListItem,
   type PMDBPickItem,
 } from './pmdb'
-import { getTvdbIdFromTmdb, tmdbProvider } from './tmdb'
+import {
+  getMdblistListItems,
+  getMdblistUserLists,
+  getMdblistWatchlistItems,
+  searchMdblistPublicLists,
+} from './mdblist'
+import { getTvdbIdFromTmdb, getTmdbCardMetadata, tmdbProvider } from './tmdb'
 import { getTvdbCardMetadata } from './tvdb'
 import { resolveAnimeIds } from './animeLists'
-import { cachedFetch } from './cache/sqliteCache'
-import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { cachedFetch, cacheSet } from './cache/sqliteCache'
+import { CACHE_CATEGORIES } from './cache/constants'
+import { providerCacheScope } from './cache/homeRowCacheKeys'
+import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
+import { dedupeMediaItems } from './mediaPresentation'
+import { getServerCatalogItems, parseServerCatalogListId } from './serverIntegrations'
 
 function providerListCacheKey(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): string {
-  const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : ''
-  return `provider:${row.sourceType || 'unknown'}:${account}:${row.providerListId || ''}`
+  const account = row.sourceType === 'anilist' ? getStoredAniListAccount()?.id || 'anonymous' : providerCacheScope(row.sourceType)
+  const version = row.sourceType === 'anilist' ? 'v3:' : ''
+  return `provider:${row.sourceType || 'unknown'}:${version}${account}:${row.providerListId || ''}`
 }
 
 export const TRAKT_LIST_SOURCES = [
@@ -33,15 +44,30 @@ export const PMDB_LIST_SOURCES = [
   { id: 'watchlist', label: 'PMDB - Watchlist', layout: 'poster' as const },
 ]
 
-export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
+export const MDBLIST_LIST_SOURCES = [
+  { id: 'watchlist', label: 'MDBList - Watchlist', layout: 'poster' as const },
+]
+
+export async function getProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, forceRefresh = false, maxItems?: number): Promise<SearchResult[]> {
+  // Native media servers already read their durable SQLite catalog cache.
+  // Bypassing the generic immutable provider-list cache ensures a completed
+  // incremental refresh is visible the next time a shelf/page is opened.
+  if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+    return loadProviderListItems(row, maxItems)
+  }
   const key = providerListCacheKey(row)
+  if (forceRefresh) {
+    const fresh = await loadProviderListItems(row)
+    if (fresh.length) void cacheSet(key, fresh, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+    return fresh
+  }
   return cachedFetch<SearchResult[]>(key, () => loadProviderListItems(row), {
     category: CACHE_CATEGORIES.PROVIDER_LIST,
-    ttlSeconds: CACHE_TTLS.PROVIDER_LIST,
+    ttlSeconds: null,
   })
 }
 
-async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>): Promise<SearchResult[]> {
+async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'providerListId'>, maxItems?: number): Promise<SearchResult[]> {
   const id = row.providerListId || ''
   let items: SearchResult[] = []
   if (row.sourceType === 'anilist') {
@@ -52,9 +78,20 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
     items = await getPmdbProviderList(id)
   } else if (row.sourceType === 'pmdb-picks') {
     items = (await getPMDBPickItems(id)).map(pmdbPickItemToSearchResult)
+  } else if (row.sourceType === 'mdblist') {
+    items = await getMdblistProviderList(id)
+  } else if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+    const catalog = parseServerCatalogListId(id)
+    if (catalog) items = await getServerCatalogItems(catalog.connectionId, catalog.catalogId, maxItems)
   }
 
   if (items.length > 0) {
+    // Server scans already persist presentation-ready metadata and artwork.
+    // Re-enriching every native library item here is both redundant and, for
+    // large libraries, can create thousands of background metadata requests.
+    if (row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {
+      return dedupeMediaItems(items)
+    }
     if (row.sourceType === 'anilist') {
       const seenAnilistId = new Set<number>()
       const deduplicated = items.filter((item) => {
@@ -63,12 +100,44 @@ async function loadProviderListItems(row: Pick<HomeRowConfig, 'sourceType' | 'pr
         if (aid) seenAnilistId.add(aid)
         return true
       })
-      return canonicalizeCatalogItemsWithTvdb(deduplicated, { preservePictures: false })
+      const canonicalDeduplicated = dedupeMediaItems(deduplicated)
+      const key = providerListCacheKey(row)
+      void scheduleTask(metadataTaskQueue, {
+        id: `anilist-catalog-enrich:${key}`,
+        dedupKey: `anilist-catalog-enrich:${key}`,
+        priority: 'low',
+        group: 'metadata',
+        execute: async () => {
+          const enriched = await canonicalizeCatalogItemsWithTvdb(canonicalDeduplicated, { preservePictures: false })
+          if (enriched.length) {
+            void cacheSet(key, enriched, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+          }
+          return enriched
+        },
+      }).catch(() => undefined)
+      return canonicalDeduplicated
     }
 
-    const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
-    const enriched = await enrichSearchResultsWithAppMetadata(items)
-    return canonicalizeCatalogItemsWithTvdb(enriched)
+    // A shelf needs its provider's list to become usable, not every item's
+    // cross-provider match. Those lookups can fan out into several metadata
+    // services and previously kept the entire row in skeletons.
+    const key = providerListCacheKey(row)
+    void scheduleTask(metadataTaskQueue, {
+      id: `provider-catalog-enrich:${key}`,
+      dedupKey: `provider-catalog-enrich:${key}`,
+      priority: 'low',
+      group: 'metadata',
+      execute: async () => {
+        const { enrichSearchResultsWithAppMetadata } = await import('./metadata/metadataResolver')
+        const enriched = await enrichSearchResultsWithAppMetadata(items)
+        const canonical = await canonicalizeCatalogItemsWithTvdb(enriched)
+        if (canonical.length) {
+          void cacheSet(key, canonical, { category: CACHE_CATEGORIES.PROVIDER_LIST, ttlSeconds: null })
+        }
+        return canonical
+      },
+    }).catch(() => undefined)
+    return items
   }
   return []
 }
@@ -85,49 +154,92 @@ export async function canonicalizeCatalogItemsWithTvdb(
       const item = items[index]
       if (item.type !== 'series') continue
 
-      let tvdbId = item.tvdbId ? Number(String(item.tvdbId).replace('tvdb-', '')) || undefined : undefined
+      let tvdbId = item.tvdbId ? Number(String(item.tvdbId).replace(/^tvdb[-:]/i, '')) || undefined : undefined
+      let resolvedTmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
       if (!tvdbId && (item.anilistId || item.malId)) {
         const anime = await resolveAnimeIds({
           anilistId: item.anilistId ? Number(item.anilistId) : undefined,
           malId: item.malId ? Number(item.malId) : undefined,
-          tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined,
+          tmdbId: resolvedTmdbId,
           imdbId: item.imdbId,
         }).catch(() => null)
         tvdbId = anime?.tvdbId
+        if (anime?.tmdbId) resolvedTmdbId = anime.tmdbId
       }
-      if (!tvdbId && item.tmdbId) tvdbId = await getTvdbIdFromTmdb(item.tmdbId)
-      if (!tvdbId) continue
+      if (!tvdbId && resolvedTmdbId) tvdbId = await getTvdbIdFromTmdb(resolvedTmdbId)
 
-      const tvdb = await getTvdbCardMetadata(tvdbId)
-      results[index] = {
-        ...item,
-        id: `tvdb-${tvdbId}`,
-        title: tvdb?.title || item.title,
-        year: tvdb?.year || item.year,
-        overview: tvdb?.overview || item.overview,
-        poster: options?.preservePictures ? item.poster : (tvdb?.poster || item.poster),
-        backdrop: options?.preservePictures ? item.backdrop : (tvdb?.backdrop || item.backdrop),
-        genres: tvdb?.genres?.length ? tvdb.genres : item.genres,
-        provider: 'tvdb',
-        tvdbId,
+      if (tvdbId) {
+        const tvdb = await getTvdbCardMetadata(tvdbId)
+        let poster = options?.preservePictures ? item.poster : (tvdb?.poster || item.poster)
+        let backdrop = options?.preservePictures ? item.backdrop : (tvdb?.backdrop || item.backdrop)
+        if (!options?.preservePictures && resolvedTmdbId && (!poster || poster === item.poster)) {
+          const tmdb = await getTmdbCardMetadata('series', resolvedTmdbId).catch(() => null)
+          if (tmdb?.poster) poster = tmdb.poster
+          if (tmdb?.backdrop && !backdrop) backdrop = tmdb.backdrop
+        }
+        results[index] = {
+          ...item,
+          id: `tvdb-${tvdbId}`,
+          title: tvdb?.title || item.title,
+          year: tvdb?.year || item.year,
+          overview: tvdb?.overview || item.overview,
+          poster,
+          backdrop,
+          genres: tvdb?.genres?.length ? tvdb.genres : item.genres,
+          provider: 'tvdb',
+          tvdbId,
+        }
+      } else if (resolvedTmdbId && !options?.preservePictures) {
+        const tmdb = await getTmdbCardMetadata('series', resolvedTmdbId).catch(() => null)
+        if (tmdb?.poster || tmdb?.backdrop) {
+          results[index] = {
+            ...item,
+            poster: tmdb.poster || item.poster,
+            backdrop: tmdb.backdrop || item.backdrop,
+            tmdbId: resolvedTmdbId,
+          }
+        }
       }
     }
   })
   await Promise.all(workers)
-  return results
+
+  // Deduplicate multi-season anime that resolved to the same TVDB/TMDB series
+  const seen = new Set<string>()
+  return results.filter((item) => {
+    if (item.tvdbId) {
+      const key = `tvdb:${String(item.tvdbId).replace(/^tvdb[-:]/i, '')}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    if (item.tmdbId) {
+      const key = `tmdb:${String(item.tmdbId).replace(/^tmdb[-:]/i, '')}`
+      if (seen.has(key)) return false
+      seen.add(key)
+    }
+    return true
+  })
 }
 
 export async function getAvailableTraktListSources(): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
   try {
-    const { getUserLists } = await import('./trakt/lists')
     const lists = await getUserLists()
     return [
       ...TRAKT_LIST_SOURCES,
       ...lists.map((list) => ({ id: `list:${list.ids.slug}`, label: `Trakt - ${list.name}`, layout: 'poster' as const })),
     ]
-  } catch {
+  } catch (_) {
     return TRAKT_LIST_SOURCES
   }
+}
+
+export async function searchTraktPublicListSources(query: string): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
+  const results = await searchTraktPopularLists(query)
+  return results.map((list) => ({
+    id: `public:${list.user.ids.slug}:${list.ids.slug}`,
+    label: list.name,
+    layout: 'poster' as const,
+  }))
 }
 
 export async function getAvailablePmdbListSources(): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
@@ -137,7 +249,7 @@ export async function getAvailablePmdbListSources(): Promise<{ id: string; label
       ...PMDB_LIST_SOURCES,
       ...lists.map((list) => ({ id: `list:${list.id}`, label: `PMDB - ${list.name}`, layout: 'poster' as const })),
     ]
-  } catch {
+  } catch (_) {
     return PMDB_LIST_SOURCES
   }
 }
@@ -147,12 +259,37 @@ export async function getAvailablePmdbPickSources(): Promise<{ id: string; label
   return catalogs.map((catalog) => ({ id: catalog.id, label: catalog.name, layout: 'poster' as const }))
 }
 
+export async function getAvailableMdblistSources(search = ''): Promise<{ id: string; label: string; layout: 'poster' | 'landscape' }[]> {
+  const [owned, publicLists] = await Promise.all([
+    getMdblistUserLists().catch(() => []),
+    search.trim() ? searchMdblistPublicLists(search).catch(() => []) : Promise.resolve([]),
+  ])
+  const mediatypeSuffix = (mt?: string) => mt ? ` (${mt === 'movie' ? 'Movies' : mt === 'show' ? 'Shows' : mt})` : ''
+  return [
+    ...MDBLIST_LIST_SOURCES,
+    ...owned.map((list) => ({
+      id: `list:${list.id}`,
+      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}`,
+      layout: 'poster' as const,
+    })),
+    ...publicLists.map((list) => ({
+      id: `list:${list.id}`,
+      label: `MDBList - ${list.name}${mediatypeSuffix(list.mediatype)}`,
+      layout: 'poster' as const,
+    })),
+  ]
+}
+
 async function getTraktProviderList(id: string): Promise<SearchResult[]> {
   let raw: unknown[] = []
   if (id === 'watchlist-movies') raw = await getWatchlist('movies')
   else if (id === 'watchlist-shows') raw = await getWatchlist('shows')
   else if (id === 'collection-movies') raw = await getCollection('movies')
   else if (id === 'collection-shows') raw = await getCollection('shows')
+  else if (id.startsWith('public:')) {
+    const parts = id.slice(7).split(':')
+    raw = await getTraktPublicListItems(parts[0], parts.slice(1).join(':'))
+  }
   else if (id.startsWith('list:')) raw = await getTraktListItems(id.slice(5))
   return raw.map(traktItemToSearchResult).filter((item): item is SearchResult => item !== null)
 }
@@ -161,8 +298,29 @@ async function getPmdbProviderList(id: string): Promise<SearchResult[]> {
   const raw = id.startsWith('list:')
     ? await getPMDBListItems(id.slice(5))
     : await getPMDBWatchlistItems()
-  const items = await Promise.all(raw.map(pmdbItemToSearchResult))
+  // PMDB lists can contain hundreds of items, and each TMDB detail lookup
+  // starts several requests. Bound concurrency to avoid flooding the API and
+  // starving visible-page requests while preserving list order.
+  const items = await mapLimit(raw, 4, pmdbItemToSearchResult)
   return items.filter((item): item is SearchResult => item !== null)
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await mapper(items[index])
+    }
+  }))
+  return results
+}
+
+async function getMdblistProviderList(id: string): Promise<SearchResult[]> {
+  return id.startsWith('list:')
+    ? getMdblistListItems(id.slice(5))
+    : getMdblistWatchlistItems()
 }
 
 function traktItemToSearchResult(raw: unknown): SearchResult | null {
@@ -195,7 +353,7 @@ async function pmdbItemToSearchResult(item: PMDBListItem): Promise<SearchResult 
     }
     const meta = await tmdbProvider.getShow(`tmdb-${item.tmdb_id}`)
     return { ...meta, id: meta.imdbId || `tmdb-${item.tmdb_id}`, provider: 'pmdb', type: 'series', tmdbId: item.tmdb_id }
-  } catch {
+  } catch (_) {
     return {
       id: `tmdb-${item.tmdb_id}`,
       title: `${item.media_type === 'movie' ? 'Movie' : 'Show'} ${item.tmdb_id}`,

@@ -1,12 +1,17 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { SubtitleResult } from '../types'
 import { logEvent } from '../services/diagnostics'
+import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
+import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { getTmdbApiKey } from '../services/apiKeys'
-import { downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, isEmbeddedPlayerRunning } from '../services/player'
+import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
+import { readBoundedResponseJson } from '../services/network/boundedResponse'
+import { clearPlayerThumbnail, downloadSubtitle, launchEmbeddedPlayer, resizeEmbeddedPlayer, sendPlayerCommand, stopEmbeddedPlayer, getPlayerProperty, getPlayerSnapshot, isEmbeddedPlayerRunning, requestPlayerThumbnail, writeTempSubtitle, updateTempSubtitle, readTempSubtitle, extractEmbeddedSubtitle, openRouterChat, shouldMarkWatched, type ThumbnailMetadata } from '../services/player'
 import { onSimklPlaybackStart, onSimklPlaybackStop, onSimklPlaybackPause, saveSimklPlaybackProgress } from '../services/simkl/playback'
 import type { PlaybackItem } from '../services/simkl/playback'
 import { isAuthenticated as isTraktAuthenticated } from '../services/trakt/auth'
@@ -16,29 +21,49 @@ import {
   scrobbleStop as traktScrobbleStop,
   buildMovieScrobble,
   buildEpisodeScrobble,
-  buildMappedEpisodeScrobble,
 } from '../services/trakt/scrobble'
 import {
   getPMDBSkips,
   savePMDBPlaybackProgress,
   scrobblePMDB,
+  removePMDBWatched,
   lookupTmdbId
 } from '../services/pmdb'
-import { saveAniListProgress, saveAniListProgressMapped } from '../services/anilist'
+import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
+import { saveAniListProgressMapped } from '../services/anilist'
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
 import { getAddonStreams, getStreamAddons } from '../services/addons'
-import { useAppStore, getLanguageCodeFromTrack, APP_LANGUAGES } from '../stores/appStore'
-import { setDiscordActivity, clearDiscordActivity } from '../services/discord'
+import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from '../services/streams/preloadManager'
+import { canonicalStreamKey } from '../services/streams/preloadUtils'
+import { buildSmartContext, preparedStreamRegistry } from '../services/streams/preparedStreams'
+import { type SmartStream } from '../services/streams/smartScoring'
+import { rankStreamCandidates } from '../services/streams/nativeScoring'
+import { loadStreamCandidatesNative } from '../services/streams/streamCandidateLoader'
+import { getPlayableStreamUrl } from '../services/streams/playableUrl'
+import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
+import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack, APP_LANGUAGES } from '../stores/appStore'
+import { setDiscordActivity, restoreDiscordBrowsingActivity } from '../services/discord'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
+import { createTrackPropertyQueue } from '../services/player/trackSwitch'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   play as wtPlay,
   pause as wtPause,
   seek as wtSeek,
   sendBuffering as wtSendBuffering,
+  reportLocalPlayback as wtReportLocalPlayback,
+  clearLocalPlayback as wtClearLocalPlayback,
 } from '../services/watch-together/wsClient'
 import { shouldCorrectDrift, markCorrectionApplied, resetDriftState } from '../services/watch-together/driftCorrection'
+import PlayerChatOverlay from './watch-together/PlayerChatOverlay'
+import { recordPlaybackSample } from '../services/viewingActivity'
+import PlayerDebugPanel from './PlayerDebugPanel'
+import { collectNativePlayerDebugSnapshot, type NativePlayerDebugSnapshot } from '../services/playerDebug'
+import { markPerformance, measurePerformance } from '../services/performanceMetrics'
+import { annotateTorBoxStreams, resolveTorBoxStream } from '../services/torbox'
+import { clearSeekrPreview, getSeekrPreview, seekrCueAt, type SeekrPreviewCue, type SeekrPreviewData, type SeekrPreviewRequest } from '../services/seekrPreview'
+import { withRequestTimeout } from '../services/network/timeout'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +78,9 @@ interface NativeMpvPlayerProps {
   backdrop?: string
   onClose: () => void
   onPickAnother: () => void
+  onPlaybackError?: (message: string, positionSeconds?: number) => void
+  onPlaybackStarted?: () => void
+  onReportBad?: () => void
 }
 
 interface MpvTrack {
@@ -65,6 +93,9 @@ interface MpvTrack {
   forced?: boolean
   external?: boolean
   'external-filename'?: string
+  filename?: string
+  'ff-index'?: number
+  'src-id'?: number
 }
 
 interface TrackOption {
@@ -72,23 +103,92 @@ interface TrackOption {
   label: string
   lang?: string
   priority: number
+  forced?: boolean
 }
 
-interface NextEpInfo {
-  season: number
-  episode: number
+interface SubtitleSource {
+  originalUrl: string
+  localPath: string
+  label: string
+  forced?: boolean
+}
+
+interface TimelinePreview {
+  visible: boolean
+  leftPct: number
+  time: number
+}
+
+type TimelineThumbnail = string | { cue: SeekrPreviewCue }
+
+function SeekrSpriteImage({ cue, onInvalid, onLoad }: { cue: SeekrPreviewCue; onInvalid: () => void; onLoad?: () => void }) {
+  const scale = Math.min(240 / Math.max(1, cue.width), 135 / Math.max(1, cue.height))
+  return (
+    <img
+      src={cue.spriteUrl}
+      alt=""
+      className="absolute max-w-none"
+      style={{ left: -cue.x * scale, top: -cue.y * scale, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+      draggable={false}
+      onLoad={onLoad}
+      onError={onInvalid}
+    />
+  )
+}
+
+function ScrubThumbnailImage({ thumbnail, onInvalid }: { thumbnail: TimelineThumbnail; onInvalid: () => void }) {
+  const [loaded, setLoaded] = useState(false)
+  const seekrCue = typeof thumbnail === 'string' ? null : thumbnail.cue
+  const src = typeof thumbnail === 'string' ? thumbnail : thumbnail.cue.spriteUrl
+  return (
+    <div className={`relative h-[135px] w-60 overflow-hidden rounded-xl transition-opacity duration-100 ${loaded ? 'border border-white/20 opacity-100 shadow-[0_18px_55px_rgba(0,0,0,0.72)] ring-1 ring-black/50' : 'opacity-0'}`}>
+      {seekrCue
+        ? <SeekrSpriteImage cue={seekrCue} onLoad={() => setLoaded(true)} onInvalid={onInvalid} />
+        : <img src={src} alt="" className="h-full w-full object-cover" draggable={false} onLoad={() => setLoaded(true)} onError={onInvalid} />}
+    </div>
+  )
+}
+
+interface PlayerChapter {
   title: string
-  overview?: string
-  runtime?: number
-  stillPath?: string
+  time: number
+}
+
+function findEndingChapterTime(chapters: PlayerChapter[], duration: number): number | null {
+  if (duration <= 0) return null
+
+  const endingChapterPattern = /(?:^|\b)(?:end(?:ing)?\s*credits?|credits?|credit\s*roll|outro|ending|end\s*titles?|ending\s*theme|ed\s*\d*)(?:\b|$)/i
+  const candidates = chapters
+    .filter((chapter) => endingChapterPattern.test(chapter.title.trim()))
+    // Ignore malformed early markers and chapters that start after playback.
+    .filter((chapter) => chapter.time >= duration * 0.5 && chapter.time < duration - 1)
+    .sort((a, b) => a.time - b.time)
+
+  return candidates[0]?.time ?? null
+}
+
+function introDbChapters(segments: PMDBSkipSegment[]): PlayerChapter[] {
+  const chapters = segments
+    .filter((segment) => segment.id.startsWith('introdb-'))
+    .flatMap((segment) => [
+      { title: 'Recap', time: segment.recap_start_ms },
+      { title: 'Intro', time: segment.intro_start_ms },
+      { title: 'Credits', time: segment.credits_start_ms },
+    ])
+    .flatMap((chapter) => typeof chapter.time === 'number' && chapter.time >= 0
+      ? [{ title: chapter.title, time: chapter.time / 1000 }]
+      : [])
+
+  return chapters
+    .sort((a, b) => a.time - b.time)
+    .filter((chapter, index) => index === 0 || chapter.time !== chapters[index - 1].time)
 }
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function languageName(value?: string): string {
-  const code = getLanguageCodeFromTrack(value)
-  return APP_LANGUAGES.find((lang) => lang.code === code)?.name || value?.toUpperCase() || 'Unknown'
+  return getLanguageNameFromTrack(value)
 }
 
 function trackLabel(track: MpvTrack, fallback: string): string {
@@ -108,6 +208,80 @@ function trackPriority(track: MpvTrack): number {
   return 3
 }
 
+function normalizeSubtitlePath(path?: string): string {
+  return (path || '').replace(/\\/g, '/').toLowerCase()
+}
+
+function stripAiSubtitleResponse(value: string): string {
+  return value
+    .trim()
+    .replace(/^```(?:srt|vtt|ass|ssa|text)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+}
+
+const MAX_LIVE_TRANSLATION_CACHE_ENTRIES = 1_000
+
+function liveTranslationCacheKey(line: string, language: string, model: string, context = ''): string {
+  return JSON.stringify([language, model, context, line])
+}
+
+function rememberLiveTranslation(cache: Map<string, string>, key: string, value: string): void {
+  cache.delete(key)
+  cache.set(key, value)
+  while (cache.size > MAX_LIVE_TRANSLATION_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+}
+
+function formatSrtTimestamp(seconds: number): string {
+  const safe = Math.max(0, seconds)
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const wholeSeconds = Math.floor(safe % 60)
+  const millis = Math.floor((safe - Math.floor(safe)) * 1000)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
+}
+
+interface SubCue {
+  start: number // seconds
+  end: number   // seconds
+  text: string
+}
+
+// Parses SRT or WebVTT content into ordered cues. Strips markup/ASS overrides.
+function parseSubCueTimestamp(ts: string): number {
+  const m = ts.trim().replace(',', '.').match(/(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)/)
+  if (!m) return NaN
+  const h = m[1] ? Number(m[1]) : 0
+  return h * 3600 + Number(m[2]) * 60 + Number(m[3])
+}
+
+function parseSubtitleCues(content: string): SubCue[] {
+  const cues: SubCue[] = []
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  for (const block of normalized.split(/\n\s*\n/)) {
+    const lines = block.split('\n')
+    const tlIdx = lines.findIndex((l) => l.includes('-->'))
+    if (tlIdx === -1) continue
+    const [rawStart, rawEnd] = lines[tlIdx].split('-->')
+    const start = parseSubCueTimestamp(rawStart)
+    if (!Number.isFinite(start)) continue
+    const end = parseSubCueTimestamp(rawEnd || '')
+    const text = lines
+      .slice(tlIdx + 1)
+      .join('\n')
+      .replace(/<[^>]+>/g, '')       // HTML/VTT tags
+      .replace(/\{\\[^}]*\}/g, '')   // ASS override blocks
+      .trim()
+    if (!text) continue
+    cues.push({ start, end: Number.isFinite(end) && end > start ? end : start + 3, text })
+  }
+  return cues.sort((a, b) => a.start - b.start)
+}
+
 function buildVideoViewport() {
   const scale = window.devicePixelRatio || 1
   return {
@@ -115,6 +289,27 @@ function buildVideoViewport() {
     y: 0,
     width: Math.round(window.innerWidth * scale),
     height: Math.round(window.innerHeight * scale),
+  }
+}
+
+async function resolvePmdbPlaybackEpisode(
+  item: PlaybackItem,
+  tmdbId: number,
+): Promise<{ tmdbId: number; season?: number; episode?: number }> {
+  if (!item.isAnime || item.contentType !== 'series' || item.tvdbId == null || item.season == null || item.episode == null) {
+    return { tmdbId, season: item.season, episode: item.episode }
+  }
+
+  try {
+    const { mapTvdbEpisodeToAnimeProviders, shouldFlattenPmdbAnimeEpisodes } = await import('../services/animeLists')
+    const mapped = await mapTvdbEpisodeToAnimeProviders(item.tvdbId, item.season, item.episode)
+    if (!mapped?.tmdbId) return { tmdbId, season: item.season, episode: item.episode }
+    if (await shouldFlattenPmdbAnimeEpisodes(item.tvdbId, mapped.tmdbId)) {
+      return { tmdbId: mapped.tmdbId, season: 1, episode: mapped.episode }
+    }
+    return { tmdbId: mapped.tmdbId, season: mapped.season, episode: mapped.episode }
+  } catch (_) {
+    return { tmdbId, season: item.season, episode: item.episode }
   }
 }
 
@@ -148,42 +343,79 @@ function formatTime(s: number): string {
     : `${m}:${String(sec).padStart(2, '0')}`
 }
 
-async function fetchNextEpisodeFromTmdb(
-  tmdbId: number,
-  season: number,
-  episode: number
-): Promise<NextEpInfo | null> {
-  const apiKey = getTmdbApiKey()
+// Metadata for the currently-playing item, shown in the paused info overlay.
+interface CurrentItemMeta {
+  overview?: string
+  runtime?: number      // minutes
+  year?: number
+  genres?: string[]
+  rating?: number       // vote_average (0–10)
+  episodeTitle?: string // TV only
+  epCode?: string       // "S01E03", TV only
+  stillPath?: string    // TV episode still (original quality)
+}
 
-  const tryFetch = async (s: number, e: number): Promise<NextEpInfo | null> => {
+// Fetches rich metadata about the *current* item for the paused overlay.
+// TV/anime → episode name/overview/runtime/still plus show-level genres/rating.
+// Movie → overview/runtime/year/genres/rating.
+async function fetchCurrentItemMeta(
+  tmdbId: number,
+  isEpisodic: boolean,
+  season?: number,
+  episode?: number,
+): Promise<CurrentItemMeta | null> {
+  const apiKey = getTmdbApiKey()
+  if (!apiKey) return null
+  const tmdbGet = async (path: string): Promise<any | null> => {
     try {
-      const res = await fetch(
-        `https://api.themoviedb.org/3/tv/${tmdbId}/season/${s}/episode/${e}?api_key=${apiKey}`
-      )
-      if (!res.ok) return null
-      const data = await res.json()
-      if (!data.name) return null
-      return {
-        season: s,
-        episode: e,
-        title: data.name,
-        overview: data.overview || undefined,
-        runtime: data.runtime || undefined,
-        stillPath: data.still_path
-          ? `https://image.tmdb.org/t/p/original${data.still_path}`
-          : undefined,
-      }
-    } catch {
+      return await withRequestTimeout(8_000, async (signal) => {
+        const res = await fetch(`https://api.themoviedb.org/3${path}?api_key=${apiKey}`, { signal })
+        return res.ok ? await readBoundedResponseJson<Record<string, any>>(res, 1024 * 1024, 'TMDB player metadata response') : null
+      }, 'TMDB player metadata request timed out')
+    } catch (_) {
       return null
     }
   }
 
-  // `episode` is already the next episode number — fetch it directly.
-  // (Callers pass `currentEpisode + 1`; don't increment again.)
-  const next = await tryFetch(season, episode)
-  if (next) return next
-  // If it's the last episode of the season, try S+1 E1
-  return tryFetch(season + 1, 1)
+  if (isEpisodic && season != null && episode != null) {
+    const [ep, show] = await Promise.all([
+      tmdbGet(`/tv/${tmdbId}/season/${season}/episode/${episode}`),
+      tmdbGet(`/tv/${tmdbId}`),
+    ])
+    if (!ep && !show) return null
+    const genres = Array.isArray(show?.genres)
+      ? show.genres.map((g: any) => g?.name).filter(Boolean) as string[]
+      : undefined
+    return {
+      overview: ep?.overview || show?.overview || undefined,
+      runtime: ep?.runtime || undefined,
+      year: (show?.first_air_date as string)?.slice(0, 4)
+        ? Number((show.first_air_date as string).slice(0, 4))
+        : undefined,
+      genres: genres?.length ? genres : undefined,
+      rating: typeof show?.vote_average === 'number' ? show.vote_average : undefined,
+      episodeTitle: ep?.name || undefined,
+      epCode: `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`,
+      stillPath: ep?.still_path
+        ? `https://image.tmdb.org/t/p/original${ep.still_path}`
+        : undefined,
+    }
+  }
+
+  const movie = await tmdbGet(`/movie/${tmdbId}`)
+  if (!movie) return null
+  const genres = Array.isArray(movie.genres)
+    ? movie.genres.map((g: any) => g?.name).filter(Boolean) as string[]
+    : undefined
+  return {
+    overview: movie.overview || undefined,
+    runtime: movie.runtime || undefined,
+    year: (movie.release_date as string)?.slice(0, 4)
+      ? Number((movie.release_date as string).slice(0, 4))
+      : undefined,
+    genres: genres?.length ? genres : undefined,
+    rating: typeof movie.vote_average === 'number' ? movie.vote_average : undefined,
+  }
 }
 
 // ── Sub-component: Up Next Overlay ────────────────────────────────────────────
@@ -192,12 +424,14 @@ interface UpNextOverlayProps {
   nextEp: NextEpInfo
   showBackdrop?: string
   countdown: number
+  countdownDuration: number
+  autoplayEnabled: boolean
   isSearching: boolean
   onPlay: () => void
   onDismiss: () => void
 }
 
-function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, onDismiss }: UpNextOverlayProps) {
+function UpNextOverlay({ nextEp, showBackdrop, countdown, countdownDuration, autoplayEnabled, isSearching, onPlay, onDismiss }: UpNextOverlayProps) {
   const epCode = `S${String(nextEp.season).padStart(2, '0')}E${String(nextEp.episode).padStart(2, '0')}`
   const backdrop = highQualityTmdbImage(nextEp.stillPath || showBackdrop)
   const backdropStyle = backdrop
@@ -206,6 +440,7 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
         backgroundSize: 'cover',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
+        backgroundAttachment: 'fixed',
       } as CSSProperties
     : undefined
   const pipVars = {
@@ -229,9 +464,12 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
       <div className="absolute right-0 top-0 h-[var(--pip-top)] w-[calc(var(--pip-right)+var(--pip-w))] bg-black/35" />
       <div className="absolute right-0 top-[var(--pip-top)] h-[var(--pip-h)] w-[var(--pip-right)] bg-black/35" />
       <div className="absolute right-0 top-[calc(var(--pip-top)+var(--pip-h))] bottom-0 w-[calc(var(--pip-right)+var(--pip-w))] bg-gradient-to-t from-black/70 via-black/35 to-black/20" />
-      <div className="absolute right-[var(--pip-right)] top-[var(--pip-top)] w-[var(--pip-w)] h-[var(--pip-h)] rounded-2xl border border-white/20 shadow-2xl bg-transparent pointer-events-none">
-        <div className="absolute inset-0 rounded-2xl ring-1 ring-white/15 shadow-[0_0_80px_rgba(0,0,0,0.9)]" />
-        <span className="absolute left-3 top-2 rounded-full bg-black/55 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/65 backdrop-blur-sm">
+      {/* The native video surface is a rectangle and cannot be clipped by the
+          WebView. Keep the frame square too, otherwise its transparent rounded
+          corners reveal black patches around the live player. */}
+      <div className="absolute right-[var(--pip-right)] top-[var(--pip-top)] w-[var(--pip-w)] h-[var(--pip-h)] border border-white/20 shadow-2xl bg-transparent pointer-events-none">
+        <div className="absolute inset-0 ring-1 ring-white/15 shadow-[0_0_80px_rgba(0,0,0,0.9)]" />
+        <span className="absolute left-3 top-2 rounded-full bg-black/55 px-2 py-1 text-meta font-semibold uppercase tracking-[0.16em] text-white/65 backdrop-blur-sm">
           Now Playing
         </span>
       </div>
@@ -245,9 +483,13 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
       <div className="relative z-10 pb-10 px-10" style={{ paddingRight: 'calc(var(--pip-right) + var(--pip-w) + 40px)' }}>
         <div className="flex items-end gap-6 max-w-5xl">
           {/* Episode still */}
-          {nextEp.stillPath && (
+          {backdrop && (
             <div className="flex-shrink-0 w-44 rounded-lg overflow-hidden aspect-video bg-white/10 shadow-2xl">
-              <img src={nextEp.stillPath} className="w-full h-full object-cover" draggable={false} />
+              <img
+                src={backdrop}
+                className="w-full h-full object-cover brightness-[.72] contrast-[.96]"
+                draggable={false}
+              />
             </div>
           )}
 
@@ -256,10 +498,10 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
             <p className="text-xs text-white/50 font-medium tracking-wider mb-1">{epCode}</p>
             <h3 className="text-xl font-bold text-white leading-tight truncate">{nextEp.title}</h3>
             {nextEp.overview && (
-              <p className="text-sm text-white/55 mt-1.5 line-clamp-2 leading-relaxed">{nextEp.overview}</p>
+              <p className="text-sm text-white/60 mt-1.5 line-clamp-2 leading-relaxed">{nextEp.overview}</p>
             )}
             {nextEp.runtime != null && (
-              <p className="text-xs text-white/35 mt-1">{nextEp.runtime} min</p>
+              <p className="text-xs text-white/60 mt-1">{nextEp.runtime} min</p>
             )}
 
             {/* Action row */}
@@ -279,7 +521,7 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
                     <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
                     </svg>
-                    Playing in {countdown}…
+                    {autoplayEnabled ? `Playing in ${countdown}…` : 'Play next episode'}
                   </>
                 )}
               </button>
@@ -297,13 +539,78 @@ function UpNextOverlay({ nextEp, showBackdrop, countdown, isSearching, onPlay, o
           </div>
         </div>
 
-        {/* Countdown progress bar */}
-        <div className="mt-5 h-0.5 bg-white/15 rounded-full overflow-hidden">
+      </div>
+
+      {/* Keep the countdown edge-to-edge. It must not inherit the content
+          column's right inset, which only exists to leave room for PiP. */}
+      {autoplayEnabled && (
+        <div className="absolute inset-x-0 bottom-0 z-10 h-0.5 bg-white/15 overflow-hidden">
           <div
-            className="h-full bg-white/70 rounded-full transition-all duration-1000 ease-linear"
-            style={{ width: `${((15 - countdown) / 15) * 100}%` }}
+            className="h-full bg-white/70 transition-all duration-1000 ease-linear"
+            style={{ width: `${((countdownDuration - countdown) / countdownDuration) * 100}%` }}
           />
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Sub-component: Paused Info Overlay (Netflix-style) ────────────────────────
+
+interface PausedInfoOverlayProps {
+  title: string
+  subtitle?: string
+  backdrop?: string
+  meta: CurrentItemMeta | null
+}
+
+function PausedInfoOverlay({ title, subtitle, backdrop, meta }: PausedInfoOverlayProps) {
+  const image = highQualityTmdbImage(meta?.stillPath || backdrop)
+  const isEpisodic = !!meta?.epCode
+  // Meta line: TV → "S01E03 · Episode Name"; movie → "2024 · ★ 8.1 · 142 min".
+  const metaBits: string[] = []
+  if (isEpisodic) {
+    if (meta?.epCode) metaBits.push(meta.epCode)
+    if (meta?.episodeTitle) metaBits.push(meta.episodeTitle)
+  } else {
+    if (meta?.year != null) metaBits.push(String(meta.year))
+    if (meta?.rating != null && meta.rating > 0) metaBits.push(`★ ${meta.rating.toFixed(1)}`)
+    if (meta?.runtime != null) metaBits.push(`${meta.runtime} min`)
+  }
+  return (
+    <div className="absolute inset-0 z-[5] overflow-hidden pointer-events-none animate-fade-in">
+      {/* Backdrop (covers the frozen mpv frame when artwork exists) */}
+      {image && (
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: `url(${image})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+          }}
+        />
+      )}
+      {/* Scrims: darken left + bottom for legibility */}
+      <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/45 to-black/20" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-black/25" />
+
+      {/* Info block — lower third, left aligned */}
+      <div className="absolute left-0 bottom-0 px-16 pb-24 max-w-3xl">
+        <p className="text-sm font-semibold tracking-[0.2em] uppercase text-white/60 mb-3">You're watching</p>
+        <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight drop-shadow-lg">{title}</h1>
+        {metaBits.length > 0 && (
+          <p className="mt-3 text-base text-white/70 font-medium">{metaBits.join('  ·  ')}</p>
+        )}
+        {!metaBits.length && subtitle && (
+          <p className="mt-3 text-sm text-white/60 tracking-wider uppercase">{subtitle}</p>
+        )}
+        {meta?.genres?.length ? (
+          <p className="mt-2 text-sm text-white/60">{meta.genres.slice(0, 3).join(' · ')}</p>
+        ) : null}
+        {meta?.overview && (
+          <p className="mt-4 text-base text-white/70 leading-relaxed line-clamp-3">{meta.overview}</p>
+        )}
       </div>
     </div>
   )
@@ -325,7 +632,7 @@ interface TrackMenuPanelProps {
 function TrackMenuPanel({ type, tracks, selected, onSelect, onClose, onToggleTranslate, translateActive, hasTranslateKey }: TrackMenuPanelProps) {
   return (
     <div className="absolute bottom-full right-0 mb-3 w-56 bg-black/95 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl py-1.5 z-30 max-h-80 overflow-y-auto">
-      <div className="px-4 py-1.5 text-[10px] font-semibold tracking-wider text-white/35 uppercase">
+      <div className="px-4 py-1.5 text-meta font-semibold tracking-wider text-white/60 uppercase">
         {type === 'subs' ? 'Subtitles' : 'Audio Track'}
       </div>
       {type === 'subs' && (
@@ -351,7 +658,7 @@ function TrackMenuPanel({ type, tracks, selected, onSelect, onClose, onToggleTra
         </button>
       ))}
       {tracks.length === 0 && type === 'audio' && (
-        <div className="px-4 py-2 text-sm text-white/35">No tracks detected</div>
+        <div className="px-4 py-2 text-sm text-white/60">No tracks detected</div>
       )}
       {type === 'subs' && hasTranslateKey && (
         <>
@@ -381,6 +688,28 @@ interface PlayerSession {
   streamUrl: string
   startedAt: number
   status: "starting" | "playing" | "paused" | "buffering" | "stopped" | "error"
+}
+
+let latestFullPlayerSessionId: string | null = null
+let fullPlayerMountCount = 0
+
+// True when we're a watch-together guest without playback-control rights.
+// Local transport actions (pause, seek) are blocked so the guest doesn't
+// desync from the room and then get yanked back by drift correction.
+function wtControlBlocked(): boolean {
+  const wt = useWatchTogetherStore.getState()
+  if (!wt.currentRoom || !wt.currentUserId) return false
+  return wt.currentRoom.hostUserId !== wt.currentUserId && !wt.currentRoom.everyoneCanControl
+}
+
+// mpv args derived from settings that aren't first-class launch params.
+function buildMpvExtraArgs(storeState: { audioPassthrough: boolean }): string {
+  const qualityArgs = '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
+  const parts = [qualityArgs]
+  if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
+    parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
+  }
+  return parts.filter(Boolean).join(' ')
 }
 
 function playerUrlHash(value: string): string {
@@ -432,8 +761,8 @@ function IsolatedNativeMpvPlayer({ url, title, startTime, onClose, onPickAnother
       <div className="absolute inset-0 flex items-center justify-center px-8 text-center">
         <div>
           <p className="text-lg font-semibold">Isolated playback is running in a separate mpv window.</p>
-          <p className="mt-2 text-sm text-white/55">Use mpv's native controls. Aurales IPC and window hooks are disabled.</p>
-          <p className="mt-4 text-xs text-white/35">Hardware decoding: {hwdecMode}</p>
+          <p className="mt-2 text-sm text-white/60">Use mpv's native controls. Aurales IPC and window hooks are disabled.</p>
+          <p className="mt-4 text-xs text-white/60">Hardware decoding: {hwdecMode}</p>
         </div>
       </div>
       {error && <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-xl border border-red-500/30 bg-red-950/85 px-5 py-3 text-sm text-red-100">{error}</div>}
@@ -454,20 +783,45 @@ function FullNativeMpvPlayer({
   backdrop,
   onClose,
   onPickAnother,
+  onPlaybackError,
+  onPlaybackStarted,
 }: NativeMpvPlayerProps) {
+  useEffect(() => {
+    setRequestPlaybackActive(true)
+    return () => setRequestPlaybackActive(false)
+  }, [])
 
   // ─ Refs ───────────────────────────────────────────────────────────────────
   const activeSessionRef = useRef<PlayerSession | null>(null)
+  const playbackEpochRef = useRef(0)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const trackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const delayedPlayerTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+  const schedulePlayerTimeout = useCallback((callback: () => void, delay: number) => {
+    const timer = setTimeout(() => {
+      delayedPlayerTimersRef.current.delete(timer)
+      callback()
+    }, delay)
+    delayedPlayerTimersRef.current.add(timer)
+  }, [])
+
+  useEffect(() => () => {
+    delayedPlayerTimersRef.current.forEach((timer) => clearTimeout(timer))
+    delayedPlayerTimersRef.current.clear()
+  }, [])
   const loadedSubtitleUrlsRef = useRef<Set<string>>(new Set())
+  const subtitleMirrorPendingRef = useRef<string | null>(null)
   const autoSkippedSegmentsRef = useRef<Set<string>>(new Set())
-  const subtitleSourcesRef = useRef<Map<string, { originalUrl: string; localPath: string; label: string }>>(new Map())
+  const subtitleSourcesRef = useRef<Map<string, SubtitleSource>>(new Map())
+  const subtitleTrackSourcesRef = useRef<Map<number, SubtitleSource>>(new Map())
+  const aiSubtitleTrackIdRef = useRef<number | null>(null)
+  const aiSubtitleSourceTrackIdRef = useRef<number | null>(null)
   const progressRef = useRef({ currentTime: 0, duration: 0 })
   const lastSavedTimeRef = useRef(0)
   const lastSimklPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
+  const lastMdblistPlaybackSaveRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastVolumeEnforceRef = useRef(0)
   const lastPauseRef = useRef<boolean | null>(null)
@@ -488,8 +842,8 @@ function FullNativeMpvPlayer({
   const tmdbIdRef = useRef<number | undefined>(
     playbackItem?.tmdbId
       ? Number(playbackItem.tmdbId)
-      : playbackItem?.localId?.startsWith('tmdb-')
-        ? Number(playbackItem.localId.replace('tmdb-', ''))
+      : /^tmdb[-:]/i.test(playbackItem?.localId || '')
+        ? Number(playbackItem!.localId.replace(/^tmdb[-:]/i, ''))
         : undefined
   )
 
@@ -497,6 +851,9 @@ function FullNativeMpvPlayer({
   const currentItemRef = useRef<PlaybackItem | undefined>(playbackItem)
   const currentPosterRef = useRef<string | undefined>(poster)
   const currentBackdropRef = useRef<string | undefined>(backdrop)
+  // The URL mpv is currently playing (updated on autoplay transition). Used as a
+  // fallback source for embedded-subtitle extraction when mpv's `path` is empty.
+  const currentStreamUrlRef = useRef<string | undefined>(url)
   const volumeRef = useRef<number>(100)
 
   // Up Next refs (accessed inside stale poll closure)
@@ -504,11 +861,34 @@ function FullNativeMpvPlayer({
   const showUpNextRef = useRef(false)
   const upNextTriggeredRef = useRef(false)
   const upNextCancelledRef = useRef(false)
+  const nextPrepareTriggeredRef = useRef(false)
 
   // ─ State ─────────────────────────────────────────────────────────────────
   const [controlsVisible, setControlsVisible] = useState(true)
   const [paused, setPaused] = useState(false)
+  const [buffering, setBuffering] = useState(false)
+  const eofClosedRef = useRef(false)
+  const closeRef = useRef<(() => Promise<void>) | null>(null)
+  const closingRef = useRef(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  // Ref mirror avoids stale closures during native fullscreen transitions.
+  const isFullscreenRef = useRef(false)
+  useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
+  const fullscreenTransitionRef = useRef(0)
+  const fullscreenTransitionPendingRef = useRef(false)
+  useEffect(() => {
+    let disposed = false
+    const syncFullscreenState = async () => {
+      const fullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
+      if (disposed) return
+      isFullscreenRef.current = fullscreen
+      setIsFullscreen(fullscreen)
+    }
+    syncFullscreenState().catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [])
   const [error, setError] = useState('')
   const [audioTracks, setAudioTracks] = useState<TrackOption[]>([])
   const [subTracks, setSubTracks] = useState<TrackOption[]>([])
@@ -516,7 +896,22 @@ function FullNativeMpvPlayer({
   const [selectedSub, setSelectedSub] = useState<number | 'no'>('no')
   const [tracksLoaded, setTracksLoaded] = useState(false)
   const [playerReady, setPlayerReady] = useState(false)
+  const playerReadyRef = useRef(false)
   const [playerRunning, setPlayerRunning] = useState(true)
+  const bufferingStartedAtRef = useRef<number | null>(null)
+  const unstableStreamNotifiedRef = useRef(false)
+  const onPlaybackErrorRef = useRef(onPlaybackError)
+  useEffect(() => { playerReadyRef.current = playerReady }, [playerReady])
+  useEffect(() => { onPlaybackErrorRef.current = onPlaybackError }, [onPlaybackError])
+  const smartStartedNotifiedRef = useRef(false)
+  const smartErrorNotifiedRef = useRef(false)
+  useEffect(() => { smartStartedNotifiedRef.current = false; smartErrorNotifiedRef.current = false }, [url])
+  useEffect(() => {
+    if (playerReady && !smartStartedNotifiedRef.current) { smartStartedNotifiedRef.current = true; onPlaybackStarted?.() }
+  }, [playerReady, onPlaybackStarted])
+  useEffect(() => {
+    if (error && !playerReady && !smartErrorNotifiedRef.current) { smartErrorNotifiedRef.current = true; onPlaybackError?.(error) }
+  }, [error, playerReady, onPlaybackError])
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [skips, setSkips] = useState<PMDBSkipSegment[]>([])
@@ -526,8 +921,37 @@ function FullNativeMpvPlayer({
   const [showTimeRemaining, setShowTimeRemaining] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [draggingProgress, setDraggingProgress] = useState(0)
+  const draggingProgressRef = useRef(0)
   const [accumulatedSeek, setAccumulatedSeek] = useState<number | null>(null)
   const accumulatedSeekRef = useRef<number | null>(null)
+
+  // Timeline Preview (timestamp bubble while scrubbing)
+  const [timelinePreview, setTimelinePreview] = useState<TimelinePreview>({ visible: false, leftPct: 0, time: 0 })
+  const [timelineThumbnail, setTimelineThumbnail] = useState<TimelineThumbnail | null>(null)
+  const [seekrLookupRevision, setSeekrLookupRevision] = useState(0)
+  const [mediaBadges, setMediaBadges] = useState<string[]>([])
+  const [chapters, setChapters] = useState<PlayerChapter[]>([])
+  const [showChapters, setShowChapters] = useState(false)
+  const [seekrPreview, setSeekrPreview] = useState<SeekrPreviewData | null>(null)
+  const chapterStripRef = useRef<HTMLDivElement | null>(null)
+  const videoOutputFallbackAttemptedRef = useRef(false)
+  const restartPlaybackRef = useRef<(resumeTime: number, options?: { hwdecMode?: 'no'; decodedAudio?: boolean }) => void>(() => {})
+  const [showMediaInfo, setShowMediaInfo] = useState(false)
+  const [showPlayerDebug, setShowPlayerDebug] = useState(false)
+  const [playerDebugSnapshot, setPlayerDebugSnapshot] = useState<NativePlayerDebugSnapshot | null>(null)
+  const [playerDebugLoading, setPlayerDebugLoading] = useState(false)
+  const [playerDebugError, setPlayerDebugError] = useState('')
+  const isDraggingRef = useRef(false)
+  const activeTimelinePointerRef = useRef<number | null>(null)
+  const thumbnailRequestRef = useRef(0)
+  const nativeThumbnailResolvedRef = useRef(0)
+  const timelinePreviewTimeRef = useRef(0)
+  const timelineThumbnailMetadataRef = useRef<Map<number, ThumbnailMetadata>>(new Map())
+  const seekrPreviewRef = useRef<SeekrPreviewData | null>(null)
+  const seekrPreviewRequestRef = useRef<SeekrPreviewRequest | null>(null)
+  const timelinePreviewVisibleRef = useRef(false)
+  const thumbnailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
 
   // Up Next state
   const [nextEpInfo, setNextEpInfo] = useState<NextEpInfo | null>(null)
@@ -535,16 +959,50 @@ function FullNativeMpvPlayer({
   const [upNextCountdown, setUpNextCountdown] = useState(10)
   const [isAutoSearching, setIsAutoSearching] = useState(false)
 
-  // Live subtitle translation overlay
+  // AI subtitle track generation
   const [liveTranslateOn, setLiveTranslateOn] = useState(false)
+  const [translatingSubtitles, setTranslatingSubtitles] = useState(false)
   const [translatedText, setTranslatedText] = useState('')
   const [currentSubText, setCurrentSubText] = useState('')
   const liveTranslateCacheRef = useRef<Map<string, string>>(new Map())
   const liveTranslatePendingRef = useRef<string>('')
+  const liveAiSubtitlePathRef = useRef<string | null>(null)
+  const liveAiSubtitleContentRef = useRef('')
+  const liveAiCueIndexRef = useRef(0)
+  const liveAiLastCueRef = useRef('')
+  // Full source subtitle cue list (with original timestamps) for ahead-of-time
+  // translation, plus a reentry guard so start can't run twice concurrently.
+  const sourceCuesRef = useRef<SubCue[]>([])
+  const sourceNextIdxRef = useRef(0) // next source cue to translate (persists across effect re-runs)
+  const aiStartInProgressRef = useRef(false)
 
   // Current display title/subtitle — updated when autoplay transitions episodes
   const [currentDisplayTitle, setCurrentDisplayTitle] = useState(title)
   const [currentDisplaySubtitle, setCurrentDisplaySubtitle] = useState(subtitle)
+  const getThumbnailMediaId = useCallback(() => {
+    const item = currentItemRef.current
+    if (!item) return currentDisplayTitle || 'playback'
+    return [
+      item.localId,
+      item.season != null ? `season-${item.season}` : '',
+      item.episode != null ? `episode-${item.episode}` : '',
+    ].filter(Boolean).join('-')
+  }, [currentDisplayTitle])
+
+  // Netflix-style paused info overlay — metadata fetched lazily on first pause.
+  const [currentMeta, setCurrentMeta] = useState<CurrentItemMeta | null>(null)
+  useEffect(() => {
+    if ((!paused && !showMediaInfo) || currentMeta) return
+    const tmdbId = tmdbIdRef.current
+    if (!tmdbId) return
+    const item = currentItemRef.current
+    const isEpisodic = item?.contentType === 'series'
+    let cancelled = false
+    fetchCurrentItemMeta(tmdbId, isEpisodic, item?.season, item?.episode)
+      .then((info) => { if (!cancelled && info) setCurrentMeta(info) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [paused, showMediaInfo, currentMeta])
 
   // Volume — persisted in localStorage between sessions
   const [volume, setVolume] = useState<number>(() => {
@@ -553,29 +1011,161 @@ function FullNativeMpvPlayer({
     return isNaN(n) ? 100 : Math.max(0, Math.min(130, n))
   })
 
+  // Playback speed
+  const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const changeSpeed = useCallback((speed: number) => {
+    setPlaybackSpeed(speed)
+    setShowSpeedMenu(false)
+    sendPlayerCommand('set_property', ['speed', speed]).catch(() => {})
+  }, [])
+  const dismissPlayerOptions = useCallback(() => {
+    setTrackMenu(null)
+    setShowSpeedMenu(false)
+    setShowMediaInfo(false)
+    setShowChapters(false)
+    setShowPlayerDebug(false)
+  }, [])
+  const refreshPlayerDebug = useCallback(async () => {
+    if (!import.meta.env.DEV) return
+    setPlayerDebugLoading(true)
+    try {
+      const snapshot = await collectNativePlayerDebugSnapshot()
+      setPlayerDebugSnapshot(snapshot)
+      setPlayerDebugError('')
+    } catch (cause) {
+      setPlayerDebugError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setPlayerDebugLoading(false)
+    }
+  }, [])
+  useEffect(() => {
+    if (!import.meta.env.DEV || !showPlayerDebug || !playerReady) return
+    refreshPlayerDebug().catch(() => {})
+    const interval = window.setInterval(() => refreshPlayerDebug().catch(() => {}), 2000)
+    return () => window.clearInterval(interval)
+  }, [playerReady, refreshPlayerDebug, showPlayerDebug, url])
   // Store
   const scrobbleSimkl = useAppStore((s) => s.scrobbleSimkl)
+  const simklSaveResumePosition = useAppStore((s) => s.simklSaveResumePosition)
+  const traktSaveResumePosition = useAppStore((s) => s.traktSaveResumePosition)
   const scrobbleTrakt = useAppStore((s) => s.scrobbleTrakt)
   const scrobblePmdb = useAppStore((s) => s.scrobblePmdb)
+  const scrobbleMdblistEnabled = useAppStore((s) => s.scrobbleMdblist)
   const scrobbleAnilist = useAppStore((s) => s.scrobbleAnilist)
   const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey) || hasMdblistOAuth()
   const pmdbSaveResumePosition = useAppStore((s) => s.pmdbSaveResumePosition)
-  const autoSkipSegments = useAppStore((s) => s.autoSkipSegments)
+  const mdblistSaveResumePosition = useAppStore((s) => s.mdblistSaveResumePosition)
+  const showSkipIntroButton = useAppStore((s) => s.showSkipIntroButton)
+  const autoSkipIntro = useAppStore((s) => s.autoSkipIntro)
+  const showSkipCreditsButton = useAppStore((s) => s.showSkipCreditsButton)
+  const autoSkipCredits = useAppStore((s) => s.autoSkipCredits)
+  const autoPlayNextEpisode = useAppStore((s) => s.autoPlayNextEpisode)
+  const nextEpisodeCountdownSeconds = useAppStore((s) => s.nextEpisodeCountdownSeconds)
+  const scrubThumbnailPreviews = useAppStore((s) => s.scrubThumbnailPreviews)
+  const showPlayerLoadingIndicator = useAppStore((s) => s.showPlayerLoadingIndicator)
   const openrouterApiKey = useAppStore((s) => s.openrouterApiKey)
   const openrouterModel = useAppStore((s) => s.openrouterModel)
   const subtitleTranslationLang = useAppStore((s) => s.subtitleTranslationLang)
   const subtitleTranslationEnabled = useAppStore((s) => s.subtitleTranslationEnabled)
-  const translationCuesAhead = useAppStore((s) => s.translationCuesAhead)
+  const subtitleFontSize = useAppStore((s) => s.subtitleFontSize)
+  const subtitleBgOpacity = useAppStore((s) => s.subtitleBgOpacity)
+  const subtitleColor = useAppStore((s) => s.subtitleColor)
+  const subtitleBorderStyle = useAppStore((s) => s.subtitleBorderStyle)
+  const subtitleScale = useAppStore((s) => s.subtitleScale)
+  const subtitleBold = useAppStore((s) => s.subtitleBold)
+  const subtitleItalic = useAppStore((s) => s.subtitleItalic)
+  const subtitleOutlineColor = useAppStore((s) => s.subtitleOutlineColor)
+  const subtitleBgColor = useAppStore((s) => s.subtitleBgColor)
+  const subtitleOutlineThickness = useAppStore((s) => s.subtitleOutlineThickness)
+  const subtitleShadowOffset = useAppStore((s) => s.subtitleShadowOffset)
+  const subtitleShadowOpacity = useAppStore((s) => s.subtitleShadowOpacity)
+  const subtitleVerticalPosition = useAppStore((s) => s.subtitleVerticalPosition)
+  const subtitleAlignment = useAppStore((s) => s.subtitleAlignment)
+  const subtitleHorizontalMargin = useAppStore((s) => s.subtitleHorizontalMargin)
+  const subtitleTextBlur = useAppStore((s) => s.subtitleTextBlur)
+  const subtitleScaleWithWindow = useAppStore((s) => s.subtitleScaleWithWindow)
+  const subtitleAssOverride = useAppStore((s) => s.subtitleAssOverride)
   const contextAwareTranslation = useAppStore((s) => s.contextAwareTranslation)
+  const seekStepSeconds = useAppStore((s) => s.seekStepSeconds)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const isInWatchTogether = useWatchTogetherStore((s) => !!s.currentRoom)
 
   // Keep refs in sync with state for stale-closure access
   const pausedRef = useRef(paused)
   const wtIgnoreNextEvent = useRef(false)
+  const wtIgnoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressNextWatchTogetherEvent = useCallback(() => {
+    wtIgnoreNextEvent.current = true
+    if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
+    wtIgnoreTimerRef.current = setTimeout(() => {
+      wtIgnoreNextEvent.current = false
+      wtIgnoreTimerRef.current = null
+    }, 750)
+  }, [])
   useEffect(() => { pausedRef.current = paused }, [paused])
   useEffect(() => { nextEpInfoRef.current = nextEpInfo }, [nextEpInfo])
   useEffect(() => { showUpNextRef.current = showUpNext }, [showUpNext])
   useEffect(() => { volumeRef.current = volume }, [volume])
+
+  // Hide the blurred hero backdrop so the native mpv window is visible through the transparent webview
+  useEffect(() => {
+    const root = document.documentElement
+    const wasActive = root.classList.contains('hero-bg-active')
+    root.classList.remove('hero-bg-active')
+    return () => { if (wasActive) root.classList.add('hero-bg-active') }
+  }, [])
+
+  // Live-sync subtitle styling to mpv when settings change during playback
+  const playerRunningRef = useRef(playerRunning)
+  useEffect(() => { playerRunningRef.current = playerRunning }, [playerRunning])
+  useEffect(() => {
+    if (!playerRunningRef.current) return
+
+    sendPlayerCommand('set_property', ['sub-font-size', subtitleFontSize]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-scale', subtitleScale]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-bold', subtitleBold ? 'yes' : 'no']).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-italic', subtitleItalic ? 'yes' : 'no']).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-color', subtitleColor]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-border-color', subtitleOutlineColor]).catch(() => {})
+
+    const bgAlpha = Math.round(Number(subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
+    const cleanBgColor = subtitleBgColor.replace('#', '')
+    sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}${cleanBgColor}`]).catch(() => {})
+
+    if (subtitleBorderStyle === 'outline') {
+      sendPlayerCommand('set_property', ['sub-border-size', subtitleOutlineThickness]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+    } else if (subtitleBorderStyle === 'shadow') {
+      sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', subtitleShadowOffset]).catch(() => {})
+      const shadowAlpha = Math.round(subtitleShadowOpacity * 255).toString(16).padStart(2, '0')
+      sendPlayerCommand('set_property', ['sub-shadow-color', `#${shadowAlpha}000000`]).catch(() => {})
+    } else {
+      sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+      sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+    }
+
+    sendPlayerCommand('set_property', ['sub-pos', subtitleVerticalPosition]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-align-x', subtitleAlignment]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-margin-x', subtitleHorizontalMargin]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-blur', subtitleTextBlur]).catch(() => {})
+    sendPlayerCommand('set_property', ['sub-scale-with-window', subtitleScaleWithWindow ? 'yes' : 'no']).catch(() => {})
+
+    const overrideMap: Record<string, string> = {
+      apply: 'no',
+      scale_only: 'scale',
+      ignore: 'yes'
+    }
+    sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subtitleAssOverride] || 'scale']).catch(() => {})
+  }, [
+    subtitleFontSize, subtitleColor, subtitleBgOpacity, subtitleBorderStyle, subtitleScale,
+    subtitleBold, subtitleItalic, subtitleOutlineColor, subtitleBgColor, subtitleOutlineThickness,
+    subtitleShadowOffset, subtitleShadowOpacity, subtitleVerticalPosition, subtitleAlignment,
+    subtitleHorizontalMargin, subtitleTextBlur, subtitleScaleWithWindow, subtitleAssOverride
+  ])
 
   const applySavedVolume = useCallback((delays = [0, 250, 750, 1500, 3000]) => {
     const target = volumeRef.current
@@ -586,45 +1176,340 @@ function FullNativeMpvPlayer({
     })
   }, [])
 
+  const sendWatchTogetherSeek = useCallback((targetTime: number) => {
+    if (!Number.isFinite(targetTime)) return
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
+      wtSeek(Math.max(0, targetTime))
+    }
+  }, [])
+
   // ── Watch Together sync ──────────────────────────────────────────────────
   useEffect(() => {
-    const wtState = useWatchTogetherStore.getState()
-    if (!wtState.currentRoom) return
+    if (!isInWatchTogether) return
 
     resetDriftState()
 
     const onSyncRequest = (e: Event) => {
-      const { time, isPlaying } = (e as CustomEvent).detail as { time: number; isPlaying: boolean }
+      if (!playerRunningRef.current) return
+      // Don't correct until mpv has actually loaded the file — seeking a
+      // not-yet-loaded stream errors out or lands at the wrong position.
+      if (progressRef.current.duration <= 0) return
+      const { time, isPlaying, sentAt, sequence } = (e as CustomEvent).detail as { time: number; isPlaying: boolean; sentAt: number; sequence?: number }
 
       const { driftThreshold } = useWatchTogetherStore.getState()
       const { shouldSeek, targetTime } = shouldCorrectDrift(
         progressRef.current.currentTime,
-        { currentTime: time, isPlaying, lastUpdatedAt: Date.now() },
+        { currentTime: time, isPlaying, lastUpdatedAt: sentAt },
         driftThreshold,
-        3000,
+        1000,
       )
 
       if (shouldSeek) {
-        wtIgnoreNextEvent.current = true
-        sendPlayerCommand('seek', [targetTime, 'absolute']).catch(() => {})
+        suppressNextWatchTogetherEvent()
+        sendPlayerCommand('seek', [Math.max(0, targetTime), 'absolute']).catch(() => {})
         markCorrectionApplied()
       }
 
-      if (isPlaying && pausedRef.current) {
-        wtIgnoreNextEvent.current = true
-        sendPlayerCommand('set_property', ['pause', false]).catch(() => {})
-      } else if (!isPlaying && !pausedRef.current) {
-        wtIgnoreNextEvent.current = true
-        sendPlayerCommand('set_property', ['pause', true]).catch(() => {})
+      const targetPaused = !isPlaying
+      if (targetPaused !== pausedRef.current) {
+        suppressNextWatchTogetherEvent()
+        // Apply the authoritative room state locally before the next mpv poll.
+        // Otherwise the sender can keep rendering the old play state briefly
+        // and report that stale state back into the room sync loop.
+        pausedRef.current = targetPaused
+        setPaused(targetPaused)
+        wtReportLocalPlayback(progressRef.current.currentTime, isPlaying)
+        sendPlayerCommand('set_property', ['pause', targetPaused]).catch(() => {})
       }
+      if (sequence != null) useWatchTogetherStore.getState().markPendingSyncApplied(sequence)
     }
 
     window.addEventListener('wt:sync_request', onSyncRequest)
     return () => {
       window.removeEventListener('wt:sync_request', onSyncRequest)
+      if (wtIgnoreTimerRef.current) clearTimeout(wtIgnoreTimerRef.current)
       resetDriftState()
+      wtClearLocalPlayback()
     }
+  }, [isInWatchTogether, suppressNextWatchTogetherEvent])
+
+  // ── Timeline Preview ──────────────────────────────────────────────────────
+  const hideTimelinePreview = useCallback(() => {
+    timelinePreviewVisibleRef.current = false
+    thumbnailRequestRef.current += 1
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = null
+    setTimelineThumbnail(null)
+    setTimelinePreview((preview) => ({ ...preview, visible: false }))
+    clearPlayerThumbnail().catch(() => {})
   }, [])
+
+  const cachedTimelineThumbnailAt = useCallback((targetTime: number): string | null => {
+    const passes = [...timelineThumbnailMetadataRef.current.values()]
+      .sort((a, b) => a.interval - b.interval)
+    for (const metadata of passes) {
+      const paths = metadata.thumbnailPaths || []
+      if (paths.length === 0 || metadata.interval <= 0) continue
+      const targetIndex = Math.max(0, Math.round(targetTime / metadata.interval))
+      const maxDistance = metadata.interval <= 5 ? 6 : 1
+      for (let distance = 0; distance <= maxDistance; distance += 1) {
+        const candidates = distance === 0
+          ? [targetIndex]
+          : [targetIndex - distance, targetIndex + distance]
+        for (const index of candidates) {
+          if (index < 0) continue
+          const path = paths[index]
+          if (path) return convertFileSrc(path)
+        }
+      }
+    }
+    return null
+  }, [])
+
+  const updateTimelinePreviewAtPct = useCallback((leftPct: number) => {
+    if (duration <= 0 || !Number.isFinite(duration)) return
+    const pct = Math.max(0, Math.min(100, leftPct))
+    const time = Math.round(Math.max(0, Math.min(duration, (pct / 100) * duration)))
+    timelinePreviewVisibleRef.current = true
+    timelinePreviewTimeRef.current = time
+    setTimelinePreview({ visible: true, leftPct: pct, time })
+    if (!scrubThumbnailPreviews) {
+      setTimelineThumbnail(null)
+      return
+    }
+
+    // Switch between already-generated frames synchronously while dragging.
+    // The refined five-second cache is preferred, with the minute wave as an
+    // early fallback. No decoder or filesystem request is started here.
+    const cachedThumbnail = cachedTimelineThumbnailAt(time)
+    const seekrCue = seekrPreviewRef.current && seekrCueAt(seekrPreviewRef.current, time)
+    setTimelineThumbnail(seekrCue ? { cue: seekrCue } : cachedThumbnail)
+
+    // A parsed Seekr cue is already an exact preview. Keep the established
+    // ThumbFast/FFmpeg path completely idle in this case; it remains the
+    // fallback for every missing, failed, or invalid Seekr lookup.
+    if (seekrCue) return
+
+    const requestId = ++thumbnailRequestRef.current
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = setTimeout(() => {
+      if (requestId !== thumbnailRequestRef.current) return
+      // The native helper uses the already-open stream. A second FFmpeg
+      // connection to the same remote source can starve the actual seek.
+      requestPlayerThumbnail(time).catch(() => {})
+    }, 140)
+  }, [cachedTimelineThumbnailAt, duration, scrubThumbnailPreviews])
+
+  // Seekr is an optional, one-shot native lookup. It never participates in
+  // player startup and it cannot prevent the established thumbnail providers.
+  useEffect(() => {
+    seekrPreviewRef.current = null
+    setSeekrPreview(null)
+    seekrPreviewRequestRef.current = null
+    if (!playerReady || !scrubThumbnailPreviews || duration <= 0) return
+    const item = currentItemRef.current
+    const localId = item?.localId || ''
+    const localTmdbId = /^tmdb-(\d+)$/.exec(localId)?.[1]
+    const tmdbId = tmdbIdRef.current || item?.tmdbId || (localTmdbId ? Number(localTmdbId) : undefined)
+    const imdbId = item?.imdbId || (/^tt\d+$/i.test(localId) ? localId : undefined)
+    const request = item?.contentType === 'series' && tmdbId && item.season != null && item.episode != null
+      ? { duration, showTmdbId: tmdbId, season: item.season, episode: item.episode }
+      : { duration, tmdbId, imdbId }
+    seekrPreviewRequestRef.current = request
+    let cancelled = false
+    getSeekrPreview(request).then((preview) => {
+      if (cancelled || !preview) return
+      seekrPreviewRef.current = preview
+      setSeekrPreview(preview)
+      // Preload the first unique sheets once. Their URLs are signed but carry
+      // no API key; only native code ever performs the authenticated lookup.
+      for (const spriteUrl of [...new Set(preview.cues.map((cue) => cue.spriteUrl))].slice(0, 2)) {
+        const image = new Image()
+        image.src = spriteUrl
+      }
+    })
+    return () => { cancelled = true; seekrPreviewRef.current = null }
+  }, [duration, playerReady, scrubThumbnailPreviews, seekrLookupRevision, url])
+
+  const showTimelinePreviewFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return
+    updateTimelinePreviewAtPct(((event.clientX - rect.left) / rect.width) * 100)
+  }, [updateTimelinePreviewAtPct])
+
+  useEffect(() => () => {
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<{ path: string; width: number; height: number; time?: number; sessionId: string }>('player-thumbnail-ready', (event) => {
+      if (disposed || !scrubThumbnailPreviews) return
+      if (!timelinePreviewVisibleRef.current) return
+      if (event.payload.time != null && Math.abs(event.payload.time - timelinePreviewTimeRef.current) > 1) return
+      nativeThumbnailResolvedRef.current = thumbnailRequestRef.current
+      setTimelineThumbnail(event.payload.path)
+    }).then((cleanup) => {
+      if (disposed) cleanup()
+      else unlisten = cleanup
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [scrubThumbnailPreviews])
+
+  useEffect(() => {
+    const thumbnailMetadata = timelineThumbnailMetadataRef.current
+    thumbnailMetadata.clear()
+    let disposed = false
+    let unlistenMetadata: (() => void) | undefined
+    let unlistenFrame: (() => void) | undefined
+    const refreshVisiblePreview = () => {
+      if (!timelinePreviewVisibleRef.current) return
+      const path = cachedTimelineThumbnailAt(timelinePreviewTimeRef.current)
+      if (path) setTimelineThumbnail(path)
+    }
+    listen<{ metadata: ThumbnailMetadata }>('thumbnail-cache-updated', (event) => {
+      if (disposed || event.payload.metadata.cacheKey !== getThumbnailMediaId()) return
+      const metadata = event.payload.metadata
+      thumbnailMetadata.set(metadata.interval, metadata)
+      refreshVisiblePreview()
+    }).then((cleanup) => {
+      if (disposed) cleanup()
+      else unlistenMetadata = cleanup
+    }).catch(() => {})
+    listen<{ cacheKey: string; interval: number; index: number; path: string }>('thumbnail-frame-ready', (event) => {
+      const frame = event.payload
+      if (disposed || frame.cacheKey !== getThumbnailMediaId()) return
+      const existing = thumbnailMetadata.get(frame.interval)
+      const thumbnailPaths = [...(existing?.thumbnailPaths || [])]
+      thumbnailPaths[frame.index] = frame.path
+      thumbnailMetadata.set(frame.interval, existing
+        ? { ...existing, thumbnailPaths, thumbnailCount: Math.max(existing.thumbnailCount || 0, frame.index + 1) }
+        : {
+            cacheKey: frame.cacheKey,
+            interval: frame.interval,
+            thumbnailWidth: 480,
+            thumbnailHeight: 270,
+            columns: 10,
+            rows: 10,
+            sprites: [],
+            thumbnailPaths,
+            thumbnailCount: frame.index + 1,
+            status: 'generating',
+          })
+      refreshVisiblePreview()
+    }).then((cleanup) => {
+      if (disposed) cleanup()
+      else unlistenFrame = cleanup
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlistenMetadata?.()
+      unlistenFrame?.()
+      thumbnailMetadata.clear()
+    }
+  }, [cachedTimelineThumbnailAt, getThumbnailMediaId, url])
+
+  useEffect(() => {
+    if (scrubThumbnailPreviews) return
+    thumbnailRequestRef.current += 1
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current)
+    thumbnailTimerRef.current = null
+    timelinePreviewVisibleRef.current = false
+    setTimelineThumbnail(null)
+    clearPlayerThumbnail().catch(() => {})
+  }, [scrubThumbnailPreviews])
+
+  useEffect(() => {
+    if (!playerReady) return
+    let cancelled = false
+    const retryTimers: ReturnType<typeof setTimeout>[] = []
+    const loadMediaDetails = async (attempt = 0) => {
+      const [videoCodecValue, audioParamsValue, fpsValue, chapterListValue] = await Promise.all([
+        getPlayerProperty('video-codec').catch(() => null),
+        getPlayerProperty('audio-params').catch(() => null),
+        getPlayerProperty('estimated-vf-fps').catch(() => null),
+        getPlayerProperty('chapter-list').catch(() => null),
+      ])
+      if (cancelled) return
+
+      const codecRaw = String(videoCodecValue || '').toLowerCase()
+      const codec = codecRaw.includes('hevc') || codecRaw.includes('h265')
+        ? 'HEVC'
+        : codecRaw.includes('av1')
+          ? 'AV1'
+          : codecRaw.includes('h264') || codecRaw.includes('avc')
+            ? 'H.264'
+            : codecRaw ? codecRaw.toUpperCase() : ''
+      const audioParams = audioParamsValue && typeof audioParamsValue === 'object'
+        ? audioParamsValue as Record<string, unknown>
+        : {}
+      const channelCount = Number(audioParams['channel-count'] || 0)
+      const channelLabel = channelCount >= 8 ? '7.1' : channelCount >= 6 ? '5.1' : channelCount === 2 ? 'Stereo' : channelCount === 1 ? 'Mono' : ''
+      const fps = Number(fpsValue || 0)
+      setMediaBadges([codec, channelLabel, fps > 0 ? `${fps.toFixed(2)} FPS` : ''].filter(Boolean))
+
+      const parsedChapters = Array.isArray(chapterListValue)
+        ? chapterListValue.flatMap((entry, index) => {
+          if (!entry || typeof entry !== 'object') return []
+          const chapter = entry as Record<string, unknown>
+          const time = Number(chapter.time)
+          if (!Number.isFinite(time)) return []
+          return [{ title: String(chapter.title || `Chapter ${index + 1}`), time }]
+        })
+        : []
+      if (parsedChapters.length > 0) {
+        setChapters(parsedChapters)
+      } else if (attempt < 4) {
+        retryTimers.push(setTimeout(() => { loadMediaDetails(attempt + 1).catch(() => {}) }, 500 * (attempt + 1)))
+      }
+    }
+    const timer = setTimeout(() => { loadMediaDetails().catch(() => {}) }, 250)
+    return () => { cancelled = true; clearTimeout(timer); retryTimers.forEach(clearTimeout) }
+  }, [playerReady, tracksLoaded, url])
+
+  // Some sources (notably HMAX WEB-DLs) author chapter times with a constant
+  // offset (often +1h) or list chapters past the end of the file, so the raw
+  // mpv chapter-list can't be trusted for seeking until it's normalized.
+  const displayChapters = useMemo(() => {
+    if (chapters.length === 0 || duration <= 0) return chapters
+    const sorted = [...chapters].sort((a, b) => a.time - b.time)
+    const looksShifted = sorted[0].time > 0
+      && (sorted[0].time > duration * 0.5 || sorted[sorted.length - 1].time > duration)
+    const offset = looksShifted ? sorted[0].time : 0
+    return sorted
+      .map((chapter) => ({ ...chapter, time: chapter.time - offset }))
+      .filter((chapter) => chapter.time >= 0 && chapter.time < duration - 1)
+      .filter((chapter, index, list) => index === 0 || chapter.time - list[index - 1].time >= 1)
+  }, [chapters, duration])
+  const autoNextEpisodeChapterTime = useMemo(
+    () => findEndingChapterTime(displayChapters, duration),
+    [displayChapters, duration],
+  )
+  const autoNextEpisodeChapterTimeRef = useRef<number | null>(null)
+  useEffect(() => {
+    autoNextEpisodeChapterTimeRef.current = autoNextEpisodeChapterTime
+  }, [autoNextEpisodeChapterTime])
+
+  // Center the active chapter tile when the strip opens.
+  useEffect(() => {
+    if (!showChapters) return
+    const active = chapterStripRef.current?.querySelector('[data-active-chapter="true"]')
+    if (active instanceof HTMLElement) {
+      active.scrollIntoView({ inline: 'center', block: 'nearest' })
+    }
+  }, [showChapters])
+
+  // Chapter browsing is an overlay only. Never crop or zoom the actual video;
+  // also reset panscan in case a reused mpv session came from an older build.
+  useEffect(() => {
+    if (!playerReady) return
+    sendPlayerCommand('set_property', ['panscan', 0]).catch(() => {})
+  }, [playerReady, showChapters])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
@@ -634,11 +1519,13 @@ function FullNativeMpvPlayer({
       ? `${item.localId}:${item.season}:${item.episode}`
       : item.localId
     const progressPct = dur > 0 ? (time / dur) * 100 : 0
-    const isCompleted = completedFlag || progressPct >= 85
+    // A stream may expose an inaccurate credits boundary at startup. Preserve
+    // it as resumable progress until the user has actually watched 80%.
+    const isCompleted = completedFlag || shouldMarkWatched(progressPct)
     logEvent('PLAYBACK SYNC DEBUG', `Save watch progress local DB: ${Math.round(time)}s / ${Math.round(dur)}s (Completed: ${isCompleted})`)
     useAppStore.getState().setWatchProgress(key, {
       id: key,
-      mediaType: item.mediaType === 'show' ? 'series' : item.mediaType,
+      mediaType: item.contentType === 'series' ? (item.mediaType === 'anime' ? 'anime' : 'series') : 'movie',
       mediaId: item.localId,
       title: item.title,
       poster: currentPosterRef.current,
@@ -651,6 +1538,8 @@ function FullNativeMpvPlayer({
       updatedAt: new Date().toISOString(),
       imdbId: item.imdbId,
       tmdbId: item.tmdbId,
+      malId: item.malId,
+      anilistId: item.anilistId,
     })
   }, [])
 
@@ -668,106 +1557,326 @@ function FullNativeMpvPlayer({
     const item = currentItemRef.current
     const tmdbId = tmdbIdRef.current
     const imdbId = item?.imdbId
-    if (!item || !pmdbApiKey) return
-    if (!tmdbId && !imdbId) return
+    if (!item || !pmdbApiKey) return Promise.resolve()
+    if (!tmdbId && !imdbId) return Promise.resolve()
 
-    const isEpisodic = item.mediaType === 'show' || item.mediaType === 'anime'
+    const isEpisodic = item.contentType === 'series'
     const mediaType = isEpisodic ? 'tv' : 'movie'
     const progress = dur > 0 ? pos / dur : 0
 
     // Scrobble only when: caller explicitly permits it, we're confident the
     // episode is finished (≥90%), and duration looks real (≥3 min).
     if (allowScrobble && scrobblePmdb && tmdbId && progress >= 0.90 && dur >= 180) {
-      scrobblePMDB(tmdbId, mediaType, item.season, item.episode).catch(() => {})
-      return // PMDB server already marks it watched — no need to save resume point
+      return (async () => {
+        const pmdbEpisode = isEpisodic
+          ? await resolvePmdbPlaybackEpisode(item, tmdbId)
+          : { tmdbId, season: item.season, episode: item.episode }
+        await scrobblePMDB(pmdbEpisode.tmdbId, mediaType, pmdbEpisode.season, pmdbEpisode.episode)
+        if (
+          isEpisodic &&
+          pmdbEpisode.season != null &&
+          pmdbEpisode.episode != null &&
+          (pmdbEpisode.season !== item.season || pmdbEpisode.episode !== item.episode)
+        ) {
+          await removePMDBWatched(pmdbEpisode.tmdbId, 'tv', item.season, item.episode)
+        }
+      })().catch(() => {})
     }
 
     if (pmdbSaveResumePosition && dur > 0) {
       logEvent('PLAYBACK SYNC DEBUG', `Save PMDB resume point: ${Math.floor(pos)}s / ${Math.floor(dur)}s`)
-      savePMDBPlaybackProgress(
-        tmdbId,
-        mediaType,
-        item.season,
-        item.episode,
-        Math.floor(pos * 1000),
-        Math.floor(dur * 1000),
-        imdbId
-      ).catch(() => {})
-      // Note: we intentionally ignore the {action:'completed'} response here.
+      return (async () => {
+        const pmdbEpisode = isEpisodic && tmdbId
+          ? await resolvePmdbPlaybackEpisode(item, tmdbId)
+          : { tmdbId, season: item.season, episode: item.episode }
+        await savePMDBPlaybackProgress(
+          pmdbEpisode.tmdbId,
+          mediaType,
+          pmdbEpisode.season,
+          pmdbEpisode.episode,
+          Math.floor(pos * 1000),
+          Math.floor(dur * 1000),
+          imdbId
+        )
+      })().catch(() => {})
     }
+
+    return Promise.resolve()
   }, [pmdbApiKey, pmdbSaveResumePosition, scrobblePmdb])
+
+  const saveMdblistProgressHelper = useCallback((pos: number, dur: number, allowScrobble = false) => {
+    const item = currentItemRef.current
+    const tmdbId = tmdbIdRef.current
+    if (!item || !mdblistApiKey || dur <= 0) return Promise.resolve()
+    const isEpisodic = item.contentType === 'series'
+    const mediaType = isEpisodic ? 'series' : 'movie'
+    const progressPct = Math.max(0, Math.min(100, (pos / dur) * 100))
+
+    const action = mdblistPlaybackAction(
+      allowScrobble ? 'stop' : 'pause',
+      progressPct,
+      scrobbleMdblistEnabled,
+      mdblistSaveResumePosition,
+    )
+    if (!action) return Promise.resolve()
+    return (async () => {
+      await scrobbleMdblist(action, tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId)
+      if (scrobbleMdblistEnabled && !mdblistSaveResumePosition && progressPct < 80) {
+        await scrobbleMdblist('clear', tmdbId, mediaType, progressPct, item.season, item.episode, item.imdbId, item.tvdbId)
+      }
+    })().catch(() => {})
+  }, [mdblistApiKey, mdblistSaveResumePosition, scrobbleMdblistEnabled])
 
   // ─ Controls visibility ────────────────────────────────────────────────────
   const showControls = useCallback(() => {
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-    hideTimerRef.current = setTimeout(() => setControlsVisible(false), 4000)
-  }, [])
+    hideTimerRef.current = setTimeout(() => {
+      setControlsVisible(false)
+      dismissPlayerOptions()
+    }, 4000)
+  }, [dismissPlayerOptions])
+
+  useEffect(() => {
+    const dismissOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('[data-player-popover]')) return
+      dismissPlayerOptions()
+    }
+    document.addEventListener('pointerdown', dismissOnOutsidePress, true)
+    return () => document.removeEventListener('pointerdown', dismissOnOutsidePress, true)
+  }, [dismissPlayerOptions])
+
+  const wtBlockedNotice = useCallback(() => {
+    setError('Only the host can control playback in this room.')
+    setTimeout(() => setError((prev) => prev === 'Only the host can control playback in this room.' ? '' : prev), 2500)
+    showControls()
+  }, [showControls])
 
   const command = useCallback((name: string, args: unknown[] = []) => {
-    sendPlayerCommand(name, args).catch((e) => setError(String(e)))
+    sendPlayerCommand(name, args).catch((e) => {
+      const message = String(e)
+      logEvent('MPV DEBUG', `command ${name} failed: ${message}`)
+      if (!/IPC not ready|No player is running|Failed to send mpv command/i.test(message)) {
+        setError(message)
+      }
+    })
   }, [])
 
+  // Track selection stays inside the current libmpv session: only `aid`/`sid`
+  // are changed, never the loaded file or player/UI lifecycle. The native
+  // command bridge uses blocking workers, so serialize these narrow mutations
+  // to preserve the user's final choice during rapid switching.
+  const trackPropertyQueueRef = useRef(createTrackPropertyQueue((property, value) =>
+    sendPlayerCommand('set_property', [property, value]),
+  ))
+  const setTrackProperty = useCallback((property: 'aid' | 'sid', value: number | 'no') =>
+    trackPropertyQueueRef.current(property, value), [])
+
+  const commitTimelineSeek = useCallback((percentage: number) => {
+    const pct = Math.max(0, Math.min(100, percentage))
+    isDraggingRef.current = false
+    activeTimelinePointerRef.current = null
+    setIsDragging(false)
+    hideTimelinePreview()
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
+    const targetTime = duration > 0 ? (pct / 100) * duration : 0
+    progressRef.current.currentTime = targetTime
+    setCurrentTime(targetTime)
+    command('seek', [pct, 'absolute-percent+keyframes'])
+    if (duration > 0) sendWatchTogetherSeek(targetTime)
+  }, [command, duration, hideTimelinePreview, sendWatchTogetherSeek, wtBlockedNotice])
+
+  // Pointer capture is normally enough, but WebKit can still omit the range
+  // input's pointerup when native video/window layers change under the cursor.
+  // A window-level release guard guarantees the drag state is always cleared.
+  useEffect(() => {
+    const finishDrag = (event: PointerEvent) => {
+      if (isDraggingRef.current && activeTimelinePointerRef.current === event.pointerId) {
+        commitTimelineSeek(draggingProgressRef.current)
+      }
+    }
+    const cancelDrag = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+      activeTimelinePointerRef.current = null
+      setIsDragging(false)
+      hideTimelinePreview()
+    }
+    window.addEventListener('pointerup', finishDrag)
+    window.addEventListener('pointercancel', cancelDrag)
+    window.addEventListener('blur', cancelDrag)
+    return () => {
+      window.removeEventListener('pointerup', finishDrag)
+      window.removeEventListener('pointercancel', cancelDrag)
+      window.removeEventListener('blur', cancelDrag)
+    }
+  }, [commitTimelineSeek, hideTimelinePreview])
+
   // ─ Subtitle loading ───────────────────────────────────────────────────────
-  const loadAddonSubtitles = useCallback(async () => {
-    const pending = subtitles
+  const loadAddonSubtitles = useCallback(async (loadAll = false) => {
+    const session = activeSessionRef.current
+    const playbackEpoch = playbackEpochRef.current
+    if (!session || session.status === 'stopped') return
+    const isSessionCurrent = () => activeSessionRef.current === session
+      && session.status !== 'stopped'
+      && latestFullPlayerSessionId === session.id
+      && playbackEpochRef.current === playbackEpoch
+    const loadedUrls = loadedSubtitleUrlsRef.current
+    const subtitleSources = subtitleSourcesRef.current
+    const state = useAppStore.getState()
+    const preferred = state.preferredSubtitles || []
+    const available = subtitles
       .map((track, index) => ({ track, index }))
-      .filter(({ track }) => track.url && !loadedSubtitleUrlsRef.current.has(track.url!))
+      .filter(({ track }) => track.url)
+    const preferredTracks = available.filter(({ track }) => {
+      const code = getLanguageCodeFromTrack(track.lang)
+      return Boolean(code && preferred.includes(code))
+    })
+    const forcedTracks = available.filter(({ track }) => /\bforced\b/i.test(track.label || ''))
+    // Matching-audio behavior cannot be decided until mpv reports the chosen
+    // audio track. Load both normal preferred and forced candidates now so the
+    // later selector can apply Show / Forced / Hide correctly.
+    const initialBase = preferredTracks.length > 0 ? preferredTracks : available.slice(0, 2)
+    const initial = [...initialBase, ...forcedTracks].filter((candidate, index, all) =>
+      all.findIndex((entry) => entry.track.url === candidate.track.url) === index
+    )
+    // Download only the tracks needed for auto-selection during startup.
+    // The complete catalog is loaded when the user opens the subtitle menu.
+    const selectedTracks = (loadAll ? available : initial).slice(0, loadAll ? undefined : 4)
+    const pending = selectedTracks.filter(({ track }) => !loadedUrls.has(track.url!))
     if (!pending.length) return
 
     // Mark all as loading immediately to prevent duplicate downloads
-    for (const { track } of pending) loadedSubtitleUrlsRef.current.add(track.url!)
+    for (const { track } of pending) loadedUrls.add(track.url!)
 
-    // Download all files in parallel
-    const results = await Promise.allSettled(
-      pending.map(async ({ track, index }) => {
+    // Keep native HTTP workers and local file writes bounded when the user
+    // explicitly opens a large subtitle catalog.
+    const results: PromiseSettledResult<{ track: SubtitleResult; localPath: string; label: string }>[] = []
+    for (let offset = 0; offset < pending.length; offset += 4) {
+      if (!isSessionCurrent()) break
+      const batch = pending.slice(offset, offset + 4)
+      results.push(...await Promise.allSettled(
+        batch.map(async ({ track, index }) => {
         const lang = languageName(track.lang)
         const sourceName = track.source === 'addon' ? (track.addonName || 'Addon') : 'Stream'
         const label = `${lang} · ${sourceName} · External`
         let extension = 'srt'
-        try { extension = new URL(track.url!).pathname.split('.').pop()?.slice(0, 5) || 'srt' } catch {}
+        try { extension = new URL(track.url!).pathname.split('.').pop()?.slice(0, 5) || 'srt' } catch (_) {}
         const fileName = `${track.source || 'external'}-${track.lang || 'und'}-${index}.${extension}`
         const localPath = await downloadSubtitle(track.url!, fileName)
         return { track, localPath, label }
-      })
-    )
+        }),
+      ))
+    }
+
+    if (!isSessionCurrent()) {
+      for (const { track } of pending) loadedUrls.delete(track.url!)
+      return
+    }
 
     // Add downloaded files to mpv sequentially (mpv IPC is single-threaded)
     for (const r of results) {
+      if (!isSessionCurrent()) {
+        for (const { track } of pending) loadedUrls.delete(track.url!)
+        return
+      }
       if (r.status === 'rejected') continue
       const { track, localPath, label } = r.value
-      subtitleSourcesRef.current.set(localPath, { originalUrl: track.url!, localPath, label })
+      subtitleSources.set(localPath, { originalUrl: track.url!, localPath, label, forced: /\bforced\b/i.test(track.label || '') })
       await sendPlayerCommand('sub-add', [localPath, 'auto', label, track.lang || 'und']).catch(() => {
-        loadedSubtitleUrlsRef.current.delete(track.url!)
-        subtitleSourcesRef.current.delete(localPath)
+        loadedUrls.delete(track.url!)
+        subtitleSources.delete(localPath)
       })
     }
 
     // Clean up failed downloads so they can retry
     for (let i = 0; i < pending.length; i++) {
       if (results[i].status === 'rejected') {
-        loadedSubtitleUrlsRef.current.delete(pending[i].track.url!)
+        loadedUrls.delete(pending[i].track.url!)
       }
     }
   }, [subtitles])
 
   // ─ Track refresh ─────────────────────────────────────────────────────────
-  const refreshTracks = useCallback(async () => {
+  const refreshTracks = useCallback(async (isSessionCurrent: () => boolean = () => true) => {
     const data = await getPlayerProperty('track-list') as MpvTrack[]
-    if (!Array.isArray(data)) return false
+    if (!isSessionCurrent() || !Array.isArray(data)) return false
+    const embeddedSubs = data.filter((track) => track.type === 'sub' && !track.external)
+    const embeddedBySource = new Map(
+      embeddedSubs
+        .filter((track) => track['src-id'] != null && track['ff-index'] != null)
+        .map((track) => [`${track['src-id']}:${track['ff-index']}`, track]),
+    )
+    const mirroredEmbedded = new Map<string, MpvTrack>()
+    data
+      .filter((track) => track.type === 'sub' && track.external)
+      .forEach((track) => {
+        const key = `${track['src-id']}:${track['ff-index']}`
+        if (embeddedBySource.has(key)) mirroredEmbedded.set(key, track)
+      })
+    const trackSources = new Map<number, SubtitleSource>()
+    data
+      .filter((t) => t.type === 'sub')
+      .forEach((track) => {
+        const trackPath = normalizeSubtitlePath(track['external-filename'] || track.filename)
+        if (!trackPath) return
+        const source = [...subtitleSourcesRef.current.values()].find((candidate) => {
+          const sourcePath = normalizeSubtitlePath(candidate.localPath)
+          return sourcePath === trackPath || trackPath.endsWith(sourcePath) || sourcePath.endsWith(trackPath)
+        })
+        if (source) trackSources.set(track.id, source)
+      })
+    subtitleTrackSourcesRef.current = trackSources
     const audio = data
       .filter((t) => t.type === 'audio')
       .map((t) => ({ id: t.id, label: trackLabel(t, `Audio ${t.id}`), lang: t.lang, priority: 0 }))
     const subs = data
       .filter((t) => t.type === 'sub')
-      .map((t) => ({ id: t.id, label: trackLabel(t, `Sub ${t.id}`), lang: t.lang, priority: trackPriority(t) }))
+      // Hide the AI-translated track from the list — it's driven only by the
+      // "Live Translate" toggle, not picked as a normal subtitle option.
+      .filter((t) => t.id !== aiSubtitleTrackIdRef.current && !t.title?.endsWith('(Translated)'))
+      // The same media is attached as a subtitle-only source so changing an
+      // embedded track cannot seek the primary audio/video demuxer. Show those
+      // mirrored tracks in place of their buffering-prone originals.
+      .filter((t) => t.external || (
+        subtitleMirrorPendingRef.current === null
+        && !mirroredEmbedded.has(`${t['src-id']}:${t['ff-index']}`)
+      ))
+      .map((t) => {
+        const original = t.external ? embeddedBySource.get(`${t['src-id']}:${t['ff-index']}`) : undefined
+        const displayTrack = original
+          ? {
+              ...t,
+              external: false,
+              title: original.title,
+              lang: t.lang || original.lang,
+              default: t.default || original.default,
+              forced: t.forced || original.forced,
+            }
+          : t
+        const label = trackLabel(displayTrack, `Sub ${t.id}`)
+        return {
+          id: t.id,
+          label,
+          lang: displayTrack.lang,
+          priority: trackPriority(displayTrack),
+          forced: Boolean(displayTrack.forced || subtitleTrackSourcesRef.current.get(t.id)?.forced || /\bforced\b/i.test(label)),
+        }
+      })
       .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label))
     const selAudio = data.find((t) => t.type === 'audio' && t.selected)
     const selSub = data.find((t) => t.type === 'sub' && t.selected)
+    if (!isSessionCurrent()) return false
     setAudioTracks(audio)
     setSubTracks(subs)
     if (selAudio) setSelectedAudio(selAudio.id)
-    if (selSub) setSelectedSub(selSub.id)
+    if (selSub) {
+      const mirror = !selSub.external
+        ? mirroredEmbedded.get(`${selSub['src-id']}:${selSub['ff-index']}`)
+        : undefined
+      setSelectedSub(mirror?.id ?? selSub.id)
+    }
     else setSelectedSub('no')
 
     // Auto-select preferred audio + subtitle tracks independently.
@@ -777,108 +1886,167 @@ function FullNativeMpvPlayer({
     const bothDone = hasAutoSelectedAudioRef.current && hasAutoSelectedSubRef.current
     if (!bothDone && autoSelectAttemptsRef.current < MAX_AUTO_SELECT && data.length > 0) {
       autoSelectAttemptsRef.current++
-      const preferredAudio = useAppStore.getState().preferredAudio || ['en', 'ja']
-      const preferredSubtitles = useAppStore.getState().preferredSubtitles || ['en']
+      const { preferredAudio = ['en', 'ja'], preferredSubtitles = ['en'], subtitleMode, preferSdhSubtitles, animeAudioMode } = useAppStore.getState()
+      const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+      let chosenAudioId = selAudio?.id
 
       // ── Audio auto-select ──
       if (!hasAutoSelectedAudioRef.current && audio.length > 0) {
-        let bestAudioId = selAudio?.id
-        let bestAudioRank = Infinity
-        audio.forEach((t) => {
-          const code = getLanguageCodeFromTrack(t.lang)
-          const rank = code ? preferredAudio.indexOf(code) : -1
-          if (rank !== -1 && rank < bestAudioRank) { bestAudioRank = rank; bestAudioId = t.id }
-        })
-        if (bestAudioId !== undefined && bestAudioId !== selAudio?.id) {
-          sendPlayerCommand('set_property', ['aid', bestAudioId])
-          setSelectedAudio(bestAudioId)
+        const bestAudioId = selectPreferredLanguageTrack(audio, audioPreferences, getLanguageCodeFromTrack)?.id
+        if (bestAudioId !== undefined) {
+          chosenAudioId = bestAudioId
+          if (bestAudioId !== selAudio?.id) {
+            if (isSessionCurrent()) {
+              setTrackProperty('aid', bestAudioId).catch((error) => {
+                logEvent('MPV DEBUG', `preferred audio track ${bestAudioId} failed: ${String(error)}`)
+              })
+            }
+            setSelectedAudio(bestAudioId)
+          }
+          hasAutoSelectedAudioRef.current = true
+        } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
+          hasAutoSelectedAudioRef.current = true
         }
-        hasAutoSelectedAudioRef.current = true
       }
 
       // ── Subtitle auto-select ──
-      if (!hasAutoSelectedSubRef.current && subs.length > 0) {
-        let bestSubId: number | 'no' = selSub?.id || 'no'
-        let bestSubRank = Infinity
-        subs.forEach((t) => {
-          const code = getLanguageCodeFromTrack(t.lang)
-          const rank = code ? preferredSubtitles.indexOf(code) : -1
-          if (rank !== -1 && rank < bestSubRank) { bestSubRank = rank; bestSubId = t.id }
+      if (!hasAutoSelectedSubRef.current) {
+        const subtitleSelection = selectStartupSubtitle({
+          tracks: subs,
+          preferred: preferredSubtitles,
+          preferSdh: preferSdhSubtitles,
+          mode: subtitleMode,
+          selectedAudioLanguage: audio.find((track) => track.id === chosenAudioId)?.lang,
+          normalize: getLanguageCodeFromTrack,
         })
-        if (bestSubId !== 'no' && bestSubId !== selSub?.id) {
-          sendPlayerCommand('set_property', ['sid', bestSubId])
-          setSelectedSub(bestSubId as number)
+        if (subtitleSelection.kind === 'off') {
+          if (selSub && isSessionCurrent()) sendPlayerCommand('set_property', ['sid', 'no'])
+          setSelectedSub('no')
+          hasAutoSelectedSubRef.current = true
+        } else if (subtitleSelection.kind === 'track') {
+          const bestSubId = subtitleSelection.track.id
+          if (bestSubId !== selSub?.id) {
+            if (isSessionCurrent()) {
+              setTrackProperty('sid', bestSubId).catch((error) => {
+                logEvent('MPV DEBUG', `preferred subtitle track ${bestSubId} failed: ${String(error)}`)
+              })
+            }
+            setSelectedSub(bestSubId)
+          }
+          hasAutoSelectedSubRef.current = true
+        } else if (autoSelectAttemptsRef.current >= MAX_AUTO_SELECT) {
+          hasAutoSelectedSubRef.current = true
         }
-        hasAutoSelectedSubRef.current = true
       }
     }
     setTracksLoaded(audio.length > 0 || subs.length > 0)
     return audio.length > 0 || subs.length > 0
-  }, [])
+  }, [playbackItem?.isAnime, setTrackProperty])
+
+  const mirrorEmbeddedSubtitles = useCallback((source: string) => {
+    const session = activeSessionRef.current
+    const playbackEpoch = playbackEpochRef.current
+    if (!session || session.status === 'stopped') return
+    const isSessionCurrent = () => activeSessionRef.current === session
+      && session.status !== 'stopped'
+      && latestFullPlayerSessionId === session.id
+      && playbackEpochRef.current === playbackEpoch
+    // mpv opens this as a separate subtitle demuxer. Its refresh seeks stay on
+    // that connection and cannot drain or pause the primary A/V packet queue.
+    subtitleMirrorPendingRef.current = source
+    sendPlayerCommand('sub-add', [source, 'auto'])
+      .then(() => {
+        if (!isSessionCurrent() || subtitleMirrorPendingRef.current !== source) return false
+        subtitleMirrorPendingRef.current = null
+        return refreshTracks(isSessionCurrent)
+      })
+      .catch((error) => {
+        if (isSessionCurrent() && subtitleMirrorPendingRef.current === source) {
+          subtitleMirrorPendingRef.current = null
+          refreshTracks(isSessionCurrent).catch(() => false)
+        }
+        logEvent('MPV DEBUG', `subtitle mirror failed: ${String(error)}`)
+      })
+  }, [refreshTracks])
 
   // ─ Live subtitle translation ─────────────────────────────────────────────
-  // Fast 200ms poll. Translation fires concurrently (non-blocking) so the poll
-  // never stalls waiting for the API. Cached lines display instantly.
+  // Polling stays independent of the API. Keep only one request active and
+  // one latest pending line so slow responses cannot fan out paid requests.
   useEffect(() => {
-    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang) return
-    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang || liveAiSubtitlePathRef.current) return
+    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)!
     if (!lang) return
 
     let cancelled = false
-    const inflight = new Set<string>()
     let lastText = ''
+    let translationInFlight = false
+    let queuedLine: string | null = null
+    const model = openrouterModel || 'google/gemini-2.5-flash'
 
     const translateLine = async (line: string) => {
-      if (inflight.has(line) || liveTranslateCacheRef.current.has(line)) return
-      inflight.add(line)
+      const cacheKey = liveTranslationCacheKey(line, lang.code, model)
+      if (liveTranslateCacheRef.current.has(cacheKey)) return
       try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${openrouterApiKey}`,
-            'HTTP-Referer': 'https://github.com/itsrenoria/aurales',
-            'X-Title': 'Aurales Media Player',
-          },
-          body: JSON.stringify({
-            model: openrouterModel || 'google/gemini-2.5-flash',
-            messages: [
-              { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise — this is a subtitle line.` },
-              { role: 'user', content: line }
-            ]
-          })
+        const raw = await openRouterChat(openrouterApiKey, {
+          model,
+          messages: [
+            { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise - this is a subtitle line.` },
+            { role: 'user', content: line }
+          ]
         })
-        if (cancelled || !response.ok) return
-        const data = await response.json()
-        const result = data.choices?.[0]?.message?.content?.trim()
+        if (cancelled) return
+        const data = JSON.parse(raw)
+        const result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
         if (!result || cancelled) return
-        liveTranslateCacheRef.current.set(line, result)
+        rememberLiveTranslation(liveTranslateCacheRef.current, cacheKey, result)
         if (liveTranslatePendingRef.current === line) setTranslatedText(result)
-      } catch { /* retry next occurrence */ }
-      finally { inflight.delete(line) }
+      } catch (_) { /* retry next occurrence */ }
     }
 
+    const drainTranslationQueue = async () => {
+      if (translationInFlight) return
+      translationInFlight = true
+      try {
+        while (!cancelled && queuedLine) {
+          const line = queuedLine
+          queuedLine = null
+          await translateLine(line)
+        }
+      } finally {
+        translationInFlight = false
+        if (!cancelled && queuedLine) void drainTranslationQueue()
+      }
+    }
+
+    let polling = false
     const poll = setInterval(async () => {
-      if (cancelled) return
+      if (cancelled || polling) return
+      polling = true
       try {
         const text = await getPlayerProperty('sub-text') as string | null
         const trimmed = (text || '').trim()
 
         if (!trimmed) {
+          liveTranslatePendingRef.current = ''
+          queuedLine = null
           if (lastText) { setTranslatedText(''); setCurrentSubText(''); lastText = '' }
           return
         }
         if (trimmed === lastText) return
         lastText = trimmed
         liveTranslatePendingRef.current = trimmed
+        queuedLine = null
         setCurrentSubText(trimmed)
 
-        const cached = liveTranslateCacheRef.current.get(trimmed)
+        const cacheKey = liveTranslationCacheKey(trimmed, lang.code, model)
+        const cached = liveTranslateCacheRef.current.get(cacheKey)
         if (cached) { setTranslatedText(cached); return }
 
         setTranslatedText('')
-        translateLine(trimmed)
-      } catch { /* next poll */ }
+        queuedLine = trimmed
+        void drainTranslationQueue()
+      } catch (_) { /* next poll */ }
+      finally { polling = false }
     }, 250)
 
     return () => { cancelled = true; clearInterval(poll) }
@@ -893,36 +2061,115 @@ function FullNativeMpvPlayer({
     }
   }, [liveTranslateOn])
 
+  useEffect(() => {
+    if (!liveTranslateOn || !openrouterApiKey || !subtitleTranslationLang || !liveAiSubtitlePathRef.current) return
+    const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+    if (!lang) return
+    if (sourceCuesRef.current.length === 0) return
+
+    // Translate the source cue list ahead of playback. Each translated cue keeps
+    // its ORIGINAL start/end, so it displays in perfect sync no matter how long
+    // the API call took. We stay ~AHEAD cues in front of the playhead.
+    const AHEAD = 10
+    const RESYNC_GAP = AHEAD * 3 // a jump this far behind playback means a seek
+    let cancelled = false
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+    const appendTranslatedCue = async (text: string, start: number, end: number) => {
+      const path = liveAiSubtitlePathRef.current
+      if (!path || cancelled) return
+      liveAiCueIndexRef.current += 1
+      const cue = [
+        String(liveAiCueIndexRef.current),
+        `${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(Math.max(end, start + 1))}`,
+        text,
+        '',
+        '',
+      ].join('\n')
+      liveAiSubtitleContentRef.current += cue
+      await updateTempSubtitle(path, liveAiSubtitleContentRef.current)
+      await sendPlayerCommand('sub-reload').catch(() => {})
+    }
+
+    const model = openrouterModel || 'google/gemini-2.5-flash'
+    const translateLine = async (line: string): Promise<string> => {
+      const cacheKey = liveTranslationCacheKey(line, lang.code, model, contextAwareTranslation ? currentDisplayTitle : '')
+      const cached = liveTranslateCacheRef.current.get(cacheKey)
+      if (cached) return cached
+      const raw = await openRouterChat(openrouterApiKey, {
+        model,
+        messages: [
+          { role: 'system', content: `Translate into natural ${lang.name}. Output ONLY the translation, nothing else. Keep it concise; this is a subtitle cue.` },
+          { role: 'user', content: contextAwareTranslation ? `${currentDisplayTitle}\n\n${line}` : line }
+        ]
+      })
+      const data = JSON.parse(raw)
+      const result = stripAiSubtitleResponse(data.choices?.[0]?.message?.content || '')
+      if (result) rememberLiveTranslation(liveTranslateCacheRef.current, cacheKey, result)
+      return result
+    }
+
+    const pump = async () => {
+      while (!cancelled) {
+        const cues = sourceCuesRef.current
+        if (sourceNextIdxRef.current >= cues.length) { await sleep(1500); continue }
+
+        const now = progressRef.current.currentTime
+        // Number of cues whose start time is at/behind the playhead.
+        let currentIdx = 0
+        while (currentIdx < cues.length && cues[currentIdx].start <= now) currentIdx++
+        // Big forward jump (seek) → don't waste calls translating skipped cues.
+        if (currentIdx - sourceNextIdxRef.current > RESYNC_GAP) sourceNextIdxRef.current = currentIdx
+
+        if (sourceNextIdxRef.current >= currentIdx + AHEAD) { await sleep(400); continue }
+
+        const cue = cues[sourceNextIdxRef.current]
+        try {
+          const translated = await translateLine(cue.text)
+          if (cancelled) return
+          if (translated) await appendTranslatedCue(translated, cue.start, cue.end)
+        } catch (_) {
+          // Skip a failed cue rather than stalling the whole track.
+        }
+        sourceNextIdxRef.current += 1
+      }
+    }
+
+    pump()
+
+    return () => { cancelled = true }
+  }, [contextAwareTranslation, currentDisplayTitle, liveTranslateOn, openrouterApiKey, openrouterModel, subtitleTranslationLang])
+
   // Addon subtitle requests can finish after playback has already started.
   // Load every newly received URL and refresh MPV tracks without requiring the
   // subtitle menu to be opened first. This also unlocks automatic translation.
   useEffect(() => {
     let cancelled = false
+    const session = activeSessionRef.current
+    const isSessionCurrent = () => Boolean(session)
+      && activeSessionRef.current === session
+      && session?.status !== 'stopped'
+      && latestFullPlayerSessionId === session?.id
     const syncExternalSubtitles = async () => {
       await loadAddonSubtitles()
-      if (!cancelled) await refreshTracks().catch(() => false)
+      if (!cancelled && isSessionCurrent()) await refreshTracks(isSessionCurrent).catch(() => false)
     }
     syncExternalSubtitles().catch(() => {})
     return () => { cancelled = true }
   }, [subtitles, loadAddonSubtitles, refreshTracks])
 
   // ─ Background init effects ───────────────────────────────────────────────
-  useEffect(() => {
-    const origHtml = document.documentElement.style.background
-    const origBody = document.body.style.background
-    document.body.style.background = 'transparent'
-    document.documentElement.style.background = 'transparent'
+  useLayoutEffect(() => {
+    fullPlayerMountCount += 1
+    document.documentElement.classList.add('full-player-active')
+    document.body.style.setProperty('background', 'transparent', 'important')
     return () => {
-      document.body.style.background = origBody
-      document.documentElement.style.background = origHtml
-    }
-  }, [])
-
-  useEffect(() => {
-    const root = document.getElementById('root')
-    if (root) { root.style.visibility = 'hidden'; root.style.pointerEvents = 'none' }
-    return () => {
-      if (root) { root.style.visibility = ''; root.style.pointerEvents = '' }
+      fullPlayerMountCount = Math.max(0, fullPlayerMountCount - 1)
+      if (fullPlayerMountCount === 0) {
+        document.documentElement.classList.remove('full-player-active')
+        document.body.style.removeProperty('background')
+      }
     }
   }, [])
 
@@ -939,16 +2186,99 @@ function FullNativeMpvPlayer({
     }
   }, [showControls])
 
+  // Size the mpv child window to the host's REAL physical client size. Using
+  // window.innerWidth * devicePixelRatio drifts from the true client size across
+  // a fullscreen transition (DPI/timing), which left the video not filling the
+  // screen. innerSize() is already in physical pixels — exactly what mpv wants.
+  const applyFullVideoViewport = useCallback(async () => {
+    if (showUpNextRef.current) {
+      await resizeEmbeddedPlayer(buildUpNextPipViewport()).catch(() => {})
+      return
+    }
+    if (isFullscreenRef.current) {
+      // The native command resolves zero dimensions from the real Win32 client
+      // rectangle, avoiding stale WebView/DPI sizes during fullscreen changes.
+      await resizeEmbeddedPlayer({ x: 0, y: 0, width: 0, height: 0 }).catch(() => {})
+      return
+    }
+    try {
+      const size = await getCurrentWindow().innerSize()
+      if (size.width > 0 && size.height > 0) {
+        await resizeEmbeddedPlayer({ x: 0, y: 0, width: size.width, height: size.height })
+        return
+      }
+    } catch (_) { /* fall through to the CSS-based estimate */ }
+    await resizeEmbeddedPlayer(buildVideoViewport()).catch(() => {})
+  }, [])
+
+  const repairFullscreenWindow = useCallback(async () => {
+    if (!isFullscreenRef.current) return
+    await invoke('set_native_player_fullscreen', { fullscreen: true }).catch(() => {})
+    await applyFullVideoViewport()
+    await invoke('setup_player_click_through').catch(() => {})
+  }, [applyFullVideoViewport])
+
+  const exitFullscreenWindow = useCallback(async () => {
+    const transition = ++fullscreenTransitionRef.current
+    // Disable fullscreen repairs before asking Windows to leave fullscreen.
+    // Focus/move events emitted during the transition must not put it back.
+    isFullscreenRef.current = false
+    setIsFullscreen(false)
+    await invoke('set_native_player_fullscreen', { fullscreen: false }).catch(() => {})
+    if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
+    // Allow the native client rectangle to settle before sizing the mpv child.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    if (fullscreenTransitionRef.current !== transition || isFullscreenRef.current) return
+    await applyFullVideoViewport()
+  }, [applyFullVideoViewport])
+
   const toggleFullscreen = useCallback(async () => {
-    const win = getCurrentWindow()
-    const current = await win.isFullscreen().catch(() => false)
-    const next = !current
-    setIsFullscreen(next)
-    await win.setFullscreen(next).catch((e) => setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`))
-    const doResize = () => resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
-    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(doResize, d))
+    // Tauri's isFullscreen() can lag behind the compositor during a transition.
+    // Deriving the next state from that delayed value made both the F hotkey and
+    // button occasionally issue the same request twice. The ref is updated
+    // optimistically and a lock rejects repeat input until the request settles.
+    if (fullscreenTransitionPendingRef.current) return
+    fullscreenTransitionPendingRef.current = true
+    // Native window calls can occasionally wait on the compositor. Never let
+    // that leave the button and F hotkey locked for the rest of playback.
+    const forceUnlockTimer = window.setTimeout(() => {
+      fullscreenTransitionPendingRef.current = false
+    }, 900)
+    const targetFullscreen = !isFullscreenRef.current
+    try {
+      if (targetFullscreen) {
+        // Flip state up front so the window-drag strip disappears immediately.
+        ++fullscreenTransitionRef.current
+        isFullscreenRef.current = true
+        setIsFullscreen(true)
+        await invoke('set_native_player_fullscreen', { fullscreen: true })
+      } else {
+        await exitFullscreenWindow()
+      }
+    } catch (e) {
+      if (targetFullscreen) {
+        isFullscreenRef.current = false
+        setIsFullscreen(false)
+      }
+      setError(`Fullscreen failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      window.clearTimeout(forceUnlockTimer)
+      // Keep the lock through the first compositor frame; otherwise a key-repeat
+      // or click followed by F can race the native window-state notification.
+      window.setTimeout(() => {
+        fullscreenTransitionPendingRef.current = false
+      }, 180)
+    }
+    // Re-sync the mpv child to the new client size (retries as the transition settles).
+    const linux = document.documentElement.dataset.platform === 'linux'
+    ;[0, 150, 400, 800, 1500].forEach((d) => setTimeout(() => {
+      if (linux && isFullscreenRef.current) repairFullscreenWindow().catch(() => {})
+      else applyFullVideoViewport()
+    }, d))
     showControls()
-  }, [showControls])
+  }, [showControls, applyFullVideoViewport, exitFullscreenWindow, repairFullscreenWindow])
+
+  const togglePlayRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     let pressedKey: string | null = null
@@ -968,7 +2298,7 @@ function FullNativeMpvPlayer({
       if (key === ' ' || key === 'Spacebar') {
         e.preventDefault()
         e.stopPropagation()
-        togglePlay()
+        togglePlayRef.current()
         showControls()
         return
       }
@@ -977,24 +2307,55 @@ function FullNativeMpvPlayer({
         e.preventDefault()
         e.stopPropagation()
         showControls()
+        if (wtControlBlocked()) { wtBlockedNotice(); return }
 
         if (e.repeat) return
 
         if (holdTimeout) clearTimeout(holdTimeout)
         if (spoolInterval) clearInterval(spoolInterval)
 
+        const step = useAppStore.getState().seekStepSeconds || 10
         pressedKey = key
-        accumulatedSeekRef.current = key === 'ArrowRight' ? 10 : -10
+        const direction = key === 'ArrowRight' ? 1 : -1
+        const initialDelta = direction * step
+        const initialTarget = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + initialDelta))
+        progressRef.current.currentTime = initialTarget
+        setCurrentTime(initialTarget)
+        sendPlayerCommand('seek', [initialDelta, 'relative+keyframes']).catch(() => {})
+        sendWatchTogetherSeek(initialTarget)
+        accumulatedSeekRef.current = initialDelta
         setAccumulatedSeek(accumulatedSeekRef.current)
 
         holdTimeout = setTimeout(() => {
           spoolInterval = setInterval(() => {
             if (accumulatedSeekRef.current !== null) {
-              accumulatedSeekRef.current += key === 'ArrowRight' ? 5 : -5
+              const spool = Math.max(5, Math.round(step / 2))
+              const delta = direction * spool
+              const target = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + delta))
+              progressRef.current.currentTime = target
+              setCurrentTime(target)
+              sendPlayerCommand('seek', [delta, 'relative+keyframes']).catch(() => {})
+              sendWatchTogetherSeek(target)
+              accumulatedSeekRef.current += delta
               setAccumulatedSeek(accumulatedSeekRef.current)
             }
           }, 150)
         }, 250)
+        return
+      }
+
+      if (key === 'Escape') {
+        if (trackMenu || showSpeedMenu || showMediaInfo || showChapters || showPlayerDebug) {
+          e.preventDefault()
+          e.stopPropagation()
+          dismissPlayerOptions()
+          return
+        }
+        if (isFullscreenRef.current) {
+          e.preventDefault()
+          e.stopPropagation()
+          toggleFullscreen()
+        }
         return
       }
 
@@ -1036,12 +2397,7 @@ function FullNativeMpvPlayer({
           e.stopPropagation()
           if (holdTimeout) clearTimeout(holdTimeout)
           if (spoolInterval) clearInterval(spoolInterval)
-          
-          if (accumulatedSeekRef.current !== null) {
-            logEvent('PLAYER DEBUG', `Keyboard seek triggered for: ${accumulatedSeekRef.current}s`)
-            sendPlayerCommand('seek', [accumulatedSeekRef.current, 'relative']).catch(() => {})
-          }
-          
+
           pressedKey = null
           holdTimeout = null
           spoolInterval = null
@@ -1060,14 +2416,30 @@ function FullNativeMpvPlayer({
       if (holdTimeout) clearTimeout(holdTimeout)
       if (spoolInterval) clearInterval(spoolInterval)
     }
-  }, [showControls, toggleFullscreen])
+  }, [sendWatchTogetherSeek, showControls, toggleFullscreen, trackMenu, showSpeedMenu, showMediaInfo, showChapters, showPlayerDebug, dismissPlayerOptions, wtBlockedNotice])
 
   // ─ Player launch ─────────────────────────────────────────────────────────
   useEffect(() => {
     const streamUrl = url
     const mediaId = playbackItem?.localId || url
+    const activeSession = activeSessionRef.current
 
-    if (activeSessionRef.current && activeSessionRef.current.streamUrl === streamUrl && activeSessionRef.current.status !== "stopped") {
+    if (activeSession && activeSession.streamUrl === streamUrl && activeSession.status !== "stopped") {
+      // StrictMode and metadata-only prop updates can re-run this effect for
+      // the same live stream. Keep its playback session, but refresh the media
+      // identity used by scrobbling, progress saves, and artwork.
+      activeSession.mediaId = mediaId
+      if (playbackItem) {
+        currentItemRef.current = playbackItem
+        tmdbIdRef.current = playbackItem.tmdbId
+          ? Number(playbackItem.tmdbId)
+          : /^tmdb[-:]/i.test(playbackItem.localId || '')
+            ? Number(playbackItem.localId!.replace(/^tmdb[-:]/i, ''))
+            : undefined
+      }
+      currentPosterRef.current = poster || currentPosterRef.current
+      currentBackdropRef.current = backdrop || currentBackdropRef.current
+      currentStreamUrlRef.current = streamUrl
       console.warn("[PLAYER DEBUG] startPlayback ignored: already playing same stream")
       return
     }
@@ -1080,32 +2452,115 @@ function FullNativeMpvPlayer({
       status: "starting"
     }
     activeSessionRef.current = session
+    currentItemRef.current = playbackItem
+    currentPosterRef.current = poster
+    currentBackdropRef.current = backdrop
+    currentStreamUrlRef.current = streamUrl
+    tmdbIdRef.current = playbackItem?.tmdbId
+      ? Number(playbackItem.tmdbId)
+      : /^tmdb[-:]/i.test(playbackItem?.localId || '')
+        ? Number(playbackItem!.localId.replace(/^tmdb[-:]/i, ''))
+        : undefined
+    const playbackEpoch = ++playbackEpochRef.current
+    loadedSubtitleUrlsRef.current = new Set()
+    subtitleSourcesRef.current = new Map()
+    subtitleTrackSourcesRef.current = new Map()
+    subtitleMirrorPendingRef.current = null
+    autoSkippedSegmentsRef.current = new Set()
+    playerReadyRef.current = false
+    unstableStreamNotifiedRef.current = false
+    bufferingStartedAtRef.current = null
+    setPlayerReady(false)
+    setPlayerRunning(false)
+    setCurrentTime(startTime || 0)
+    setDuration(0)
+    progressRef.current = { currentTime: startTime || 0, duration: 0 }
+    setTracksLoaded(false)
+    setAudioTracks([])
+    setSubTracks([])
+    setSelectedSub('no')
+    setSkips([])
+    setActiveSkip(null)
+    setSkipType(null)
+    setChapters([])
+    latestFullPlayerSessionId = session.id
     logEvent('PLAYER DEBUG', `Player started session ${session.id} for media ${session.mediaId}`)
 
     let cancelled = false
+    const sessionTimers = new Set<ReturnType<typeof setTimeout>>()
+    const isSessionStopped = () => session.status === 'stopped'
     const start = async () => {
       try {
         logEvent('PLAYER DEBUG', `Spawn mpv process for session ${session.id} with URL hash: ${playerUrlHash(url)}`)
         const storeState = useAppStore.getState()
+        markPerformance('mpv-init-start')
         await launchEmbeddedPlayer({
           url,
           title,
           startTime,
           volume: volumeRef.current,
           viewport: buildVideoViewport(),
-          hwdecMode: storeState.hwdecMode,
-          cacheBufferSize: storeState.cacheBufferSize,
-          mpvCacheSecs: storeState.mpvCacheSecs,
-          mpvNetworkTimeout: storeState.mpvNetworkTimeout,
-          mpvCustomArgs: storeState.mpvCustomArgs
+          hwdecMode: 'auto',
+          videoCacheMode: storeState.videoCacheMode,
+          mpvCustomArgs: buildMpvExtraArgs(storeState)
         })
+        markPerformance('mpv-initialized')
+        measurePerformance('mpv-initialization', 'mpv-init-start', 'mpv-initialized')
         if (cancelled || session.status === "stopped") return
+        mirrorEmbeddedSubtitles(streamUrl)
         setPlayerRunning(true)
         session.status = "playing"
+        showControls()
+        const syncNativeSurface = () => {
+          resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+          invoke('setup_player_click_through').catch(() => {})
+        }
+        syncNativeSurface()
+        ;[100, 300, 700, 1500, 3000, 5000].forEach((delay) => {
+          setTimeout(() => {
+            if (!cancelled && session.status !== "stopped") syncNativeSurface()
+          }, delay)
+        })
 
-        // Enforce saved volume a few times because mpv can reset filters/audio
-        // while the demuxer initializes on some streams.
+        // Enforce saved volume and subtitle styling
         applySavedVolume()
+        const subState = useAppStore.getState()
+        sendPlayerCommand('set_property', ['sub-font-size', subState.subtitleFontSize]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-scale', subState.subtitleScale]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-bold', subState.subtitleBold ? 'yes' : 'no']).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-italic', subState.subtitleItalic ? 'yes' : 'no']).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-color', subState.subtitleColor]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-border-color', subState.subtitleOutlineColor]).catch(() => {})
+
+        const bgAlpha = Math.round(Number(subState.subtitleBgOpacity) * 255).toString(16).padStart(2, '0')
+        const cleanBgColor = subState.subtitleBgColor.replace('#', '')
+        sendPlayerCommand('set_property', ['sub-back-color', `#${bgAlpha}${cleanBgColor}`]).catch(() => {})
+
+        if (subState.subtitleBorderStyle === 'outline') {
+          sendPlayerCommand('set_property', ['sub-border-size', subState.subtitleOutlineThickness]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+        } else if (subState.subtitleBorderStyle === 'shadow') {
+          sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', subState.subtitleShadowOffset]).catch(() => {})
+          const shadowAlpha = Math.round(subState.subtitleShadowOpacity * 255).toString(16).padStart(2, '0')
+          sendPlayerCommand('set_property', ['sub-shadow-color', `#${shadowAlpha}000000`]).catch(() => {})
+        } else {
+          sendPlayerCommand('set_property', ['sub-border-size', 0]).catch(() => {})
+          sendPlayerCommand('set_property', ['sub-shadow-offset', 0]).catch(() => {})
+        }
+
+        sendPlayerCommand('set_property', ['sub-pos', subState.subtitleVerticalPosition]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-align-x', subState.subtitleAlignment]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-margin-x', subState.subtitleHorizontalMargin]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-blur', subState.subtitleTextBlur]).catch(() => {})
+        sendPlayerCommand('set_property', ['sub-scale-with-window', subState.subtitleScaleWithWindow ? 'yes' : 'no']).catch(() => {})
+
+        const overrideMap: Record<string, string> = {
+          apply: 'no',
+          scale_only: 'scale',
+          ignore: 'yes'
+        }
+        sendPlayerCommand('set_property', ['sub-ass-override', overrideMap[subState.subtitleAssOverride] || 'scale']).catch(() => {})
 
         if (playbackItem) {
           const startProgress = startTime && progressRef.current.duration > 0
@@ -1116,24 +2571,32 @@ function FullNativeMpvPlayer({
           }
           if (scrobbleTrakt && isTraktAuthenticated() && playbackItem.imdbId) {
             const pct = Math.round(startProgress * 10000) / 100
-            const payload = playbackItem.mediaType === 'show' && playbackItem.season != null && playbackItem.episode != null
+            const payload = playbackItem.contentType === 'series' && playbackItem.season != null && playbackItem.episode != null
               ? buildEpisodeScrobble(playbackItem.imdbId, playbackItem.season, playbackItem.episode, pct)
               : buildMovieScrobble(playbackItem.imdbId, pct)
             logEvent('PLAYBACK SYNC DEBUG', `Send Trakt start for session ${session.id} at ${pct}%`)
             traktScrobbleStart(payload).catch(() => {})
+          }
+          if (scrobbleMdblistEnabled && mdblistApiKey) {
+            const pct = Math.round(startProgress * 10000) / 100
+            const mediaType = playbackItem.contentType === 'movie' ? 'movie' : 'series'
+            scrobbleMdblist('start', tmdbIdRef.current, mediaType, pct, playbackItem.season, playbackItem.episode, playbackItem.imdbId, playbackItem.tvdbId).catch(() => {})
           }
 
           // Resolve TMDB ID then fetch skips from PMDB + IntroDB and merge
           const resolveAndFetchSkips = async () => {
             if (!tmdbIdRef.current && playbackItem.imdbId) {
               try {
-                const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+                const isEpisodic = playbackItem.contentType === 'series'
                 const preferredType = isEpisodic ? 'tv' : 'movie'
                 const mapping = await lookupTmdbId('imdb', playbackItem.imdbId, preferredType)
-                if (mapping) tmdbIdRef.current = mapping.tmdbId
-              } catch {}
+                if (mapping && !cancelled && session.status !== "stopped" && playbackEpochRef.current === playbackEpoch) {
+                  tmdbIdRef.current = mapping.tmdbId
+                  setSeekrLookupRevision((revision) => revision + 1)
+                }
+              } catch (_) {}
             }
-            const isEpisodic = playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime'
+            const isEpisodic = playbackItem.contentType === 'series'
             const mediaType = isEpisodic ? 'tv' : 'movie'
             const [pmdbSkips, introdbSkips] = await Promise.allSettled([
               tmdbIdRef.current
@@ -1147,31 +2610,71 @@ function FullNativeMpvPlayer({
               ...(pmdbSkips.status === 'fulfilled' ? pmdbSkips.value : []),
               ...(introdbSkips.status === 'fulfilled' ? introdbSkips.value : []),
             ]
-            if (!cancelled && session.status !== "stopped") setSkips(merged)
+            if (!cancelled && session.status !== "stopped" && playbackEpochRef.current === playbackEpoch) {
+              setSkips(merged)
+              const fallbackChapters = introDbChapters(merged)
+              if (fallbackChapters.length > 0) {
+                setChapters((existing) => existing.length > 0 ? existing : fallbackChapters)
+              }
+            }
           }
           resolveAndFetchSkips()
         }
 
         ;[500, 1000, 2000, 3500].forEach((delay) => {
-          setTimeout(() => { if (!cancelled && session.status !== "stopped") invoke('setup_player_click_through').catch(() => {}) }, delay)
+          const timer = setTimeout(() => {
+            sessionTimers.delete(timer)
+            if (!cancelled && session.status !== "stopped") invoke('setup_player_click_through').catch(() => {})
+          }, delay)
+          sessionTimers.add(timer)
         })
 
+        const startupTimer = setTimeout(() => {
+          sessionTimers.delete(startupTimer)
+          if (cancelled || session.status === "stopped" || playbackEpochRef.current !== playbackEpoch || playerReadyRef.current) return
+          setError('This source took too long to start. Trying another stream…')
+        }, 12_000)
+        sessionTimers.add(startupTimer)
+
         await loadAddonSubtitles()
+        if (cancelled || isSessionStopped()) return
         let attempts = 0
-        trackPollRef.current = setInterval(async () => {
-          if (cancelled || session.status === "stopped") return
-          attempts += 1
-          await loadAddonSubtitles()
+        const stopTrackPoll = () => {
+          clearInterval(trackPoll)
+          if (trackPollRef.current === trackPoll) trackPollRef.current = null
+        }
+        let trackPollInFlight = false
+        const trackPoll = setInterval(async () => {
+          if (trackPollInFlight) return
+          if (cancelled || isSessionStopped() || playbackEpochRef.current !== playbackEpoch) {
+            stopTrackPoll()
+            return
+          }
+          trackPollInFlight = true
           try {
-            const found = await refreshTracks()
-            void found
-          } catch {}
-          if (attempts >= 20) {
-            if (trackPollRef.current) clearInterval(trackPollRef.current)
-            trackPollRef.current = null
-            setTracksLoaded(true)
+            attempts += 1
+            await loadAddonSubtitles()
+            if (cancelled || isSessionStopped() || playbackEpochRef.current !== playbackEpoch) {
+              stopTrackPoll()
+              return
+            }
+            try {
+              const found = await refreshTracks(() => !cancelled && session.status !== "stopped" && playbackEpochRef.current === playbackEpoch)
+              void found
+            } catch (_) {}
+            if (cancelled || isSessionStopped() || playbackEpochRef.current !== playbackEpoch) {
+              stopTrackPoll()
+              return
+            }
+            if (attempts >= 20) {
+              stopTrackPoll()
+              setTracksLoaded(true)
+            }
+          } finally {
+            trackPollInFlight = false
           }
         }, 1000)
+        trackPollRef.current = trackPoll
       } catch (e) {
         if (!cancelled && session.status !== "stopped") setError(e instanceof Error ? e.message : String(e))
       }
@@ -1185,39 +2688,157 @@ function FullNativeMpvPlayer({
       if (pollRef.current) clearInterval(pollRef.current)
       if (trackPollRef.current) clearInterval(trackPollRef.current)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-      stopEmbeddedPlayer().catch(() => {})
+      sessionTimers.forEach((timer) => clearTimeout(timer))
+      sessionTimers.clear()
+      // Defer stop so a re-mount's launchEmbeddedPlayer (which internally
+      // calls stop_embedded_mpv) can claim the player first.  If a new
+      // session has already taken over by the time this fires, skip the
+      // stop — otherwise we'd kill the new session's mpv process.
+      setTimeout(() => {
+        // Only stop if a new session HAS NOT claimed the player slot.
+        // A short delay ensures rapid StrictMode remounts have time to
+        // update the global session ID before we check.
+        if (latestFullPlayerSessionId === session.id) {
+          latestFullPlayerSessionId = null
+          stopEmbeddedPlayer().catch(() => {})
+        }
+      }, 50)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, title])
+  }, [url, title, mirrorEmbeddedSubtitles])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    const syncSurfaceLayer = () => {
+      if (disposed) return
+      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
+      invoke('setup_player_click_through').catch(() => {})
+    }
+    listen<{ sessionId: string; eventId: number }>('mpv-playback-ready', (event) => {
+      if (disposed) return
+      // FILE_LOADED means headers were parsed; PLAYBACK_RESTART means decoded
+      // playback actually began. Only the latter should dismiss loading.
+      if (event.payload.eventId !== 21) return
+      const activeSession = activeSessionRef.current
+      if (!activeSession || activeSession.status === 'stopped' || latestFullPlayerSessionId !== activeSession.id) return
+      void invoke<string | null>('get_embedded_player_session_id').then((currentNativeSessionId) => {
+        if (disposed || currentNativeSessionId !== event.payload.sessionId
+          || activeSessionRef.current !== activeSession || latestFullPlayerSessionId !== activeSession.id) return
+        if (!playerReadyRef.current) {
+          markPerformance('player-video-ready')
+          measurePerformance('mpv-init-to-video-ready', 'mpv-init-start', 'player-video-ready')
+          measurePerformance('play-to-video-ready', 'player-play-request', 'player-video-ready')
+        }
+        playerReadyRef.current = true
+        setPlayerRunning(true)
+        setPlayerReady(true)
+        setError('')
+        showControls()
+        syncSurfaceLayer()
+      }).catch(() => {})
+
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [showControls])
+
+  // libmpv reports why each file ended (eof/stop/error/redirect). An "error"
+  // reason means the stream itself died (404, network, demux failure) — show
+  // it instead of leaving a silent black player behind.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<{ sessionId: string; reason: string; error: string | null }>('mpv-end-file', (event) => {
+      if (disposed) return
+      const activeSession = activeSessionRef.current
+      if (!activeSession || activeSession.status === 'stopped' || latestFullPlayerSessionId !== activeSession.id) return
+      void invoke<string | null>('get_embedded_player_session_id').then((currentNativeSessionId) => {
+        if (disposed || currentNativeSessionId !== event.payload.sessionId
+          || activeSessionRef.current !== activeSession || latestFullPlayerSessionId !== activeSession.id) return
+        const { reason, error: endError } = event.payload
+        logEvent('MPV DEBUG', `end-file reason=${reason}${endError ? ` error=${endError}` : ''}`)
+        if (reason === 'error') {
+          const message = `Playback failed: ${endError || 'the stream ended with an unknown error'}. Trying another stream…`
+          if (/video output initialization failed/i.test(endError || '') && !videoOutputFallbackAttemptedRef.current) {
+            videoOutputFallbackAttemptedRef.current = true
+            setError('')
+            restartPlaybackRef.current(Math.max(progressRef.current.currentTime || 0, startTime || 0), { hwdecMode: 'no' })
+            return
+          }
+          setError(message)
+          // Startup failures are forwarded by the error/playerReady effect, but
+          // an end-file error usually happens after readiness and would otherwise
+          // strand Smart Play on a dead source. Watch Together must remain manual
+          // so one guest cannot independently advance the room's stream.
+          if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+            unstableStreamNotifiedRef.current = true
+            smartErrorNotifiedRef.current = true
+            onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
+          }
+        }
+      }).catch(() => {})
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [startTime])
 
   useEffect(() => {
     if (playerReady || error) return
     let cancelled = false
+    let polling = false
     const startedAt = Date.now()
     const interval = setInterval(async () => {
-      const running = await isEmbeddedPlayerRunning().catch(() => false)
-      if (cancelled) return
-      setPlayerRunning(running)
+      if (cancelled || polling) return
+      polling = true
+      try {
+        // A transient Tauri IPC failure does not prove that mpv stopped. Treat
+        // it as an unknown sample so the startup poll cannot report a false
+        // stream failure after its short process-exit grace period.
+        const running = await isEmbeddedPlayerRunning().catch(() => null)
+        if (cancelled) return
+        if (running !== null) setPlayerRunning(running)
 
-      if (!running && Date.now() - startedAt > 3000) {
-        await new Promise((r) => setTimeout(r, 500))
-        const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
-        const reversed = [...logs].reverse()
-        const stderrLines = reversed.filter((line) => line.includes('[MPV STDERR]'))
-        const detail = stderrLines[0]
-          ?? reversed.find((line) => line.includes('[MPV OUTPUT]'))
-          ?? reversed.find((line) => line.includes('[PLAYER EXIT]'))
-        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
-        const cleanDetail = detail?.replace(/^.*?\] /, '')
-        const fallback = `The stream closed before video playback started (after ${elapsed}s, ${logs.length} log lines).`
-        setError(cleanDetail || fallback)
-        if (stderrLines.length > 0) {
-          console.error('[MPV CRASH]', stderrLines.map((l) => l.replace(/^.*?\] /, '')).join('\n'))
+        if (running && playerReadyRef.current) {
+          clearInterval(interval)
+        } else if (running === false && Date.now() - startedAt > 3000) {
+          await new Promise((r) => setTimeout(r, 500))
+          if (cancelled) return
+          const logs = await invoke<string[]>('get_player_debug_logs').catch(() => [])
+          if (cancelled) return
+          const reversed = [...logs].reverse()
+          const stderrLines = reversed.filter((line) =>
+            line.includes('[MPV STDERR]') &&
+            !line.includes('Ignoring unterminated command on disconnect') &&
+            !line.includes('ipc_0')
+          )
+          const detail = stderrLines[0]
+            ?? reversed.find((line) => line.includes('[MPV OUTPUT]'))
+            ?? reversed.find((line) => line.includes('[PLAYER EXIT]'))
+          const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+          const cleanDetail = detail?.replace(/^.*?\] /, '')
+          const fallback = `The stream closed before video playback started (after ${elapsed}s, ${logs.length} log lines).`
+          setError(cleanDetail || fallback)
+          if (stderrLines.length > 0) {
+            console.error('[MPV CRASH]', stderrLines.map((l) => l.replace(/^.*?\] /, '')).join('\n'))
+          }
+          clearInterval(interval)
+        } else if (Date.now() - startedAt > 30000) {
+          setError('The stream did not provide a playable video frame within 30 seconds.')
+          clearInterval(interval)
         }
-        clearInterval(interval)
-      } else if (Date.now() - startedAt > 30000) {
-        setError('The stream did not provide a playable video frame within 30 seconds.')
-        clearInterval(interval)
+      } finally {
+        polling = false
       }
     }, 750)
 
@@ -1229,33 +2850,97 @@ function FullNativeMpvPlayer({
 
   // ─ Resize ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    let disposed = false
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    let clickThroughTimer: ReturnType<typeof setTimeout> | undefined
+    let fullscreenSyncTimer: ReturnType<typeof setTimeout> | undefined
     const onResize = () => {
-      resizeEmbeddedPlayer(showUpNextRef.current ? buildUpNextPipViewport() : buildVideoViewport()).catch(() => {})
-      setTimeout(() => invoke('setup_player_click_through').catch(() => {}), 300)
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (disposed) return
+        applyFullVideoViewport()
+        clearTimeout(clickThroughTimer)
+        clickThroughTimer = setTimeout(() => {
+          if (!disposed) invoke('setup_player_click_through').catch(() => {})
+        }, 300)
+      }, 50)
+      clearTimeout(fullscreenSyncTimer)
+      fullscreenSyncTimer = setTimeout(async () => {
+        if (disposed || fullscreenTransitionPendingRef.current) return
+        const actualFullscreen = await getCurrentWindow().isFullscreen().catch(() => isFullscreenRef.current)
+        if (disposed) return
+        isFullscreenRef.current = actualFullscreen
+        setIsFullscreen(actualFullscreen)
+      }, 220)
     }
+    let unlistenMoved: (() => void) | undefined
+    let unlistenResized: (() => void) | undefined
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+    // Tauri's onResized fires on the fullscreen transition with the true new
+    // size, which the DOM 'resize' event can miss or report stale.
+    getCurrentWindow().onMoved(() => onResize())
+      .then((unlisten) => { if (disposed) unlisten(); else unlistenMoved = unlisten })
+      .catch(() => {})
+    getCurrentWindow().onResized(() => onResize())
+      .then((unlisten) => { if (disposed) unlisten(); else unlistenResized = unlisten })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      clearTimeout(resizeTimer)
+      clearTimeout(clickThroughTimer)
+      clearTimeout(fullscreenSyncTimer)
+      window.removeEventListener('resize', onResize)
+      unlistenMoved?.()
+      unlistenResized?.()
+    }
+  }, [applyFullVideoViewport])
+
+  // The native window handler keeps Windows' caption hidden even while this
+  // WebView is backgrounded. Fullscreen also needs its monitor bounds and
+  // video viewport repaired after focus changes.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    const scheduleRepair = (delays: number[]) => {
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
+      delays.forEach((delay) => {
+        const timer = setTimeout(() => {
+          timers.delete(timer)
+          repairFullscreenWindow().catch(() => {})
+        }, delay)
+        timers.add(timer)
+      })
+    }
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!isFullscreenRef.current) return
+      scheduleRepair(focused ? [0, 150, 400] : [0, 50, 150, 400, 800])
+    }).then((u) => { unlisten = u }).catch(() => {})
+    return () => {
+      unlisten?.()
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
+    }
+  }, [repairFullscreenWindow])
 
   useEffect(() => {
     const viewport = showUpNext ? buildUpNextPipViewport() : buildVideoViewport()
     resizeEmbeddedPlayer(viewport).catch(() => {})
-    ;[250, 750, 1500].forEach((delay) => {
-      setTimeout(() => resizeEmbeddedPlayer(viewport).catch(() => {}), delay)
-    })
+    const timers = [250, 750, 1500].map((delay) => setTimeout(() => resizeEmbeddedPlayer(viewport).catch(() => {}), delay))
+    return () => timers.forEach((timer) => clearTimeout(timer))
   }, [showUpNext])
 
   // ─ Discord Rich Presence ──────────────────────────────────────────────────
   useEffect(() => {
     if (!discordRichPresence) return
 
-    const isEpisodic = playbackItem && (playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime')
+    const isEpisodic = playbackItem?.contentType === 'series'
     const details = title || 'Watching something'
     const state = paused
       ? (isEpisodic ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0} · Paused` : 'Paused')
       : isEpisodic
         ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0}`
-        : playbackItem?.mediaType === 'movie' ? 'Watching' : undefined
+        : playbackItem?.contentType === 'movie' ? 'Watching' : undefined
 
     const posterUrl = poster && poster.startsWith('http') ? poster : undefined
     const nowSec = Math.floor(Date.now() / 1000)
@@ -1278,7 +2963,7 @@ function FullNativeMpvPlayer({
       activityType: 3,
     }).catch(() => {})
 
-    return () => { clearDiscordActivity().catch(() => {}) }
+    return () => { restoreDiscordBrowsingActivity().catch(() => {}) }
   }, [discordRichPresence, title, playbackItem, paused, poster])
 
   // Periodically sync Discord timestamps with actual playback position
@@ -1290,14 +2975,14 @@ function FullNativeMpvPlayer({
       if (dur <= 0) return
       const nowSec = Math.floor(Date.now() / 1000)
 
-      const isEpisodic = playbackItem && (playbackItem.mediaType === 'show' || playbackItem.mediaType === 'anime')
+      const isEpisodic = playbackItem?.contentType === 'series'
       const posterUrl = poster && poster.startsWith('http') ? poster : undefined
 
       setDiscordActivity({
         details: title || 'Watching something',
         state: isEpisodic
           ? `S${playbackItem!.season ?? 0}E${playbackItem!.episode ?? 0}`
-          : playbackItem?.mediaType === 'movie' ? 'Watching' : undefined,
+          : playbackItem?.contentType === 'movie' ? 'Watching' : undefined,
         largeImage: posterUrl || 'aurales_logo',
         largeText: title || 'Aurales',
         smallImage: 'playing',
@@ -1310,48 +2995,130 @@ function FullNativeMpvPlayer({
     return () => clearInterval(sync)
   }, [discordRichPresence, paused, title, playbackItem, poster])
 
-  const triggerRestart = useCallback(async (resumeTime: number) => {
+  const triggerRestart = useCallback(async (resumeTime: number, options?: { hwdecMode?: 'no'; decodedAudio?: boolean }) => {
+    const session = activeSessionRef.current
+    if (!session || session.status === 'stopped' || latestFullPlayerSessionId !== session.id) return
+    const playbackEpoch = ++playbackEpochRef.current
+    const isRestartCurrent = () => activeSessionRef.current === session
+      && session.status !== 'stopped'
+      && latestFullPlayerSessionId === session.id
+      && playbackEpochRef.current === playbackEpoch
+    if (trackPollRef.current) clearInterval(trackPollRef.current)
+    trackPollRef.current = null
+    loadedSubtitleUrlsRef.current = new Set()
+    subtitleSourcesRef.current = new Map()
+    subtitleTrackSourcesRef.current = new Map()
+    subtitleMirrorPendingRef.current = null
     logEvent('PLAYER DEBUG', `Restarting player session at position ${resumeTime}s...`)
+    playerReadyRef.current = false
+    setPlayerReady(false)
+    setBuffering(true)
+    setError('')
+    setTracksLoaded(false)
+    setAudioTracks([])
+    setSubTracks([])
+    lastTimePosValRef.current = -1
+    lastTimePosUpdateRef.current = Date.now()
     try {
       await stopEmbeddedPlayer()
+      if (!isRestartCurrent()) return
       const storeState = useAppStore.getState()
+      const launchState = options?.decodedAudio ? { ...storeState, audioPassthrough: false } : storeState
       await launchEmbeddedPlayer({
         url,
         title,
         startTime: resumeTime,
         volume: volumeRef.current,
         viewport: buildVideoViewport(),
-        hwdecMode: storeState.hwdecMode,
-        cacheBufferSize: storeState.cacheBufferSize,
-        mpvCacheSecs: storeState.mpvCacheSecs,
-        mpvNetworkTimeout: storeState.mpvNetworkTimeout,
-        mpvCustomArgs: storeState.mpvCustomArgs
+        hwdecMode: options?.hwdecMode || 'auto',
+        videoCacheMode: storeState.videoCacheMode,
+        mpvCustomArgs: buildMpvExtraArgs(launchState)
       })
+      if (!isRestartCurrent()) return
+      mirrorEmbeddedSubtitles(url)
       applySavedVolume()
+      await loadAddonSubtitles()
+      if (!isRestartCurrent()) return
+      const aiSubtitlePath = liveAiSubtitlePathRef.current
+      if (aiSubtitlePath) {
+        const language = APP_LANGUAGES.find((entry) => entry.code === subtitleTranslationLang)
+        const label = `AI ${language?.name || subtitleTranslationLang} (Translated)`
+        await sendPlayerCommand('sub-add', [aiSubtitlePath, 'select', label, subtitleTranslationLang]).catch(() => {})
+        if (!isRestartCurrent()) return
+        await sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
+        const selected = await getPlayerProperty('sid').catch(() => null)
+        if (!isRestartCurrent()) return
+        if (typeof selected === 'number') {
+          aiSubtitleTrackIdRef.current = selected
+          setSelectedSub(selected)
+        }
+      }
+      let attempts = 0
+      const stopTrackPoll = () => {
+        clearInterval(trackPoll)
+        if (trackPollRef.current === trackPoll) trackPollRef.current = null
+      }
+      let trackPollInFlight = false
+      const trackPoll = setInterval(async () => {
+        if (trackPollInFlight) return
+        if (!isRestartCurrent()) { stopTrackPoll(); return }
+        trackPollInFlight = true
+        attempts += 1
+        try {
+          await loadAddonSubtitles()
+          if (!isRestartCurrent()) { stopTrackPoll(); return }
+          await refreshTracks(isRestartCurrent).catch(() => false)
+          if (!isRestartCurrent()) { stopTrackPoll(); return }
+          if (attempts >= 20) {
+            stopTrackPoll()
+            setTracksLoaded(true)
+          }
+        } catch (_) {
+          // Keep polling; transient subtitle/provider errors should not leave
+          // the player stuck without its audio and subtitle track list.
+        } finally {
+          trackPollInFlight = false
+        }
+      }, 1000)
+      trackPollRef.current = trackPoll
       logEvent('PLAYER DEBUG', `Player restarted successfully`)
     } catch (err) {
+      if (!isRestartCurrent()) return
+      setBuffering(false)
+      setError('Playback recovery failed. Choose another stream and try again.')
       logEvent('PLAYER DEBUG', `Auto-restart failed: ${err}`)
     }
-  }, [url, title, applySavedVolume])
+  }, [url, title, subtitleTranslationLang, applySavedVolume, loadAddonSubtitles, refreshTracks, mirrorEmbeddedSubtitles])
+
+  restartPlaybackRef.current = (resumeTime, options) => { void triggerRestart(resumeTime, options) }
+
+  const useDecodedAudio = useCallback(() => {
+    const storeState = useAppStore.getState()
+    if (!storeState.audioPassthrough) return
+    storeState.setAudioPassthrough(false)
+    logEvent('PLAYER DEBUG', 'Passthrough disabled; restarting with decoded audio output.')
+    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0), { decodedAudio: true })
+  }, [startTime, triggerRestart])
 
   // ─ Polling ───────────────────────────────────────────────────────────────
   useEffect(() => {
+    let cancelled = false
     let polling = false
     pollRef.current = setInterval(async () => {
-      if (polling) return
+      if (polling || cancelled) return
       polling = true
       try {
-        const [pos, dur, isPause, isBuffering, cacheBuffState, demuxerCacheDur, eofReached, idleActive, coreIdle] = await Promise.all([
-          getPlayerProperty('time-pos') as Promise<number | null>,
-          getPlayerProperty('duration') as Promise<number | null>,
-          getPlayerProperty('pause') as Promise<boolean | null>,
-          getPlayerProperty('buffering') as Promise<boolean | null>,
-          getPlayerProperty('cache-buffering-state') as Promise<number | null>,
-          getPlayerProperty('demuxer-cache-duration') as Promise<number | null>,
-          getPlayerProperty('eof-reached') as Promise<boolean | null>,
-          getPlayerProperty('idle-active') as Promise<boolean | null>,
-          getPlayerProperty('core-idle') as Promise<boolean | null>,
-        ])
+        const snapshot = await getPlayerSnapshot()
+        if (cancelled) return
+        const pos = snapshot.timePos
+        const dur = snapshot.duration
+        const isPause = snapshot.paused
+        const isBuffering = snapshot.buffering
+        const cacheBuffState = snapshot.cacheBufferingState
+        const demuxerCacheDur = snapshot.demuxerCacheDuration
+        const eofReached = snapshot.eofReached
+        const idleActive = snapshot.idleActive
+        const coreIdle = snapshot.coreIdle
 
         const nowMs = Date.now()
 
@@ -1360,9 +3127,36 @@ function FullNativeMpvPlayer({
           lastPauseRef.current = isPause
           logEvent('MPV DEBUG', `pause changed to: ${isPause}`)
         }
+        // Keep React state in sync with mpv's real pause state. Remote
+        // watch-together commands (and mpv itself) change it outside of
+        // togglePlay, and a desynced `paused` flips the next WT event.
+        if (isPause !== null && isPause !== pausedRef.current) {
+          pausedRef.current = isPause
+          setPaused(isPause)
+        }
         if (isBuffering !== null && isBuffering !== lastBufferingRef.current) {
           lastBufferingRef.current = isBuffering
           logEvent('MPV DEBUG', `buffering changed to: ${isBuffering}`)
+          if (useWatchTogetherStore.getState().currentRoom) {
+            wtSendBuffering(isBuffering, pos ?? progressRef.current.currentTime)
+          }
+        }
+        setBuffering(isBuffering === true)
+        if (isBuffering === true && playerReadyRef.current) {
+          bufferingStartedAtRef.current ??= nowMs
+          const bufferingFor = nowMs - bufferingStartedAtRef.current
+          if (
+            bufferingFor >= 12_000 &&
+            !unstableStreamNotifiedRef.current &&
+            !useWatchTogetherStore.getState().currentRoom
+          ) {
+            unstableStreamNotifiedRef.current = true
+            const message = 'This source keeps buffering. Trying a more stable stream…'
+            setError(message)
+            onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
+          }
+        } else {
+          bufferingStartedAtRef.current = null
         }
         if (cacheBuffState !== null && cacheBuffState !== lastCacheBuffStateRef.current) {
           lastCacheBuffStateRef.current = cacheBuffState
@@ -1372,9 +3166,20 @@ function FullNativeMpvPlayer({
           lastDemuxerCacheDurRef.current = demuxerCacheDur
           logEvent('MPV DEBUG', `demuxer-cache-duration changed: ${demuxerCacheDur}s`)
         }
+        const didReachEof = eofReached === true && lastEofReachedRef.current !== true
         if (eofReached !== null && eofReached !== lastEofReachedRef.current) {
           lastEofReachedRef.current = eofReached
           logEvent('MPV DEBUG', `eof-reached changed: ${eofReached}`)
+        }
+        // Signed Seekr sprite URLs are only useful while this item is playing.
+        // Release them at actual EOF even when an Up Next overlay keeps the
+        // player mounted for the next episode.
+        if (didReachEof) {
+          const seekrRequest = seekrPreviewRequestRef.current
+          if (seekrRequest) {
+            clearSeekrPreview(seekrRequest)
+            seekrPreviewRequestRef.current = null
+          }
         }
         if (idleActive !== null && idleActive !== lastIdleActiveRef.current) {
           lastIdleActiveRef.current = idleActive
@@ -1394,21 +3199,42 @@ function FullNativeMpvPlayer({
         }
         if (pos != null) {
           setCurrentTime(pos)
+          playerReadyRef.current = true
           setPlayerReady(true)
           progressRef.current.currentTime = pos
         }
         if (dur != null && dur > 0) {
           setDuration(dur)
-          setPlayerReady(true)
           progressRef.current.duration = dur
         }
 
-        // Stall detection
-        const PLAYER_STALL_TIMEOUT_MS = 30000
-        const PLAYER_RESTART_COOLDOWN_MS = 15000
-        const MAX_AUTO_RESTARTS = 0
+        // Feed the live position to the watch-together sync loop — the room's
+        // stored playback time only changes on events and must not be used.
+        if (pos != null && useWatchTogetherStore.getState().currentRoom) {
+          wtReportLocalPlayback(pos, !isPause && !isBuffering)
+        }
 
-        const isPlaying = pos !== null && !isPause && !isBuffering
+        // End of file: mpv runs with --keep-open=no, so the process exits at
+        // EOF. Close gracefully (scrobbles the finished state) instead of
+        // leaving a dead overlay behind — unless Up Next is on screen.
+        if (
+          eofReached === true &&
+          !eofClosedRef.current &&
+          !showUpNextRef.current &&
+          progressRef.current.duration > 0 &&
+          progressRef.current.currentTime / progressRef.current.duration > 0.8
+        ) {
+          eofClosedRef.current = true
+          closeRef.current?.()
+          return
+        }
+
+        // Stall detection
+        const PLAYER_STALL_TIMEOUT_MS = 12000
+        const PLAYER_RESTART_COOLDOWN_MS = 15000
+        const MAX_AUTO_RESTARTS = 1
+
+        const isPlaying = playerReadyRef.current && pos !== null && !isPause && !isBuffering
         if (isPlaying) {
           if (pos !== lastTimePosValRef.current) {
             lastTimePosValRef.current = pos
@@ -1423,6 +3249,11 @@ function FullNativeMpvPlayer({
                 lastRestartTimeRef.current = nowMs
                 lastTimePosUpdateRef.current = nowMs
                 triggerRestart(pos)
+              } else if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+                unstableStreamNotifiedRef.current = true
+                const message = 'Playback stalled on this source. Trying a more stable stream…'
+                setError(message)
+                onPlaybackErrorRef.current?.(message, progressRef.current.currentTime)
               } else {
                 logEvent('PLAYER DEBUG', `Stall auto-restart skipped: max auto-restarts exceeded or within cooldown.`)
               }
@@ -1433,17 +3264,19 @@ function FullNativeMpvPlayer({
         }
 
         if (pos != null && dur != null && dur > 0) {
+          const activityItem = currentItemRef.current
+          if (activityItem) recordPlaybackSample({ mediaKey: activityItem.localId, title: activityItem.title, mediaType: activityItem.mediaType === 'anime' ? 'anime' : activityItem.contentType === 'movie' ? 'movie' : 'series', poster: currentPosterRef.current, tmdbId: activityItem.tmdbId, season: activityItem.season, episode: activityItem.episode, positionSeconds: pos, durationSeconds: dur, playing: isPause === false, completed: pos / dur >= 0.85 })
           if (Math.abs(pos - lastSavedTimeRef.current) >= 15) {
             lastSavedTimeRef.current = pos
             saveLocalProgress(pos, dur, false)
           }
           const item = currentItemRef.current
-          if (item && scrobbleSimkl && pos - lastSimklPlaybackSaveRef.current >= 60) {
+          if (item && scrobbleSimkl && simklSaveResumePosition && pos - lastSimklPlaybackSaveRef.current >= 60) {
             lastSimklPlaybackSaveRef.current = pos
             logEvent('PLAYBACK SYNC DEBUG', `Save Simkl scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveSimklPlaybackProgress(item, pos / dur).catch(() => {})
           }
-          if (item && scrobbleAnilist && item.mediaType === 'anime' && pos - lastAniListPlaybackSaveRef.current >= 60) {
+          if (item && scrobbleAnilist && item.isAnime && pos - lastAniListPlaybackSaveRef.current >= 60) {
             lastAniListPlaybackSaveRef.current = pos
             logEvent('PLAYBACK SYNC DEBUG', `Save AniList scrobble progress: ${Math.round(pos)}s / ${Math.round(dur)}s`)
             saveAniListProgressMapped(item, pos / dur).catch(() => {})
@@ -1452,14 +3285,35 @@ function FullNativeMpvPlayer({
             lastPmdbPlaybackSaveRef.current = pos
             savePMDBProgressHelper(pos, dur, false)
           }
+          if (isPlaying && item && scrobbleMdblistEnabled && mdblistApiKey &&
+            (tmdbIdRef.current || item.imdbId || item.tvdbId) && pos - lastMdblistPlaybackSaveRef.current >= 60) {
+            lastMdblistPlaybackSaveRef.current = pos
+            scrobbleMdblist('start', tmdbIdRef.current, item.contentType === 'movie' ? 'movie' : 'series',
+              Math.round((pos / dur) * 10000) / 100, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
+          }
 
-          // Detect near-end for Up Next
-          // Trigger when ≤90s remaining OR ≥92% through, whichever comes first
+          // Detect near-end for Up Next, honoring the Next Episode Prompt
+          // setting. Auto follows an embedded Credits/Ending/Outro chapter
+          // when one is available and falls back to the duration heuristic
+          // for streams without a useful ending chapter.
+          // Suppressed in Watch Together — autoplaying a new episode locally
+          // would desync the whole room.
           const remaining = dur - pos
           const pctDone = pos / dur
+          const promptSetting = useAppStore.getState().nextEpisodePrompt
+          const promptThresholds: Record<string, number> = { '30s': 30, '45s': 45, '1m': 60, '1.5m': 90, '2m': 120 }
+          const endingChapterTime = autoNextEpisodeChapterTimeRef.current
+          const shouldPrompt = promptSetting === 'off'
+            ? false
+            : promptSetting === 'auto'
+              ? endingChapterTime != null
+                ? pos >= endingChapterTime
+                : (remaining <= 90 || pctDone >= 0.92)
+              : remaining <= (promptThresholds[promptSetting] ?? 90)
           if (
-            (remaining <= 90 || pctDone >= 0.92) &&
+            shouldPrompt &&
             remaining > 0 &&
+            !useWatchTogetherStore.getState().currentRoom &&
             nextEpInfoRef.current &&
             !showUpNextRef.current &&
             !upNextTriggeredRef.current &&
@@ -1467,7 +3321,33 @@ function FullNativeMpvPlayer({
           ) {
             upNextTriggeredRef.current = true
             setShowUpNext(true)
-            setUpNextCountdown(15)
+            setUpNextCountdown(nextEpisodeCountdownSeconds)
+          }
+
+          // Warm up the next episode ~90s before the end: preload its addon
+          // results, rank them, and probe the top direct link so the Up-Next
+          // switch starts instantly. Once per episode; skipped in Watch
+          // Together and when the prompt is disabled.
+          const approachingAutoChapter = promptSetting === 'auto'
+            && endingChapterTime != null
+            && endingChapterTime - pos <= 90
+          if (
+            remaining > 0 && (remaining <= 90 || approachingAutoChapter) &&
+            !nextPrepareTriggeredRef.current &&
+            promptSetting !== 'off' &&
+            !useWatchTogetherStore.getState().currentRoom &&
+            nextEpInfoRef.current &&
+            (currentItemRef.current?.imdbId || currentItemRef.current?.localId)
+          ) {
+            nextPrepareTriggeredRef.current = true
+            const nextEp = nextEpInfoRef.current
+            preparedStreamRegistry.prepare({
+              mediaType: 'series',
+              mediaId: currentItemRef.current.imdbId || currentItemRef.current.localId,
+              imdbId: currentItemRef.current.imdbId,
+              tmdbId: tmdbIdRef.current ?? undefined,
+              seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
+            }, { title, priority: StreamPreloadPriority.CONTINUE_NEXT_EPISODE }).catch(() => {})
           }
         }
 
@@ -1491,7 +3371,10 @@ function FullNativeMpvPlayer({
           }
           setActiveSkip((previous) => previous?.id === found?.id ? previous : found)
           setSkipType((previous) => previous === foundType ? previous : foundType)
-          if (autoSkipSegments && found && foundType) {
+          // Auto-skip is disabled for guests without control rights — the
+          // local jump would be reverted by drift correction anyway.
+          const shouldAutoSkip = foundType === 'credits' ? autoSkipCredits : autoSkipIntro
+          if (shouldAutoSkip && found && foundType && !wtControlBlocked()) {
             const endMs = foundType === 'intro'
               ? found.intro_end_ms
               : foundType === 'recap'
@@ -1507,6 +3390,7 @@ function FullNativeMpvPlayer({
               autoSkippedSegmentsRef.current.add(segmentKey)
               logEvent('PLAYER DEBUG', `Auto-skipping segment [${foundType}] to ${endMs / 1000}s`)
               await command('seek', [endMs / 1000, 'absolute'])
+              sendWatchTogetherSeek(endMs / 1000)
               setActiveSkip(null)
               setSkipType(null)
             }
@@ -1515,24 +3399,29 @@ function FullNativeMpvPlayer({
           setActiveSkip(null)
           setSkipType(null)
         }
-      } catch { /* transient IPC failures */ }
+      } catch (_) { /* transient IPC failures */ }
       finally { polling = false }
     }, 1000)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [skips, autoSkipSegments, command, saveLocalProgress, savePMDBProgressHelper, scrobbleSimkl, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, triggerRestart])
+    return () => {
+      cancelled = true
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [skips, autoSkipIntro, autoSkipCredits, nextEpisodeCountdownSeconds, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, mdblistApiKey, scrobbleMdblistEnabled, title, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   useEffect(() => {
-    if (!playbackItem || (playbackItem.mediaType !== 'show' && playbackItem.mediaType !== 'anime')) return
+    if (!playbackItem || playbackItem.contentType !== 'series') return
     if (!playbackItem.season || !playbackItem.episode) return
+    let cancelled = false
 
     const doFetch = async () => {
       let tmdbId = tmdbIdRef.current
       if (!tmdbId && playbackItem.imdbId) {
         try {
           const mapping = await lookupTmdbId('imdb', playbackItem.imdbId)
+          if (cancelled) return
           if (mapping) { tmdbIdRef.current = mapping.tmdbId; tmdbId = mapping.tmdbId }
-        } catch {}
+        } catch (_) {}
       }
 
       const nextSeason = playbackItem.season!
@@ -1540,7 +3429,9 @@ function FullNativeMpvPlayer({
 
       if (tmdbId) {
         const info = await fetchNextEpisodeFromTmdb(tmdbId, nextSeason, nextEpisode)
-        if (info) { setNextEpInfo(info); return }
+        if (cancelled) return
+        setNextEpInfo(info)
+        return
       }
 
       // Fallback: build a minimal stub so UpNext overlay can still appear
@@ -1556,78 +3447,244 @@ function FullNativeMpvPlayer({
     }
     // Give the main start effect time to resolve TMDB ID
     const timer = setTimeout(doFetch, 2000)
-    return () => clearTimeout(timer)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [playbackItem])
 
   // ─ Up Next countdown ─────────────────────────────────────────────────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleAutoplay = useCallback(async () => {
     const nextEp = nextEpInfoRef.current
     const item = currentItemRef.current
-    if (!nextEp || !item?.imdbId) { setShowUpNext(false); return }
+    if (!nextEp || !item?.localId || isAutoSearching) { setShowUpNext(false); return }
+    const mediaId = item.imdbId || item.localId
+    const sessionId = activeSessionRef.current?.id
+    const playbackEpoch = playbackEpochRef.current
+    const ownsSessionId = () => Boolean(
+      sessionId
+      && latestFullPlayerSessionId === sessionId
+      && activeSessionRef.current?.id === sessionId
+      && activeSessionRef.current.status !== 'stopped'
+    )
+    const ownsSession = () => ownsSessionId() && playbackEpochRef.current === playbackEpoch
+    if (!ownsSession()) return
 
     setIsAutoSearching(true)
-    const streamId = `${item.imdbId}:${nextEp.season}:${nextEp.episode}`
-    const addons = getStreamAddons('series')
+    const nextRequest: StreamPreloadRequest = {
+      mediaType: 'series',
+      mediaId,
+      imdbId: item.imdbId,
+      tmdbId: tmdbIdRef.current ?? undefined,
+      seasonEpisode: { season: nextEp.season, episode: nextEp.episode },
+    }
 
     let foundUrl: string | null = null
-    for (const addon of addons) {
+    let chosenStream: PreloadedStream | null = null
+
+    // 1) Prepared stream from the near-end warm-up: already ranked + probed.
+    const prepared = preparedStreamRegistry.consume(canonicalStreamKey(nextRequest))
+    if (prepared) {
+      foundUrl = prepared.playableUrl
+      chosenStream = prepared.stream
+      logEvent('PLAYER DEBUG', `Up Next: using prepared stream from ${prepared.stream.addonName} (score ${prepared.score})`)
+    }
+
+    // 2) Preloaded/cached addon results + the same smart ranking the stream
+    //    selector uses.
+    if (!foundUrl) {
       try {
-        const streams = await getAddonStreams(addon.url, 'series', streamId)
-        const valid = streams.find((s) => s.url)
-        if (valid?.url) { foundUrl = valid.url; break }
-      } catch {}
+        const rawResults = await streamPreloadManager.request(nextRequest, { priority: StreamPreloadPriority.PLAYBACK })
+        if (!ownsSession()) return
+        const results = await annotateTorBoxStreams(rawResults).catch(() => rawResults)
+        const top = (await rankStreamCandidates(results as SmartStream[], buildSmartContext({ title, season: nextEp.season, episode: nextEp.episode }), {
+          cancelGroup: `streams:up-next:${mediaId}`,
+          priority: 'playback',
+        }))
+          .find((candidate) => candidate.score > -500)
+        if (top) {
+          foundUrl = getPlayableStreamUrl(top.stream) || await resolveTorBoxStream(top.stream, {
+            title,
+            season: nextEp.season,
+            episode: nextEp.episode,
+          }).catch(() => null)
+          chosenStream = top.stream as PreloadedStream
+          logEvent('PLAYER DEBUG', `Up Next: smart-ranked stream from ${chosenStream.addonName} (score ${top.score})`)
+        }
+      } catch (_) {}
+    }
+
+    // 3) Native batch, with the legacy per-addon loop only when that native
+    //    operation is unavailable.
+    if (!foundUrl) {
+      const streamId = `${mediaId}:${nextEp.season}:${nextEp.episode}`
+      const addons = getStreamAddons('series')
+      let fallbackAddons = addons
+      try {
+        const native = await loadStreamCandidatesNative('series', streamId, addons, {
+          cancelGroup: `streams:up-next-fallback:${mediaId}`,
+          priority: 'playback',
+        })
+        // Native loading preserves raw Stremio candidates. Apply the same
+        // TorBox annotation used below before deciding whether a torrent is
+        // playable, then re-check ownership after that asynchronous work.
+        const streams = await annotateTorBoxStreams(native.candidates).catch(() => native.candidates)
+        if (!ownsSession()) return
+        // A completed native batch already queried every successful addon.
+        // Retry only provider failures through the legacy transport.
+        fallbackAddons = native.failures.length > 0
+          ? addons.filter((addon) => native.failures.some((failure) => failure.addonId === addon.manifest.id))
+          : []
+        const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+        if (valid) {
+          foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
+            title,
+            season: nextEp.season,
+            episode: nextEp.episode,
+          }).catch(() => null)
+          chosenStream = valid
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setIsAutoSearching(false)
+          return
+        }
+        // The established per-addon loop below remains the compatibility path.
+      }
+      // A successful native batch only retries addons it reported as failed;
+      // empty or unplayable responses are not fetched twice.
+      if (!foundUrl) {
+        for (const addon of fallbackAddons) {
+          if (foundUrl) break
+          try {
+            const rawStreams = await getAddonStreams(addon.url, 'series', streamId)
+            if (!ownsSession()) return
+            const streams = await annotateTorBoxStreams(rawStreams).catch(() => rawStreams)
+            const valid = streams.find((stream) => getPlayableStreamUrl(stream) || stream.behaviorHints?.torboxCached === true)
+            if (valid) {
+              foundUrl = getPlayableStreamUrl(valid) || await resolveTorBoxStream(valid, {
+                title,
+                season: nextEp.season,
+                episode: nextEp.episode,
+              }).catch(() => null)
+              if (foundUrl) break
+            }
+          } catch (_) {}
+        }
+      }
     }
 
     setIsAutoSearching(false)
+    if (!ownsSession()) return
     if (!foundUrl) { setShowUpNext(false); return }
 
     // Stop current, save progress
     const { currentTime: pos, duration: dur } = progressRef.current
     saveLocalProgress(pos, dur, false)
+    const promises: Promise<any>[] = []
     if (scrobbleSimkl && item) {
-      onSimklPlaybackStop(item, dur > 0 ? pos / dur : 0).catch(() => {})
+      promises.push(onSimklPlaybackStop(item, dur > 0 ? pos / dur : 0).catch(() => {}))
     }
     if (scrobbleTrakt && isTraktAuthenticated() && item?.imdbId && item.season != null && item.episode != null) {
       const pct = Math.round((dur > 0 ? pos / dur : 0) * 10000) / 100
       const payload = buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
-      traktScrobbleStop(payload).catch(() => {})
+      promises.push(traktScrobbleStop(payload).catch(() => {}))
     }
-    await stopEmbeddedPlayer().catch(() => {})
+    await Promise.allSettled(promises)
+    if (!ownsSession()) return
+    // No stop here: launch_embedded_mpv reuses the live libmpv instance
+    // (loadfile replace) when launch options match, so the next episode
+    // starts without tearing down the video surface.
 
     // Update current playback item refs
     const newItem: PlaybackItem = { ...item, season: nextEp.season, episode: nextEp.episode, title: `${title} · ${nextEp.title}` }
     currentItemRef.current = newItem
+    currentStreamUrlRef.current = foundUrl
     currentPosterRef.current = nextEp.stillPath ?? currentPosterRef.current
     currentBackdropRef.current = nextEp.stillPath ?? currentBackdropRef.current
 
+    // Reset readiness before replacing the file. libmpv can emit
+    // PLAYBACK_RESTART before launchEmbeddedPlayer resolves; resetting after the
+    // await would clobber that event and leave the new episode behind a loading
+    // overlay. Recovery counters are per stream and must not leak across episodes.
+    playerReadyRef.current = false
+    pausedRef.current = false
+    setPlayerReady(false)
+    setPlayerRunning(false)
+    setBuffering(true)
+    setError('')
+    setCurrentTime(0)
+    setDuration(0)
+    setPaused(false)
+    progressRef.current = { currentTime: 0, duration: 0 }
+    lastTimePosValRef.current = -1
+    lastTimePosUpdateRef.current = Date.now()
+    lastSavedTimeRef.current = 0
+    lastSimklPlaybackSaveRef.current = 0
+    lastPmdbPlaybackSaveRef.current = 0
+    lastMdblistPlaybackSaveRef.current = 0
+    lastAniListPlaybackSaveRef.current = 0
+    autoRestartCountRef.current = 0
+    lastRestartTimeRef.current = 0
+    unstableStreamNotifiedRef.current = false
+    bufferingStartedAtRef.current = null
+    eofClosedRef.current = false
+
+    // Invalidate async work (subtitle downloads, track polling, skip lookups)
+    // that still belongs to the previous file even when libmpv reuses the same
+    // native player session for this episode.
+    const autoplayEpoch = ++playbackEpochRef.current
+    loadedSubtitleUrlsRef.current = new Set()
+    subtitleSourcesRef.current = new Map()
+    subtitleTrackSourcesRef.current = new Map()
+    subtitleMirrorPendingRef.current = null
+    autoSkippedSegmentsRef.current = new Set()
+    setTracksLoaded(false)
+    setAudioTracks([])
+    setSubTracks([])
+    setSkips([])
+    setActiveSkip(null)
+    setSkipType(null)
+    setChapters([])
+    setNextEpInfo(null)
+    nextEpInfoRef.current = null
+    setShowUpNext(false)
+    upNextTriggeredRef.current = false
+    upNextCancelledRef.current = false
+    nextPrepareTriggeredRef.current = false
+    hasAutoSelectedAudioRef.current = false
+    hasAutoSelectedSubRef.current = false
+    autoSelectAttemptsRef.current = 0
+    setLiveTranslateOn(false)
+    aiSubtitleTrackIdRef.current = null
+    aiSubtitleSourceTrackIdRef.current = null
+    liveAiSubtitlePathRef.current = null
+    sourceCuesRef.current = []
+    sourceNextIdxRef.current = 0
+    autoTranslateStartedRef.current = false
+    const ownsAutoplayEpoch = () => ownsSessionId() && playbackEpochRef.current === autoplayEpoch
+
     try {
-      await launchEmbeddedPlayer({ url: foundUrl, title, volume: volumeRef.current, viewport: buildVideoViewport() })
+      const storeState = useAppStore.getState()
+      await launchEmbeddedPlayer({
+        url: foundUrl,
+        title,
+        volume: volumeRef.current,
+        viewport: buildVideoViewport(),
+        hwdecMode: 'auto',
+        videoCacheMode: storeState.videoCacheMode,
+        mpvCustomArgs: buildMpvExtraArgs(storeState)
+      })
+      if (!ownsAutoplayEpoch()) return
+      mirrorEmbeddedSubtitles(foundUrl)
+      setPlayerRunning(true)
       applySavedVolume()
+      // Feed the same reliability history the stream selector uses (paths 1/2
+      // only — the lenient fallback has no addon identity attached).
+      if (chosenStream) recordReliabilityEvent(chosenStream, 'success')
 
       // Update title/subtitle in the player controls bar
       const epCode = `S${String(nextEp.season).padStart(2, '0')}E${String(nextEp.episode).padStart(2, '0')}`
       setCurrentDisplayTitle(title)
       setCurrentDisplaySubtitle(`${epCode} · ${nextEp.title}`)
-
-      // Reset progress state
-      setCurrentTime(0); setDuration(0); setPaused(false); setPlayerReady(false)
-      setTracksLoaded(false); setAudioTracks([]); setSubTracks([])
-      setSkips([]); setActiveSkip(null); setSkipType(null)
-      setShowUpNext(false)
-      upNextTriggeredRef.current = false
-      upNextCancelledRef.current = false
-      progressRef.current = { currentTime: 0, duration: 0 }
-      lastSavedTimeRef.current = 0
-      lastSimklPlaybackSaveRef.current = 0
-      lastPmdbPlaybackSaveRef.current = 0
-      lastAniListPlaybackSaveRef.current = 0
-      hasAutoSelectedAudioRef.current = false
-      hasAutoSelectedSubRef.current = false
-      autoSelectAttemptsRef.current = 0
-      loadedSubtitleUrlsRef.current = new Set()
-      subtitleSourcesRef.current = new Map()
-      autoSkippedSegmentsRef.current = new Set()
+      setCurrentMeta(null) // refetch paused-overlay metadata for the new episode
 
       // Start scrobble for new episode
       if (scrobbleSimkl) onSimklPlaybackStart(newItem, 0).catch(() => {})
@@ -1637,58 +3694,80 @@ function FullNativeMpvPlayer({
       }
 
       // Fetch next-next episode
-      setNextEpInfo(null)
-      nextEpInfoRef.current = null
       const tmdbId = tmdbIdRef.current
       if (tmdbId) {
-        fetchNextEpisodeFromTmdb(tmdbId, nextEp.season, nextEp.episode).then((info) => {
-          if (info) { setNextEpInfo(info); return }
-          // Fallback stub
-          setNextEpInfo({ season: nextEp.season, episode: nextEp.episode + 1, title: `Episode ${nextEp.episode + 1}` })
+        fetchNextEpisodeFromTmdb(tmdbId, nextEp.season, nextEp.episode + 1).then((info) => {
+          if (!ownsAutoplayEpoch()) return
+          setNextEpInfo(info)
         }).catch(() => {
-          setNextEpInfo({ season: nextEp.season, episode: nextEp.episode + 1, title: `Episode ${nextEp.episode + 1}` })
+          if (!ownsAutoplayEpoch()) return
+          setNextEpInfo(null)
         })
         const nextImdbId = newItem.imdbId ?? ''
         Promise.allSettled([
           getPMDBSkips(tmdbId, 'tv', nextEp.season, nextEp.episode),
           nextImdbId ? getIntroDBSkips(nextImdbId, nextEp.season, nextEp.episode) : Promise.resolve([]),
         ]).then(([pmdb, introdb]) => {
+          if (!ownsAutoplayEpoch()) return
           const merged: PMDBSkipSegment[] = [
             ...(pmdb.status === 'fulfilled' ? pmdb.value : []),
             ...(introdb.status === 'fulfilled' ? introdb.value : []),
           ]
           setSkips(merged)
+          const fallbackChapters = introDbChapters(merged)
+          if (fallbackChapters.length > 0) setChapters(fallbackChapters)
         }).catch(() => {})
       }
 
       // Re-setup click-through
-      ;[500, 1000, 2000].forEach((d) => setTimeout(() => invoke('setup_player_click_through').catch(() => {}), d))
+      ;[500, 1000, 2000].forEach((delay) => schedulePlayerTimeout(() => {
+        if (ownsAutoplayEpoch()) invoke('setup_player_click_through').catch(() => {})
+      }, delay))
 
       // Restart track polling
       let attempts = 0
+      let trackPollInFlight = false
       if (trackPollRef.current) clearInterval(trackPollRef.current)
-      trackPollRef.current = setInterval(async () => {
+      const stopTrackPoll = () => {
+        clearInterval(trackPoll)
+        if (trackPollRef.current === trackPoll) trackPollRef.current = null
+      }
+      const trackPoll = setInterval(async () => {
+        if (trackPollInFlight) return
+        if (!ownsAutoplayEpoch()) { stopTrackPoll(); return }
+        trackPollInFlight = true
         attempts += 1
         try {
-          const found = await refreshTracks()
+          const found = await refreshTracks(ownsAutoplayEpoch)
+          if (!ownsAutoplayEpoch()) { stopTrackPoll(); return }
           if (found && attempts >= 3) {
-            if (trackPollRef.current) clearInterval(trackPollRef.current)
-            trackPollRef.current = null
+            stopTrackPoll()
           }
-        } catch {}
+        } catch (_) {}
+        finally {
+          trackPollInFlight = false
+        }
+        if (!ownsAutoplayEpoch()) { stopTrackPoll(); return }
         if (attempts >= 20) {
-          if (trackPollRef.current) clearInterval(trackPollRef.current)
-          trackPollRef.current = null
+          stopTrackPoll()
           setTracksLoaded(true)
         }
       }, 1000)
+      trackPollRef.current = trackPoll
     } catch (e) {
+      if (!ownsAutoplayEpoch()) return
+      setPlayerRunning(false)
+      setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, saveLocalProgress, refreshTracks, applySavedVolume])
+  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
 
   useEffect(() => {
-    if (!showUpNext) { setUpNextCountdown(15); return }
+    if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
+    if (!autoPlayNextEpisode) {
+      setUpNextCountdown(nextEpisodeCountdownSeconds)
+      return
+    }
     const interval = setInterval(() => {
       setUpNextCountdown((prev) => {
         if (prev <= 1) {
@@ -1700,39 +3779,48 @@ function FullNativeMpvPlayer({
       })
     }, 1000)
     return () => clearInterval(interval)
-  }, [showUpNext, handleAutoplay])
+  }, [showUpNext, handleAutoplay, autoPlayNextEpisode, nextEpisodeCountdownSeconds])
 
   // ─ Playback controls ──────────────────────────────────────────────────────
   const close = async () => {
+    if (closingRef.current) return
+    closingRef.current = true
     const item = currentItemRef.current
+    const { currentTime: pos, duration: dur } = progressRef.current
+    const progress = dur > 0 ? pos / dur : 0
     if (item) {
-      const { currentTime: pos, duration: dur } = progressRef.current
-      const progress = dur > 0 ? pos / dur : 0
       saveLocalProgress(pos, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
+    }
+
+    // Restore the native window before revealing the detail page. Rendering it
+    // while Windows is still leaving fullscreen leaves the whole app at the
+    // temporary fullscreen bounds/position.
+    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
+    // Stopping mpv and remote progress/scrobble writes remain non-blocking.
+    void stopEmbeddedPlayer().catch(() => {})
+    onClose()
+
+    if (item) {
+      const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
-        saveSimklPlaybackProgress(item, progress).catch(() => {})
-        onSimklPlaybackStop(item, progress).catch(() => {})
+        promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
-      if (scrobbleAnilist && item.mediaType === 'anime') {
-        saveAniListProgressMapped(item, progress).catch(() => {})
+      if (scrobbleAnilist && item.isAnime) {
+        promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+        const payload = item.contentType === 'series' && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
-        traktScrobbleStop(payload).catch(() => {})
+        promises.push(traktScrobbleStop(payload).catch(() => {}))
       }
-      savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is done watching
+      promises.push(savePMDBProgressHelper(pos, dur, true))
+      promises.push(saveMdblistProgressHelper(pos, dur, true))
+      void Promise.allSettled(promises)
     }
-    if (isFullscreen) await getCurrentWindow().setFullscreen(false).catch(() => {})
-    await stopEmbeddedPlayer().catch(() => {})
-    onClose()
   }
+  useEffect(() => { closeRef.current = close })
 
   const pickAnother = async () => {
     const item = currentItemRef.current
@@ -1740,91 +3828,104 @@ function FullNativeMpvPlayer({
       const { currentTime: pos, duration: dur } = progressRef.current
       const progress = dur > 0 ? pos / dur : 0
       saveLocalProgress(pos, dur, false)
-      const { keepFramesFor, savedFramesCount, setSavedFramesCount } = useAppStore.getState()
-      if (keepFramesFor !== 'none') {
-        setSavedFramesCount(savedFramesCount + 1)
-      }
+      const promises: Promise<any>[] = []
       if (scrobbleSimkl) {
-        saveSimklPlaybackProgress(item, progress).catch(() => {})
-        onSimklPlaybackStop(item, progress).catch(() => {})
+        promises.push(onSimklPlaybackStop(item, progress).catch(() => {}))
       }
-      if (scrobbleAnilist && item.mediaType === 'anime') {
-        saveAniListProgressMapped(item, progress).catch(() => {})
+      if (scrobbleAnilist && item.isAnime) {
+        promises.push(saveAniListProgressMapped(item, progress).catch(() => {}))
       }
       if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
         const pct = Math.round(progress * 10000) / 100
-        const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+        const payload = item.contentType === 'series' && item.season != null && item.episode != null
           ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
           : buildMovieScrobble(item.imdbId, pct)
-        traktScrobbleStop(payload).catch(() => {})
+        promises.push(traktScrobbleStop(payload).catch(() => {}))
       }
-      savePMDBProgressHelper(pos, dur, true) // allowScrobble: yes, user is switching away
+      promises.push(savePMDBProgressHelper(pos, dur, true))
+      promises.push(saveMdblistProgressHelper(pos, dur, true))
+      await Promise.allSettled(promises)
     }
-    if (isFullscreen) { await getCurrentWindow().setFullscreen(false).catch(() => {}); setIsFullscreen(false) }
+    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
     await stopEmbeddedPlayer().catch(() => {})
     onPickAnother()
   }
+
+  const retryStream = useCallback(() => {
+    setError('')
+    // Clearing the error re-arms the startup watchdog, which reports again if
+    // the relaunch also fails to produce a video frame.
+    triggerRestart(Math.max(progressRef.current.currentTime || 0, startTime || 0))
+  }, [triggerRestart, startTime])
 
   const togglePlay = () => {
     if (!playerRunning) {
       setError('The player process has exited. Go back and choose another stream.')
       return
     }
-    setPaused((prev) => {
-      const newPaused = !prev
-      const item = currentItemRef.current
-      if (item) {
-        const { currentTime: pos, duration: dur } = progressRef.current
-        const progress = dur > 0 ? pos / dur : 0
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
+    const targetPaused = !pausedRef.current
+    const { currentTime: pos, duration: dur } = progressRef.current
+    const progress = dur > 0 ? pos / dur : 0
+    const item = currentItemRef.current
+
+    pausedRef.current = targetPaused
+    setPaused(targetPaused)
+    command('set_property', ['pause', targetPaused])
+
+    const wt = useWatchTogetherStore.getState()
+    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
+      if (targetPaused) wtPause(pos)
+      else wtPlay(pos)
+    }
+
+    if (item) {
+      queueMicrotask(() => {
         saveLocalProgress(pos, dur, false)
-        if (newPaused) {
+        if (targetPaused) {
           if (scrobbleSimkl) {
-            saveSimklPlaybackProgress(item, progress).catch(() => {})
             onSimklPlaybackPause(item, progress).catch(() => {})
           }
-          if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
+          // Trakt derives the resume point from scrobble pause - the
+          // "Save Resume Position" setting gates it.
+          if (scrobbleTrakt && traktSaveResumePosition && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+            const payload = item.contentType === 'series' && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobblePause(payload).catch(() => {})
           }
           savePMDBProgressHelper(pos, dur, false)
+          saveMdblistProgressHelper(pos, dur, false)
         } else {
           if (scrobbleSimkl) {
-            saveSimklPlaybackProgress(item, progress).catch(() => {})
             onSimklPlaybackStart(item, progress).catch(() => {})
+          }
+          if (scrobbleMdblistEnabled && mdblistApiKey) {
+            scrobbleMdblist('start', tmdbIdRef.current, item.contentType === 'movie' ? 'movie' : 'series',
+              Math.round(progress * 10000) / 100, item.season, item.episode, item.imdbId, item.tvdbId).catch(() => {})
           }
           if (scrobbleTrakt && isTraktAuthenticated() && item.imdbId) {
             const pct = Math.round(progress * 10000) / 100
-            const payload = (item.mediaType === 'show' || item.mediaType === 'anime') && item.season != null && item.episode != null
+            const payload = item.contentType === 'series' && item.season != null && item.episode != null
               ? buildEpisodeScrobble(item.imdbId, item.season, item.episode, pct)
               : buildMovieScrobble(item.imdbId, pct)
             traktScrobbleStart(payload).catch(() => {})
           }
         }
-      }
-      return newPaused
-    })
-    command('cycle', ['pause'])
-
-    const wt = useWatchTogetherStore.getState()
-    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
-      const pos = progressRef.current.currentTime
-      if (paused) wtPlay(pos)
-      else wtPause(pos)
+      })
     }
-    wtIgnoreNextEvent.current = false
   }
+  togglePlayRef.current = togglePlay
 
   const seekBy = (secs: number) => {
     if (!playerRunning) return
-    command('seek', [secs, 'relative'])
-    const wt = useWatchTogetherStore.getState()
-    if (wt.currentRoom && !wtIgnoreNextEvent.current) {
-      wtSeek(progressRef.current.currentTime + secs)
-    }
-    wtIgnoreNextEvent.current = false
+    if (wtControlBlocked()) { wtBlockedNotice(); return }
+    const targetTime = Math.max(0, Math.min(progressRef.current.duration || Number.POSITIVE_INFINITY, progressRef.current.currentTime + secs))
+    progressRef.current.currentTime = targetTime
+    setCurrentTime(targetTime)
+    command('seek', [secs, 'relative+keyframes'])
+    sendWatchTogetherSeek(targetTime)
   }
   // seekTo is now handled directly by inline slider events.
   const changeVolume = (val: number) => {
@@ -1834,12 +3935,147 @@ function FullNativeMpvPlayer({
 
   const changeAudio = (id: number) => {
     setSelectedAudio(id)
-    command('set_property', ['aid', id])
+    setTrackProperty('aid', id).catch((error) => {
+      logEvent('MPV DEBUG', `audio track ${id} failed: ${String(error)}`)
+      refreshTracks().catch(() => false)
+    })
     setTrackMenu(null)
   }
+
+  const startLiveAiSubtitles = useCallback(async () => {
+    if (!openrouterApiKey || !subtitleTranslationLang) {
+      setError('Set an OpenRouter key and target subtitle language first.')
+      return
+    }
+    if (aiStartInProgressRef.current) return
+    aiStartInProgressRef.current = true
+
+    setTranslatingSubtitles(true)
+    setError('')
+    try {
+      await loadAddonSubtitles()
+      await refreshTracks().catch(() => false)
+
+      const sourceTrackId = selectedSub !== 'no' && selectedSub !== aiSubtitleTrackIdRef.current
+        ? selectedSub
+        : (subTracks.find((track) => track.id !== aiSubtitleTrackIdRef.current)?.id)
+      if (sourceTrackId == null) {
+        setError('AI subtitles need a subtitle track to translate from.')
+        return
+      }
+
+      // Pull the full source cue list up front so we can translate ahead of
+      // playback with the ORIGINAL timestamps (exact sync, latency-proof).
+      const rawList = (await getPlayerProperty('track-list').catch(() => null)) as MpvTrack[] | null
+      const sourceTrack = Array.isArray(rawList) ? rawList.find((t) => t.id === sourceTrackId) : undefined
+      const externalPath = subtitleTrackSourcesRef.current.get(sourceTrackId)?.localPath
+      let sourceContent = ''
+      if (externalPath) {
+        sourceContent = await readTempSubtitle(externalPath).catch(() => '')
+      } else if (sourceTrack?.['ff-index'] != null && Array.isArray(rawList)) {
+        const pathProp = (await getPlayerProperty('path').catch(() => null)) as string | null
+        const streamName = (await getPlayerProperty('stream-open-filename').catch(() => null)) as string | null
+        const mediaPath = pathProp || streamName || currentStreamUrlRef.current
+        if (!mediaPath) throw new Error('Could not resolve the media path for extraction.')
+        // ffmpeg maps subtitles by their relative index (0:s:N). Embedded sub
+        // streams keep the same order as mpv's ff-index, so the chosen track's
+        // position among embedded subs (sorted by ff-index) is that N.
+        const embeddedSubs = rawList
+          .filter((t) => t.type === 'sub' && t['ff-index'] != null)
+          .sort((a, b) => (a['ff-index'] as number) - (b['ff-index'] as number))
+        const subIndex = embeddedSubs.findIndex((t) => t.id === sourceTrackId)
+        if (subIndex < 0) throw new Error('Could not locate the source subtitle stream.')
+        sourceContent = await extractEmbeddedSubtitle(mediaPath, subIndex)
+      } else {
+        throw new Error('Could not access the source subtitle track.')
+      }
+      const cues = parseSubtitleCues(sourceContent)
+      if (cues.length === 0) throw new Error('No subtitle cues found in the source track.')
+      sourceCuesRef.current = cues
+
+      // Reuse an existing AI track if we made one earlier (avoids duplicates).
+      if (aiSubtitleTrackIdRef.current != null) {
+        await sendPlayerCommand('sub-remove', [aiSubtitleTrackIdRef.current]).catch(() => {})
+        aiSubtitleTrackIdRef.current = null
+      }
+
+      liveAiCueIndexRef.current = 1
+      liveAiLastCueRef.current = ''
+      sourceNextIdxRef.current = 0
+      liveAiSubtitleContentRef.current = '1\n00:00:00,000 --> 00:00:00,100\n.\n\n'
+      const translatedPath = await writeTempSubtitle(liveAiSubtitleContentRef.current, 'srt')
+      liveAiSubtitlePathRef.current = translatedPath
+
+      const lang = APP_LANGUAGES.find((l) => l.code === subtitleTranslationLang)
+      const label = `AI ${lang?.name || subtitleTranslationLang} (Translated)`
+      await sendPlayerCommand('sub-add', [translatedPath, 'select', label, subtitleTranslationLang])
+      await sendPlayerCommand('set_property', ['sub-ass-override', 'force']).catch(() => {})
+      await sendPlayerCommand('set_property', ['sub-visibility', true])
+      await refreshTracks().catch(() => false)
+
+      const selected = await getPlayerProperty('sid').catch(() => null)
+      if (typeof selected === 'number') {
+        setSelectedSub(selected)
+        aiSubtitleTrackIdRef.current = selected
+      }
+      aiSubtitleSourceTrackIdRef.current = sourceTrackId
+      setLiveTranslateOn(true)
+    } catch (e) {
+      setError(`AI subtitle translation failed: ${String(e)}`)
+    } finally {
+      setTranslatingSubtitles(false)
+      aiStartInProgressRef.current = false
+    }
+  }, [loadAddonSubtitles, openrouterApiKey, refreshTracks, selectedSub, subTracks, subtitleTranslationLang])
+
+  const toggleAiSubtitleTrack = useCallback(async () => {
+    if (translatingSubtitles) return
+    if (!liveTranslateOn) {
+      await startLiveAiSubtitles()
+      return
+    }
+
+    setLiveTranslateOn(false)
+    await sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
+    const sourceTrackId = aiSubtitleSourceTrackIdRef.current
+    if (sourceTrackId != null) {
+      setSelectedSub(sourceTrackId)
+      command('set_property', ['sid', sourceTrackId])
+      command('set_property', ['sub-visibility', true])
+    } else {
+      setSelectedSub('no')
+      command('set_property', ['sub-visibility', false])
+    }
+  }, [command, liveTranslateOn, startLiveAiSubtitles, translatingSubtitles])
+
+  // Auto-start live AI subtitle translation once per playback when the
+  // "Translate subtitles" setting is on and a source track is available.
+  const autoTranslateStartedRef = useRef(false)
+  useEffect(() => {
+    if (!subtitleTranslationEnabled || autoTranslateStartedRef.current) return
+    if (!openrouterApiKey || !subtitleTranslationLang) return
+    if (!tracksLoaded || subTracks.length === 0) return
+    if (liveTranslateOn || translatingSubtitles) return
+    autoTranslateStartedRef.current = true
+    startLiveAiSubtitles()
+  }, [subtitleTranslationEnabled, openrouterApiKey, subtitleTranslationLang, tracksLoaded, subTracks, liveTranslateOn, translatingSubtitles, startLiveAiSubtitles])
+
   const changeSub = (id: number | 'no') => {
     setSelectedSub(id)
-    command('set_property', ['sid', id])
+    setLiveTranslateOn(id !== 'no' && id === aiSubtitleTrackIdRef.current)
+    if (id === 'no') {
+      sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
+      command('set_property', ['sub-visibility', false])
+    } else {
+      if (id !== aiSubtitleTrackIdRef.current) {
+        sendPlayerCommand('set_property', ['secondary-sid', 'no']).catch(() => {})
+      }
+      setTrackProperty('sid', id).catch((error) => {
+        logEvent('MPV DEBUG', `subtitle track ${id} failed: ${String(error)}`)
+        refreshTracks().catch(() => false)
+      })
+      command('set_property', ['sub-visibility', true])
+    }
     setTrackMenu(null)
   }
 
@@ -1869,10 +4105,10 @@ function FullNativeMpvPlayer({
   const overlay = (
     <div
       className={`fixed inset-0 z-[60] text-white select-none ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
-      style={{ background: playerReady ? 'rgba(0,0,0,0.01)' : '#000' }}
+      style={{ background: playerReady ? 'rgba(0,0,0,0.05)' : '#000' }}
       onMouseMove={showControls}
     >
-      {!playerReady && !error && (
+      {!playerReady && !error && showPlayerLoadingIndicator && (
         <div className="absolute inset-0 z-[3] flex items-center justify-center bg-black pointer-events-none">
           <div className="flex flex-col items-center gap-4">
             <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white" />
@@ -1887,15 +4123,29 @@ function FullNativeMpvPlayer({
         onDoubleClick={toggleFullscreen}
       />
 
-      {/* Center play/pause indicator */}
-      {paused && (
+      {/* Window drag strip — the player overlay covers the TitleBar, so give back a
+          draggable region across the top. Top-corner buttons sit above this (higher z). */}
+      {!isFullscreen && (
+        <div data-tauri-drag-region className="absolute top-0 inset-x-0 h-14 z-[3]" />
+      )}
+
+      {/* Buffering spinner */}
+      {buffering && !paused && playerReady && (
         <div className="absolute inset-0 z-[2] flex items-center justify-center pointer-events-none">
-          <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
-            <svg className="w-10 h-10 ml-1" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+          <div className="w-16 h-16 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-white/25 border-t-white rounded-full animate-spin" />
           </div>
         </div>
+      )}
+
+      {/* Netflix-style paused info overlay — shown once controls auto-hide */}
+      {paused && playerReady && !buffering && !error && !controlsVisible && (
+        <PausedInfoOverlay
+          title={currentDisplayTitle}
+          subtitle={currentDisplaySubtitle}
+          backdrop={currentBackdropRef.current}
+          meta={currentMeta}
+        />
       )}
 
       {/* Keyboard Seek HUD */}
@@ -1923,47 +4173,46 @@ function FullNativeMpvPlayer({
         </button>
       </div>
 
-      {/* Error message */}
-      {error && (
-        <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 max-w-md rounded-2xl border border-red-500/25 bg-red-900/60 backdrop-blur-xl px-5 py-3 text-sm text-red-200">
-          {error}
+      {/* Fatal startup failure — playback never began, offer a way out */}
+      {error && !playerReady && (
+        <div className="absolute inset-0 z-[25] flex items-center justify-center bg-black/80 backdrop-blur-sm px-6">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-neutral-950/90 p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10">
+              <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+            </div>
+            <h3 className="mb-1.5 text-base font-bold text-white">This stream could not be played</h3>
+            <p className="mb-5 break-words text-xs leading-relaxed text-white/60">{error}</p>
+            <div className="flex items-center justify-center gap-2.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); pickAnother() }}
+                className="cursor-pointer rounded-xl border border-accent/20 bg-accent/15 px-4 py-2 text-sm font-semibold text-accent transition-colors hover:bg-accent/25"
+              >
+                Choose another stream
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); retryStream() }}
+                className="cursor-pointer rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/80 transition-colors hover:bg-white/10"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Track loading spinner */}
       {!tracksLoaded && !error && (
-        <div className="absolute left-1/2 bottom-32 z-20 -translate-x-1/2 flex items-center gap-2 text-xs text-white/40 pointer-events-none">
+        <div className="absolute left-1/2 bottom-32 z-20 -translate-x-1/2 flex items-center gap-2 text-xs text-white/60 pointer-events-none">
           <div className="w-3.5 h-3.5 border border-white/30 border-t-transparent rounded-full animate-spin" />
           Detecting tracks…
         </div>
       )}
 
-      {/* Skip Intro / Credits button */}
-      {activeSkip && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            let endMs: number
-            if (skipType === 'intro') endMs = activeSkip.intro_end_ms
-            else if (skipType === 'recap') endMs = activeSkip.recap_end_ms ?? activeSkip.intro_end_ms
-            else endMs = activeSkip.credits_end_ms ?? duration * 1000
-            const targetSec = endMs / 1000
-            if (!isNaN(targetSec)) {
-              command('seek', [targetSec, 'absolute'])
-              setActiveSkip(null)
-              setSkipType(null)
-            }
-          }}
-          className={`absolute z-[20] right-8 px-6 py-3 bg-black/70 hover:bg-black/90 border border-white/25 text-white rounded-xl text-sm font-semibold shadow-2xl backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-            controlsVisible ? 'bottom-36' : 'bottom-8'
-          }`}
-        >
-          <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M5.88 4.12L13.76 12l-7.88 7.88L8 22l10-10L8 2z" />
-            <path d="M18 5h2v14h-2z" />
-          </svg>
-          Skip {skipType === 'intro' ? 'Intro' : skipType === 'recap' ? 'Recap' : 'Credits'}
-        </button>
+      {/* Watch Together overlays */}
+      {isInWatchTogether && (
+        <PlayerChatOverlay visible={controlsVisible} onInteraction={showControls} />
       )}
 
       {/* ── Bottom controls bar ── */}
@@ -1971,20 +4220,80 @@ function FullNativeMpvPlayer({
         className={`absolute inset-x-0 bottom-0 z-[10] transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-8 pt-20 pb-6 bg-gradient-to-t from-black/90 via-black/55 to-transparent">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[clamp(11rem,28vh,20rem)] bg-gradient-to-t from-black/95 via-black/55 to-transparent" />
+        <div
+          className="player-controls relative mx-[clamp(26px,4.5vw,92px)] mb-[clamp(18px,3vh,42px)] flex flex-col"
+        >
 
-          {/* Info row: title + track icons */}
-          <div className="flex items-end justify-between mb-4">
-            <div className="min-w-0 pr-4">
-              <h2 className="text-2xl font-bold leading-tight truncate">{currentDisplayTitle}</h2>
-              {currentDisplaySubtitle && (
-                <p className="text-sm text-white/50 tracking-wider uppercase mt-1 truncate">{currentDisplaySubtitle}</p>
+          {/* Compact TV-style control row */}
+          <div className={`player-controls__info order-3 flex items-center justify-between transition-all duration-250 ${trackMenu ? 'relative z-40' : ''} ${showChapters ? 'pointer-events-none max-h-0 translate-y-2 overflow-hidden opacity-0' : 'mt-1 min-h-12 max-h-16 translate-y-0 overflow-visible opacity-100'}`}>
+            <div className="flex items-center gap-1">
+              <button type="button" aria-label="Media information" title="Info" onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo((value) => !value); setShowChapters(false); setShowPlayerDebug(false) }} className={`grid h-10 w-10 place-items-center rounded-full transition-all ${showMediaInfo ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6M12 7.4h.01" strokeLinecap="round"/></svg>
+              </button>
+              <button type="button" aria-label="Chapters" title="Chapters" disabled={displayChapters.length === 0} onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowChapters((value) => !value); setShowMediaInfo(false); setShowPlayerDebug(false) }} className={`grid h-10 w-10 place-items-center rounded-full transition-all disabled:cursor-not-allowed disabled:opacity-35 ${showChapters ? 'bg-white text-black shadow-lg' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 5v14M8 9h12M8 15h12" strokeLinecap="round"/></svg>
+              </button>
+              {import.meta.env.DEV && (
+                <button
+                  type="button"
+                  aria-label="Player diagnostics"
+                  title="Player diagnostics"
+                  onClick={() => { setTrackMenu(null); setShowSpeedMenu(false); setShowMediaInfo(false); setShowChapters(false); setShowPlayerDebug((value) => !value) }}
+                  className={`grid h-10 w-10 place-items-center rounded-full transition-all ${showPlayerDebug ? 'bg-amber-300 text-black shadow-lg' : 'text-amber-200/65 hover:bg-amber-300/10 hover:text-amber-100'}`}
+                >
+                  <svg className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M9 9h6v7a3 3 0 0 1-6 0V9Z"/><path d="M10 9V7a2 2 0 0 1 4 0v2M6 11h3M15 11h3M6 15h3M15 15h3M8 4l2 2M16 4l-2 2" strokeLinecap="round"/></svg>
+                </button>
               )}
             </div>
 
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="player-controls__secondary flex flex-shrink-0 items-center gap-2">
+              {nextEpInfo && currentItemRef.current?.contentType === 'series' && !isInWatchTogether && (
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); void handleAutoplay() }}
+                  disabled={isAutoSearching}
+                  aria-label={`Skip to next episode, season ${nextEpInfo.season} episode ${nextEpInfo.episode}`}
+                  title={`Next episode · S${nextEpInfo.season} E${nextEpInfo.episode}`}
+                  className="grid h-10 w-10 place-items-center rounded-full text-white/75 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isAutoSearching ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" /> : <svg className="h-[19px] w-[19px]" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>}
+                </button>
+              )}
+              {activeSkip && (
+                (skipType === 'credits' && showSkipCreditsButton)
+                || ((skipType === 'intro' || skipType === 'recap') && showSkipIntroButton)
+              ) && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (wtControlBlocked()) { wtBlockedNotice(); return }
+                    let endMs: number
+                    if (skipType === 'intro') endMs = activeSkip.intro_end_ms
+                    else if (skipType === 'recap') endMs = activeSkip.recap_end_ms ?? activeSkip.intro_end_ms
+                    else endMs = activeSkip.credits_end_ms ?? duration * 1000
+                    const targetSec = endMs / 1000
+                    if (!isNaN(targetSec)) {
+                      command('seek', [targetSec, 'absolute+exact'])
+                      sendWatchTogetherSeek(targetSec)
+                      setActiveSkip(null)
+                      setSkipType(null)
+                    }
+                  }}
+                  aria-label={`Skip ${skipType === 'intro' ? 'intro' : skipType === 'recap' ? 'recap' : 'credits'}`}
+                  className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-xs font-bold text-black shadow-[0_8px_28px_rgba(0,0,0,0.4)] transition-transform duration-150 hover:scale-[1.03] active:scale-[0.98]"
+                >
+                  <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M5.88 4.12L13.76 12l-7.88 7.88L8 22l10-10L8 2z" />
+                    <path d="M18 5h2v14h-2z" />
+                  </svg>
+                  Skip {skipType === 'intro' ? 'Intro' : skipType === 'recap' ? 'Recap' : 'Credits'}
+                </button>
+              )}
+
+              <div className="flex items-center gap-0.5">
               {/* Subtitle button */}
-              <div className="relative">
+              <div className="relative" data-player-popover>
                 {trackMenu === 'subs' && (
                   <TrackMenuPanel
                     type="subs"
@@ -1992,16 +4301,21 @@ function FullNativeMpvPlayer({
                     selected={selectedSub}
                     onSelect={changeSub}
                     onClose={() => setTrackMenu(null)}
-                    onToggleTranslate={() => setLiveTranslateOn((v) => !v)}
+                    onToggleTranslate={toggleAiSubtitleTrack}
                     translateActive={liveTranslateOn}
                     hasTranslateKey={!!openrouterApiKey && !!subtitleTranslationLang}
                   />
                 )}
                 <button
-                  onClick={() => setTrackMenu(trackMenu === 'subs' ? null : 'subs')}
-                  onFocus={() => loadAddonSubtitles().then(() => refreshTracks()).catch(() => {})}
+                  onClick={() => {
+                    setShowSpeedMenu(false)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setTrackMenu(trackMenu === 'subs' ? null : 'subs')
+                  }}
+                  onFocus={() => loadAddonSubtitles(true).then(() => refreshTracks()).catch(() => {})}
                   title="Subtitles"
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${trackMenu === 'subs' || selectedSub !== 'no' ? 'bg-white/20 text-white' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'}`}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${trackMenu === 'subs' ? 'bg-white/18 text-white' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <rect x="2" y="4" width="20" height="16" rx="2.5" />
@@ -2011,7 +4325,7 @@ function FullNativeMpvPlayer({
               </div>
 
               {/* Audio button */}
-              <div className="relative">
+              <div className="relative" data-player-popover>
                 {trackMenu === 'audio' && (
                   <TrackMenuPanel
                     type="audio"
@@ -2022,10 +4336,15 @@ function FullNativeMpvPlayer({
                   />
                 )}
                 <button
-                  onClick={() => setTrackMenu(trackMenu === 'audio' ? null : 'audio')}
+                  onClick={() => {
+                    setShowSpeedMenu(false)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setTrackMenu(trackMenu === 'audio' ? null : 'audio')
+                  }}
                   onFocus={() => refreshTracks().catch(() => {})}
                   title="Audio track"
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${trackMenu === 'audio' ? 'bg-white/20 text-white' : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'}`}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${trackMenu === 'audio' ? 'bg-white/18 text-white' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
                     <path d="M9 18V5l12-2v13" strokeLinecap="round" strokeLinejoin="round" />
@@ -2034,12 +4353,70 @@ function FullNativeMpvPlayer({
                 </button>
               </div>
 
+              {/* Speed */}
+              <div className="relative ml-1" data-player-popover>
+                {showSpeedMenu && (
+                  <div className="absolute bottom-full mb-2 right-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
+                    {SPEED_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => changeSpeed(s)}
+                        className={`w-full px-4 py-1.5 text-xs font-semibold text-left transition-colors ${
+                          playbackSpeed === s ? 'text-accent bg-white/10' : 'text-white/70 hover:text-white hover:bg-white/8'
+                        }`}
+                      >
+                        {s === 1 ? 'Normal' : `${s}x`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => {
+                    setTrackMenu(null)
+                    setShowMediaInfo(false)
+                    setShowChapters(false)
+                    setShowSpeedMenu((v) => !v)
+                  }}
+                  title="Playback speed"
+                  className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-label font-bold transition-colors ${
+                    playbackSpeed !== 1 ? 'bg-white/18 text-white' : 'text-white/60 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+                </button>
+              </div>
+
               {/* Volume */}
-              <div className="flex items-center gap-1.5 ml-1">
-                <svg className="w-4 h-4 text-white/50 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-                  <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
-                </svg>
+              <div className="group/vol ml-1 flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    const newVol = volume > 0 ? 0 : (volumeRef.current > 0 ? volumeRef.current : 100)
+                    setVolume(newVol)
+                    if (newVol > 0) volumeRef.current = newVol
+                    localStorage.setItem('orynt_volume', String(newVol))
+                    changeVolume(newVol)
+                  }}
+                  title={volume > 0 ? 'Mute (M)' : 'Unmute (M)'}
+                  className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  {volume === 0 ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <line x1="23" y1="9" x2="17" y2="15" strokeLinecap="round" />
+                      <line x1="17" y1="9" x2="23" y2="15" strokeLinecap="round" />
+                    </svg>
+                  ) : volume < 50 ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" strokeLinecap="round" />
+                    </svg>
+                  )}
+                </button>
                 <input
                   type="range"
                   min={0}
@@ -2052,27 +4429,16 @@ function FullNativeMpvPlayer({
                     localStorage.setItem('orynt_volume', String(v))
                     changeVolume(v)
                   }}
-                  className="w-20 accent-white cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
+                  className="w-0 cursor-pointer accent-white opacity-0 transition-all duration-200 group-hover/vol:w-20 group-hover/vol:opacity-80 focus:w-20 focus:opacity-100"
                 />
               </div>
 
-              {/* Pick another */}
-              <button
-                onClick={pickAnother}
-                title="Pick another stream"
-                className="w-9 h-9 rounded-xl bg-white/8 text-white/60 hover:bg-white/15 hover:text-white flex items-center justify-center transition-colors ml-1"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-                  <path d="M1 4v6h6M23 20v-6h-6" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M20.49 9A9 9 0 005.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 013.51 15" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-
               {/* Fullscreen */}
               <button
-                onClick={toggleFullscreen}
-                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                className="w-9 h-9 rounded-xl bg-white/8 text-white/60 hover:bg-white/15 hover:text-white flex items-center justify-center transition-colors"
+                type="button"
+                onClick={(event) => { event.stopPropagation(); toggleFullscreen() }}
+                title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
                 {isFullscreen ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -2084,16 +4450,31 @@ function FullNativeMpvPlayer({
                   </svg>
                 )}
               </button>
+
+              {/* Primary playback action */}
+              <button
+                onClick={(event) => { event.stopPropagation(); togglePlay() }}
+                title={paused ? 'Play (Space)' : 'Pause (Space)'}
+                aria-label={paused ? 'Play' : 'Pause'}
+                className="ml-2 grid h-12 w-12 place-items-center rounded-full bg-white text-black shadow-[0_10px_32px_rgba(0,0,0,0.35)] transition-transform duration-150 hover:scale-105 active:scale-95"
+              >
+                {paused ? (
+                  <svg className="ml-0.5 h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>
+                )}
+              </button>
+              </div>
             </div>
           </div>
 
           {/* Seek bar + playback controls row */}
-          <div className="flex items-center gap-3 mb-2 px-10">
+          <div className={`order-1 flex flex-wrap items-center justify-end gap-2.5 transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 overflow-hidden opacity-0' : 'max-h-8 overflow-visible opacity-100'}`}>
             {/* Play/Pause */}
             <button
               onClick={(e) => { e.stopPropagation(); togglePlay() }}
-              title={paused ? 'Play' : 'Pause'}
-              className="w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors flex-shrink-0"
+              title={paused ? 'Play (Space)' : 'Pause (Space)'}
+              className="hidden"
             >
               {paused ? (
                 <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
@@ -2106,19 +4487,140 @@ function FullNativeMpvPlayer({
               )}
             </button>
 
-            <div className="relative flex-1 h-1.5 group cursor-pointer">
-              <div className="absolute inset-0 rounded-full bg-white/20 group-hover:bg-white/30 transition-colors" />
+            {/* Skip back */}
+            <button
+              onClick={(e) => { e.stopPropagation(); seekBy(-seekStepSeconds) }}
+              title={`Back ${seekStepSeconds}s (←)`}
+              className="hidden"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">{seekStepSeconds}</text>
+              </svg>
+            </button>
+
+            {/* Skip forward */}
+            <button
+              onClick={(e) => { e.stopPropagation(); seekBy(seekStepSeconds) }}
+              title={`Forward ${seekStepSeconds}s (→)`}
+              className="hidden"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
+                <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">{seekStepSeconds}</text>
+              </svg>
+            </button>
+
+            <div
+              className="order-1 relative h-3 w-full flex-none cursor-pointer touch-none group"
+              onPointerDown={(event) => {
+                if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
+                if (event.pointerType === 'mouse' && (event.buttons & 1) !== 1) return
+                if ((event.target as Element | null)?.closest('button')) return
+                const rect = event.currentTarget.getBoundingClientRect()
+                const pct = rect.width > 0
+                  ? Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
+                  : progressPct
+                try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* window guard still releases the drag */ }
+                isDraggingRef.current = true
+                activeTimelinePointerRef.current = event.pointerId
+                setIsDragging(true)
+                draggingProgressRef.current = pct
+                setDraggingProgress(pct)
+                updateTimelinePreviewAtPct(pct)
+              }}
+              onPointerMove={(event) => {
+                if (!isDraggingRef.current) {
+                  showTimelinePreviewFromPointer(event)
+                  return
+                }
+                const ownsDrag = activeTimelinePointerRef.current === event.pointerId
+                const leftButtonHeld = event.pointerType !== 'mouse' || (event.buttons & 1) === 1
+                if (!ownsDrag || !leftButtonHeld) {
+                  isDraggingRef.current = false
+                  activeTimelinePointerRef.current = null
+                  setIsDragging(false)
+                  showTimelinePreviewFromPointer(event)
+                  return
+                }
+                const rect = event.currentTarget.getBoundingClientRect()
+                const pct = rect.width > 0
+                  ? Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
+                  : draggingProgressRef.current
+                draggingProgressRef.current = pct
+                setDraggingProgress(pct)
+                updateTimelinePreviewAtPct(pct)
+              }}
+              onPointerUp={(event) => {
+                if (!isDraggingRef.current || activeTimelinePointerRef.current !== event.pointerId) return
+                const rect = event.currentTarget.getBoundingClientRect()
+                const pct = rect.width > 0
+                  ? Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
+                  : draggingProgressRef.current
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+                draggingProgressRef.current = pct
+                commitTimelineSeek(pct)
+              }}
+              onPointerCancel={() => {
+                isDraggingRef.current = false
+                activeTimelinePointerRef.current = null
+                setIsDragging(false)
+                hideTimelinePreview()
+              }}
+              onPointerLeave={() => {
+                if (!isDraggingRef.current) hideTimelinePreview()
+              }}
+            >
+              {timelinePreview.visible && (
+                <div
+                  className="seek-preview pointer-events-none absolute bottom-7 z-[20] -translate-x-1/2 overflow-visible bg-transparent"
+                  // The bubble is centred on the cursor, so at either end of the
+                  // timeline half of it used to render outside the viewport.
+                  // Clamping the centre by half the bubble's own width keeps it
+                  // fully on screen while staying as close to the scrub position
+                  // as possible. --seek-preview-half tracks whether a thumbnail
+                  // is present, since that changes the bubble's width.
+                  style={{
+                    left: `clamp(var(--seek-preview-half), ${timelinePreview.leftPct}%, calc(100% - var(--seek-preview-half)))`,
+                    ['--seek-preview-half' as string]: scrubThumbnailPreviews ? '7.5rem' : '2.5rem',
+                  }}
+                >
+                  {scrubThumbnailPreviews && timelineThumbnail && (
+                    <ScrubThumbnailImage
+                      key={typeof timelineThumbnail === 'string' ? timelineThumbnail : `${timelineThumbnail.cue.spriteUrl}:${timelineThumbnail.cue.x}:${timelineThumbnail.cue.y}`}
+                      thumbnail={timelineThumbnail}
+                      onInvalid={() => {
+                        seekrPreviewRef.current = null
+                        setSeekrPreview(null)
+                        setTimelineThumbnail(null)
+                        // A revoked/expired signed sprite URL must hand the
+                        // same hover back to the established providers.
+                        window.setTimeout(() => updateTimelinePreviewAtPct(timelinePreview.leftPct), 0)
+                      }}
+                    />
+                  )}
+                  <span className="mt-2 block text-center text-sm font-bold tabular-nums text-white [text-shadow:0_2px_8px_rgba(0,0,0,0.95)]">
+                    {formatTime(timelinePreview.time)}
+                  </span>
+                </div>
+              )}
+              <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/25 group-hover:bg-white/35 transition-colors" />
               {skipTimelineRanges.map((range, index) => (
                 <button
                   key={`${range.type}-${range.start}-${range.end}-${index}`}
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation()
-                    command('seek', [range.end / 1000, 'absolute'])
+                    if (wtControlBlocked()) { wtBlockedNotice(); return }
+                    const targetTime = range.end / 1000
+                    progressRef.current.currentTime = targetTime
+                    setCurrentTime(targetTime)
+                    command('seek', [targetTime, 'absolute+keyframes'])
+                    sendWatchTogetherSeek(targetTime)
                   }}
                   title={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
                   aria-label={`Skip ${range.type === 'credits' ? 'outro' : range.type}`}
-                  className={`absolute inset-y-[1px] z-[3] min-w-[3px] rounded-sm opacity-65 transition-all hover:inset-y-[-2px] hover:opacity-100 ${
+                  className={`absolute top-1/2 z-[3] h-[3px] min-w-[3px] -translate-y-1/2 rounded-sm opacity-65 transition-[height,opacity] hover:h-[7px] hover:opacity-100 ${
                     range.type === 'recap'
                       ? 'bg-sky-400/90'
                       : range.type === 'intro'
@@ -2129,77 +4631,208 @@ function FullNativeMpvPlayer({
                 />
               ))}
               <div
-                className="absolute inset-y-0 left-0 z-[1] rounded-full bg-white/90 transition-all"
+                className="absolute left-0 top-1/2 z-[1] h-[3px] -translate-y-1/2 rounded-full bg-white/90 transition-all"
                 style={{ width: `${displayProgressPct}%` }}
               />
               {/* Thumb dot */}
               <div
-                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ left: `calc(${displayProgressPct}% - 6px)` }}
+                className="absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full bg-white opacity-75 shadow-lg transition-opacity group-hover:opacity-100"
+                style={{ left: `calc(${displayProgressPct}% - 5px)` }}
               />
               <input
                 type="range"
                 min={0}
                 max={100}
-                step={0.05}
+                step={duration > 0 ? Math.max(100 / duration, 0.001) : 0.05}
                 value={displayProgressPct}
-                onMouseDown={() => {
-                  setIsDragging(true)
-                  setDraggingProgress(progressPct)
-                }}
-                onMouseUp={() => {
-                  setIsDragging(false)
-                  command('seek', [draggingProgress, 'absolute-percent'])
-                  const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgress / 100) * duration)
-                }}
-                onTouchStart={() => {
-                  setIsDragging(true)
-                  setDraggingProgress(progressPct)
-                }}
-                onTouchEnd={() => {
-                  setIsDragging(false)
-                  command('seek', [draggingProgress, 'absolute-percent'])
-                  const wt = useWatchTogetherStore.getState()
-                  if (wt.currentRoom && duration > 0) wtSeek((draggingProgress / 100) * duration)
-                }}
+                aria-label="Playback position"
+                aria-valuetext={duration > 0 ? `${formatTime(displayCurrentTime)} of ${formatTime(duration)}` : 'Loading'}
                 onChange={(e) => {
-                  setDraggingProgress(Number(e.target.value))
+                  const val = Number(e.target.value)
+                  draggingProgressRef.current = val
+                  setDraggingProgress(val)
+                  if (isDraggingRef.current) {
+                    updateTimelinePreviewAtPct(val)
+                  } else {
+                    // Native range keyboard controls do not emit pointer events.
+                    // Commit them immediately so arrow/Page/Home/End seeking works.
+                    commitTimelineSeek(val)
+                  }
                 }}
-                className="absolute inset-0 w-full opacity-0 cursor-pointer h-6 -top-2.5"
+                className="pointer-events-none absolute inset-x-0 top-1/2 h-6 w-full -translate-y-1/2 touch-none opacity-0"
               />
             </div>
           </div>
 
           {/* Timestamps row */}
-          <div className="flex items-center justify-between text-[11px] text-white/45 px-10">
+          <div className={`relative order-2 flex items-center justify-between text-xs font-medium tabular-nums text-white/58 transition-all duration-250 ${showChapters ? 'pointer-events-none max-h-0 overflow-hidden opacity-0' : 'mt-2 max-h-8 overflow-visible opacity-100'}`} data-player-popover>
             <span>{duration > 0 ? formatTime(displayCurrentTime) : '--:--'}</span>
-            <button
-              onClick={() => setShowTimeRemaining((r) => !r)}
-              className="hover:text-white/70 transition-colors"
-            >
-              {duration > 0
-                ? showTimeRemaining
-                  ? `-${formatTime(displayRemaining)}`
-                  : formatTime(duration)
-                : '--:--'}
+            <button onClick={() => setShowTimeRemaining((r) => !r)} className="transition-colors hover:text-white/80">
+              {duration > 0 ? showTimeRemaining ? `-${formatTime(displayRemaining)}` : formatTime(duration) : '--:--'}
             </button>
+
+            {showMediaInfo && (
+              <div className="absolute bottom-full left-0 mb-4 w-[min(34rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/90 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl">
+                <div className="flex items-start justify-between gap-5">
+                  <div className="min-w-0">
+                    <p className="text-meta font-bold uppercase tracking-[0.18em] text-white/60">Now playing</p>
+                    <h3 className="mt-1.5 text-lg font-semibold leading-tight text-white">{currentDisplayTitle}</h3>
+                    {(currentMeta?.episodeTitle || currentDisplaySubtitle) && (
+                      <p className="mt-1 text-sm text-white/50">
+                        {[currentMeta?.epCode, currentMeta?.episodeTitle || currentDisplaySubtitle].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => setShowMediaInfo(false)} aria-label="Close information" className="grid h-8 w-8 flex-none place-items-center rounded-full bg-white/5 text-lg text-white/60 transition-colors hover:bg-white/10 hover:text-white">×</button>
+                </div>
+
+                {currentMeta?.overview ? (
+                  <p className="mt-4 text-sm leading-6 text-white/68">{currentMeta.overview}</p>
+                ) : (
+                  <p className="mt-4 text-sm text-white/60">Description unavailable.</p>
+                )}
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {currentMeta?.year && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{currentMeta.year}</span>}
+                  {currentMeta?.runtime && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{currentMeta.runtime} min</span>}
+                  {currentMeta?.rating != null && <span className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">★ {currentMeta.rating.toFixed(1)}</span>}
+                  {currentMeta?.genres?.slice(0, 3).map((genre) => <span key={genre} className="rounded-full bg-white/7 px-2.5 py-1 text-label font-medium text-white/60">{genre}</span>)}
+                  {mediaBadges.map((badge) => <span key={badge} className="rounded-full border border-white/10 px-2.5 py-1 text-meta font-semibold text-white/60">{badge}</span>)}
+                </div>
+              </div>
+            )}
+
+            {import.meta.env.DEV && showPlayerDebug && (
+              <PlayerDebugPanel
+                snapshot={playerDebugSnapshot}
+                sourceHint={currentStreamUrlRef.current || url}
+                passthroughConfigured={useAppStore.getState().audioPassthrough}
+                loading={playerDebugLoading}
+                error={playerDebugError}
+                onRefresh={() => refreshPlayerDebug().catch(() => {})}
+                onUseDecodedAudio={useDecodedAudio}
+                onClose={() => setShowPlayerDebug(false)}
+              />
+            )}
           </div>
+
+          {/* Chapter strip: compact tabs and a continuous thumbnail rail. */}
+          {displayChapters.length > 0 && (
+            <div
+              aria-hidden={!showChapters}
+              data-player-popover
+              className={`order-0 grid transition-[grid-template-rows,opacity,transform] duration-300 ease-expo ${showChapters ? 'grid-rows-[1fr] translate-y-0 opacity-100' : 'pointer-events-none grid-rows-[0fr] translate-y-3 opacity-0'}`}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white/78">
+                  <button
+                    type="button"
+                    onClick={() => { setShowChapters(false); setShowMediaInfo(true); setShowPlayerDebug(false) }}
+                    className="rounded-full px-3 py-2 transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    Info
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowChapters(false)}
+                    className="flex items-center gap-2 rounded-full bg-white px-4 py-2 font-bold text-black shadow-[0_8px_24px_rgba(0,0,0,.35)] transition-transform hover:scale-[1.02] active:scale-[.98]"
+                  >
+                    <span>Chapters</span>
+                    <span className="h-4 w-px bg-black/20" />
+                    <span className="tabular-nums">{displayChapters.length}</span>
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 13 3.5-3.5 3.5 3.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                </div>
+                <div
+                  ref={chapterStripRef}
+                  className="flex gap-2 overflow-x-auto px-0.5 pb-1.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                >
+                  {displayChapters.map((chapter, index) => {
+                    const next = displayChapters[index + 1]
+                    const isActive = displayCurrentTime >= chapter.time && (next == null || displayCurrentTime < next.time)
+                    const cue = seekrPreview && seekrCueAt(seekrPreview, chapter.time)
+                    const thumb = cue ? null : cachedTimelineThumbnailAt(chapter.time)
+                    return (
+                      <button
+                        key={`chapter-tile-${chapter.time}-${index}`}
+                        type="button"
+                        data-active-chapter={isActive || undefined}
+                        aria-label={`Go to ${chapter.title}`}
+                        title={`${chapter.title} · ${formatTime(chapter.time)}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (wtControlBlocked()) { wtBlockedNotice(); return }
+                          setShowChapters(false)
+                          progressRef.current.currentTime = chapter.time
+                          setCurrentTime(chapter.time)
+                          command('seek', [chapter.time, 'absolute+keyframes'])
+                          sendWatchTogetherSeek(chapter.time)
+                        }}
+                        className="group/chapter flex-none rounded-lg text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-white/70"
+                      >
+                        <div className={`relative aspect-video w-60 overflow-hidden rounded-lg border bg-white/5 transition-all duration-150 ${isActive ? 'border-white/65 shadow-[0_8px_28px_rgba(0,0,0,0.55)]' : 'border-white/10 hover:border-white/35'}`}>
+                          {cue ? (
+                            <SeekrSpriteImage cue={cue} onInvalid={() => { seekrPreviewRef.current = null; setSeekrPreview(null) }} />
+                          ) : thumb ? (
+                            <img src={thumb} alt="" draggable={false} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full animate-pulse bg-white/10" />
+                          )}
+                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2.5 pb-2 pt-8">
+                            <div className="flex items-end justify-between gap-2">
+                              <span className={`grid h-6 w-6 place-items-center rounded bg-black/65 text-white transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover/chapter:opacity-80'}`}>
+                                <svg className="ml-px h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                              </span>
+                              <span className="rounded bg-black/65 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-white/95">{formatTime(chapter.time)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Live translated subtitle overlay */}
-      {liveTranslateOn && currentSubText && (
-        <div className="absolute inset-x-0 bottom-28 z-[8] flex justify-center pointer-events-none px-16">
-          <div className="bg-black/75 backdrop-blur-sm rounded-xl px-5 py-2.5 max-w-3xl text-center">
+      {false && liveTranslateOn && currentSubText && (() => {
+        const subTextShadow = subtitleBorderStyle === 'outline'
+          ? `0 0 3px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.8), -1px -1px 0 rgba(0,0,0,0.8)`
+          : subtitleBorderStyle === 'shadow'
+            ? `2px 2px 4px rgba(0,0,0,0.9)`
+            : 'none'
+        return (
+          <div className="absolute inset-x-0 bottom-24 z-[8] flex flex-col items-center pointer-events-none px-12 gap-1">
             {translatedText ? (
-              <p className="text-base font-semibold text-purple-200 leading-relaxed">{translatedText}</p>
+              <span
+                className="inline-block px-3 py-1 rounded font-semibold leading-snug text-center"
+                style={{
+                  fontSize: `${subtitleFontSize}px`,
+                  color: subtitleColor,
+                  backgroundColor: `rgba(0, 0, 0, ${subtitleBgOpacity})`,
+                  textShadow: subTextShadow,
+                }}
+              >
+                {translatedText}
+              </span>
             ) : (
-              <p className="text-sm text-white/50 leading-relaxed italic">{currentSubText}</p>
+              <span
+                className="inline-block px-3 py-1 rounded italic leading-snug text-center"
+                style={{
+                  fontSize: `${Math.max(14, subtitleFontSize - 4)}px`,
+                  color: `${subtitleColor}80`,
+                  backgroundColor: `rgba(0, 0, 0, ${Math.max(0.3, Number(subtitleBgOpacity))})`,
+                }}
+              >
+                {currentSubText}
+              </span>
             )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Up Next overlay */}
       {showUpNext && nextEpInfo && (
@@ -2207,6 +4840,8 @@ function FullNativeMpvPlayer({
           nextEp={nextEpInfo}
           showBackdrop={currentBackdropRef.current}
           countdown={upNextCountdown}
+          countdownDuration={nextEpisodeCountdownSeconds}
+          autoplayEnabled={autoPlayNextEpisode}
           isSearching={isAutoSearching}
           onPlay={handleAutoplay}
           onDismiss={() => {

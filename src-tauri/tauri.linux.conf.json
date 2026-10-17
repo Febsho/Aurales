@@ -1,0 +1,40 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "app": {
+    "windows": [
+      {
+        "title": "Aurales",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["appimage"],
+    "externalBin": [
+      "binaries/mpv",
+      "binaries/ffmpeg",
+      "binaries/yt-dlp"
+    ],
+    "resources": {
+      "binaries/*.dll": null,
+      "binaries/libmpv.so.*": "libmpv/",
+      "resources/mpv-scripts/*": "mpv-scripts/",
+      "resources/mpv-script-opts/*": "mpv-script-opts/"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["mpv", "libmpv2 | libmpv1", "ffmpeg"]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
+  }
+}

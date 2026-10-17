@@ -1,4 +1,5 @@
 import type { AnimeTitleInput, AnimeTitlePreference, AnimeSeasonTitleInput } from './types'
+import { invoke } from '@tauri-apps/api/core'
 
 export function isLikelyJapaneseOnly(text: string): boolean {
   return /[぀-ヿ㐀-䶿一-龯]/.test(text)
@@ -97,4 +98,20 @@ export function resolveSeasonTitles(
   }
 
   return { displayTitle: `Season ${seasonNumber}`, originalTitle: title }
+}
+
+export async function resolveSeasonTitlesWithNativeFallback(
+  title: string | undefined,
+  seasonNumber: number,
+  preference: AnimeTitlePreference = 'auto',
+  useGenericLabels = true,
+  avoidJapanese = true,
+): Promise<{ displayTitle: string; originalTitle?: string; nativeTitle?: string }> {
+  try {
+    return await invoke<{ displayTitle: string; originalTitle?: string; nativeTitle?: string }>('resolve_anime_season_title', {
+      request: { title, seasonNumber, preference, useGenericLabels, avoidJapanese },
+    })
+  } catch (_) {
+    return resolveSeasonTitles(title, seasonNumber, preference, useGenericLabels, avoidJapanese)
+  }
 }

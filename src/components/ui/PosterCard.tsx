@@ -44,12 +44,12 @@ export default function PosterCard({
       onClick={onClick}
       className={[
         'flex-shrink-0 group cursor-pointer focus-ring text-left',
-        'transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+        'transition-all duration-[var(--duration-slow)] ease-expo',
         sizeWidths[size],
         className,
       ].join(' ')}
     >
-      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-card mb-2.5 border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-hover:-translate-y-2 group-hover:scale-[1.04] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)]">
+      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-card mb-2.5 border border-white/[0.04] transition-all duration-[var(--duration-slow)] ease-expo group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-hover:-translate-y-2 group-hover:scale-[1.04] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)]">
         {poster && !imgError ? (
           <img
             src={poster}
@@ -76,7 +76,7 @@ export default function PosterCard({
         )}
 
         {showRating && ratingStr && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-meta font-bold text-yellow-400">
             <svg className="w-3 h-3 fill-current" viewBox="0 0 24 24">
               <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
             </svg>
@@ -95,7 +95,7 @@ export default function PosterCard({
         {title}
       </h3>
       {year && (
-        <p className="text-[11px] text-white/35 pl-1 mt-0.5">{year}</p>
+        <p className="text-label text-white/60 pl-1 mt-0.5">{year}</p>
       )}
     </button>
   )

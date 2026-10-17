@@ -1,25 +1,50 @@
 use rusqlite::{Connection, Result};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct Database {
-    pub conn: Mutex<Connection>,
+    pub conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub fn new(app_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&app_dir).ok();
-        let db_path = app_dir.join("orynt.db");
+        let db_path = app_dir.join("aurales.db");
+        if !db_path.exists() {
+            let mut legacy_paths = vec![app_dir.join("orynt.db")];
+            if let Some(parent) = app_dir.parent() {
+                legacy_paths.push(parent.join("com.orynt.app").join("orynt.db"));
+            }
+
+            if let Some(legacy_path) = legacy_paths.into_iter().find(|path| path.is_file()) {
+                // Use SQLite's online backup API instead of copying the file:
+                // committed data may still live in the legacy database's WAL.
+                let legacy = Connection::open(legacy_path)?;
+                let migration_path = app_dir.join("aurales.db.migrating");
+                let _ = std::fs::remove_file(&migration_path);
+                legacy.backup(rusqlite::DatabaseName::Main, &migration_path, None)?;
+                std::fs::rename(&migration_path, &db_path)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            }
+        }
         let conn = Connection::open(db_path)?;
+        // SQLite leaves foreign-key enforcement disabled by default. The
+        // schema relies on cascades for media seasons, episodes, and server
+        // catalog rows, so enable enforcement before migrations or writes.
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Database {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         };
         db.run_migrations()?;
         Ok(db)
     }
 
     fn run_migrations(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS settings (
@@ -307,6 +332,62 @@ impl Database {
                 watched_at TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Server integrations keep only non-secret configuration here.
+            -- Passwords and access tokens are stored in the operating-system keyring.
+            CREATE TABLE IF NOT EXISTS server_connections (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                server_url TEXT NOT NULL,
+                username TEXT,
+                auth_mode TEXT NOT NULL,
+                base_directory TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_error TEXT,
+                server_name TEXT,
+                user_name TEXT,
+                last_tested_at TEXT,
+                last_refreshed_at TEXT,
+                refresh_cursor TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS server_catalog_items (
+                connection_id TEXT NOT NULL,
+                source_item_id TEXT NOT NULL,
+                catalog_ids_json TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                year INTEGER,
+                season INTEGER,
+                episode INTEGER,
+                parent_source_item_id TEXT,
+                tmdb_id TEXT,
+                tvdb_id TEXT,
+                imdb_id TEXT,
+                anilist_id TEXT,
+                mal_id TEXT,
+                poster TEXT,
+                backdrop TEXT,
+                updated_marker TEXT,
+                raw_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(connection_id, source_item_id),
+                FOREIGN KEY(connection_id) REFERENCES server_connections(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection ON server_catalog_items(connection_id);
+            DROP INDEX IF EXISTS idx_server_catalog_tmdb;
+            DROP INDEX IF EXISTS idx_server_catalog_tvdb;
+            DROP INDEX IF EXISTS idx_server_catalog_anilist;
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tmdb ON server_catalog_items(connection_id,tmdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_tvdb ON server_catalog_items(connection_id,tvdb_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_anilist ON server_catalog_items(connection_id,anilist_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_mal ON server_catalog_items(connection_id,mal_id);
+            CREATE INDEX IF NOT EXISTS idx_server_catalog_connection_parent_episode ON server_catalog_items(connection_id,parent_source_item_id,season,episode);
             ",
         )?;
         Ok(())

@@ -5,47 +5,216 @@
 import { simklRequest, MOCK_WATCHLIST } from './client'
 import { isSimklMockMode } from './auth'
 import { resolveSimklId, type MediaRef } from './mappings'
-import type { SimklWatchlistItem, SimklApiItem, SimklMediaType } from './types'
+import { cachedFetch } from '../cache/sqliteCache'
+import type { SimklWatchlistItem, SimklApiItem, SimklMediaType, SimklEpisode } from './types'
+import { getActiveProfileId, profileProviderCacheKey, profileStorageKey } from '../profiles'
+
+const EXACT_EPISODE_PREFIX = 'simkl_episode_state_v1:'
+const EXACT_EPISODE_TTL_MS = 10 * 60 * 1000
+const EXACT_EPISODE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000
+const SIMKL_PENDING_EPISODES_KEY = 'simkl_pending_episode_marks_v1'
+const SIMKL_PENDING_TTL_MS = 24 * 60 * 60 * 1000
+let lastExactEpisodeCleanupAt = 0
+
+function profileEpisodeStateKey(localId: string, season: number, episode: number): string {
+  return profileStorageKey(`${EXACT_EPISODE_PREFIX}${localId}:${season}:${episode}`, getActiveProfileId())
+}
+
+function cleanupExpiredEpisodeStates(): void {
+  const now = Date.now()
+  if (now - lastExactEpisodeCleanupAt < EXACT_EPISODE_CLEANUP_INTERVAL_MS) return
+  lastExactEpisodeCleanupAt = now
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith(EXACT_EPISODE_PREFIX)) continue
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(key) || 'null')
+        if (!parsed || typeof parsed !== 'object') {
+          localStorage.removeItem(key)
+          continue
+        }
+        const state = parsed as { watched?: unknown; updatedAt?: unknown }
+        if (typeof state.watched !== 'boolean' || typeof state.updatedAt !== 'number'
+          || !Number.isFinite(state.updatedAt) || now - state.updatedAt > EXACT_EPISODE_TTL_MS) {
+          localStorage.removeItem(key)
+        }
+      } catch (_) {
+        localStorage.removeItem(key)
+      }
+    }
+  } catch (_) { /* episode state remains best-effort when storage is unavailable */ }
+}
+
+export function getSimklEpisodeExactState(localId: string, season: number, episode: number): boolean | undefined {
+  try {
+    cleanupExpiredEpisodeStates()
+    const key = profileEpisodeStateKey(localId, season, episode)
+    const raw = localStorage.getItem(key)
+    if (!raw) return undefined
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return undefined
+    const state = parsed as { watched?: unknown; updatedAt?: unknown }
+    if (typeof state.watched !== 'boolean' || typeof state.updatedAt !== 'number' || !Number.isFinite(state.updatedAt)) {
+      localStorage.removeItem(key)
+      return undefined
+    }
+    if (Date.now() - state.updatedAt > EXACT_EPISODE_TTL_MS) {
+      localStorage.removeItem(key)
+      return undefined
+    }
+    return state.watched
+  } catch (_) { return undefined }
+}
+
+function setSimklEpisodeExactState(localId: string, season: number, episode: number, watched: boolean): void {
+  try { localStorage.setItem(profileEpisodeStateKey(localId, season, episode), JSON.stringify({ watched, updatedAt: Date.now() })) }
+  catch (_) { /* Provider history remains authoritative if local cache storage is full/unavailable. */ }
+}
+
+type PendingSimklEpisode = { localId: string; season: number; episode: number; markedAt: number }
+
+function readPendingSimklEpisodes(): PendingSimklEpisode[] {
+  try {
+    const key = profileStorageKey(SIMKL_PENDING_EPISODES_KEY, getActiveProfileId())
+    let raw = localStorage.getItem(key)
+    // Attribute pre-profile pending marks to the profile active at migration.
+    if (raw == null) {
+      raw = localStorage.getItem(SIMKL_PENDING_EPISODES_KEY)
+      if (raw != null) {
+        localStorage.setItem(key, raw)
+        localStorage.removeItem(SIMKL_PENDING_EPISODES_KEY)
+      }
+    }
+    const parsed: unknown = JSON.parse(raw || '[]')
+    const cutoff = Date.now() - SIMKL_PENDING_TTL_MS
+    if (!Array.isArray(parsed)) return []
+    const valid = parsed.filter((mark): mark is PendingSimklEpisode => Boolean(mark
+      && typeof mark.localId === 'string' && mark.localId.length > 0
+      && Number.isInteger(mark.season) && mark.season >= 0
+      && Number.isInteger(mark.episode) && mark.episode > 0
+      && Number.isFinite(mark.markedAt) && mark.markedAt >= cutoff))
+    if (valid.length !== parsed.length) localStorage.setItem(key, JSON.stringify(valid))
+    return valid
+  } catch (_) {
+    return []
+  }
+}
+
+function writePendingSimklEpisodes(marks: PendingSimklEpisode[]): void {
+  try { localStorage.setItem(profileStorageKey(SIMKL_PENDING_EPISODES_KEY, getActiveProfileId()), JSON.stringify(marks)) } catch (_) { /* storage unavailable */ }
+}
+
+export function markSimklEpisodePending(localId: string, season: number, episode: number): void {
+  const marks = readPendingSimklEpisodes().filter((mark) => !(mark.localId === localId && mark.season === season && mark.episode === episode))
+  marks.push({ localId, season, episode, markedAt: Date.now() })
+  writePendingSimklEpisodes(marks)
+}
+
+export function unmarkSimklEpisodePending(localId: string, season: number, episode: number): void {
+  writePendingSimklEpisodes(readPendingSimklEpisodes().filter((mark) => !(mark.localId === localId && mark.season === season && mark.episode === episode)))
+}
+
+export function isSimklEpisodePending(localId: string, season: number, episode: number): boolean {
+  return readPendingSimklEpisodes().some((mark) => mark.localId === localId && mark.season === season && mark.episode === episode)
+}
+
+export async function invalidateSimklHistoryCaches(): Promise<void> {
+  const { cacheClearCategory } = await import('../cache/sqliteCache')
+  await Promise.all([
+    cacheClearCategory('SIMKL_LISTS'),
+    cacheClearCategory('simkl_list'),
+  ])
+  const { invalidateWatchedStatusCache } = await import('../watchedCacheSync')
+  await invalidateWatchedStatusCache().catch(() => {})
+}
 
 // ─── Fetch history ─────────────────────────────────────────────────────────────
 
-export async function getSimklWatchedMovies(): Promise<SimklWatchlistItem[]> {
+async function fetchSimklWatchedMovies(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) {
     return toHistoryItems(MOCK_WATCHLIST.filter((i) => !!i.movie && i.status === 'completed'))
   }
-  try {
-    const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/completed?extended=full&date_from=1970-01-01')
-    return toHistoryItems(data ?? [])
-  } catch { return [] }
+  const data = await simklRequest<SimklApiItem[]>('/sync/all-items/movies/completed?extended=full&date_from=1970-01-01')
+  return toHistoryItems(data ?? [])
 }
 
-export async function getSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
+export async function getSimklWatchedMovies(forceRefresh = false): Promise<SimklWatchlistItem[]> {
+  if (forceRefresh) return fetchSimklWatchedMovies()
+  return cachedFetch<SimklWatchlistItem[]>(
+    profileProviderCacheKey('simkl_history:movies', 'simkl'),
+    fetchSimklWatchedMovies,
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
+}
+
+async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
   if (isSimklMockMode()) {
     return toHistoryItems(MOCK_WATCHLIST.filter((i) => !!i.show && i.status === 'completed'))
   }
-  try {
-    const statuses = ['watching', 'completed', 'hold', 'dropped']
-    const responses = await Promise.all(
-      statuses.flatMap((status) => (['shows', 'anime'] as const).map((type) =>
-        simklRequest<SimklApiItem[]>(
-          `/sync/all-items/${type}/${status}?extended=full&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
-        ).catch(() => [])
-      ))
-    )
-    const merged = new Map<string, SimklWatchlistItem>()
-    for (const item of responses.flatMap((data) => toHistoryItems(data ?? []))) {
-      const key = `${item.type}:${item.simklId || item.imdbId || item.tvdbId || item.id}`
-      const existing = merged.get(key)
-      if (!existing) {
-        merged.set(key, item)
-        continue
-      }
-      const episodes = [...(existing.watchedEpisodes || []), ...(item.watchedEpisodes || [])]
-      const uniqueEpisodes = new Map(episodes.map((episode) => [`${episode.season}:${episode.episode}`, episode]))
-      merged.set(key, { ...existing, watchedEpisodes: [...uniqueEpisodes.values()] })
+  const statuses = ['watching', 'completed', 'hold', 'dropped']
+  const responses = await Promise.all(
+    statuses.flatMap((status) => (['shows', 'anime'] as const).map((type) =>
+      simklRequest<unknown>(
+        // Simkl exposes the TVDB season/episode for anime only with
+        // full_anime_seasons. Without it, cours and specials frequently use
+        // different numbering and a watched anime episode appears unwatched.
+        `/sync/all-items/${type}/${status}?extended=${type === 'anime' ? 'full_anime_seasons' : 'full'}&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
+      ).then((response) => normalizeSimklHistoryItems(response, status as SimklWatchlistItem['status'])).catch(() => [])
+    ))
+  )
+  const merged = new Map<string, SimklWatchlistItem>()
+  for (const item of responses.flat()) {
+    const key = `${item.type}:${item.simklId || item.imdbId || item.tvdbId || item.id}`
+    const existing = merged.get(key)
+    if (!existing) {
+      merged.set(key, item)
+      continue
     }
-    return [...merged.values()]
-  } catch { return [] }
+    const episodes = [...(existing.watchedEpisodes || []), ...(item.watchedEpisodes || [])]
+    const uniqueEpisodes = new Map(episodes.map((episode) => [`${episode.season}:${episode.episode}`, episode]))
+    merged.set(key, { ...existing, watchedEpisodes: [...uniqueEpisodes.values()] })
+  }
+  return [...merged.values()]
+}
+
+export async function getSimklWatchedEpisodes(forceRefresh = false): Promise<SimklWatchlistItem[]> {
+  if (forceRefresh) return fetchSimklWatchedEpisodes()
+  return cachedFetch<SimklWatchlistItem[]>(
+    // Version the key so cached responses fetched before TVDB episode mapping
+    // was requested cannot keep anime episodes falsely unchecked.
+    profileProviderCacheKey('simkl_history:episodes:v2', 'simkl'),
+    fetchSimklWatchedEpisodes,
+    { category: 'SIMKL_LISTS', ttlSeconds: 300 },
+  )
+}
+
+/**
+ * Resolve against the signed-in user's own history when Simkl's public ID
+ * search has no record. This is deliberately strict so similarly named anime
+ * cannot inherit each other's watched state.
+ */
+export function findExactSimklHistoryItem(
+  item: Pick<MediaRef, 'title' | 'year' | 'contentType' | 'isAnime'>,
+  history: SimklWatchlistItem[],
+): SimklWatchlistItem | null {
+  if (!item.isAnime || item.contentType !== 'movie' || !item.title) return null
+  const title = normalizeHistoryTitle(item.title)
+  if (!title) return null
+  return history.find((entry) => {
+    if (entry.type !== 'anime' && entry.type !== 'movie') return false
+    const entryTitle = normalizeHistoryTitle(entry.title)
+    if (!entryTitle || entryTitle !== title) return false
+    return !item.year || !entry.year || Number(item.year) === Number(entry.year)
+  }) ?? null
+}
+
+async function resolveFromOwnHistory(item: MediaRef): Promise<SimklWatchlistItem | null> {
+  const [movies, anime] = await Promise.all([
+    getSimklWatchedMovies(),
+    getSimklWatchedEpisodes(),
+  ])
+  return findExactSimklHistoryItem(item, [...movies, ...anime])
 }
 
 // ─── Mark watched ──────────────────────────────────────────────────────────────
@@ -53,19 +222,32 @@ export async function getSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
 export async function markMovieWatchedOnSimkl(item: MediaRef, watchedAt?: string): Promise<void> {
   if (isSimklMockMode()) return
 
-  const mapping = await resolveSimklId(item)
+  const mapping = await resolveSimklId(item, {
+    allowTitleFallback: !item.isAnime,
+    allowExactTitleFallback: item.isAnime && item.contentType === 'movie',
+  })
   const at = watchedAt || new Date().toISOString()
+  const historyMatch = !mapping?.simklId ? await resolveFromOwnHistory(item) : null
+
+  // It is already present in the user's watched history; no write is needed.
+  if (historyMatch && (historyMatch.status === 'completed' || historyMatch.type === 'anime')) return
 
   if (mapping?.simklId) {
+    const body = mapping.type === 'anime'
+      ? { anime: [{ ids: { simkl: mapping.simklId }, seasons: [{ number: 1, episodes: [{ number: 1, watched_at: at }] }] }] }
+      : mapping.type === 'movie'
+        ? { movies: [{ ids: { simkl: mapping.simklId }, watched_at: at }] }
+        : null
+    if (!body) throw new Error('Resolved Simkl item is not a movie')
     await simklRequest('/sync/history', {
       method: 'POST',
-      body: JSON.stringify({
-        movies: [{ ids: { simkl: mapping.simklId }, watched_at: at }],
-      }),
+      body: JSON.stringify(body),
     })
+    await invalidateSimklHistoryCaches()
     return
   }
 
+  if (item.isAnime) throw new Error('No exact Simkl mapping for this anime movie')
   // Fallback: use external IDs
   const ids: Record<string, string | number> = {}
   if (item.imdbId) ids.imdb = item.imdbId
@@ -76,6 +258,7 @@ export async function markMovieWatchedOnSimkl(item: MediaRef, watchedAt?: string
       movies: [{ title: item.title, year: item.year, ids, watched_at: at }],
     }),
   })
+  await invalidateSimklHistoryCaches()
 }
 
 export async function markEpisodeWatchedOnSimkl(
@@ -85,14 +268,15 @@ export async function markEpisodeWatchedOnSimkl(
 ): Promise<void> {
   if (isSimklMockMode()) return
 
-  const mapping = await resolveSimklId(show)
+  const mapping = await resolveSimklId(show, { allowTitleFallback: !show.isAnime })
   const at = watchedAt || new Date().toISOString()
+  const mediaKey = (show.type === 'anime' || mapping?.type === 'anime') ? 'anime' : 'shows'
 
   if (mapping?.simklId) {
     await simklRequest('/sync/history', {
       method: 'POST',
       body: JSON.stringify({
-        shows: [
+        [mediaKey]: [
           {
             ids: { simkl: mapping.simklId },
             seasons: [
@@ -105,6 +289,8 @@ export async function markEpisodeWatchedOnSimkl(
         ],
       }),
     })
+    setSimklEpisodeExactState(show.localId, episode.season, episode.episode, true)
+    await invalidateSimklHistoryCaches()
     return
   }
 
@@ -112,10 +298,13 @@ export async function markEpisodeWatchedOnSimkl(
   const ids: Record<string, string | number> = {}
   if (show.imdbId) ids.imdb = show.imdbId
   if (show.tvdbId) ids.tvdb = show.tvdbId
+  if (show.tmdbId) ids.tmdb = show.tmdbId
+  if (show.malId) ids.mal = show.malId
+  if (show.simklId) ids.simkl = show.simklId
   await simklRequest('/sync/history', {
     method: 'POST',
     body: JSON.stringify({
-      shows: [
+      [mediaKey]: [
         {
           title: show.title,
           year: show.year,
@@ -125,21 +314,30 @@ export async function markEpisodeWatchedOnSimkl(
       ],
     }),
   })
+  setSimklEpisodeExactState(show.localId, episode.season, episode.episode, true)
+  await invalidateSimklHistoryCaches()
 }
 
 export async function removeWatchedFromSimkl(item: MediaRef, type: SimklMediaType = 'movie'): Promise<void> {
   if (isSimklMockMode()) return
 
-  const mapping = await resolveSimklId(item)
-  if (!mapping?.simklId) return
+  const mapping = await resolveSimklId(item, {
+    allowTitleFallback: !item.isAnime,
+    allowExactTitleFallback: item.isAnime && item.contentType === 'movie',
+  })
+  const historyMatch = !mapping?.simklId ? await resolveFromOwnHistory(item) : null
+  const simklId = mapping?.simklId ?? historyMatch?.simklId
+  if (!simklId) return
 
-  const key = type === 'movie' ? 'movies' : type === 'show' ? 'shows' : 'anime'
+  const resolvedType = item.isAnime ? (mapping?.type ?? historyMatch?.type ?? type) : type
+  const key = resolvedType === 'movie' ? 'movies' : resolvedType === 'show' ? 'shows' : 'anime'
   await simklRequest('/sync/history/remove', {
     method: 'POST',
     body: JSON.stringify({
-      [key]: [{ ids: { simkl: mapping.simklId } }],
+      [key]: [{ ids: { simkl: simklId } }],
     }),
   })
+  await invalidateSimklHistoryCaches()
 }
 
 export async function removeEpisodeWatchedOnSimkl(
@@ -148,16 +346,20 @@ export async function removeEpisodeWatchedOnSimkl(
 ): Promise<void> {
   if (isSimklMockMode()) return
 
-  const mapping = await resolveSimklId(show)
+  const mapping = await resolveSimklId(show, { allowTitleFallback: !show.isAnime })
+  const mediaKey = (show.type === 'anime' || mapping?.type === 'anime') ? 'anime' : 'shows'
   const ids: Record<string, string | number> = {}
   if (mapping?.simklId) ids.simkl = mapping.simklId
   if (show.imdbId) ids.imdb = show.imdbId
   if (show.tvdbId) ids.tvdb = show.tvdbId
+  if (show.tmdbId) ids.tmdb = show.tmdbId
+  if (show.malId) ids.mal = show.malId
+  if (show.simklId) ids.simkl = show.simklId
 
   await simklRequest('/sync/history/remove', {
     method: 'POST',
     body: JSON.stringify({
-      shows: [{
+      [mediaKey]: [{
         title: show.title,
         year: show.year,
         ids,
@@ -165,11 +367,20 @@ export async function removeEpisodeWatchedOnSimkl(
       }],
     }),
   })
+  setSimklEpisodeExactState(show.localId, episode.season, episode.episode, false)
+  await invalidateSimklHistoryCaches()
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function toHistoryItems(raw: any): SimklWatchlistItem[] {
+  return normalizeSimklHistoryItems(raw)
+}
+
+export function normalizeSimklHistoryItems(
+  raw: any,
+  statusOverride?: SimklWatchlistItem['status'],
+): SimklWatchlistItem[] {
   if (!raw) return []
   let items: any[] = []
   if (Array.isArray(raw)) {
@@ -190,8 +401,8 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
   }
 
   return items.map((r) => {
-    const type: SimklMediaType = r.movie ? 'movie' : r.show ? 'show' : 'anime'
-    const media = r.movie || r.show || r.anime
+    const type: SimklMediaType = r.movie ? 'movie' : (r.show || r.tv) ? 'show' : 'anime'
+    const media = r.movie || r.show || r.tv || r.anime
     if (!media) return null
     const ids = media.ids
     if (!ids) return null
@@ -205,16 +416,18 @@ function toHistoryItems(raw: any): SimklWatchlistItem[] {
       tvdbId: ids.tvdb,
       imdbId: ids.imdb,
       malId: ids.mal,
-      status: 'completed',
+      status: statusOverride || (r.status || 'completed') as SimklWatchlistItem['status'],
       watchedAt: r.last_watched_at,
       watchedEpisodes: extractWatchedEpisodes(r),
+      watchedEpisodesCount: r.watched_episodes_count,
+      totalEpisodesCount: r.total_episodes_count,
     } satisfies SimklWatchlistItem
   }).filter(Boolean) as SimklWatchlistItem[]
 }
 
-function extractWatchedEpisodes(raw: any) {
+export function extractWatchedEpisodes(raw: any) {
   const seasons = Array.isArray(raw?.seasons) ? raw.seasons : []
-  const episodes: { season: number; episode: number; watchedAt?: string }[] = []
+  const episodes: SimklEpisode[] = []
   for (const season of seasons) {
     const seasonNumber = Number(season.number ?? season.season)
     if (!Number.isFinite(seasonNumber)) continue
@@ -222,12 +435,20 @@ function extractWatchedEpisodes(raw: any) {
     for (const episode of seasonEpisodes) {
       const episodeNumber = Number(episode.number ?? episode.episode)
       if (!Number.isFinite(episodeNumber)) continue
+      const tvdbSeason = Number(episode.tvdb?.season ?? episode.tvdb_season)
+      const tvdbEpisode = Number(episode.tvdb?.episode ?? episode.tvdb_episode)
       episodes.push({
         season: seasonNumber,
         episode: episodeNumber,
         watchedAt: episode.watched_at ?? episode.watchedAt ?? raw.last_watched_at,
+        tvdbSeason: Number.isFinite(tvdbSeason) ? tvdbSeason : undefined,
+        tvdbEpisode: Number.isFinite(tvdbEpisode) ? tvdbEpisode : undefined,
       })
     }
   }
   return episodes.length ? episodes : undefined
+}
+
+function normalizeHistoryTitle(value: string): string {
+  return value.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }

@@ -38,7 +38,7 @@ const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
         disabled={disabled}
         className={[
           'inline-flex items-center justify-center',
-          'transition-all duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'transition-all duration-[var(--duration-normal)] ease-expo',
           'focus-ring cursor-pointer select-none',
           'active:scale-[0.93]',
           variantStyles[variant],

@@ -1,5 +1,45 @@
 import { invoke } from '@tauri-apps/api/core'
 
+// Windows uses an HWND/D3D11 surface; Linux uses an X11/XWayland surface.
+// Both keep the same React controls above the native libmpv video layer.
+export function nativePlayerSupported(): boolean {
+  const platform = navigator.userAgent
+  return !!(window as any).__TAURI_INTERNALS__
+    && (platform.includes('Windows') || platform.includes('Linux'))
+}
+
+let resolvedEmbeddedPlayerSupport: boolean | null = null
+let embeddedPlayerSupportRequest: Promise<boolean> | null = null
+
+export async function resolveNativePlayerSupported(): Promise<boolean> {
+  if (resolvedEmbeddedPlayerSupport !== null) return resolvedEmbeddedPlayerSupport
+  if (embeddedPlayerSupportRequest) return embeddedPlayerSupportRequest
+  if (!nativePlayerSupported()) {
+    resolvedEmbeddedPlayerSupport = false
+    return false
+  }
+
+  embeddedPlayerSupportRequest = invoke<boolean>('get_embedded_player_supported')
+    .then((supported) => {
+      resolvedEmbeddedPlayerSupport = supported
+      return supported
+    })
+    .catch(() => {
+      resolvedEmbeddedPlayerSupport = false
+      return false
+    })
+  return embeddedPlayerSupportRequest
+}
+
+// Inline trailers need a transparent WebKit view layered above a native video
+// child. That composition is reliable on Windows, but WebKitGTK's fallback
+// renderer can keep the X11 child fully occluded. Linux trailers therefore use
+// the browser video/YouTube path while full playback continues to use libmpv.
+export function nativeTrailerPlayerSupported(): boolean {
+  return !!(window as any).__TAURI_INTERNALS__
+    && navigator.userAgent.includes('Windows')
+}
+
 export interface PlaybackRequest {
   url: string
   title?: string
@@ -7,9 +47,7 @@ export interface PlaybackRequest {
   subtitleUrl?: string
   volume?: number
   hwdecMode?: string
-  cacheBufferSize?: string
-  mpvCacheSecs?: number
-  mpvNetworkTimeout?: number
+  videoCacheMode?: 'memory' | 'disk' | 'auto'
   mpvCustomArgs?: string
   viewport?: {
     x: number
@@ -17,6 +55,71 @@ export interface PlaybackRequest {
     width: number
     height: number
   }
+}
+
+export interface PlayerSnapshot {
+  timePos: number | null
+  duration: number | null
+  paused: boolean | null
+  buffering: boolean | null
+  cacheBufferingState: number | null
+  demuxerCacheDuration: number | null
+  eofReached: boolean | null
+  idleActive: boolean | null
+  coreIdle: boolean | null
+}
+
+export interface ThumbnailGenerationRequest {
+  streamUrl: string
+  cacheKey: string
+  duration?: number
+  fastInterval?: number
+  refinedInterval?: number
+  thumbnailWidth?: number
+  thumbnailHeight?: number
+  columns?: number
+  rows?: number
+  quality?: number
+  thumbnailInterval?: number
+  maxConcurrentFfmpegWorkers?: number
+}
+
+export interface ThumbnailMetadata {
+  cacheKey: string
+  interval: number
+  thumbnailWidth: number
+  thumbnailHeight: number
+  columns: number
+  rows: number
+  duration?: number
+  thumbnailPaths?: string[]
+  sprites: string[]
+  spriteThumbnailCounts?: number[]
+  thumbnailCount?: number
+  status: string
+}
+
+export interface ScrubThumbnailRequest {
+  mediaId: string
+  streamUrl: string
+  duration?: number
+  time: number
+  thumbnailInterval?: number
+  thumbnailWidth?: number
+  thumbnailHeight?: number
+  quality?: number
+  maxConcurrentFfmpegWorkers?: number
+}
+
+export interface ScrubThumbnailResponse {
+  cacheKey: string
+  status: 'ready' | 'nearest' | 'generating' | string
+  requestedTime: number
+  requestedIndex: number
+  exactPath?: string
+  nearestPath?: string
+  nearestIndex?: number
+  metadata: ThumbnailMetadata
 }
 
 export async function launchPlayer(request: PlaybackRequest): Promise<void> {
@@ -27,16 +130,34 @@ export async function launchPlayer(request: PlaybackRequest): Promise<void> {
   })
 }
 
-export async function launchEmbeddedPlayer(request: PlaybackRequest): Promise<void> {
+// Which feature currently owns the (singleton) embedded mpv instance. The
+// hero trailer must not stop a player the real playback UI has claimed.
+type EmbeddedPlayerOwner = 'player' | 'hero-trailer' | `hero-trailer-${string}`
+let embeddedPlayerOwner: EmbeddedPlayerOwner | null = null
+
+export function getEmbeddedPlayerOwner(): EmbeddedPlayerOwner | null {
+  return embeddedPlayerOwner
+}
+
+export async function stopEmbeddedPlayerIfOwner(owner: EmbeddedPlayerOwner): Promise<void> {
+  if (embeddedPlayerOwner !== owner) return
+  await stopEmbeddedPlayer()
+}
+
+export async function launchEmbeddedPlayer(request: PlaybackRequest, owner: EmbeddedPlayerOwner = 'player'): Promise<void> {
+  // A Home hero stream may finish resolving after Continue Watching has opened
+  // the real player. Never allow that stale trailer launch to steal the singleton.
+  if (owner === 'hero-trailer' && embeddedPlayerOwner === 'player') {
+    throw new Error('Full player currently owns the embedded video surface')
+  }
+  embeddedPlayerOwner = owner
   await invoke('launch_embedded_mpv', {
     url: request.url,
     title: request.title || undefined,
     startTime: request.startTime || undefined,
     volume: request.volume ?? undefined,
     hwdecMode: request.hwdecMode || undefined,
-    cacheBufferSize: request.cacheBufferSize || undefined,
-    mpvCacheSecs: request.mpvCacheSecs || undefined,
-    mpvNetworkTimeout: request.mpvNetworkTimeout || undefined,
+    videoCacheMode: request.videoCacheMode || undefined,
     mpvCustomArgs: request.mpvCustomArgs || undefined,
     x: request.viewport?.x,
     y: request.viewport?.y,
@@ -49,6 +170,30 @@ export async function sendPlayerCommand(command: string, args: unknown[] = []): 
   await invoke('mpv_command', { command, args })
 }
 
+export async function requestPlayerThumbnail(time: number): Promise<void> {
+  await invoke('request_player_thumbnail', { time })
+}
+
+export async function clearPlayerThumbnail(): Promise<void> {
+  await invoke('clear_player_thumbnail')
+}
+
+export async function startThumbnailGeneration(request: ThumbnailGenerationRequest): Promise<ThumbnailMetadata | null> {
+  return await invoke('start_thumbnail_generation', { request })
+}
+
+export async function getThumbnailMetadata(cacheKey: string): Promise<ThumbnailMetadata | null> {
+  return await invoke('get_thumbnail_metadata', { cacheKey })
+}
+
+export async function getOrQueueScrubThumbnail(request: ScrubThumbnailRequest): Promise<ScrubThumbnailResponse> {
+  return await invoke('get_or_queue_scrub_thumbnail', { request })
+}
+
+export async function prefetchThumbnailSprite(path: string): Promise<void> {
+  await invoke('prefetch_thumbnail_sprite', { path })
+}
+
 export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest['viewport']>): Promise<void> {
   await invoke('resize_embedded_mpv', {
     x: viewport.x,
@@ -59,11 +204,16 @@ export async function resizeEmbeddedPlayer(viewport: NonNullable<PlaybackRequest
 }
 
 export async function stopEmbeddedPlayer(): Promise<void> {
+  embeddedPlayerOwner = null
   await invoke('stop_embedded_mpv')
 }
 
 export async function getPlayerProperty(property: string): Promise<unknown> {
   return await invoke('mpv_get_property', { property })
+}
+
+export async function getPlayerSnapshot(): Promise<PlayerSnapshot> {
+  return await invoke<PlayerSnapshot>('get_player_snapshot')
 }
 
 export async function isEmbeddedPlayerRunning(): Promise<boolean> {
@@ -86,6 +236,10 @@ export async function updateTempSubtitle(path: string, content: string): Promise
   await invoke('update_temp_subtitle', { path, content })
 }
 
+export async function extractEmbeddedSubtitle(url: string, subIndex: number): Promise<string> {
+  return await invoke('extract_embedded_subtitle', { url, subIndex })
+}
+
 export async function openRouterChat(apiKey: string, requestBody: Record<string, unknown>): Promise<string> {
   return await invoke('openrouter_chat', { apiKey, requestBody })
 }
@@ -104,5 +258,5 @@ export function calculateProgress(current: number, total: number): number {
 }
 
 export function shouldMarkWatched(progress: number): boolean {
-  return progress >= 85
+  return progress >= 80
 }

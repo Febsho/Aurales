@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
+import { parseDetailId } from '../services/metadata/detailIds'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
 import type { MovieDetails } from '../types'
 import { MOCK_HERO_MOVIE, MOCK_TRENDING } from '../data/mock'
 import { tmdbProvider } from '../services/tmdb'
@@ -13,18 +15,54 @@ import WatchlistButton from '../components/WatchlistButton'
 import RatingsStrip from '../components/RatingsStrip'
 import DetailHero from '../components/media/DetailHero'
 import DetailContentShell from '../components/media/DetailContentShell'
+import DetailStickyHeader from '../components/media/DetailStickyHeader'
+import DetailLoadingState from '../components/media/DetailLoadingState'
 import { Button } from '../components/ui'
 import MarkWatchedButton from '../components/MarkWatchedButton'
 import StartInRoomButton from '../components/watch-together/StartInRoomButton'
-import { applyMovieArt, applySearchResultArt } from '../services/artwork'
+import { applyInitialArtworkPreference, applyMovieArt, applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { getSimklPlaybackProgress } from '../services/simkl/playback'
+import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
+import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
+import { loadMovieDetailPage } from '../services/metadata/detailPageLoader'
 import { isWatchedFromProviders } from '../services/watchedStatus'
 import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
+import { getSessionDetail, rememberSessionDetail } from '../services/cache/detailSessionCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../services/cache/constants'
+import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
+import { usePreparedStream } from '../hooks/usePreparedStream'
+import { useStreamFeatures } from '../hooks/useStreamFeatures'
+import { setDiscordBrowsingActivity } from '../services/discord'
+import { streamPreloadManager, StreamPreloadPriority } from '../services/streams/preloadManager'
+import { useContextMenu } from '../hooks/useContextMenu'
+import { moviePrimaryLabel } from '../services/detailPresentation'
+
+function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
+  if (idA == null || idB == null) return false
+  const clean = (val: string | number) => {
+    const s = String(val).toLowerCase().trim()
+    return s
+      .replace(/^app_tmdb_movie_/, '')
+      .replace(/^app_movie_/, '')
+      .replace(/^app_tmdb_/, '')
+      .replace(/^app_tvdb_/, '')
+      .replace(/^tmdb[-:]/, '')
+      .replace(/^imdb[-:]/, '')
+      .replace(/^tvdb[-:]/, '')
+      .replace(/^mal[-:]/, '')
+      .replace(/^anilist[-:]/, '')
+  }
+  const cleanA = clean(idA)
+  const cleanB = clean(idB)
+  return cleanA !== '' && cleanA === cleanB
+}
 
 interface LocationState {
   poster?: string
   backdrop?: string
+  logo?: string
   title?: string
   year?: number
   rating?: number
@@ -34,10 +72,15 @@ interface LocationState {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   addonUrl?: string
   provider?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  sourceConnectionId?: string
+  sourceItemId?: string
+  addonMeta?: Record<string, unknown>
+  autoPlay?: boolean
 }
 
 function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetails {
@@ -60,7 +103,7 @@ function addonMetaToMovie(meta: Record<string, unknown>, id: string): MovieDetai
     poster: meta.poster as string | undefined,
     backdrop: (meta.background || meta.banner) as string | undefined,
     logo: meta.logo as string | undefined,
-    certification: meta.certification as string | undefined,
+    certification: typeof meta.certification === 'string' ? meta.certification : undefined,
     cast: Array.isArray(meta.cast) ? (meta.cast as string[]).map((name, i) => ({
       id: `cast-${i}`, name, character: '', profilePath: undefined,
     })) : [],
@@ -129,6 +172,18 @@ function parseRuntime(value: unknown): number | undefined {
   return numeric > 10 ? numeric : undefined
 }
 
+function artworkSettingsKey(): string {
+  const settings = useAppStore.getState()
+  return JSON.stringify({
+    managed: settings.appManagedMetadata,
+    providers: settings.artProviders,
+    fanart: Boolean(settings.fanartApiKey),
+    custom: settings.customArtUrls,
+    betterPosters: settings.betterPosters,
+    meta: [settings.movieMetadataSource, settings.movieMetadataFallback],
+  })
+}
+
 function rotateFallback<T>(items: T[], seed: string): T[] {
   if (items.length === 0) return []
   const offset = Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % items.length
@@ -140,56 +195,294 @@ export default function MovieDetailPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const state = (location.state || {}) as LocationState
+  const locationStateRef = useRef(state)
+  locationStateRef.current = state
   const [movie, setMovie] = useState<MovieDetails | null>(null)
   const [malRating, setMalRating] = useState<number | null>(null)
   const [fallbackRecommendations, setFallbackRecommendations] = useState(MOCK_TRENDING)
-  const [loading, setLoading] = useState(true)
+  const [, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const [streamOpen, setStreamOpen] = useState(false)
+  const [forceManualSourceSelection, setForceManualSourceSelection] = useState(false)
+  const [streamResolving, setStreamResolving] = useState(false)
+  const autoPlayHandledRef = useRef(false)
+  const showCtxMenu = useContextMenu((state) => state.show)
   const addons = useAppStore((s) => s.addons)
   const watchedProgress = useAppStore((s) => s.watchProgress)
+  const watchedProgressRef = useRef(watchedProgress)
+  watchedProgressRef.current = watchedProgress
+  const completedIds = useAppStore((s) => s.completedIds)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const setWatchProgress = useAppStore((s) => s.setWatchProgress)
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
+  const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
+  const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
+  const discordRichPresence = useAppStore((s) => s.discordRichPresence)
+  const playbackPreloadMode = useAppStore((s) => s.playbackPreloadMode)
+  const artSettingsSignature = useMemo(() => JSON.stringify({
+    providers: artProviders,
+    fanart: Boolean(fanartApiKey),
+    custom: customArtUrls,
+    betterPosters,
+    meta: [movieMetadataSource, movieMetadataFallback],
+  }), [artProviders, fanartApiKey, customArtUrls, betterPosters, movieMetadataSource, movieMetadataFallback])
   const [movieWatched, setMovieWatched] = useState(false)
 
   useEffect(() => {
-    async function load() {
-      setMalRating(null)
+    if (!movie || !state.autoPlay || autoPlayHandledRef.current) return
+    autoPlayHandledRef.current = true
+    setForceManualSourceSelection(false)
+    setStreamOpen(true)
+  }, [movie, state.autoPlay])
 
-      const movieCacheKey = id ? `detail:movie:${id}` : null
+  const progressItem = useMemo(() => {
+    if (!movie) return null
+    return Array.from(watchedProgress.values()).find((i) => {
+      if (i.mediaType !== 'movie') return false
+      return (
+        fuzzyIdsMatch(i.mediaId, movie.id) ||
+        fuzzyIdsMatch(i.imdbId, movie.imdbId) ||
+        fuzzyIdsMatch(i.tmdbId, movie.tmdbId) ||
+        fuzzyIdsMatch(i.id, movie.id)
+      )
+    })
+  }, [movie, watchedProgress])
+
+  const hasProgress = progressItem && !progressItem.completed && progressItem.progressSeconds > 5
+
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
+  const pmdbApiKey = useAppStore((s) => s.pmdbApiKey)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+
+  const [liveResumePoint, setLiveResumePoint] = useState<{
+    provider: string
+    progressSeconds: number
+    durationSeconds: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!movie) return
+
+    let active = true
+
+    async function fetchPoints() {
+      const candidates: {
+        provider: 'local' | 'simkl' | 'trakt' | 'pmdb' | 'mdblist'
+        progressSeconds: number
+        durationSeconds: number
+        updatedAt?: string
+      }[] = []
+
+      // 1. Local
+      if ((primaryProgressProvider === 'local' || primaryProgressProvider === 'all') && progressItem && !progressItem.completed && progressItem.progressSeconds > 5) {
+        candidates.push({
+          provider: 'local',
+          progressSeconds: progressItem.progressSeconds,
+          durationSeconds: progressItem.durationSeconds,
+          updatedAt: progressItem.updatedAt,
+        })
+      }
+
+      const fetchPromises: Promise<void>[] = []
+
+      if ((primaryProgressProvider === 'simkl' || primaryProgressProvider === 'all') && simklConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getSimklPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.type !== 'movie' || !item.movie) return false
+              return (
+                fuzzyIdsMatch(item.movie.ids.simkl, movie!.id) ||
+                fuzzyIdsMatch(item.movie.ids.imdb, movie!.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie!.tmdbId)
+              )
+            })
+            if (match && active) {
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
+              candidates.push({
+                provider: 'simkl',
+                progressSeconds: Math.floor((match.progress / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.paused_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if ((primaryProgressProvider === 'trakt' || primaryProgressProvider === 'all') && traktConnected) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getTraktPlaybackProgress()
+            const match = raw.find((item: any) => {
+              if (item.type !== 'movie' || !item.movie) return false
+              return (
+                fuzzyIdsMatch(item.movie.ids.imdb, movie!.imdbId) ||
+                fuzzyIdsMatch(item.movie.ids.tmdb, movie!.tmdbId)
+              )
+            }) as any
+            if (match && active) {
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
+              candidates.push({
+                provider: 'trakt',
+                progressSeconds: Math.floor((match.progress / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.paused_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if ((primaryProgressProvider === 'pmdb' || primaryProgressProvider === 'all') && pmdbApiKey) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getPMDBPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.media_type !== 'movie') return false
+              return fuzzyIdsMatch(item.tmdb_id, movie!.tmdbId)
+            })
+            if (match && active) {
+              candidates.push({
+                provider: 'pmdb',
+                progressSeconds: Math.floor((match.position_ms ?? 0) / 1000),
+                durationSeconds: Math.floor((match.runtime_ms ?? 7200000) / 1000),
+                updatedAt: match.updated_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if ((primaryProgressProvider === 'mdblist' || primaryProgressProvider === 'all') && (mdblistApiKey || hasMdblistOAuth())) {
+        fetchPromises.push((async () => {
+          try {
+            const raw = await getMdblistPlaybackProgress()
+            const match = raw.find((item) => {
+              if (item.type !== 'movie') return false
+              return (
+                fuzzyIdsMatch(item.movie?.ids?.tmdb, movie!.tmdbId) ||
+                fuzzyIdsMatch(item.movie?.ids?.imdb, movie!.imdbId)
+              )
+            })
+            if (match && active) {
+              const dur = movie!.runtime ? movie!.runtime * 60 : 7200
+              candidates.push({
+                provider: 'mdblist',
+                progressSeconds: Math.floor(((match.progress ?? 0) / 100) * dur),
+                durationSeconds: dur,
+                updatedAt: match.updated_at,
+              })
+            }
+          } catch (_) {}
+        })())
+      }
+
+      if (fetchPromises.length > 0) {
+        await Promise.allSettled(fetchPromises)
+      }
+
+      if (!active) return
+
+      const selected = primaryProgressProvider === 'all'
+        ? candidates.filter((candidate) => candidate.progressSeconds > 5 && candidate.progressSeconds < candidate.durationSeconds * 0.85)
+          .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))[0]
+        : candidates.find((candidate) => candidate.provider === primaryProgressProvider)
+      setLiveResumePoint(selected || null)
+    }
+
+    fetchPoints()
+
+    return () => {
+      active = false
+    }
+  }, [movie, progressItem, primaryProgressProvider, pmdbApiKey, mdblistApiKey, simklConnected, traktConnected])
+
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoadError(null)
+      setMalRating(null)
+      setLoading(true)
+      const appManagedMetadata = useAppStore.getState().appManagedMetadata
+      const artKey = artworkSettingsKey()
+      const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
+
+      // Catalog cards retain the raw addon meta. When direct addon metadata is
+      // selected, it is already the requested record, so publish it before any
+      // cache or network work rather than asking the addon for it again.
+      if (!appManagedMetadata && state.addonMeta) {
+        const directMovie = applyMovieArt(applyInitialArtworkPreference({
+          ...addonMetaToMovie(state.addonMeta, state.sourceAddonItemId || id || 'unknown'),
+          id: id || state.sourceAddonItemId || 'unknown',
+        }, 'movie', Boolean(state.isAnime || state.anilistId || state.malId)))
+        if (cancelled) return
+        setMovie(directMovie)
+        setLoading(false)
+        if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, directMovie)
+          void cacheSet(movieCacheKey, directMovie, {
+            category: CACHE_CATEGORIES.DETAIL_PAGE,
+            ttlSeconds: CACHE_TTLS.DETAIL_PAGE,
+          })
+        }
+        return
+      }
+
+      // Mount the real detail structure from navigation/catalog data before
+      // SQLite, addon metadata, ID mapping, or TMDB's multi-endpoint request.
+      // Those sources refine this shell instead of hiding it behind a loader.
+      const hotMovie = movieCacheKey ? getSessionDetail<MovieDetails>(movieCacheKey) : null
+      const immediateMovie: MovieDetails | null = hotMovie?.data || (state.title ? applyMovieArt({
+        id: id || 'unknown',
+        title: state.title,
+        year: state.year,
+        overview: state.overview,
+        rating: state.rating,
+        poster: state.poster,
+        backdrop: state.backdrop,
+        logo: state.logo,
+        imdbId: cleanId(state.imdbId),
+        tmdbId: cleanId(state.tmdbId),
+        malId: cleanId(state.malId),
+        anilistId: cleanId(state.anilistId),
+        genres: [],
+        cast: [],
+        crew: [],
+        recommendations: [],
+        trailers: [],
+      }) : null)
+      setMovie(immediateMovie)
+      if (hotMovie) {
+        setLoading(false)
+        // Fresh session data is already the most recent completed enrichment.
+        // Stale data remains visible while the normal disk/provider path below
+        // revalidates it without returning the page to a skeleton.
+        if (!hotMovie.stale) return
+      }
+
       if (movieCacheKey) {
         const cached = await cacheGet<MovieDetails>(movieCacheKey)
+        if (cancelled) return
         if (cached) {
+          rememberSessionDetail(movieCacheKey, cached.data)
           setMovie(cached.data)
           setLoading(false)
           if (!cached.stale) return
         }
       }
 
-      if (loading) setLoading(true)
       let result: MovieDetails | null = null
 
-      const parseId = (val: unknown, prefix: string): string | undefined => {
-        let cleaned = cleanId(val)
-        if (!cleaned) return undefined
-        if (cleaned.startsWith('app_tvdb_')) cleaned = cleaned.replace('app_tvdb_', '')
-        else if (cleaned.startsWith('app_tmdb_movie_')) cleaned = cleaned.replace('app_tmdb_movie_', '')
-        else if (cleaned.startsWith('app_tmdb_')) cleaned = cleaned.replace('app_tmdb_', '')
-        else if (cleaned.startsWith('app_movie_')) cleaned = cleaned.replace('app_movie_', '')
-        const hasAnyPrefix = /^[a-z_]+[-:]/i.test(cleaned)
-        if (hasAnyPrefix) {
-          const lower = cleaned.toLowerCase()
-          if (lower.startsWith(`${prefix}-`) || lower.startsWith(`${prefix}:`)) {
-            return cleaned.replace(/^[a-z_]+[-:]/i, '')
-          }
-          return undefined
-        }
-        if (prefix === 'imdb') {
-          return cleaned.startsWith('tt') ? cleaned : undefined
-        }
-        if (cleaned.startsWith('tt')) return undefined
-        return cleaned
-      }
+      const parseId = (value: unknown, provider: string) => parseDetailId(cleanId(value), provider)
 
       // Collect all known IDs from route state
       const knownIds = {
@@ -199,14 +492,14 @@ export default function MovieDetailPage() {
         malId: parseId(state.malId, 'mal') || parseId(id, 'mal'),
         anilistId: parseId(state.anilistId, 'anilist') || parseId(id, 'anilist'),
       }
-
       // Early resolve anime IDs if they are AniList / MAL but we don't have TMDB ID
-      if ((knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
+      if (appManagedMetadata && (knownIds.anilistId || knownIds.malId) && !knownIds.tmdbId) {
         try {
           const { resolveAnimeIds } = await import('../services/animeLists')
           const resolved = await resolveAnimeIds({
             anilistId: knownIds.anilistId ? Number(knownIds.anilistId) : undefined,
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
+            contentType: 'movie',
           })
           if (resolved) {
             if (resolved.tvdbId) knownIds.tvdbId = String(resolved.tvdbId)
@@ -218,15 +511,17 @@ export default function MovieDetailPage() {
         } catch (e) {
           console.error('[MovieDetailPage] Failed early anime resolution:', e)
         }
+        if (cancelled) return
       }
 
-      if (state.sourceAddonId && state.sourceAddonItemId) {
+      if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
         const normalized = await resolveAppMetadata({
           addonId: state.sourceAddonId, addonUrl: state.addonUrl, addonType: 'movie', id: state.sourceAddonItemId,
           title: state.title, year: state.year, imdbId: knownIds.imdbId, tmdbId: Number(knownIds.tmdbId) || undefined,
           tvdbId: Number(knownIds.tvdbId) || undefined, anilistId: Number(knownIds.anilistId) || undefined,
           malId: Number(knownIds.malId) || undefined,
         }).catch(() => null)
+        if (cancelled) return
         if (normalized && normalized.sourceMetadataProvider !== 'fallback_addon') {
           result = appMediaToMovie(normalized)
           knownIds.imdbId ||= normalized.imdbId
@@ -236,36 +531,63 @@ export default function MovieDetailPage() {
       }
 
       // If addon item, get IDs from addon meta
-      if (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId)) {
+      const shouldRequestAddonMeta = !appManagedMetadata
+        || (useAppStore.getState().useAddonMetadataFallback && !result)
+      if (shouldRequestAddonMeta && (state.addonUrl || state.provider === 'addon' || (id?.startsWith('tt') && !knownIds.tmdbId))) {
         const tryAddonMeta = async (addonUrl: string) => {
           try {
-            const meta = await getAddonMeta(addonUrl, 'movie', id || '')
+            if (cancelled) return null
+            const addonItemId = state.sourceAddonItemId || id || ''
+            const meta = await getAddonMeta(addonUrl, 'movie', addonItemId)
+            if (cancelled) return null
             if (meta) {
-              const parsed = addonMetaToMovie(meta, id || '')
+              const parsed = addonMetaToMovie(meta, addonItemId)
               if (parsed.imdbId) knownIds.imdbId = knownIds.imdbId || parsed.imdbId
               if (parsed.tmdbId) knownIds.tmdbId = knownIds.tmdbId || String(parsed.tmdbId)
               if (parsed.malId) knownIds.malId = knownIds.malId || String(parsed.malId)
               if (parsed.anilistId) knownIds.anilistId = knownIds.anilistId || String(parsed.anilistId)
               return parsed
             }
-          } catch { /* continue */ }
+          } catch (_) { /* continue */ }
           return null
         }
 
         let addonResult: MovieDetails | null = null
         if (state.addonUrl) addonResult = await tryAddonMeta(state.addonUrl)
+        if (cancelled) return
         if (!addonResult) {
           const metaAddons = getMetaAddons('movie')
           const storeMetaAddons = addons.filter((a) => a.enabled)
           for (const addon of metaAddons.length > 0 ? metaAddons : storeMetaAddons) {
             addonResult = await tryAddonMeta(addon.url)
+            if (cancelled) return
             if (addonResult) break
           }
         }
-        if (addonResult && !result && useAppStore.getState().useAddonMetadataFallback) result = addonResult
+        if (addonResult && !result && (!appManagedMetadata || useAppStore.getState().useAddonMetadataFallback)) result = addonResult
+      }
+
+      // Respect the metadata toggle on detail pages too. Addon metadata is
+      // already complete enough to render; external provider work must not
+      // delay or replace it when managed metadata is disabled.
+      if (!appManagedMetadata && result) {
+        if (cancelled) return
+        const directMovie = applyMovieArt(applyInitialArtworkPreference({
+          ...result,
+          id: id || result.id,
+        }, 'movie', Boolean(result.isAnime || knownIds.anilistId || knownIds.malId)))
+        setMovie(directMovie)
+        setLoading(false)
+        const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+        if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, directMovie)
+          void cacheSet(movieCacheKey, directMovie, cacheOpts)
+        }
+        return
       }
 
       // Show placeholder immediately
+      if (cancelled) return
       if (state.title || result) {
         const placeholder = applyMovieArt({
           id: id || 'unknown',
@@ -275,6 +597,7 @@ export default function MovieDetailPage() {
           rating: state.rating || result?.rating,
           poster: state.poster || result?.poster,
           backdrop: state.backdrop || result?.backdrop,
+          logo: state.logo || result?.logo,
           imdbId: knownIds.imdbId as string | undefined,
           tmdbId: knownIds.tmdbId,
           malId: knownIds.malId,
@@ -286,7 +609,6 @@ export default function MovieDetailPage() {
           trailers: result?.trailers || [],
         })
         setMovie(placeholder)
-        setLoading(false)
       }
 
       // Fetch REAL metadata from TMDB
@@ -295,21 +617,23 @@ export default function MovieDetailPage() {
         try {
           const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
           const found = await tmdbFindByExternalId(knownIds.imdbId as string, 'imdb_id')
+          if (cancelled) return
           if (found.tmdbId) tmdbId = String(found.tmdbId)
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       let appResult: MovieDetails | null = null
       if (tmdbId) {
         try {
-          appResult = await tmdbProvider.getMovie(`tmdb-${tmdbId}`)
+          appResult = await loadMovieDetailPage(tmdbId)
+          if (cancelled) return
           appResult = {
             ...appResult,
             id: id || appResult.id,
             malId: appResult.malId || knownIds.malId,
             anilistId: appResult.anilistId || knownIds.anilistId,
           }
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
 
       // Resolve IMDb if missing
@@ -325,8 +649,9 @@ export default function MovieDetailPage() {
           const { resolveImdbId } = await import('../services/metadataEnrich')
           const imdbId = await resolveImdbId(finalResult, 'movie')
           if (imdbId) finalResult.imdbId = imdbId
-        } catch { /* continue */ }
+        } catch (_) { /* continue */ }
       }
+      if (cancelled) return
 
       const cleanTmdb = cleanId(finalResult.tmdbId)
       const finalTmdbId = cleanTmdb ? String(cleanTmdb).replace(/^[a-z_]+[-:]/i, '') : undefined
@@ -340,21 +665,91 @@ export default function MovieDetailPage() {
 
       finalResult.id = targetId
 
-      const artApplied = applyMovieArt(finalResult)
+      const artApplied = applyMovieArt(applyInitialArtworkPreference(finalResult, 'movie', Boolean(finalResult.isAnime)))
+      // Metadata arriving after the route shell must not erase artwork that is
+      // already visible. Explicit provider-art enhancement below can still
+      // replace these fields when it has a successful result.
+      artApplied.poster ||= immediateMovie?.poster
+      artApplied.backdrop ||= immediateMovie?.backdrop
+      artApplied.logo ||= immediateMovie?.logo
+
+      if (cancelled) return
       setMovie(artApplied)
       setLoading(false)
 
       const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
-      if (movieCacheKey) void cacheSet(movieCacheKey, artApplied, cacheOpts)
-      if (artApplied.id && artApplied.id !== id) void cacheSet(`detail:movie:${artApplied.id}`, artApplied, cacheOpts)
+      if (movieCacheKey) {
+        rememberSessionDetail(movieCacheKey, artApplied)
+        void cacheSet(movieCacheKey, artApplied, cacheOpts)
+      }
+      if (artApplied.id && artApplied.id !== id) {
+        const normalizedCacheKey = `detail:movie:${artKey}:${artApplied.id}`
+        rememberSessionDetail(normalizedCacheKey, artApplied)
+        void cacheSet(normalizedCacheKey, artApplied, cacheOpts)
+      }
 
       if (id && artApplied.id && artApplied.id !== id) {
         console.log('[MovieDetailPage] Normalizing URL route ID to:', artApplied.id)
-        navigate(`/movie/${artApplied.id}`, { replace: true, state })
+        navigate(`/movie/${artApplied.id}`, { replace: true, state: locationStateRef.current })
       }
+
+      // Artwork providers are optional enhancement requests. Do not delay the
+      // complete details page while waiting for them; update it when available.
+      void resolveArtFromProviders('movie', {
+        tmdbId: artApplied.tmdbId, tvdbId: artApplied.tvdbId, imdbId: artApplied.imdbId,
+      }, artApplied.isAnime).then((providerArt) => {
+        if (cancelled) return
+        if (!providerArt.poster && !providerArt.backdrop && !providerArt.logo) return
+        const enhanced = applyMovieArt({
+          ...artApplied,
+          ...(providerArt.poster && { poster: providerArt.poster }),
+          ...(providerArt.backdrop && { backdrop: providerArt.backdrop }),
+          ...(providerArt.logo && { logo: providerArt.logo }),
+        })
+        setMovie((current) => current?.id === artApplied.id ? enhanced : current)
+        if (movieCacheKey) {
+          rememberSessionDetail(movieCacheKey, enhanced)
+          void cacheSet(movieCacheKey, enhanced, cacheOpts)
+        }
+        if (enhanced.id) {
+          const enhancedCacheKey = `detail:movie:${artKey}:${enhanced.id}`
+          rememberSessionDetail(enhancedCacheKey, enhanced)
+          void cacheSet(enhancedCacheKey, enhanced, cacheOpts)
+        }
+      }).catch(() => undefined)
     }
-    load()
-  }, [id, state.addonUrl, state.provider, state.title, addons])
+    load().catch((error) => {
+      if (cancelled) return
+      console.error('[MovieDetailPage] Detail load failed:', error)
+      setLoadError('Could not load movie details. Please try again.')
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [
+    id,
+    state.addonUrl,
+    state.provider,
+    state.title,
+    state.year,
+    state.overview,
+    state.rating,
+    state.poster,
+    state.backdrop,
+    state.logo,
+    state.imdbId,
+    state.tmdbId,
+    state.tvdbId,
+    state.malId,
+    state.anilistId,
+    state.isAnime,
+    state.addonMeta,
+    state.sourceAddonId,
+    state.sourceAddonItemId,
+    addons,
+    artSettingsSignature,
+    loadAttempt,
+    navigate,
+  ])
 
   useEffect(() => {
     if (!movie) return
@@ -384,54 +779,133 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!movie) return
     let cancelled = false
+    const isAnimeMovie = Boolean(movie.isAnime || movie.anilistId || movie.malId)
     isWatchedFromProviders({
       id: movie.id,
       type: 'movie',
+      title: movie.title,
+      year: movie.year,
       imdbId: movie.imdbId,
       tmdbId: movie.tmdbId,
       tvdbId: movie.tvdbId,
       malId: movie.malId,
       anilistId: movie.anilistId,
-    }, watchedCheckmarkSources, watchedProgress).then((watched) => {
+      isAnime: isAnimeMovie,
+    }, watchedCheckmarkSources, watchedProgressRef.current).then((watched) => {
       if (!cancelled) setMovieWatched(watched)
     }).catch(() => {
       if (!cancelled) setMovieWatched(false)
     })
     return () => { cancelled = true }
-  }, [movie, watchedCheckmarkSources, watchedProgress])
+  }, [movie, watchedCheckmarkSources, completedIds])
 
+  const fallbackMovieId = movie?.id
+  const fallbackMovieTitle = movie?.title
+  const fallbackMovieGenre = movie?.genres[0]
+  const movieRecommendationCount = movie?.recommendations.length ?? 0
   useEffect(() => {
-    if (!movie || movie.recommendations.length > 0) return
-    const query = movie.genres[0] || movie.title
+    if (!fallbackMovieId || movieRecommendationCount > 0) return
+    let cancelled = false
+    const query = fallbackMovieGenre || fallbackMovieTitle || ''
     tmdbProvider.recommendationsForText?.(query, 'movie')
       .then((results) => {
-        const filtered = results.filter((item) => item.id !== movie.id && item.title !== movie.title)
-        setFallbackRecommendations((filtered.length ? filtered : rotateFallback(MOCK_TRENDING, movie.id)).map(applySearchResultArt))
+        if (cancelled) return
+        const filtered = results.filter((item) => item.id !== fallbackMovieId && item.title !== fallbackMovieTitle)
+        setFallbackRecommendations((filtered.length ? filtered : rotateFallback(MOCK_TRENDING, fallbackMovieId)).map(applySearchResultArt))
       })
-      .catch(() => setFallbackRecommendations(rotateFallback(MOCK_TRENDING, movie.id).map(applySearchResultArt)))
-  }, [movie])
+      .catch(() => {
+        if (!cancelled) setFallbackRecommendations(rotateFallback(MOCK_TRENDING, fallbackMovieId).map(applySearchResultArt))
+      })
+    return () => { cancelled = true }
+  }, [fallbackMovieId, fallbackMovieTitle, fallbackMovieGenre, movieRecommendationCount])
 
-  if (loading || !movie) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-      </div>
-    )
+  useGlobalBackdrop(movie?.backdrop || movie?.poster)
+
+  const movieIsAnime = !!(movie?.isAnime || (id && /^(mal|anilist)[-:]/i.test(id)) || state.provider === 'anilist')
+  const movieId = movie?.id
+  const movieTitle = movie?.title
+  const moviePoster = movie?.poster
+  const movieImdbId = movie?.imdbId
+  const movieTmdbId = movie?.tmdbId
+
+  useEffect(() => {
+    if (!movieId || !movieTitle || !discordRichPresence) return
+    const image = moviePoster?.startsWith('http') ? moviePoster : undefined
+    setDiscordBrowsingActivity({
+      details: `Browsing ${movieTitle}`,
+      state: movieIsAnime ? 'Anime Movie' : 'Movie',
+      largeImage: image || 'aurales_logo',
+      largeText: movieTitle,
+      activityType: 3,
+    }).catch(() => {})
+    return () => { setDiscordBrowsingActivity().catch(() => {}) }
+  }, [movieId, movieTitle, moviePoster, movieIsAnime, discordRichPresence])
+
+  useEffect(() => {
+    if (!movieId || playbackPreloadMode === 'off') return
+    const mediaId = movieImdbId || state.sourceAddonItemId || id || ''
+    if (!mediaId) return
+    streamPreloadManager.request({
+      mediaType: 'movie',
+      mediaId,
+      imdbId: movieImdbId,
+      tmdbId: movieTmdbId,
+      sourceAddonId: state.sourceAddonId,
+      sourceAddonItemId: state.sourceAddonItemId,
+    }, { priority: StreamPreloadPriority.DETAILS_OPEN }).catch(() => undefined)
+  }, [movieId, movieImdbId, movieTmdbId, id, state.sourceAddonId, state.sourceAddonItemId, playbackPreloadMode])
+
+  // After a short dwell, rank + probe the best direct stream so Play is instant.
+  const preparedMediaId = movie ? (movie.imdbId || state.sourceAddonItemId || id || '') : ''
+  const heroStreamRequest = movie && preparedMediaId ? {
+    mediaType: 'movie' as const,
+    mediaId: preparedMediaId,
+    imdbId: movie.imdbId,
+    tmdbId: movie.tmdbId,
+    sourceAddonId: state.sourceAddonId,
+    sourceAddonItemId: state.sourceAddonItemId,
+  } : null
+  usePreparedStream(heroStreamRequest, movie?.title)
+  const streamFeatures = useStreamFeatures(heroStreamRequest)
+
+  const initialRouteArt = applyInitialArtworkPreference({
+    poster: state.poster,
+    backdrop: state.backdrop,
+    logo: state.logo,
+    provider: state.provider,
+  }, 'movie', Boolean(state.anilistId || state.malId || (id && /^(mal|anilist)[-:]/i.test(id))))
+
+  if (!movie) {
+    return <DetailLoadingState
+      error={loadError || undefined}
+      onRetry={() => setLoadAttempt(value => value + 1)}
+      logo={initialRouteArt.logo}
+      title={state.title}
+      backdrop={initialRouteArt.backdrop}
+      poster={initialRouteArt.poster}
+    />
   }
 
   const streamId = movie.imdbId || state.sourceAddonItemId || id || ''
   const streamTmdbId = movie.tmdbId ? Number(movie.tmdbId) : (id && /^(?:tmdb)[-:]/i.test(id) ? Number(id.replace(/^[a-z_]+[-:]/i, '')) : undefined)
-
+  const activeMovieResume = liveResumePoint || (hasProgress ? {
+    progressSeconds: progressItem.progressSeconds,
+    durationSeconds: progressItem.durationSeconds,
+  } : null)
+  const primaryActionLabel = moviePrimaryLabel(movieWatched, activeMovieResume)
+  const openPrimaryStream = () => { setForceManualSourceSelection(false); setStreamOpen(true) }
   return (
-    <div className="pb-12">
+    <div className="detail-page detail-page--movie min-h-screen bg-black pb-12">
       <DetailHero
+        stateKey={`movie:${movie.id}`}
         title={movie.title}
         originalTitle={movie.originalTitle}
         year={movie.year}
+        releaseDate={movie.releaseDate}
         overview={movie.overview}
-        tagline={movie.tagline}
         runtime={movie.runtime}
         rating={malRating ?? movie.rating}
+        voteCount={movie.voteCount}
         genres={movie.genres}
         certification={movie.certification}
         poster={movie.poster}
@@ -439,32 +913,70 @@ export default function MovieDetailPage() {
         logo={movie.logo}
         imdbId={movie.imdbId}
         type="movie"
-        cast={movie.cast}
         crew={movie.crew}
+        streamFeatures={streamFeatures}
         ratingsStrip={
           <RatingsStrip
             mediaType="movie"
             imdbId={movie.imdbId}
             tmdbId={movie.tmdbId}
             tvdbId={movie.tvdbId}
-            className="mb-4"
+            className="mb-3"
+            variant="hero"
           />
         }
         actions={
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="detail-hero-actions">
             <Button
-              variant="white"
-              size="xl"
+              variant="secondary"
+              size="lg"
+              className="detail-hero-actions__play"
+              loading={streamResolving}
               icon={
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               }
-              onClick={() => setStreamOpen(true)}
+              onClick={openPrimaryStream}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                showCtxMenu(event.clientX, event.clientY, {
+                  kind: 'media',
+                  item: {
+                    id: movie.id, title: movie.title, type: 'movie', year: movie.year,
+                    poster: movie.poster, backdrop: movie.backdrop, logo: movie.logo,
+                    overview: movie.overview, rating: movie.rating, genres: movie.genres,
+                    provider: movie.provider || 'local', imdbId: movie.imdbId,
+                    tmdbId: movie.tmdbId, tvdbId: movie.tvdbId, malId: movie.malId,
+                    anilistId: movie.anilistId, isAnime: movie.isAnime,
+                  },
+                  onSelectSource: () => { setForceManualSourceSelection(true); setStreamOpen(true) },
+                })
+              }}
             >
-              {movieWatched ? 'Rewatch' : 'Play'}
+              {primaryActionLabel}
             </Button>
+            <div className="detail-hero-actions__secondary">
             <WatchlistButton
+              item={{
+                id: movie.id,
+                title: movie.title,
+                type: 'movie',
+                year: movie.year,
+                poster: movie.poster,
+                backdrop: movie.backdrop,
+                logo: movie.logo,
+                overview: movie.overview,
+                rating: movie.rating,
+                genres: movie.genres,
+                provider: movie.provider || 'local',
+                imdbId: movie.imdbId,
+                tmdbId: movie.tmdbId,
+                tvdbId: movie.tvdbId,
+                malId: movie.malId,
+                anilistId: movie.anilistId,
+                isAnime: movie.isAnime,
+              }}
               mediaRef={{
                 localId: movie.id,
                 title: movie.title,
@@ -476,9 +988,11 @@ export default function MovieDetailPage() {
               mediaType="movie"
               anilistId={movie.anilistId}
               malId={movie.malId}
-              className="!h-13 !min-w-13"
+              detailSize
+              className="detail-hero-actions__watchlist"
             />
             <MarkWatchedButton
+              className="detail-hero-actions__mark"
               mediaRef={{
                 localId: movie.id,
                 title: movie.title,
@@ -491,6 +1005,7 @@ export default function MovieDetailPage() {
               imdbId={movie.imdbId}
               anilistId={movie.anilistId}
               malId={movie.malId}
+              isAnime={movieIsAnime}
               watched={movieWatched}
               onMarked={() => {
                 setMovieWatched(true)
@@ -506,15 +1021,18 @@ export default function MovieDetailPage() {
                   backdrop: movie.backdrop,
                   imdbId: movie.imdbId,
                   tmdbId: movie.tmdbId,
+                  malId: movie.malId,
+                  anilistId: movie.anilistId,
                   updatedAt: new Date().toISOString(),
                 })
               }}
               onUnmarked={() => {
                 setMovieWatched(false)
-                removeWatchProgress([movie.id, movie.imdbId || '', String(movie.tmdbId || ''), movie.tmdbId ? `tmdb-${movie.tmdbId}` : ''])
+                removeWatchProgress([movie.id, movie.imdbId || '', String(movie.tmdbId || ''), movie.tmdbId ? `tmdb-${movie.tmdbId}` : '', movie.malId ? `mal-${movie.malId}` : '', movie.anilistId ? `anilist-${movie.anilistId}` : ''])
               }}
             />
             <StartInRoomButton
+              className="detail-hero-actions__room"
               media={{
                 id: movie.id,
                 type: 'movie',
@@ -529,22 +1047,35 @@ export default function MovieDetailPage() {
                 anilistId: movie.anilistId ? Number(movie.anilistId) : undefined,
               }}
             />
+            </div>
           </div>
         }
       />
 
+      <DetailStickyHeader
+        title={movie.title}
+        actionLabel={primaryActionLabel}
+        onAction={openPrimaryStream}
+        actionLoading={streamResolving}
+      />
+
       <StreamSelector
         open={streamOpen}
-        onClose={() => setStreamOpen(false)}
+        onClose={() => { setStreamOpen(false); setForceManualSourceSelection(false) }}
         mediaType="movie"
         mediaId={streamId}
         title={movie.title}
         artwork={{ poster: movie.poster, backdrop: movie.backdrop }}
+        startTime={movieWatched ? undefined : liveResumePoint ? liveResumePoint.progressSeconds : (hasProgress ? progressItem.progressSeconds : undefined)}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
         malId={movie.malId != null ? Number(movie.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}
         sourceAddonItemId={state.sourceAddonItemId}
+        sourceConnectionId={state.sourceConnectionId}
+        sourceItemId={state.sourceItemId}
+        forceManualSelection={forceManualSourceSelection}
+        onResolvingChange={setStreamResolving}
       />
 
       <DetailContentShell
@@ -553,7 +1084,7 @@ export default function MovieDetailPage() {
         imdbId={movie.imdbId}
         backdrop={movie.backdrop}
       >
-        {movie.trailers.length > 0 && <TrailerRow title="Videos & Trailers" videos={movie.trailers} />}
+        {movie.trailers.length > 0 && <div data-detail-trailers><TrailerRow title="Videos & Trailers" videos={movie.trailers} /></div>}
         {movie.cast.length > 0 && <CastRow cast={movie.cast} crew={movie.crew} />}
 
         {movie.recommendations.length > 0 && (

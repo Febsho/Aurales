@@ -1,4 +1,5 @@
 import type { MovieDetails, SearchResult, ShowDetails } from '../../types'
+import { invoke } from '@tauri-apps/api/core'
 import type { AddonMediaInput, AnimeTitleLanguage, AppMediaItem, AppSeason, MediaKind } from './types'
 
 const numberId = (value: unknown): number | undefined => {
@@ -28,6 +29,17 @@ export function selectAnimeTitle(
   return { title: title || 'Unknown', originalTitle: titles.native, localizedTitle: titles.english || titles.romaji }
 }
 
+export async function selectAnimeTitleWithNativeFallback(
+  titles: { english?: string; romaji?: string; native?: string },
+  preference: AnimeTitleLanguage,
+): Promise<{ title: string; originalTitle?: string; localizedTitle?: string }> {
+  try {
+    return await invoke<{ title: string; originalTitle?: string; localizedTitle?: string }>('select_anime_title', { request: { titles, preference } })
+  } catch (_) {
+    return selectAnimeTitle(titles, preference)
+  }
+}
+
 export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): AppMediaItem {
   const tmdbId = numberId(details.tmdbId || input.tmdbId)
   const imdbId = details.imdbId || input.imdbId
@@ -36,6 +48,7 @@ export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): A
     type: 'movie', title: details.title, originalTitle: details.originalTitle, year: details.year,
     overview: details.overview, poster: details.poster, backdrop: details.backdrop, logo: details.logo,
     genres: details.genres || [], runtime: details.runtime, rating: details.rating, ageRating: details.certification,
+    originalLanguage: details.originalLanguage,
     tmdbId, tvdbId: numberId(details.tvdbId || input.tvdbId), imdbId,
     traktId: input.traktId, simklId: input.simklId, anilistId: input.anilistId, malId: input.malId,
     sourceMetadataProvider: details.provider === 'tvdb' ? 'tvdb' : 'tmdb', sourceAddonId: input.addonId,
@@ -46,7 +59,6 @@ export function normalizeMovie(details: MovieDetails, input: AddonMediaInput): A
 export function normalizeShow(details: ShowDetails, input: AddonMediaInput, kind: MediaKind): AppMediaItem {
   const tvdbId = numberId(details.tvdbId ?? input.tvdbId)
   const tmdbId = numberId(details.tmdbId ?? input.tmdbId)
-  const isAnime = kind === 'anime'
   const seasons: AppSeason[] = (details.seasons || []).map((season) => ({
     id: `${tvdbId ? `tvdb_${tvdbId}` : tmdbId ? `tmdb_${tmdbId}` : `media_${details.id}`}_s${season.seasonNumber}`,
     seasonNumber: season.seasonNumber, title: season.name, overview: season.overview, poster: season.poster,
@@ -62,11 +74,56 @@ export function normalizeShow(details: ShowDetails, input: AddonMediaInput, kind
     type: kind, title: details.title, originalTitle: details.originalTitle, year: details.year,
     overview: details.overview, poster: details.poster, backdrop: details.backdrop, logo: details.logo,
     genres: details.genres || [], rating: details.rating, ageRating: details.certification,
+    originalLanguage: details.originalLanguage,
     tmdbId, tvdbId, imdbId: details.imdbId || input.imdbId, traktId: input.traktId, simklId: input.simklId,
     anilistId: numberId(details.anilistId || input.anilistId), malId: numberId(details.malId || input.malId), seasons,
     sourceMetadataProvider: details.provider === 'tvdb' ? 'tvdb' : 'tmdb', sourceAddonId: input.addonId,
     sourceAddonItemId: input.id, updatedAt: new Date().toISOString(),
   }
+}
+
+/**
+ * Native compatibility path for provider-response normalization. The legacy
+ * synchronous normalizer remains the authoritative fallback for web builds,
+ * older binaries, and any native serialization mismatch.
+ */
+export async function normalizeMovieWithNativeFallback(details: MovieDetails, input: AddonMediaInput): Promise<AppMediaItem> {
+  return normalizeWithNativeFallback('movie', details, input, () => normalizeMovie(details, input))
+}
+
+export async function normalizeShowWithNativeFallback(
+  details: ShowDetails,
+  input: AddonMediaInput,
+  kind: Extract<MediaKind, 'show' | 'anime'>,
+): Promise<AppMediaItem> {
+  return normalizeWithNativeFallback(kind, details, input, () => normalizeShow(details, input, kind))
+}
+
+async function normalizeWithNativeFallback(
+  kind: MediaKind,
+  details: MovieDetails | ShowDetails,
+  input: AddonMediaInput,
+  fallback: () => AppMediaItem,
+): Promise<AppMediaItem> {
+  // `numberId` intentionally accepts unusual legacy values (nested objects,
+  // hexadecimal and fractional strings). They stay on the proven JS path:
+  // moving this rare compatibility coercion offers no native-work benefit.
+  if (!canUseNativeNormalizer(details, input)) return fallback()
+  try {
+    return await invoke<AppMediaItem>('normalize_provider_metadata', {
+      request: { kind, details, input, updatedAt: new Date().toISOString() },
+    })
+  } catch {
+    return fallback()
+  }
+}
+
+function canUseNativeNormalizer(details: MovieDetails | ShowDetails, input: AddonMediaInput): boolean {
+  return [
+    details.tmdbId, details.tvdbId, details.anilistId, details.malId,
+    input.tmdbId, input.tvdbId, input.anilistId, input.malId,
+  ].every((value) => value == null || (typeof value === 'number' && Number.isSafeInteger(value))
+    || (typeof value === 'string' && /^(?:[a-z]+-)?\d+$/i.test(value)))
 }
 
 export function addonFallback(input: AddonMediaInput, kind: MediaKind): AppMediaItem {
@@ -93,5 +150,6 @@ export function appMediaToSearchResult(item: AppMediaItem, addonUrl?: string): S
     malId: item.malId, anilistId: item.anilistId, provider: item.sourceMetadataProvider, addonUrl,
     sourceAddonId: item.sourceAddonId, sourceAddonItemId: item.sourceAddonItemId,
     metadataFallback: item.sourceMetadataProvider === 'fallback_addon',
+    isAnime: item.type === 'anime' || item.isAnime === true,
   }
 }

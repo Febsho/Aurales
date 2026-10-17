@@ -1,41 +1,51 @@
-import { useState, useRef, useEffect } from 'react'
+import BaseSelectMenu from '../components/ui/SelectMenu'
+import Switch from '../components/ui/Switch'
+import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
-import { useAppStore, APP_LANGUAGES } from '../stores/appStore'
+import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   getDeviceCode,
   pollForToken,
+  cancelDeviceAuth,
   clearTokens,
   isAuthenticated,
-  hasBundledTraktClientCredentials,
-  hasTraktClientCredentials,
 } from '../services/trakt/auth'
 import {
   initiateSimklLogin,
-  completeSimklLogin,
+  waitForSimklOauthCallback,
   disconnectSimkl,
   getSimklConnectionStatus,
-  isSimklMockMode,
 } from '../services/simkl/auth'
 import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
-import { loadAddonManifest, installAddon } from '../services/addons'
+import { syncProviderNow } from '../services/providerSync'
+import { getAddonConfigureUrl, loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
-import { stremioLogin, getStremioAddons, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
+import { stremioLogin, getStremioAddons, getStremioLibrary, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
 import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
-import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken } from '../services/anilist'
+import { cancelMdblistOAuthLogin, checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistUser } from '../services/mdblist'
+import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken, syncAniListWatchedHistory } from '../services/anilist'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
-import {
-  loadStreamRegexFilterConfig,
-  resetStreamRegexFilterConfig,
-  saveStreamRegexFilterConfig,
-  validateStreamRegexFilterConfig,
-  cssColorFromFilterColor,
-} from '../services/streamRegexFilters'
 import type { TraktDeviceCode } from '../types'
-import NativeMpvPlayer from '../components/NativeMpvPlayer'
-import { cacheStats, cacheClearCategory, cacheClearExpired } from '../services/cache/sqliteCache'
+// Lazy: debug player only loads when the test player is opened
+const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
+import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
+import { canSelfUpdate, checkForUpdate, downloadAndInstall, getAppVersion, getFlatpakInstallCommand, openFlatpakRelease } from '../services/updater'
+import type { UpdateInfo, UpdateProgress } from '../services/updater'
+import { useDiscoverPrefsStore, DEFAULT_DISCOVER_PREFS, type DiscoverPrefs } from '../stores/discoverPrefsStore'
+import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
+import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
+import { cancelTorBoxDeviceAuth, clearTorBoxToken, getTorBoxAuthGeneration, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
+import ProfilesSettings from '../components/settings/ProfilesSettings'
+import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
+import AccountsHub from '../components/settings/AccountsHub'
+import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
+import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
+import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
+import { getActiveProfileId, getProfileBackupEntries, isProfileBackupStorageKey, profileBackupStorageKeyForImport, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -45,12 +55,15 @@ const BACKUP_KEYS = [
   'trakt_tokens',
   'trakt_account',
   'mdblist_api_key',
+  'mdblist_client_id',
+  'fanart_api_key',
   'orynt_addons',
   'orynt_home_rows',
   'orynt_watch_progress',
   'orynt_preferred_subtitles',
   'orynt_preferred_audio',
   'orynt_cw_source',
+  'aurales_primary_progress_service',
   'orynt_cw_limit',
   'orynt_watched_checkmark_sources',
   'orynt_watchlist_target',
@@ -69,6 +82,14 @@ const BACKUP_KEYS = [
   'orynt_keep_frames_for',
   'orynt_saved_frames_count',
   'orynt_poster_size',
+  'aurales_hero_trailer_delay',
+  'aurales_home_card_animations',
+  'aurales_row_entry_count',
+  'aurales_poster_trailer_previews',
+  'aurales_poster_trailer_hover_delay_ms',
+  'aurales_poster_trailer_sound',
+  'aurales_better_posters',
+  'aurales_trailer_volume',
   'orynt_next_episode_prompt',
   'orynt_accent_color',
   'orynt_default_start_page',
@@ -81,31 +102,41 @@ const BACKUP_KEYS = [
   'orynt_cache_buffer_size',
   'orynt_audio_passthrough',
   'orynt_auto_skip_segments',
+  'aurales_show_skip_intro_button',
+  'aurales_auto_skip_intro',
+  'aurales_show_skip_credits_button',
+  'aurales_auto_skip_credits',
+  'aurales_auto_play_next_episode',
+  'aurales_next_episode_countdown_seconds',
+  'aurales_scrub_thumbnail_previews',
+  'aurales_show_player_loading_indicator',
   'orynt_sub_font_size',
   'orynt_sub_bg_opacity',
   'simkl_token',
   'simkl_account',
+  'simkl_v2_client_id',
   'anilist_token',
   'anilist_account',
   'anilist_client_id',
-  'anilist_client_secret',
   'openrouter_api_key',
   'openrouter_model',
+  'torbox_api_token',
   'orynt_sub_translation_enabled',
   'orynt_sub_translation_lang',
   'orynt_translation_cues_ahead',
   'orynt_context_aware_translation',
 ]
+const MAX_SETTINGS_BACKUP_BYTES = 16 * 1024 * 1024
 
 /* ─── Reusable helper components ─── */
 
 function SettingSection({ title, description, children }: { title?: string; description?: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+    <div className="settings-panel-card bg-white/[0.03] border border-white/[0.06] rounded-2xl">
       {title && (
         <div className="px-6 pt-5 pb-1">
-          <h3 className="text-[15px] font-semibold text-white">{title}</h3>
-          {description && <p className="text-[13px] text-white/40 mt-0.5">{description}</p>}
+          <h3 className="text-sm font-semibold text-white">{title}</h3>
+          {description && <p className="text-sm text-white/60 mt-0.5">{description}</p>}
         </div>
       )}
       <div className="divide-y divide-white/[0.04]">{children}</div>
@@ -113,29 +144,69 @@ function SettingSection({ title, description, children }: { title?: string; desc
   )
 }
 
+// A setting row already renders the human-readable name of the control it
+// contains, but that text was only ever a sibling <p>, never associated with
+// the control. Most switches in this file are therefore announced as a bare
+// "switch, on" with nothing identifying what they toggle. Publishing the row's
+// label through context lets every control inside it adopt that name as a
+// fallback, without having to repeat the string at 39 call sites.
+const SettingRowLabelContext = createContext<string | undefined>(undefined)
+
+// Wraps the shared menu so selects inside a SettingRow inherit that row's
+// label as their accessible name, matching SettingToggle. None of the 23 call
+// sites in this file supplied one.
+function SelectMenu(props: React.ComponentProps<typeof BaseSelectMenu>) {
+  const rowLabel = useContext(SettingRowLabelContext)
+  return <BaseSelectMenu {...props} aria-label={props['aria-label'] ?? rowLabel} />
+}
+
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 px-6 py-4">
       <div className="min-w-0">
-        <p className="text-[14px] text-white">{label}</p>
-        {description && <p className="text-[12px] text-white/35 mt-0.5 leading-relaxed">{description}</p>}
+        <p className="text-sm text-white">{label}</p>
+        {description && <p className="text-xs text-white/60 mt-0.5 leading-relaxed">{description}</p>}
       </div>
-      <div className="flex-shrink-0">{children}</div>
+      <div className="flex-shrink-0">
+        <SettingRowLabelContext.Provider value={label}>{children}</SettingRowLabelContext.Provider>
+      </div>
     </div>
   )
 }
 
-function SettingToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+// Delegates to the shared switch so Settings and Watch Together cannot drift
+// apart again. Kept as a named wrapper because it is referenced throughout
+// this file's setting rows.
+function SettingToggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
+  const rowLabel = useContext(SettingRowLabelContext)
+  return <Switch checked={checked} onChange={onChange} label={label ?? rowLabel} disabled={disabled} />
+}
+
+type SettingSelectOption = { value: string | number; label: string }
+
+function SettingSelect({
+  value,
+  options,
+  onChange,
+  className = 'w-52',
+  label,
+}: {
+  value: string | number
+  options: SettingSelectOption[]
+  onChange: (value: string) => void
+  className?: string
+  label?: string
+}) {
+  const rowLabel = useContext(SettingRowLabelContext)
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-[26px] w-[46px] flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${checked ? 'bg-accent' : 'bg-white/15'}`}
+    <BaseSelectMenu
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className={className}
+      aria-label={label ?? rowLabel}
     >
-      <span className={`pointer-events-none inline-block h-[22px] w-[22px] mt-[2px] ml-[2px] transform rounded-full bg-white shadow ring-0 transition-transform duration-200 ${checked ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-    </button>
+      {options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}
+    </BaseSelectMenu>
   )
 }
 
@@ -143,7 +214,7 @@ function DangerButton({ children, onClick }: { children: React.ReactNode; onClic
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-[13px] font-semibold transition-colors cursor-pointer"
+      className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
     >
       {children}
     </button>
@@ -156,42 +227,232 @@ function ServiceIcon({ service, className = 'w-4.5 h-4.5' }: { service: string; 
     return <img src={iconUrl} alt="" className={`${className} object-contain flex-shrink-0`} loading="lazy" />
   }
   return (
-    <span className={`${className} inline-flex items-center justify-center rounded bg-white/10 text-[9px] font-black text-white/70 flex-shrink-0`}>
+    <span className={`${className} inline-flex items-center justify-center rounded bg-white/10 text-tag font-black text-white/70 flex-shrink-0`}>
       {service.slice(0, 2).toUpperCase()}
     </span>
   )
 }
 
-function SearchEngineSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { id: string; name: string }[] }) {
+function PresenceToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white"
+    <button
+      type="button"
+      role="switch"
+      aria-label="Enable Discord Rich Presence"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${checked ? 'border-emerald-300/30 bg-emerald-400/10' : 'border-white/12 bg-black/20 hover:bg-white/[.07]'}`}
     >
-      {options.map((opt) => (
-        <option key={opt.id} value={opt.id}>{opt.name}</option>
-      ))}
-    </select>
+      <span className={`h-5 w-5 rounded-full shadow-[0_2px_8px_rgba(0,0,0,.35)] transition-transform duration-200 ${checked ? 'translate-x-5 bg-emerald-200' : 'translate-x-0 bg-white/45'}`} />
+    </button>
+  )
+}
+
+function AppUpdateSection() {
+  const [checking, setChecking] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const [progress, setProgress] = useState<UpdateProgress | null>(null)
+  const [noUpdate, setNoUpdate] = useState(false)
+  const [selfUpdates, setSelfUpdates] = useState(true)
+
+  const appVersion = getAppVersion()
+  const flatpakInstallCommand = updateInfo ? getFlatpakInstallCommand(updateInfo.version) : null
+
+  useEffect(() => {
+    canSelfUpdate().then(setSelfUpdates)
+  }, [])
+
+  const handleCheck = async () => {
+    setChecking(true)
+    setUpdateError(null)
+    setUpdateInfo(null)
+    setNoUpdate(false)
+    try {
+      const info = await checkForUpdate()
+      if (info) {
+        setUpdateInfo(info)
+      } else {
+        setNoUpdate(true)
+      }
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : 'Failed to check for updates')
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const handleInstall = async () => {
+    setInstalling(true)
+    setProgress(null)
+    try {
+      await downloadAndInstall((p) => setProgress(p))
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : 'Update failed')
+      setInstalling(false)
+    }
+  }
+
+  const progressPct = progress && progress.total ? Math.round((progress.downloaded / progress.total) * 100) : null
+
+  return (
+    <SettingSection title="App Update" description={`Aurales v${appVersion}`}>
+      <div className="px-6 py-4 space-y-4">
+        {/* Check / Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={[
+              'w-9 h-9 rounded-xl flex items-center justify-center border',
+              updateInfo ? 'bg-accent/15 border-accent/30 text-accent' : 'bg-white/[0.04] border-white/[0.08] text-white/50',
+            ].join(' ')}>
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </div>
+            <div>
+              <span className="text-sm font-semibold text-white">
+                {updateInfo ? `v${updateInfo.version} available` : noUpdate ? 'Up to date' : `v${appVersion}`}
+              </span>
+              <p className="text-label text-white/60">
+                {checking ? 'Checking for updates...'
+                  : installing ? progress?.stage === 'installing' ? 'Installing update...' : 'Downloading update...'
+                  : updateInfo ? 'A new version is ready to install'
+                  : noUpdate ? 'You are running the latest version'
+                  : 'Check for the latest version'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {updateInfo && !installing && selfUpdates ? (
+              <button
+                onClick={handleInstall}
+                className="px-4 py-2 bg-accent text-black font-bold rounded-xl text-xs transition-colors hover:bg-accent-hover cursor-pointer"
+              >
+                Install & Restart
+              </button>
+            ) : (
+              <button
+                onClick={handleCheck}
+                disabled={checking || installing}
+                className={[
+                  'px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer',
+                  checking || installing
+                    ? 'bg-white/[0.04] text-white/50 cursor-not-allowed'
+                    : 'bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white',
+                ].join(' ')}
+              >
+                {checking ? (
+                  <span className="flex items-center gap-2">
+                    <span className="w-3 h-3 border border-white/30 border-t-transparent rounded-full animate-spin" />
+                    Checking...
+                  </span>
+                ) : 'Check for Updates'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {installing && (
+          <div className="space-y-1.5">
+            <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+              {progressPct != null ? (
+                <div
+                  className="h-full bg-accent rounded-full transition-all duration-300"
+                  style={{ width: `${progressPct}%` }}
+                />
+              ) : (
+                <div className="h-full bg-accent/60 rounded-full animate-pulse" style={{ width: '100%' }} />
+              )}
+            </div>
+            <p className="text-meta text-white/50 text-right">
+              {progressPct != null ? `${progressPct}%` : progress ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} MB` : 'Preparing...'}
+            </p>
+          </div>
+        )}
+
+        {/* Flatpak installs cannot be updated from inside the sandbox */}
+        {updateInfo && !selfUpdates && (
+          <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+            <p className="text-xs text-white/60">
+              This app was installed from a standalone Flatpak bundle. Download the new bundle, then reinstall it:
+            </p>
+            {flatpakInstallCommand ? (
+              <code className="mt-2 block select-all rounded-lg bg-black/40 px-3 py-2 font-mono text-label text-white/85">
+                {flatpakInstallCommand}
+              </code>
+            ) : (
+              <p className="mt-2 text-xs text-amber-200/80">The release returned an invalid version. Open Downloads and select the bundle manually.</p>
+            )}
+            <button
+              onClick={() => openFlatpakRelease(updateInfo.version).catch((e) => setUpdateError(String(e)))}
+              className="mt-3 rounded-full bg-white px-4 py-2 text-xs font-bold text-black transition-colors hover:bg-white/85 cursor-pointer"
+            >
+              Open v{updateInfo.version} Downloads
+            </button>
+            <p className="mt-2 text-meta text-white/60">
+              The normal flatpak update command only works with an installed Flatpak repository.
+            </p>
+          </div>
+        )}
+
+        {/* Release notes */}
+        {updateInfo?.body && (
+          <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
+            <span className="text-meta font-bold uppercase tracking-wider text-white/50 block mb-2">Release Notes</span>
+            <p className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap">{updateInfo.body}</p>
+          </div>
+        )}
+
+        {/* Error */}
+        {updateError && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+            <p className="text-xs text-red-400">{updateError}</p>
+          </div>
+        )}
+      </div>
+    </SettingSection>
   )
 }
 
 function CacheManagementSection() {
   const [stats, setStats] = useState<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> } | null>(null)
+  const [cacheMessage, setCacheMessage] = useState('')
+  const [runtimeStats, setRuntimeStats] = useState(cacheRuntimeStats())
 
-  useEffect(() => { cacheStats().then(setStats) }, [])
+  useEffect(() => {
+    cacheStats().then(setStats)
+    const timer = window.setInterval(() => setRuntimeStats(cacheRuntimeStats()), 2000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const handleClearCategory = async (category: string) => {
     const cleared = await cacheClearCategory(category)
-    alert(`Cleared ${cleared} entries from ${category}`)
+    setCacheMessage(`Cleared ${cleared} entries from ${categoryLabels[category] || category}`)
     cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
   }
 
   const handleClearExpired = async () => {
     const cleared = await cacheClearExpired()
-    alert(`Cleared ${cleared} expired entries`)
+    setCacheMessage(`Cleared ${cleared} expired entries`)
     cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
   }
+
+  const handleClearAll = async () => {
+    const cleared = await cacheClearAll()
+    const { clearHomeShelfStartupSnapshots } = await import('../services/cache/homeShelfStartupSnapshot')
+    clearHomeShelfStartupSnapshots()
+    setCacheMessage(`Cleared ${cleared} total entries`)
+    cacheStats().then(setStats)
+    setTimeout(() => setCacheMessage(''), 3000)
+  }
+
+  const handleRefreshCatalogs = () => window.location.reload()
 
   const categoryLabels: Record<string, string> = {
     [CACHE_CATEGORIES.ADDON_CATALOG]: 'Addon Catalogs',
@@ -200,6 +461,7 @@ function CacheManagementSection() {
     [CACHE_CATEGORIES.TMDB_CARD]: 'TMDB Cards',
     [CACHE_CATEGORIES.TVDB_CARD]: 'TVDB Cards',
     [CACHE_CATEGORIES.TMDB_TVDB_ID]: 'TMDB→TVDB IDs',
+    [CACHE_CATEGORIES.TVDB_REMOTE_ID]: 'TVDB Remote IDs',
     [CACHE_CATEGORIES.WATCHED_STATUS]: 'Watch Status',
     [CACHE_CATEGORIES.SIMKL_LIST]: 'Simkl Lists',
     [CACHE_CATEGORIES.ARTWORK]: 'Artwork',
@@ -210,18 +472,38 @@ function CacheManagementSection() {
 
   return (
     <SettingSection title="Performance & Cache" description="SQLite-backed cache for instant page loads.">
+      {cacheMessage && (
+        <div className="mx-6 mt-4 px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl">
+          <p className="text-xs text-accent font-semibold">{cacheMessage}</p>
+        </div>
+      )}
       {stats && (
         <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 px-1 sm:grid-cols-4">
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Session</div><div className="text-sm font-bold">{runtimeStats.memoryEntries} entries</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Memory size</div><div className="text-sm font-bold">{(runtimeStats.approximateBytes / 1024 / 1024).toFixed(1)} MB</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Refreshing</div><div className="text-sm font-bold">{runtimeStats.pendingRequests}</div></div>
+            <div className="rounded-lg bg-white/[0.04] p-2"><div className="text-meta uppercase text-white/50">Errors</div><div className="text-sm font-bold">{runtimeStats.errorEntries}</div></div>
+          </div>
+          <div className="px-1 text-label text-white/60">Last refresh: {runtimeStats.lastRefreshTime ? new Date(runtimeStats.lastRefreshTime).toLocaleString() : 'Not this session'}</div>
           <div className="flex items-center justify-between px-1">
             <span className="text-xs text-muted">{stats.totalEntries} cached entries ({stats.expiredEntries} expired)</span>
-            <button onClick={handleClearExpired} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-lg text-xs font-bold cursor-pointer">
-              Clear Expired
-            </button>
+            <div className="flex gap-2">
+              <button onClick={handleRefreshCatalogs} className="px-3 py-1.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 text-accent rounded-lg text-xs font-bold cursor-pointer">
+                Refresh Catalogs
+              </button>
+              <button onClick={handleClearAll} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 rounded-lg text-xs font-bold cursor-pointer">
+                Clear All
+              </button>
+              <button onClick={handleClearExpired} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-lg text-xs font-bold cursor-pointer">
+                Clear Expired
+              </button>
+            </div>
           </div>
-          {Object.entries(stats.byCategory).filter(([, count]) => count > 0).map(([cat, count]) => (
+          {Object.entries(stats.byCategory).filter(([cat, count]) => cat !== CACHE_CATEGORIES.ANIME_MAPPING && count > 0).map(([cat, count]) => (
             <div key={cat} className="flex items-center justify-between px-1 py-1">
               <span className="text-xs text-white/70">{categoryLabels[cat] || cat} ({count})</span>
-              <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-[10px] font-bold cursor-pointer">
+              <button onClick={() => handleClearCategory(cat)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white/60 hover:text-white rounded-lg text-meta font-bold cursor-pointer">
                 Clear
               </button>
             </div>
@@ -232,81 +514,335 @@ function CacheManagementSection() {
   )
 }
 
-function SearchSettingsSection() {
+function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () => void }) {
   const store = useAppStore()
+  const [cacheInUseMb, setCacheInUseMb] = useState<number | null>(null)
+  const [clearing, setClearing] = useState(false)
+  const [cleared, setCleared] = useState(false)
+  const [clearError, setClearError] = useState(false)
 
-  const movieOptions = [
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-    { id: 'mdblist', name: 'MDBList Search' },
-    { id: 'cinemeta', name: 'Cinemeta' },
+  useEffect(() => {
+    let cancelled = false
+    void import('../services/imageCache')
+      .then(({ imageCacheStats }) => imageCacheStats())
+      .then((stats) => {
+        if (!cancelled && stats) setCacheInUseMb(Math.round((stats.bytes / 1024 / 1024) * 10) / 10)
+      })
+      .catch((error) => {
+        if (!cancelled) console.warn('[settings] could not read image cache usage', error)
+      })
+    return () => { cancelled = true }
+  }, [clearing])
+
+  const handleClear = async () => {
+    setClearing(true)
+    setCleared(false)
+    setClearError(false)
+    try {
+      onClearBackdropCache()
+      const { clearImageCache } = await import('../services/imageCache')
+      await clearImageCache()
+      setCleared(true)
+      setTimeout(() => setCleared(false), 2500)
+    } catch (error) {
+      console.error('[ImageCache] clear failed:', error)
+      setClearError(true)
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  // Quality option config
+  const qualityOptions: { value: 'data-saver' | 'balanced' | 'high'; label: string; desc: string }[] = [
+    { value: 'data-saver', label: 'Data Saver', desc: 'Smaller, lower-res images. Best for slow or metered connections.' },
+    { value: 'balanced', label: 'Balanced', desc: "Balanced picks the best size for this screen. Most people can't tell the difference from High. Data Saver reduces download sizes further." },
+    { value: 'high', label: 'High', desc: 'Full-resolution posters and backdrops. Uses more data and storage.' },
   ]
-  const seriesOptions = [
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'tvdb', name: 'TheTVDB Search' },
-    { id: 'tvmaze', name: 'TVmaze Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-    { id: 'mdblist', name: 'MDBList Search' },
-    { id: 'cinemeta', name: 'Cinemeta' },
+
+  // Cache size options
+  const sizeOptions: { value: number; label: string }[] = [
+    { value: 100, label: '100 MB' },
+    { value: 250, label: '250 MB' },
+    { value: 500, label: '500 MB' },
+    { value: 1000, label: '1 GB' },
+    { value: 2000, label: '2 GB' },
   ]
-  const animeSeriesOptions = [
-    { id: 'mal', name: 'MAL (Series)' },
-    { id: 'tvdb', name: 'TheTVDB Search' },
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
+
+  // Keep duration options
+  const keepOptions: { value: number; label: string }[] = [
+    { value: 1, label: '1 Day' },
+    { value: 3, label: '3 Days' },
+    { value: 7, label: '1 Week' },
+    { value: 14, label: '2 Weeks' },
+    { value: 30, label: '1 Month' },
   ]
-  const animeMovieOptions = [
-    { id: 'mal', name: 'MAL (Movies)' },
-    { id: 'tmdb', name: 'TMDB Search' },
-    { id: 'trakt', name: 'Trakt Search' },
-  ]
+
+  const currentQuality = qualityOptions.find(o => o.value === store.imageQuality) ?? qualityOptions[1]
+
+  return (
+    <div className="settings-panel-card bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="px-6 pt-5 pb-1">
+        <h3 className="text-sm font-semibold text-white">Image Cache</h3>
+        <p className="text-sm text-white/60 mt-0.5">Control how posters and backdrops are stored on this device.</p>
+      </div>
+
+      <div className="divide-y divide-white/[0.04]">
+        {/* Image Quality */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-sm text-white font-medium">Image Quality</p>
+            <div className="relative">
+              <SelectMenu
+                aria-label="Image cache quality" value={store.imageQuality}
+                onChange={(e) => store.setImageQuality(e.target.value as 'data-saver' | 'balanced' | 'high')}
+                className="w-40"
+              >
+                {qualityOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </SelectMenu>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">{currentQuality.desc}</p>
+        </div>
+
+        {/* Disk Cache Size */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-sm text-white font-medium">Disk Cache Size</p>
+            <div className="relative">
+              <SelectMenu
+                aria-label="Image cache size limit" value={store.imageCacheSizeMb}
+                onChange={(e) => store.setImageCacheSizeMb(Number(e.target.value))}
+                className="w-36"
+              >
+                {sizeOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </SelectMenu>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
+        </div>
+
+        {/* Keep Images For */}
+        <div>
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <p className="text-sm text-white font-medium">Keep Images For</p>
+            <div className="relative">
+              <SelectMenu
+                aria-label="Image cache retention" value={store.imageKeepDays}
+                onChange={(e) => store.setImageKeepDays(Number(e.target.value))}
+                className="w-36"
+              >
+                {keepOptions.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </SelectMenu>
+            </div>
+          </div>
+          <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
+        </div>
+
+        {/* Cache in Use + Clear */}
+        <div className="px-6 py-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-white font-medium">Cache in Use</p>
+            <span className="text-sm text-white/50 font-semibold tabular-nums">
+              {cacheInUseMb == null ? '—' : `${cacheInUseMb} MB`}
+            </span>
+          </div>
+          <div className="border-t border-white/[0.04] pt-3">
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className="rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-2 text-sm font-semibold transition-colors hover:border-red-400/40 hover:bg-red-400/15 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
+              style={{ color: cleared ? 'rgb(134 239 172)' : 'rgb(239 68 68)' }}
+            >
+              {clearing ? 'Clearing…' : cleared ? '✓ Cache Cleared' : clearError ? 'Clear Failed — Retry' : 'Clear Image Cache'}
+            </button>
+            <p role={clearError ? 'alert' : undefined} className={`text-xs mt-1.5 leading-relaxed ${clearError ? 'text-red-300' : 'text-white/60'}`}>
+              {clearError ? 'The image cache could not be cleared. Try again.' : 'Images re-download as needed after clearing.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface BetterPostersPreview {
+  catalogId: 'trending-shows' | 'trending-movies' | 'trending-anime'
+  label: string
+  id: string
+  title: string
+}
+
+const DEFAULT_BETTER_POSTERS_PREVIEWS: BetterPostersPreview[] = [
+  { catalogId: 'trending-shows', label: 'Trending show', id: 'tt9288030', title: 'Reacher' },
+  { catalogId: 'trending-movies', label: 'Trending movie', id: 'tt28014327', title: 'Mayday' },
+  { catalogId: 'trending-anime', label: 'Trending anime', id: 'tt0434665', title: 'Bleach' },
+]
+
+function ArtworkSettingsSection() {
+  const betterPosters = useAppStore((s) => s.betterPosters)
+  const setBetterPosters = useAppStore((s) => s.setBetterPosters)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [posterPreviews, setPosterPreviews] = useState<BetterPostersPreview[]>(DEFAULT_BETTER_POSTERS_PREVIEWS)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.allSettled(DEFAULT_BETTER_POSTERS_PREVIEWS.map(async (preview) => {
+      const items = await getSimklDerivedCatalogItems(preview.catalogId)
+      const item = items.find((candidate) => candidate.imdbId?.startsWith('tt'))
+      return item?.imdbId ? { ...preview, id: item.imdbId, title: item.title } : preview
+    })).then((results) => {
+      if (!cancelled) {
+        setPosterPreviews(results.map((result, index) => result.status === 'fulfilled' ? result.value : DEFAULT_BETTER_POSTERS_PREVIEWS[index]))
+      }
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const updateBetterPosters = (settings: Partial<typeof betterPosters>) => {
+    setBetterPosters({ ...betterPosters, ...settings })
+    window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+  }
+  const previewPosterPattern = getBetterPostersUrl(betterPosters)
 
   return (
     <>
-      <SettingSection title="Primary Keyword Engines" description="Choose the default engine for basic keyword searches. The AI search uses this engine to find items based on its suggestions.">
-        <SettingRow label="Movies Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.movieSearchEngine} onChange={store.setMovieSearchEngine} options={movieOptions} />
-            <SettingToggle checked={store.movieSearchEnabled} onChange={store.setMovieSearchEnabled} />
+      <h3 className="text-sm font-bold text-emerald-400/80 mb-3">Better Posters</h3>
+      <SettingSection>
+        <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. Made and hosted by mousa.a on Discord. It takes priority over a custom poster URL while enabled.">
+          <SettingToggle checked={betterPosters.enabled} onChange={(enabled) => updateBetterPosters({ enabled })} />
+        </SettingRow>
+        {betterPosters.enabled && <>
+          <SettingRow label="Trend tags" description="Show Trending, New, and ranking labels.">
+            <SettingToggle checked={betterPosters.trendTags} onChange={(trendTags) => updateBetterPosters({ trendTags })} />
+          </SettingRow>
+          <SettingRow label="Quality tags" description="Show 4K, Dolby Vision, and Atmos badges when available.">
+            <SettingToggle checked={betterPosters.qualityTags} onChange={(qualityTags) => updateBetterPosters({ qualityTags })} />
+          </SettingRow>
+          <SettingRow label="Genre" description="Show the genre label at the bottom of the poster.">
+            <SettingToggle checked={betterPosters.showGenre} onChange={(showGenre) => updateBetterPosters({ showGenre })} />
+          </SettingRow>
+          <SettingRow label="Rating" description="Show a rating label at the bottom of the poster.">
+            <SettingToggle checked={betterPosters.showRating} onChange={(showRating) => updateBetterPosters({ showRating })} />
+          </SettingRow>
+          {betterPosters.showRating && <SettingRow label="Rating source" description="Choose which score BetterPosters prints.">
+            <SettingSelect
+              value={betterPosters.ratingSource}
+              onChange={(ratingSource) => updateBetterPosters({ ratingSource: ratingSource as BetterPostersRatingSource })}
+              options={[
+                { value: 'avg', label: 'Average' }, { value: 'IM', label: 'IMDb (/10)' },
+                { value: 'TM', label: 'TMDB (/10)' }, { value: 'RT', label: 'Rotten Tomatoes (%)' },
+                { value: 'MC', label: 'Metacritic (/100)' }, { value: 'TR', label: 'Trakt (/10)' },
+                { value: 'LB', label: 'Letterboxd (/5)' }, { value: 'RE', label: 'Roger Ebert (/4)' },
+              ]}
+            />
+          </SettingRow>}
+          <SettingRow label="Age rating" description="Show labels such as PG-13, TV-MA, or R.">
+            <SettingToggle checked={betterPosters.ageRating} onChange={(ageRating) => updateBetterPosters({ ageRating })} />
+          </SettingRow>
+          <SettingRow label="Poster language" description="Language used for BetterPosters labels and metadata.">
+            <SettingSelect
+              value={betterPosters.language}
+              onChange={(language) => updateBetterPosters({ language })}
+              options={[
+                { value: 'en', label: 'English' }, { value: 'de', label: 'Deutsch' },
+                { value: 'es-ES', label: 'Español (España)' }, { value: 'es-MX', label: 'Español (Latinoamérica)' },
+                { value: 'fr', label: 'Français' }, { value: 'pt-BR', label: 'Português (Brasil)' },
+              ]}
+            />
+          </SettingRow>
+          <div ref={previewRef} className="px-6 py-6 bg-black/10">
+            <p className="text-sm font-medium text-white">Live preview</p>
+            <p className="text-xs text-white/60 mt-0.5">Current trending picks. Changes update as you adjust the options above.</p>
+            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
+              {posterPreviews.map((preview) => {
+                const posterUrl = previewPosterPattern.replace('{imdb_id}', preview.id)
+                return <figure key={preview.catalogId} className="min-w-0 text-center">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-300/75">{preview.label}</p>
+                  <img
+                    key={posterUrl}
+                    src={posterUrl}
+                    alt={`Better Posters preview for ${preview.title}`}
+                    className="mx-auto mt-2 w-full max-w-40 rounded-xl border border-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.38)]"
+                  />
+                  <figcaption className="mt-2 truncate text-xs font-medium text-white/70" title={preview.title}>{preview.title}</figcaption>
+                </figure>
+              })}
+            </div>
           </div>
-        </SettingRow>
-        <SettingRow label="Series Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.seriesSearchEngine} onChange={store.setSeriesSearchEngine} options={seriesOptions} />
-            <SettingToggle checked={store.seriesSearchEnabled} onChange={store.setSeriesSearchEnabled} />
-          </div>
-        </SettingRow>
-        <SettingRow label="Anime (Series) Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.animeSeriesSearchEngine} onChange={store.setAnimeSeriesSearchEngine} options={animeSeriesOptions} />
-            <SettingToggle checked={store.animeSeriesSearchEnabled} onChange={store.setAnimeSeriesSearchEnabled} />
-          </div>
-        </SettingRow>
-        <SettingRow label="Anime (Movies) Search Engine:">
-          <div className="flex items-center gap-2">
-            <SearchEngineSelect value={store.animeMovieSearchEngine} onChange={store.setAnimeMovieSearchEngine} options={animeMovieOptions} />
-            <SettingToggle checked={store.animeMovieSearchEnabled} onChange={store.setAnimeMovieSearchEnabled} />
-          </div>
-        </SettingRow>
-      </SettingSection>
-
-      <SettingSection title="AI-Powered Search" description="Configure the AI model in the Accounts tab under OpenRouter.">
-        <SettingRow label="Status" description="AI search uses your OpenRouter API key to interpret natural language queries.">
-          <span className={`text-xs font-semibold ${store.openrouterApiKey ? 'text-green-400' : 'text-white/30'}`}>
-            {store.openrouterApiKey ? `Active — ${store.openrouterModel || 'default model'}` : 'Not configured'}
-          </span>
-        </SettingRow>
+        </>}
       </SettingSection>
     </>
   )
 }
 
+const AUDIENCE_OPTIONS = [
+  { mode: 'auto', title: 'AUTO', subtitle: 'Infer from taste' },
+  { mode: 'grown-up', title: 'GROWN-UP', subtitle: 'Block kids networks' },
+  { mode: 'kid-safe', title: 'KID-SAFE', subtitle: 'Family-friendly only' },
+] as const
+
 export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
-  const [activeTab, setActiveTab] = useState<'accounts' | 'addons' | 'metadata' | 'search' | 'progress' | 'languages' | 'filters' | 'player' | 'advanced' | 'interface' | 'watch-together'>('accounts')
-  const [filterConfig, setFilterConfig] = useState(() => loadStreamRegexFilterConfig())
-  const [filterSearch, setFilterSearch] = useState('')
+  const [searchParams] = useSearchParams()
+  type SettingsTab = 'overview' | 'accounts' | 'servers' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'overview')
+  const showServerSettings = false
+
+  useEffect(() => {
+    if (requestedTab === 'profiles') setActiveTab('profiles')
+  }, [requestedTab])
+
+  useEffect(() => {
+    if (!showServerSettings && activeTab === 'servers') setActiveTab('overview')
+  }, [showServerSettings, activeTab])
+
+  // A category can be opened after the overview has been scrolled a long way
+  // down. Start each view at its own header instead of inheriting that offset.
+  useEffect(() => {
+    document.querySelector<HTMLElement>('.app-scroll-root')?.scrollTo({ top: 0 })
+  }, [activeTab])
+
+  const prefs = useDiscoverPrefsStore((s) => s.prefs)
+  const setPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
+  const [localPrefs, setLocalPrefs] = useState<DiscoverPrefs>(prefs)
+  const [upcomingPrefs, setUpcomingPrefs] = useState(() => getUpcomingPreferences())
+  const updateUpcomingPrefs = (patch: Partial<typeof upcomingPrefs>) => {
+    setUpcomingPreferences(patch)
+    if (typeof patch.showOnHome === 'boolean') {
+      const shelf = store.homeRows.find((row) => row.layout === 'upcoming')
+      if (shelf) store.updateHomeRow(shelf.id, { enabled: patch.showOnHome })
+    }
+    setUpcomingPrefs(getUpcomingPreferences())
+  }
+
+  useEffect(() => {
+    setLocalPrefs(prefs)
+  }, [prefs])
+
+  const handlePrefsChange = (patch: Partial<DiscoverPrefs>) => {
+    setLocalPrefs((prev) => ({ ...prev, ...patch }))
+  }
+
+  const handleReset = () => {
+    setLocalPrefs(DEFAULT_DISCOVER_PREFS)
+  }
+
+  const handleCancel = () => {
+    setLocalPrefs(prefs)
+  }
+
+  const handleSave = () => {
+    setPrefs(localPrefs)
+  }
   const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
@@ -314,20 +850,21 @@ export default function SettingsPage() {
   const [traktCode, setTraktCode] = useState<TraktDeviceCode | null>(null)
   const [traktPolling, setTraktPolling] = useState(false)
   const [traktError, setTraktError] = useState('')
-  const [showTraktAdvanced, setShowTraktAdvanced] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
 
   const simklStatus = getSimklConnectionStatus()
   const [simklLoading, setSimklLoading] = useState(false)
   const [simklError, setSimklError] = useState('')
+  const simklNotice = (simklStatus.connected || store.simklConnected) && !/^(Sync completed|Synced|Sync failed)/.test(simklError)
+    ? ''
+    : simklError
   const [simklLastSync, setSimklLastSync] = useState(getLastSimklSyncTime)
   const [simklAuthStarted, setSimklAuthStarted] = useState(false)
-  const [simklCode, setSimklCode] = useState('')
-  const [simklVerificationUrl, setSimklVerificationUrl] = useState('')
+  const simklAuthRunRef = useRef(0)
   const simklPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simklTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isMock = isSimklMockMode()
 
   const [stremioEmail, setStremioEmail] = useState('')
   const [stremioPassword, setStremioPassword] = useState('')
@@ -335,14 +872,30 @@ export default function SettingsPage() {
   const [stremioLoading, setStremioLoading] = useState(false)
   const [stremioError, setStremioError] = useState('')
   const [stremioAuth, setStremioAuth] = useState(getStremioAuth)
-  const [streamRegexJson, setStreamRegexJson] = useState(() => JSON.stringify(loadStreamRegexFilterConfig(), null, 2))
-  const [streamRegexMessage, setStreamRegexMessage] = useState('')
+  const stremioAuthRunRef = useRef(0)
+  const [torBoxUser, setTorBoxUser] = useState<TorBoxUser | null>(null)
+  const [torBoxDevice, setTorBoxDevice] = useState<TorBoxDeviceCode | null>(null)
+  const [torBoxLoading, setTorBoxLoading] = useState(false)
+  const [torBoxMessage, setTorBoxMessage] = useState('')
+  const [torBoxTokenInput, setTorBoxTokenInput] = useState(getTorBoxToken)
+  const torBoxPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const torBoxAuthRunRef = useRef(0)
+  const [backdropCacheMessage, setBackdropCacheMessage] = useState('')
 
   const [pmdbConnStatus, setPmdbConnStatus] = useState<PMDBConnectionStatus | null>(null)
   const [pmdbConnChecking, setPmdbConnChecking] = useState(false)
+  const pmdbApiKeyAtFocusRef = useRef(store.pmdbApiKey)
+  const [mdblistConnStatus, setMdblistConnStatus] = useState<{ connected: boolean; user?: MdblistUser; error?: string } | null>(null)
+  const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
+  const mdblistAuthRunRef = useRef(0)
+  const mdblistApiKeyAtFocusRef = useRef(store.mdblistApiKey)
+  const [mdblistClientIdInput] = useState(getMdblistClientId)
+  const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
+  const anilistAuthRunRef = useRef(0)
+  const anilistCallbackCancellationRef = useRef<Promise<void> | null>(null)
 
   const testPmdbConnection = async () => {
     setPmdbConnChecking(true)
@@ -352,73 +905,151 @@ export default function SettingsPage() {
     setPmdbConnChecking(false)
   }
 
+  const testMdblistConnection = async () => {
+    setMdblistConnChecking(true)
+    setMdblistConnStatus(null)
+    const status = await checkMdblistConnection()
+    setMdblistConnStatus(status)
+    setMdblistConnChecking(false)
+  }
+
+  const handleMdblistOAuthConnect = async () => {
+    const authRun = ++mdblistAuthRunRef.current
+    setMdblistConnChecking(true)
+    setMdblistConnStatus(null)
+    try {
+      setMdblistClientId(mdblistClientIdInput)
+      const { authUrl, session } = await startMdblistPKCELogin()
+      if (authRun !== mdblistAuthRunRef.current) return
+      setMdblistOAuthPolling(true)
+
+      const callbackPromise = waitForMdblistCallback()
+      await invoke('open_simkl_auth', { url: authUrl })
+
+      const callback = await callbackPromise
+      if (authRun !== mdblistAuthRunRef.current) return
+      if (callback.error) throw new Error(`MDBList authorization failed: ${callback.error}`)
+      if (callback.state !== session.state) throw new Error('MDBList OAuth state did not match.')
+      const code = callback.code
+      if (!code) throw new Error('MDBList did not return an authorization code.')
+
+      await exchangeMdblistPKCEToken(code, session)
+      if (authRun !== mdblistAuthRunRef.current) return
+      setMdblistOAuthPolling(false)
+      const status = await checkMdblistConnection()
+      if (authRun === mdblistAuthRunRef.current) setMdblistConnStatus(status)
+    } catch (err: any) {
+      if (authRun !== mdblistAuthRunRef.current) return
+      setMdblistOAuthPolling(false)
+      setMdblistConnStatus({ connected: false, error: err?.message || 'MDBList OAuth failed' })
+    } finally {
+      if (authRun === mdblistAuthRunRef.current) setMdblistConnChecking(false)
+    }
+  }
+
+  const handleMdblistOAuthDisconnect = () => {
+    mdblistAuthRunRef.current++
+    cancelMdblistOAuthLogin()
+    clearMdblistOAuth()
+    setMdblistOAuthPolling(false)
+    setMdblistConnStatus(null)
+  }
+
+  const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
+
+  const cancelAniListCallback = () => {
+    const cancellation = invoke<void>('cancel_anilist_callback_server', { provider: 'anilist' })
+    anilistCallbackCancellationRef.current = cancellation
+    void cancellation.finally(() => {
+      if (anilistCallbackCancellationRef.current === cancellation) anilistCallbackCancellationRef.current = null
+    }).catch(() => {})
+  }
+
   const handleAnilistConnect = async () => {
+    const authRun = ++anilistAuthRunRef.current
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
-      const clientId = store.anilistClientId.trim()
-      const clientSecret = store.anilistClientSecret.trim()
-      if (!clientId || !clientSecret) {
-        throw new Error('Client ID and Client Secret are required.')
+      if (anilistCallbackCancellationRef.current) await anilistCallbackCancellationRef.current
+      if (authRun !== anilistAuthRunRef.current) return
+      const clientId = getAnilistClientId()
+      if (!clientId) {
+        throw new Error('AniList client ID not configured.')
       }
 
       setAnilistMessage('Waiting for browser authorization callback...')
-      const callbackServerPromise = invoke<string>('start_anilist_callback_server')
+      const callbackServerPromise = invoke<string>('start_anilist_callback_server', { provider: 'anilist' })
 
       const redirectUri = 'http://localhost:42814/'
-      const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`
+      const authParams = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+      })
+      const authUrl = `https://anilist.co/api/v2/oauth/authorize?${authParams}`
       await invoke('open_simkl_auth', { url: authUrl })
+      if (authRun !== anilistAuthRunRef.current) return
 
+      setAnilistMessage('Waiting for AniList authorization...')
       const code = await callbackServerPromise
+      if (authRun !== anilistAuthRunRef.current) return
+      if (!code) {
+        throw new Error('AniList did not return an authorization code.')
+      }
 
-      setAnilistMessage('Exchanging authorization code for access token...')
-      const tokenJson = await invoke<string>('exchange_anilist_token', {
+      // Keep the client secret out of the WebView/JavaScript bundle. The
+      // native command reads ANILIST_CLIENT_SECRET from the release build.
+      const token = await invoke<string>('exchange_anilist_token', {
         code,
         clientId,
-        clientSecret,
         redirectUri,
       })
 
-      const tokenData = JSON.parse(tokenJson)
-      const token = tokenData.access_token
-      if (!token) {
-        throw new Error('AniList did not return an access token.')
-      }
-
+      if (authRun !== anilistAuthRunRef.current) return
       setAniListToken(token)
       setAnilistTokenInput(token)
       const account = await fetchAniListViewer()
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(true)
       store.setAnilistAccount(account)
       setAnilistMessage(`Successfully connected as ${account.name}!`)
     } catch (err: any) {
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
-      setAnilistMessage(err?.message || 'AniList connection failed')
+      const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
+      setAnilistMessage(msg)
     } finally {
-      setAnilistLoading(false)
+      if (authRun === anilistAuthRunRef.current) setAnilistLoading(false)
     }
   }
 
   const connectAniListManual = async () => {
+    const authRun = ++anilistAuthRunRef.current
+    cancelAniListCallback()
     setAnilistLoading(true)
     setAnilistMessage('')
     try {
       setAniListToken(anilistTokenInput)
       const account = await fetchAniListViewer()
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(true)
       store.setAnilistAccount(account)
       setAnilistMessage(`Connected manually as ${account.name}`)
     } catch (err: any) {
+      if (authRun !== anilistAuthRunRef.current) return
       store.setAnilistConnected(false)
       store.setAnilistAccount(null)
-      setAnilistMessage(err?.message || 'AniList connection failed')
+      const msg = typeof err === 'string' ? err : err?.message || 'AniList connection failed'
+      setAnilistMessage(msg)
     } finally {
-      setAnilistLoading(false)
+      if (authRun === anilistAuthRunRef.current) setAnilistLoading(false)
     }
   }
 
   const handleAnilistDisconnect = () => {
+    anilistAuthRunRef.current++
+    cancelAniListCallback()
     setAniListToken('')
     setAnilistTokenInput('')
     store.setAnilistConnected(false)
@@ -428,10 +1059,27 @@ export default function SettingsPage() {
 
   const syncAniListNow = async () => {
     setAnilistLoading(true)
-    setAnilistMessage('')
+    setAnilistMessage('Syncing from AniList…')
     try {
-      const items = await getAniListContinueWatching()
-      setAnilistMessage(`Pulled ${items.length} AniList in-progress item${items.length === 1 ? '' : 's'}.`)
+      const report = await syncAniListWatchedHistory()
+      // Warm the continue-watching cache too (best-effort).
+      await getAniListContinueWatching().catch(() => undefined)
+      // Refresh the watched snapshot so checkmarks update immediately.
+      const { refreshWatchedCache } = await import('../services/watchedCacheSync')
+      await refreshWatchedCache(store.watchedCheckmarkSources as any).catch(() => undefined)
+
+      if (report.errors.length && report.found === 0) {
+        setAnilistMessage(report.errors[0])
+      } else {
+        const parts = [
+          `Found ${report.found} anime`,
+          `matched ${report.matched}`,
+          `${report.episodesImported} episodes imported`,
+        ]
+        if (report.unmatched.length) parts.push(`${report.unmatched.length} unmatched`)
+        if (report.errors.length) parts.push(`${report.errors.length} error${report.errors.length === 1 ? '' : 's'}`)
+        setAnilistMessage(parts.join(' · '))
+      }
     } catch (err: any) {
       setAnilistMessage(err?.message || 'AniList sync failed')
     } finally {
@@ -440,42 +1088,66 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
+    const stremioAuthRun = stremioAuthRunRef
+    const torBoxAuthRun = torBoxAuthRunRef
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      cancelDeviceAuth()
+      stremioAuthRun.current++
       if (simklPollRef.current) clearInterval(simklPollRef.current)
       if (simklTimeoutRef.current) clearTimeout(simklTimeoutRef.current)
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      torBoxAuthRun.current++
+      cancelTorBoxDeviceAuth()
     }
   }, [])
 
   useEffect(() => {
+    if (!getTorBoxToken()) return
+    getTorBoxUser()
+      .then(setTorBoxUser)
+      .catch((error) => {
+        setTorBoxUser(null)
+        setTorBoxMessage(error instanceof Error ? error.message : 'TorBox could not verify this connection.')
+      })
+  }, [])
+
+  useEffect(() => {
     if (store.traktConnected && !store.traktAccount) {
+      let cancelled = false
       import('../services/trakt/auth').then(({ fetchTraktAccount }) => {
         fetchTraktAccount()
-          .then((account) => store.setTraktAccount(account))
+          .then((account) => { if (!cancelled) useAppStore.getState().setTraktAccount(account) })
           .catch((err) => console.error('Failed to load Trakt user profile:', err))
       })
+      return () => { cancelled = true }
     }
   }, [store.traktConnected, store.traktAccount])
 
   useEffect(() => {
-    const hasBrokenAvatar = store.simklAccount &&
-      (!store.simklAccount.avatar || !store.simklAccount.avatar.includes('wsrv.nl/?url=https://simkl.in'))
+    // Missing avatars are valid for Simkl users; re-fetching on every account
+    // update cannot repair an absent URL and can otherwise loop indefinitely.
+    const hasBrokenAvatar = store.simklAccount?.avatar &&
+      !store.simklAccount.avatar.includes('wsrv.nl/?url=https://simkl.in')
 
     if (store.simklConnected && (!store.simklAccount || hasBrokenAvatar)) {
+      let cancelled = false
       import('../services/simkl/auth').then(({ getStoredSimklToken, finaliseSimklLogin }) => {
         const token = getStoredSimklToken()
         if (token) {
           finaliseSimklLogin(token)
-            .then((account) => store.setSimklAccount(account))
+            .then((account) => { if (!cancelled) useAppStore.getState().setSimklAccount(account) })
             .catch((err) => console.error('Failed to load Simkl user profile:', err))
         }
       })
+      return () => { cancelled = true }
     }
   }, [store.simklConnected, store.simklAccount])
 
   const importStremioAddons = async (authKey: string) => {
     const addons = await getStremioAddons(authKey)
+    if (getStremioAuth()?.authKey !== authKey) return { imported: 0, updated: 0 }
     const byId = new Map(store.addons.map((addon) => [addon.manifest.id, addon]))
     let imported = 0
     let updated = 0
@@ -488,7 +1160,7 @@ export default function SettingsPage() {
         byId.set(addon.manifest.id, addon)
         imported++
       } else if (existing.url !== addon.url || JSON.stringify(existing.manifest) !== JSON.stringify(addon.manifest)) {
-        byId.set(addon.manifest.id, { ...addon, enabled: existing.enabled })
+        byId.set(addon.manifest.id, { ...addon, enabled: existing.enabled, displayName: existing.displayName })
         updated++
       }
     }
@@ -497,19 +1169,100 @@ export default function SettingsPage() {
     return { imported, updated }
   }
 
-  const handleTraktConnect = async () => {
-    if (!hasTraktClientCredentials()) {
-      setTraktError('This build does not include Trakt app credentials. Add a Client ID and Client Secret below, or rebuild with VITE_TRAKT_CLIENT_ID and VITE_TRAKT_CLIENT_SECRET.')
-      setShowTraktAdvanced(true)
-      return
+  const importStremioActivity = async (authKey: string) => {
+    const entries = await getStremioLibrary(authKey, true)
+    if (getStremioAuth()?.authKey !== authKey) return { watchedImported: 0, continueImported: 0 }
+    let watchedImported = 0
+    let continueImported = 0
+    const completedKeys = new Set<string>()
+
+    const shouldApplyRemote = (key: string, remoteUpdatedAt?: string) => {
+      const existing = useAppStore.getState().watchProgress.get(key)
+      if (!existing) return true
+      if (!remoteUpdatedAt) return false
+      return !existing.updatedAt || Date.parse(remoteUpdatedAt) >= Date.parse(existing.updatedAt)
     }
-    setTraktError('')
+
+    const saveProgress = (key: string, entry: (typeof entries)[number], completed: boolean, season?: number, episode?: number) => {
+      if (!shouldApplyRemote(key, entry.lastWatched)) return false
+      const duration = Math.max(entry.durationSeconds, completed ? 1 : 7)
+      const progress = completed ? duration : Math.max(6, Math.min(entry.progressSeconds, duration - 1))
+      store.setWatchProgress(key, {
+        id: key,
+        mediaType: entry.type,
+        mediaId: entry.id,
+        season,
+        episode,
+        progressSeconds: progress,
+        durationSeconds: duration,
+        completed,
+        title: entry.title,
+        poster: entry.poster,
+        imdbId: entry.imdbId,
+        updatedAt: entry.lastWatched || new Date().toISOString(),
+      })
+      return true
+    }
+
+    for (const entry of entries) {
+      if (entry.type === 'movie' && entry.watched) {
+        if (saveProgress(entry.id, entry, true)) watchedImported++
+        completedKeys.add(entry.id)
+      }
+      for (const videoId of entry.watchedEpisodeIds || []) {
+        const parts = videoId.split(':')
+        const season = Number(parts.at(-2))
+        const episode = Number(parts.at(-1))
+        if (!Number.isFinite(season) || !Number.isFinite(episode)) continue
+        const key = `${entry.id}:${season}:${episode}`
+        if (saveProgress(key, entry, true, season, episode)) watchedImported++
+        completedKeys.add(key)
+      }
+    }
+
+    for (const entry of entries) {
+      if (!entry.continueWatching) continue
+      const key = entry.type === 'series' && entry.season != null && entry.episode != null
+        ? `${entry.id}:${entry.season}:${entry.episode}`
+        : entry.id
+      if (completedKeys.has(key)) continue
+      if (saveProgress(key, entry, false, entry.season, entry.episode)) continueImported++
+    }
+
+    return { watchedImported, continueImported }
+  }
+
+  const formatStremioSyncResult = (
+    addons: { imported: number; updated: number },
+    activity: { watchedImported: number; continueImported: number },
+  ) => `Synced ${addons.imported} new addons, ${addons.updated} updated · ${activity.watchedImported} watched · ${activity.continueImported} continue watching`
+
+  const handleTraktConnect = async () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    setTraktCode(null)
+    setTraktPolling(true)
+    setTraktError('Requesting a secure Trakt device code…')
     try {
       const code = await getDeviceCode()
       setTraktCode(code)
-      setTraktPolling(true)
+      setTraktError('Open Trakt in your browser and enter the code shown here.')
 
+      // Browser launch is deliberately detached. Some Linux launchers do not
+      // return until the browser closes, but the device-code UI and polling
+      // need to keep working while that page is open.
+      if ((window as any).__TAURI_INTERNALS__) {
+        void invoke('open_simkl_auth', { url: code.verificationUrl }).catch(() => {
+          setTraktError('Open the Trakt verification link below and enter the code shown here.')
+        })
+      } else {
+        window.open(code.verificationUrl, '_blank', 'noopener,noreferrer')
+      }
+
+      let pollInFlight = false
       pollRef.current = setInterval(async () => {
+        if (pollInFlight) return
+        pollInFlight = true
         try {
           const tokens = await pollForToken(code.deviceCode)
           if (tokens) {
@@ -527,17 +1280,21 @@ export default function SettingsPage() {
               console.error('Failed to fetch Trakt account details:', err)
             }
           }
-        } catch {
+        } catch (_) {
           // polling error, keep trying
+        } finally {
+          pollInFlight = false
         }
       }, (code.interval || 5) * 1000)
 
       timeoutRef.current = setTimeout(() => {
         if (pollRef.current) clearInterval(pollRef.current)
+        cancelDeviceAuth()
         setTraktPolling(false)
         setTraktError('Authorization timed out. Try again.')
       }, code.expiresIn * 1000)
     } catch (e) {
+      setTraktPolling(false)
       setTraktError(`Failed to start auth: ${e instanceof Error ? e.message : e}`)
     }
   }
@@ -558,17 +1315,23 @@ export default function SettingsPage() {
       setStremioError('Enter both email and password')
       return
     }
+    const authRun = ++stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
       const result = await stremioLogin(stremioEmail, stremioPassword)
+      if (authRun !== stremioAuthRunRef.current) return
       saveStremioAuth(result.authKey, stremioEmail)
       setStremioAuth({ authKey: result.authKey, email: stremioEmail })
 
-      const { imported, updated } = await importStremioAddons(result.authKey)
+      const addons = await importStremioAddons(result.authKey)
+      if (authRun !== stremioAuthRunRef.current) return
+      const activity = await importStremioActivity(result.authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       setStremioPassword('')
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
+      if (authRun !== stremioAuthRunRef.current) return
       const message = e instanceof Error ? e.message : String(e)
       setStremioError(
         message.toLowerCase().includes('passphrase')
@@ -576,7 +1339,7 @@ export default function SettingsPage() {
           : `Login failed: ${message}`,
       )
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
@@ -586,41 +1349,165 @@ export default function SettingsPage() {
       setStremioError('Enter a Stremio auth key')
       return
     }
+    const authRun = ++stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
       saveStremioAuth(authKey, 'AuthKey login')
       setStremioAuth({ authKey, email: 'AuthKey login' })
-      const { imported, updated } = await importStremioAddons(authKey)
+      const addons = await importStremioAddons(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
+      const activity = await importStremioActivity(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
       setStremioAuthKey('')
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
-      clearStremioAuth()
-      setStremioAuth(null)
-      setStremioError(`Import failed: ${e instanceof Error ? e.message : e}`)
+      if (authRun === stremioAuthRunRef.current) {
+        if (getStremioAuth()?.authKey === authKey) clearStremioAuth()
+        setStremioAuth(null)
+        setStremioError(`Import failed: ${e instanceof Error ? e.message : e}`)
+      }
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
   const handleStremioSync = async () => {
     if (!stremioAuth) return
+    const authKey = stremioAuth.authKey
+    const authRun = stremioAuthRunRef.current
     setStremioLoading(true)
     setStremioError('')
     try {
-      const { imported, updated } = await importStremioAddons(stremioAuth.authKey)
-      setStremioError(imported || updated ? `Imported ${imported}, updated ${updated}` : 'All addons already imported')
+      const addons = await importStremioAddons(authKey)
+      if (authRun !== stremioAuthRunRef.current) return
+      const activity = await importStremioActivity(authKey)
+      if (authRun === stremioAuthRunRef.current) setStremioError(formatStremioSyncResult(addons, activity))
     } catch (e) {
-      setStremioError(`Sync failed: ${e instanceof Error ? e.message : e}`)
+      if (authRun === stremioAuthRunRef.current) setStremioError(`Sync failed: ${e instanceof Error ? e.message : e}`)
     } finally {
-      setStremioLoading(false)
+      if (authRun === stremioAuthRunRef.current) setStremioLoading(false)
     }
   }
 
   const handleStremioDisconnect = () => {
+    stremioAuthRunRef.current++
     clearStremioAuth()
     setStremioAuth(null)
+    setStremioLoading(false)
     setStremioError('')
+  }
+
+  const finishTorBoxConnection = async (token: string, authRun: number) => {
+    if (authRun !== torBoxAuthRunRef.current) return
+    cancelTorBoxDeviceAuth()
+    setTorBoxToken(token)
+    const tokenGeneration = getTorBoxAuthGeneration()
+    try {
+      const user = await getTorBoxUser()
+      if (authRun !== torBoxAuthRunRef.current || tokenGeneration !== getTorBoxAuthGeneration()) return
+      setTorBoxTokenInput(token)
+      setTorBoxUser(user)
+      setTorBoxDevice(null)
+      setTorBoxMessage(`Connected as ${user.email}`)
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      torBoxPollRef.current = null
+    } catch (error) {
+      if (authRun === torBoxAuthRunRef.current && tokenGeneration === getTorBoxAuthGeneration()) clearTorBoxToken()
+      throw error
+    }
+  }
+
+  const handleTorBoxConnect = async () => {
+    const authRun = ++torBoxAuthRunRef.current
+    setTorBoxLoading(true)
+    setTorBoxMessage('')
+    try {
+      const device = await startTorBoxDeviceAuth()
+      if (authRun !== torBoxAuthRunRef.current) return
+      setTorBoxDevice(device)
+      if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+      let pollInFlight = false
+      const poll = async () => {
+        if (pollInFlight || authRun !== torBoxAuthRunRef.current) return
+        pollInFlight = true
+        try {
+          if (Date.now() >= new Date(device.expires_at).getTime()) {
+            if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+            torBoxPollRef.current = null
+            setTorBoxLoading(false)
+            setTorBoxMessage('TorBox authorization expired. Try again.')
+            return
+          }
+          const token = await pollTorBoxDeviceToken(device.device_code)
+          if (authRun !== torBoxAuthRunRef.current) return
+          if (token) {
+            await finishTorBoxConnection(token, authRun)
+            if (authRun === torBoxAuthRunRef.current) setTorBoxLoading(false)
+          }
+        } catch (error) {
+          if (authRun !== torBoxAuthRunRef.current) return
+          if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+          torBoxPollRef.current = null
+          setTorBoxLoading(false)
+          setTorBoxMessage(error instanceof Error ? error.message : String(error))
+        } finally {
+          pollInFlight = false
+        }
+      }
+      torBoxPollRef.current = setInterval(poll, Math.max(2, device.interval || 5) * 1000)
+      setTorBoxMessage('Waiting for TorBox authorization…')
+      void poll()
+
+      // Start polling before launching the browser. A few Linux launchers keep
+      // their open process alive until the browser window closes; authorization
+      // must not wait for that process to exit.
+      const authUrl = device.verification_url || device.friendly_verification_url
+      if ((window as any).__TAURI_INTERNALS__) {
+        void invoke('open_simkl_auth', { url: authUrl }).catch(() => {
+          setTorBoxMessage('Open the TorBox link below to finish authorization.')
+        })
+      } else {
+        window.open(authUrl, '_blank', 'noopener,noreferrer')
+      }
+    } catch (error) {
+      if (authRun !== torBoxAuthRunRef.current) return
+      setTorBoxLoading(false)
+      setTorBoxMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleTorBoxManualConnect = async () => {
+    if (!torBoxTokenInput.trim()) return
+    const authRun = ++torBoxAuthRunRef.current
+    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+    torBoxPollRef.current = null
+    cancelTorBoxDeviceAuth()
+    setTorBoxLoading(true)
+    setTorBoxMessage('')
+    try {
+      await finishTorBoxConnection(torBoxTokenInput, authRun)
+    } catch (error) {
+      if (authRun === torBoxAuthRunRef.current) {
+        setTorBoxUser(null)
+        setTorBoxMessage(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (authRun === torBoxAuthRunRef.current) setTorBoxLoading(false)
+    }
+  }
+
+  const handleTorBoxDisconnect = () => {
+    torBoxAuthRunRef.current++
+    if (torBoxPollRef.current) clearInterval(torBoxPollRef.current)
+    torBoxPollRef.current = null
+    cancelTorBoxDeviceAuth()
+    clearTorBoxToken()
+    setTorBoxTokenInput('')
+    setTorBoxUser(null)
+    setTorBoxDevice(null)
+    setTorBoxLoading(false)
+    setTorBoxMessage('Disconnected from TorBox.')
   }
 
   const handleExportConfig = () => {
@@ -628,7 +1515,20 @@ export default function SettingsPage() {
     for (const key of BACKUP_KEYS) {
       backup[key] = localStorage.getItem(key)
     }
+    // Profile preferences are stored under profile-specific keys. Preserve
+    // those exact keys so restoring a backup cannot apply them to another
+    // profile.
+    for (const key of PROFILE_BACKUP_KEYS) {
+      const scopedKey = profileStorageKey(key, getActiveProfileId())
+      backup[scopedKey] = localStorage.getItem(scopedKey)
+    }
+    Object.assign(backup, getProfileBackupEntries())
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+    if (blob.size > MAX_SETTINGS_BACKUP_BYTES) {
+      setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
+      setTimeout(() => setBackdropCacheMessage(''), 4000)
+      return
+    }
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -636,31 +1536,65 @@ export default function SettingsPage() {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Let WebKit finish starting the download before releasing the blob URL.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget
     const file = e.target.files?.[0]
+    input.value = ''
     if (!file) return
+    if (file.size > MAX_SETTINGS_BACKUP_BYTES) {
+      setBackdropCacheMessage('Settings backup exceeds the 16 MiB limit.')
+      setTimeout(() => setBackdropCacheMessage(''), 4000)
+      return
+    }
     const reader = new FileReader()
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string)
-        if (typeof data !== 'object' || data === null) {
-          alert('Invalid backup file format.')
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+          setBackdropCacheMessage('Invalid backup file format.')
+          setTimeout(() => setBackdropCacheMessage(''), 3000)
           return
         }
-        for (const [key, value] of Object.entries(data)) {
-          if (value !== null && typeof value === 'string') {
-            localStorage.setItem(key, value)
-          } else {
-            localStorage.removeItem(key)
-          }
+        const allowedKeys = new Set([
+          ...BACKUP_KEYS,
+          ...PROFILE_BACKUP_KEYS.map((key) => profileStorageKey(key, getActiveProfileId())),
+        ])
+        const profileKeys = new Set(PROFILE_BACKUP_KEYS)
+        const activeProfileId = getActiveProfileId()
+        const entries = Object.entries(data as Record<string, unknown>)
+          .filter(([key]) => allowedKeys.has(key) || isProfileBackupStorageKey(key))
+          .map(([key, value]) => [
+            profileKeys.has(key) ? profileStorageKey(key, activeProfileId) : profileBackupStorageKeyForImport(key, activeProfileId) || key,
+            value,
+          ] as [string, unknown])
+        if (!entries.length || entries.some(([, value]) => value !== null && typeof value !== 'string')) {
+          setBackdropCacheMessage('Invalid backup file format.')
+          setTimeout(() => setBackdropCacheMessage(''), 3000)
+          return
         }
-        alert('Configuration imported successfully! The app will now reload.')
+        const previous = new Map(entries.map(([key]) => [key, localStorage.getItem(key)]))
+        try {
+          for (const [key, value] of entries) {
+            if (value === null) localStorage.removeItem(key)
+            else localStorage.setItem(key, value as string)
+          }
+        } catch (error) {
+          for (const [key, value] of previous) {
+            try {
+              if (value === null) localStorage.removeItem(key)
+              else localStorage.setItem(key, value)
+            } catch (_) { /* best-effort rollback if storage remains full */ }
+          }
+          throw error
+        }
         window.location.reload()
       } catch (err) {
-        alert('Failed to import configuration: ' + (err instanceof Error ? err.message : String(err)))
+        setBackdropCacheMessage('Failed to import: ' + (err instanceof Error ? err.message : String(err)))
+        setTimeout(() => setBackdropCacheMessage(''), 4000)
       }
     }
     reader.readAsText(file)
@@ -675,41 +1609,10 @@ export default function SettingsPage() {
         clearedCount++
       }
     }
-    alert(`Backdrop cache cleared! Wiped ${clearedCount} local keys.`)
+    setBackdropCacheMessage(`Cleared ${clearedCount} cached image entries.`)
+    setTimeout(() => setBackdropCacheMessage(''), 3000)
   }
 
-  const handleSaveStreamRegexFilters = () => {
-    try {
-      const parsed = validateStreamRegexFilterConfig(JSON.parse(streamRegexJson))
-      saveStreamRegexFilterConfig(parsed)
-      setStreamRegexJson(JSON.stringify(parsed, null, 2))
-      setStreamRegexMessage(`Saved ${parsed.filters.length} filters in ${parsed.groups.length} groups.`)
-    } catch (e) {
-      setStreamRegexMessage(`Invalid filter JSON: ${e instanceof Error ? e.message : e}`)
-    }
-  }
-
-  const handleResetStreamRegexFilters = () => {
-    const defaults = resetStreamRegexFilterConfig()
-    setStreamRegexJson(JSON.stringify(defaults, null, 2))
-    setStreamRegexMessage('Reset stream regex filters to defaults.')
-  }
-
-  const handleToggleFilter = (filterId: string) => {
-    const nextFilters = filterConfig.filters.map((f) =>
-      f.id === filterId ? { ...f, isEnabled: !f.isEnabled } : f
-    )
-    const nextConfig = { ...filterConfig, filters: nextFilters }
-    setFilterConfig(nextConfig)
-    saveStreamRegexFilterConfig(nextConfig)
-    setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-  }
-
-  const handleResetFilters = () => {
-    const nextConfig = resetStreamRegexFilterConfig()
-    setFilterConfig(nextConfig)
-    setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-  }
 
   const handleAddAddon = async () => {
     if (!addonUrl.trim()) return
@@ -733,86 +1636,36 @@ export default function SettingsPage() {
     simklPollRef.current = null
     simklTimeoutRef.current = null
     setSimklAuthStarted(false)
-    setSimklCode('')
-    setSimklVerificationUrl('')
-    setSimklError('')
-    setSimklLoading(false)
-  }
-
-  const finishSimklPinAuth = async (code: string) => {
-    const account = await completeSimklLogin(code)
-    if (simklPollRef.current) clearInterval(simklPollRef.current)
-    if (simklTimeoutRef.current) clearTimeout(simklTimeoutRef.current)
-    simklPollRef.current = null
-    simklTimeoutRef.current = null
-    store.setSimklConnected(true)
-    store.setSimklAccount(account)
-    setSimklAuthStarted(false)
-    setSimklCode('')
-    setSimklVerificationUrl('')
     setSimklError('')
     setSimklLoading(false)
   }
 
   const handleSimklConnect = async () => {
+    const authRun = ++simklAuthRunRef.current
     setSimklError('')
     setSimklLoading(true)
     try {
-      const pin = await initiateSimklLogin()
-      if (!pin.userCode) {
-        const account = await completeSimklLogin('')
-        store.setSimklConnected(true)
-        store.setSimklAccount(account)
-        setSimklLoading(false)
-        return
-      }
-
-      setSimklCode(pin.userCode)
-      setSimklVerificationUrl(pin.verificationUrl)
+      await initiateSimklLogin()
+      if (authRun !== simklAuthRunRef.current) return
       setSimklAuthStarted(true)
       setSimklError('Waiting for Simkl approval...')
-
-      simklPollRef.current = setInterval(async () => {
-        try {
-          await finishSimklPinAuth(pin.userCode)
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e)
-          if (!/waiting|pending|not return an access token/i.test(message)) {
-            setSimklError(`Connection failed: ${message}`)
-          }
-        }
-      }, Math.max(3, pin.interval || 5) * 1000)
-
-      simklTimeoutRef.current = setTimeout(() => {
-        if (simklPollRef.current) clearInterval(simklPollRef.current)
-        simklPollRef.current = null
-        setSimklLoading(false)
-        setSimklError('Simkl authorization timed out. Try again.')
-      }, (pin.expiresIn || 900) * 1000)
+      const account = await waitForSimklOauthCallback()
+      if (authRun !== simklAuthRunRef.current) return
+      store.setSimklConnected(true)
+      store.setSimklAccount(account)
+      setSimklAuthStarted(false)
+      setSimklError('')
     } catch (e) {
-      setSimklError(`Could not start Simkl auth: ${e instanceof Error ? e.message : String(e)}`)
-      setSimklLoading(false)
-    }
-  }
-
-  const handleSimklCodeSubmit = async () => {
-    const code = simklCode.trim()
-    if (!code) {
-      setSimklError('Paste the Simkl authorization code first.')
-      return
-    }
-    setSimklLoading(true)
-    setSimklError('')
-    try {
-      await finishSimklPinAuth(code)
-    } catch (e) {
-      setSimklError(`Connection failed: ${e instanceof Error ? e.message : String(e)}`)
+      if (authRun !== simklAuthRunRef.current) return
+      setSimklAuthStarted(false)
+      setSimklError(`Simkl connection failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
-      if (!simklPollRef.current) setSimklLoading(false)
+      if (authRun === simklAuthRunRef.current) setSimklLoading(false)
     }
   }
 
   const handleSimklDisconnect = () => {
+    simklAuthRunRef.current++
     cancelSimklAuth()
     disconnectSimkl()
     store.setSimklConnected(false)
@@ -825,7 +1678,7 @@ export default function SettingsPage() {
     setSimklError('')
     try {
       const result = await syncSimkl()
-      setSimklLastSync(result.syncedAt)
+      if (result.success) setSimklLastSync(result.syncedAt)
       if (result.errors.length > 0) {
         setSimklError(`Sync completed with errors: ${result.errors.slice(0, 2).join('; ')}`)
       } else {
@@ -839,12 +1692,26 @@ export default function SettingsPage() {
   }
 
   const isConnected = store.traktConnected || isAuthenticated()
-  const hasBundledTrakt = hasBundledTraktClientCredentials()
-  const canConnectTrakt = hasTraktClientCredentials() && !traktPolling
   const categories = [
     {
       title: 'CONNECTIONS',
       items: [
+        {
+          id: 'profiles',
+          label: 'Profiles',
+          description: 'Separate history, watchlists, Discover taste, and playback preferences.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path strokeLinecap="round" strokeLinejoin="round" d="M19 8v6m-3-3h6" /></svg>
+          )
+        },
+        {
+          id: 'sync',
+          label: 'Aurales Sync',
+          description: 'Sync profiles, settings, and connected services across devices.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 12a8 8 0 0113.657-5.657M20 12a8 8 0 01-13.657 5.657" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 3v4h-4M7 21v-4h4" /></svg>
+          )
+        },
         {
           id: 'accounts',
           label: 'Accounts',
@@ -853,6 +1720,14 @@ export default function SettingsPage() {
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
             </svg>
+          )
+        },
+        {
+          id: 'servers',
+          label: 'Server',
+          description: 'Connect Jellyfin libraries and WebDAV media folders.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path strokeLinecap="round" d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6" /></svg>
           )
         },
         {
@@ -883,7 +1758,7 @@ export default function SettingsPage() {
         {
           id: 'metadata',
           label: 'Metadata',
-          description: 'Primary sources, fallback behavior, and community ratings.',
+          description: 'Fixed metadata sources, fallback behavior, and community ratings.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
@@ -891,12 +1766,14 @@ export default function SettingsPage() {
           )
         },
         {
-          id: 'search',
-          label: 'Search',
-          description: 'Search engines, catalog order, and AI-powered search.',
+          id: 'artwork',
+          label: 'Poster',
+          description: 'Customize poster labels, ratings, and language with Better Posters.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="m21 21-4.35-4.35" />
+              <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 15-5-5L5 21" />
             </svg>
           )
         },
@@ -911,22 +1788,13 @@ export default function SettingsPage() {
           )
         },
         {
-          id: 'languages',
-          label: 'Languages',
-          description: 'Preferred audio and subtitle language selection.',
+          id: 'subtitles',
+          label: 'Audio & Subtitles',
+          description: 'Language preferences, subtitle styling, and live translation.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
-            </svg>
-          )
-        },
-        {
-          id: 'filters',
-          label: 'Stream Filters',
-          description: 'Regex pattern matching for stream attribute detection.',
-          icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v3.059a1.875 1.875 0 01-.5 1.25l-3.937 4.135a3 3 0 00-.813 2.106v2.106a3 3 0 01-.738 1.986l-2.22 2.58a.6.6 0 01-1.052-.4v-6.272a3 3 0 00-.813-2.106L3.92 9.083a1.875 1.875 0 01-.5-1.25V4.774c0-.54.384-1.006.917-1.096A50.06 50.06 0 0112 3z" />
+              <rect x="2" y="4" width="20" height="16" rx="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M6 11h6M6 15h10" strokeLinecap="round" />
             </svg>
           )
         },
@@ -942,6 +1810,16 @@ export default function SettingsPage() {
             </svg>
           )
         },
+        {
+          id: 'discovery',
+          label: 'Discovery & Taste',
+          description: 'Tune recommendation weights, language/genre filters, and content ratings.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-12.728l.707.707m11.314 11.314l.707.707M12 5a7 7 0 100 14 7 7 0 000-14z" />
+            </svg>
+          )
+        },
       ]
     },
     {
@@ -950,10 +1828,21 @@ export default function SettingsPage() {
         {
           id: 'player',
           label: 'Player',
-          description: 'Hardware decoding, buffering, subtitles, and playback behavior.',
+          description: 'Hardware decoding, buffering, and playback behavior.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+            </svg>
+          )
+        },
+        {
+          id: 'shortcuts',
+          label: 'Keyboard Shortcuts',
+          description: 'View every app, navigation, and player hotkey.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+              <path strokeLinecap="round" d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h4M7 16h10" />
             </svg>
           )
         },
@@ -971,655 +1860,161 @@ export default function SettingsPage() {
       ]
     }
   ]
+  const visibleCategories = categories.map((category) => ({
+    ...category,
+    items: category.items.filter((item) => item.id !== 'servers' || showServerSettings),
+  })).filter((category) => category.items.length > 0)
 
   // Find the active category item for header info
-  const activeItem = categories.flatMap(c => c.items).find(i => i.id === activeTab)
+  const activeItem = visibleCategories.flatMap(c => c.items).find(i => i.id === activeTab)
 
   return (
-    <div className="flex h-full">
-      {/* ─── Left Sidebar ─── */}
-      <div className="w-60 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto p-3 space-y-5">
-        {categories.map((cat) => (
-          <div key={cat.title}>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-white/30 px-3 mb-1.5">{cat.title}</div>
-            <div className="space-y-0.5">
-              {cat.items.map((item) => {
-                const active = activeTab === item.id
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => { setActiveTab(item.id as any) }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-[7px] text-[13px] font-medium rounded-lg transition-all cursor-pointer text-left ${
-                      active
-                        ? 'bg-white/[0.08] text-white'
-                        : 'text-white/50 hover:text-white/70 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <span className={active ? 'text-white/80' : 'text-white/35'}>{item.icon}</span>
-                    <span>{item.label}</span>
-                  </button>
-                )
-              })}
+    <div className="settings-page min-h-full">
+      {activeTab === 'overview' ? (
+        <div className="settings-hub">
+          <section className="settings-hub__identity" aria-labelledby="settings-title">
+            <div className="settings-hub__mark" aria-hidden="true">
+              <img src="/app-logo.png?v=3" alt="" />
             </div>
+            <p className="settings-hub__eyebrow">Aurales</p>
+            <h1 id="settings-title">Settings</h1>
+            <p>Personalize how Aurales looks, plays, connects, and keeps your library in sync.</p>
+          </section>
+
+          <section className="settings-hub__categories" aria-label="Settings categories">
+            {visibleCategories.map((category) => (
+              <div className="settings-hub__group" key={category.title}>
+                <p className="settings-hub__group-label">{category.title}</p>
+                <div className="settings-hub__cards">
+                  {category.items.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setActiveTab(item.id as SettingsTab)}
+                      className={`settings-hub-card settings-hub-card--tone-${index % 6}`}
+                    >
+                      <span className="settings-hub-card__icon" aria-hidden="true">{item.icon}</span>
+                      <span className="settings-hub-card__copy">
+                        <span className="settings-hub-card__title">{item.label}</span>
+                        <span className="settings-hub-card__description">{item.description}</span>
+                      </span>
+                      <svg className="settings-hub-card__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        </div>
+      ) : (
+        <div className="settings-page__content settings-page__content--panel">
+          <div className="settings-page__panel-header">
+            <button type="button" onClick={() => setActiveTab('overview')} className="settings-page__back" aria-label="Back to all settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" aria-hidden="true"><path d="m15 18-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              All settings
+            </button>
+            {activeTab !== 'accounts' && <><h1>{activeItem?.label ?? 'Settings'}</h1>
+            <p>{activeItem?.description ?? ''}</p></>}
           </div>
-        ))}
-      </div>
 
-      {/* ─── Right Content ─── */}
-      <div className="flex-1 overflow-y-auto p-8">
-        <h1 className="text-2xl font-bold text-white mb-0.5">{activeItem?.label ?? 'Settings'}</h1>
-        <p className="text-[13px] text-white/35 mb-8">{activeItem?.description ?? ''}</p>
-
-        <div className="space-y-6 max-w-3xl">
+          <div className="settings-page__content-inner space-y-6 max-w-6xl">
 
           {/* ═══════════════════════════════════════════════
               ACCOUNTS TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'accounts' && (
             <>
-              {/* Stremio */}
-              <SettingSection title="Stremio Account" description="Import your addon collection from Stremio.">
-                <div className="px-6 py-4">
-                  {stremioAuth ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse" />
-                          <div>
-                            <span className="text-sm font-semibold text-white">Connected</span>
-                            <p className="text-xs text-white/40 mt-0.5">{stremioAuth.email}</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleStremioSync}
-                            disabled={stremioLoading}
-                            className="px-3.5 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {stremioLoading ? 'Syncing...' : 'Sync Addons'}
-                          </button>
-                          <button
-                            onClick={handleStremioDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {stremioError && <p className="text-xs text-white/40">{stremioError}</p>}
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Email</label>
-                          <input
-                            type="email"
-                            value={stremioEmail}
-                            onChange={(e) => setStremioEmail(e.target.value)}
-                            placeholder="your@email.com"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Password</label>
-                          <input
-                            type="password"
-                            value={stremioPassword}
-                            onChange={(e) => setStremioPassword(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()}
-                            placeholder="Your Stremio password"
-                            className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleStremioLogin}
-                        disabled={stremioLoading}
-                        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {stremioLoading ? 'Logging in...' : 'Login & Import Addons'}
-                      </button>
-                      <div className="pt-4 border-t border-white/[0.06]">
-                        <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Or paste Stremio AuthKey</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={stremioAuthKey}
-                            onChange={(e) => setStremioAuthKey(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleStremioAuthKeyImport()}
-                            placeholder="AuthKey from web.stremio.com"
-                            className="flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={handleStremioAuthKeyImport}
-                            disabled={stremioLoading}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-sm transition-colors cursor-pointer text-white font-semibold"
-                          >
-                            Import
-                          </button>
-                        </div>
-                        <p className="text-xs text-white/35 mt-1.5 leading-relaxed">
-                          Use this if your Stremio account uses social login or Stremio rejects the password with "Wrong passphrase".
-                        </p>
-                      </div>
-                      {stremioError && <p className="text-xs text-red-400">{stremioError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* Simkl */}
-              <SettingSection title={isMock ? 'Simkl (Mock mode)' : 'Simkl'} description="Sync watchlist, watching, and watch history.">
-                <div className="px-6 py-4">
-                  {simklStatus.connected || store.simklConnected ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                        <div className="flex items-center gap-3">
-                          {(simklStatus.account?.avatar || store.simklAccount?.avatar) ? (
-                            <img src={simklStatus.account?.avatar || store.simklAccount?.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-[#2ecc71]/35" />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-[#2ecc71]/20 flex items-center justify-center text-[#2ecc71] text-sm font-bold">
-                              {(simklStatus.account?.username ?? store.simklAccount?.username ?? 'S')[0].toUpperCase()}
-                            </div>
-                          )}
-                          <div>
-                            <p className="text-sm font-bold text-white">
-                              {simklStatus.account?.username ?? store.simklAccount?.username ?? 'Simkl User'}
-                            </p>
-                            <p className="text-xs text-white/40 mt-0.5">
-                              {simklLastSync ? `Last sync: ${new Date(simklLastSync).toLocaleString()}` : 'Never synced'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleSimklSync}
-                            disabled={simklLoading}
-                            className="px-3.5 py-2 bg-[#2ecc71]/10 hover:bg-[#2ecc71]/20 text-[#2ecc71] rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-                          >
-                            {simklLoading ? 'Syncing...' : 'Sync Now'}
-                          </button>
-                          <button
-                            onClick={handleSimklDisconnect}
-                            className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
-                          {simklError}
-                        </p>
-                      )}
-                    </div>
-                  ) : simklAuthStarted ? (
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-sm text-white/80 font-medium mb-1">Authorize Simkl with this code</p>
-                        <p className="text-xs text-white/40 leading-relaxed">
-                          Aurales opened Simkl in your browser. Enter the code below on Simkl, click Allow, and Aurales will connect automatically.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="text"
-                          value={simklCode}
-                          onChange={(e) => setSimklCode(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSimklCodeSubmit()}
-                          placeholder="Simkl code"
-                          className="min-w-40 flex-1 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm font-mono tracking-wider text-white focus:outline-none focus:border-[#2ecc71]/50"
-                        />
-                        <button
-                          onClick={handleSimklCodeSubmit}
-                          disabled={simklLoading}
-                          className="px-4 py-2 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                        >
-                          Check Now
-                        </button>
-                      </div>
-                      {simklVerificationUrl && (
-                        <p className="text-xs text-white/40">
-                          Verification page: <span className="font-mono text-white/80">{simklVerificationUrl}</span>
-                        </p>
-                      )}
-                      <button onClick={cancelSimklAuth} className="text-xs text-white/40 hover:text-white transition-colors cursor-pointer">Cancel</button>
-                      {simklError && (
-                        <p className={`text-xs ${simklError.startsWith('Waiting') ? 'text-white/40' : 'text-red-400'}`}>{simklError}</p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-sm text-white/40">
-                        Connect your Simkl account to sync your watchlist, watching, and watch history.
-                      </p>
-                      {isMock && (
-                        <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-                          <p className="text-xs text-yellow-200">
-                            No Simkl client ID configured. Clicking Connect will use mock mode with sample data.
-                            To use real Simkl data, build with <code className="font-mono">VITE_SIMKL_CLIENT_ID</code>.
-                          </p>
-                        </div>
-                      )}
-                      <button
-                        onClick={handleSimklConnect}
-                        disabled={simklLoading}
-                        className="px-5 py-2.5 bg-[#2ecc71] hover:bg-[#27ae60] disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                      >
-                        {simklLoading ? 'Opening Simkl...' : 'Connect Simkl'}
-                      </button>
-                      {simklError && <p className="text-xs text-red-400">{simklError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* Trakt */}
-              <SettingSection title="Trakt" description="Device authorization for watch history and lists.">
-                <div className="px-6 py-4">
-                  {isConnected ? (
-                    <div className="flex items-center justify-between bg-white/[0.03] rounded-xl p-4 border border-white/[0.06]">
-                      <div className="flex items-center gap-3">
-                        {store.traktAccount?.avatar ? (
-                          <img src={store.traktAccount.avatar} alt="" className="w-10 h-10 rounded-full object-cover border border-accent/35" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center text-accent text-sm font-bold">
-                            {(store.traktAccount?.name ?? store.traktAccount?.username ?? 'T')[0].toUpperCase()}
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-sm font-bold text-white">
-                            {store.traktAccount?.name ?? store.traktAccount?.username ?? 'Trakt User'}
-                          </p>
-                          <p className="text-xs text-white/40 mt-0.5">Connected to Trakt</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleTraktDisconnect}
-                        className="px-3.5 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {hasBundledTrakt ? (
-                        <p className="text-sm text-white/40">Connect your Trakt account with device authorization.</p>
-                      ) : (
-                        <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-                          <p className="text-sm text-yellow-200">
-                            This executable was built without Aurales Trakt app credentials, so Trakt requires manual app credentials for now.
-                          </p>
-                        </div>
-                      )}
-
-                      {!traktCode ? (
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={handleTraktConnect}
-                            disabled={!canConnectTrakt}
-                            className="px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-50 text-black font-semibold rounded-xl text-sm transition-colors cursor-pointer"
-                          >
-                            Authorize with Trakt
-                          </button>
-                          {!hasBundledTrakt && (
-                            <button
-                              onClick={() => setShowTraktAdvanced((value) => !value)}
-                              className="px-4 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-semibold text-white transition-colors cursor-pointer"
-                            >
-                              {showTraktAdvanced ? 'Hide Credentials' : 'Add Client Credentials'}
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.06]">
-                          <p className="text-sm text-white/40 mb-3">
-                            1. Go to{' '}
-                            <a href={traktCode.verificationUrl} target="_blank" rel="noopener noreferrer" className="text-accent underline font-medium">
-                              {traktCode.verificationUrl}
-                            </a>
-                          </p>
-                          <p className="text-sm text-white/40 mb-4">2. Enter this PIN code:</p>
-                          <div className="flex items-center gap-3 mb-4">
-                            <span className="font-mono text-3xl font-bold text-accent tracking-widest select-all">{traktCode.userCode}</span>
-                            <button
-                              onClick={() => navigator.clipboard.writeText(traktCode.userCode)}
-                              className="px-2.5 py-1 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-white transition-colors cursor-pointer"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          {traktPolling && (
-                            <div className="flex items-center gap-2">
-                              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                              <span className="text-xs text-white/40">Waiting for you to authorize...</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {(!hasBundledTrakt || showTraktAdvanced) && (
-                        <div className="space-y-4 pt-4 border-t border-white/[0.06]">
-                          <div>
-                            <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Client ID</label>
-                            <input
-                              type="text"
-                              value={store.traktClientId}
-                              onChange={(e) => store.setTraktClientId(e.target.value)}
-                              placeholder="Paste your Trakt app Client ID"
-                              className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">Client Secret</label>
-                            <input
-                              type="password"
-                              value={store.traktClientSecret}
-                              onChange={(e) => store.setTraktClientSecret(e.target.value)}
-                              placeholder="Paste your Trakt app Client Secret"
-                              className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                            />
-                            <p className="text-xs text-white/35 mt-1.5">
-                              To remove this requirement for users, build Aurales with `VITE_TRAKT_CLIENT_ID` and `VITE_TRAKT_CLIENT_SECRET`.
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                      {traktError && <p className="text-xs text-red-400">{traktError}</p>}
-                    </div>
-                  )}
-                </div>
-              </SettingSection>
-
-              {/* MDBList */}
-              <SettingSection title="MDBList Ratings" description="IMDb, Rotten Tomatoes, Metacritic, and more.">
-                <div className="px-6 py-4">
-                  <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">MDBList API Key</label>
-                  <input
-                    type="password"
-                    value={store.mdblistApiKey}
-                    onChange={(e) => store.setMdblistApiKey(e.target.value)}
-                    placeholder="Enter your MDBList API key"
-                    className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                  />
-                  <p className="text-[11px] text-white/30 mt-1">
-                    API docs:{' '}
-                    <a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-accent hover:underline">api.mdblist.com/docs</a>
-                  </p>
-                </div>
-              </SettingSection>
-
-              {/* PublicMetaDB */}
-              <SettingSection title="PublicMetaDB (PMDB)" description="Sync watch history, scrobbles, skip timestamps, and continue watching.">
-                <div className="px-6 py-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">PublicMetaDB API Key</label>
-                    <input
-                      type="password"
-                      value={store.pmdbApiKey}
-                      onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }}
-                      placeholder="pm-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-[11px] text-white/30 mt-1">
-                      Get your API key at{' '}
-                      <a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-accent hover:underline">publicmetadb.com</a>
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={testPmdbConnection}
-                      disabled={!store.pmdbApiKey || pmdbConnChecking}
-                      className="flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-all"
-                    >
-                      {pmdbConnChecking ? (
-                        <>
-                          <div className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
-                          Testing...
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          Test Connection
-                        </>
-                      )}
-                    </button>
-
-                    {pmdbConnStatus && !pmdbConnChecking && (
-                      pmdbConnStatus.connected ? (
-                        <span className="flex items-center gap-1.5 text-sm text-green-400 font-medium">
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          Connected
-                          {pmdbConnStatus.resumeCount != null && <span className="text-white/30 ml-1">({pmdbConnStatus.resumeCount} resume points)</span>}
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1.5 text-sm text-red-400">
-                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
-                            <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round"/>
-                          </svg>
-                          <span>{pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}</span>
-                        </span>
-                      )
-                    )}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* IntroDB */}
-              <SettingSection title="IntroDB" description="Intro, recap, and credits skip timestamps for TV episodes.">
-                <div className="px-6 py-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase">IntroDB API Key</label>
-                    <input
-                      type="password"
-                      value={store.introdbApiKey}
-                      onChange={(e) => store.setIntrodbApiKey(e.target.value)}
-                      placeholder="Enter your IntroDB API key"
-                      className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                    <p className="text-[11px] text-white/30 mt-1">
-                      Get your API key at{' '}
-                      <a href="https://introdb.app" target="_blank" rel="noreferrer" className="text-accent hover:underline">introdb.app</a>
-                      {' '}-- docs:{' '}
-                      <a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-accent hover:underline">introdb.app/docs/api</a>
-                    </p>
-                  </div>
-                  <div className="flex gap-3 text-xs">
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Intro</span>
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Recap</span>
-                    <span className="px-2 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded-lg">Skip Credits</span>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* AniList */}
-              <SettingSection title="AniList" description="Track anime watch progress, manage lists, and sync history.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Client ID</label>
-                      <input
-                        type="text"
-                        value={store.anilistClientId}
-                        onChange={(e) => store.setAnilistClientId(e.target.value)}
-                        placeholder="Enter AniList Client ID"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Client Secret</label>
-                      <input
-                        type="password"
-                        value={store.anilistClientSecret}
-                        onChange={(e) => store.setAnilistClientSecret(e.target.value)}
-                        placeholder="Enter AniList Client Secret"
-                        className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 bg-white/[0.02] border border-white/[0.06] rounded-xl">
-                    <p className="text-xs text-white/50 leading-relaxed">
-                      To connect AniList:
-                      <br />
-                      1. Register an API client on the <a href="https://anilist.co/settings/developer" target="_blank" rel="noopener noreferrer" className="text-accent underline font-semibold">AniList Developer Portal</a>.
-                      <br />
-                      2. Set the <b>Redirect URL</b> to <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-white">http://localhost:42814/</code>.
-                      <br />
-                      3. Input the Client ID and Client Secret above, then click <b>Connect AniList</b> below.
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleAnilistConnect}
-                      disabled={anilistLoading || !store.anilistClientId || !store.anilistClientSecret}
-                      className="px-3.5 py-2 bg-accent text-black rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
-                    >
-                      {anilistLoading ? 'Connecting...' : store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList'}
-                    </button>
-                    <button
-                      onClick={syncAniListNow}
-                      disabled={anilistLoading || !store.anilistConnected}
-                      className="px-3.5 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 text-white rounded-xl text-xs font-semibold cursor-pointer"
-                    >
-                      Sync Now
-                    </button>
-                    {store.anilistConnected && (
-                      <button
-                        onClick={handleAnilistDisconnect}
-                        className="px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                      >
-                        Disconnect
-                      </button>
-                    )}
-                  </div>
-
-                  {store.anilistAccount && (
-                    <div className="flex items-center gap-3 bg-white/[0.03] rounded-xl p-3 border border-white/[0.06]">
-                      {store.anilistAccount.avatar ? (
-                        <img src={store.anilistAccount.avatar} alt="" className="w-8 h-8 rounded-full object-cover" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-accent text-xs font-bold">
-                          {store.anilistAccount.name[0].toUpperCase()}
-                        </div>
-                      )}
-                      <div>
-                        <p className="text-xs text-white/40">Connected as</p>
-                        <p className="text-sm font-semibold text-white">{store.anilistAccount.name}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {anilistMessage && <p className={`text-xs ${anilistMessage.toLowerCase().includes('failed') || anilistMessage.toLowerCase().includes('missing') ? 'text-red-400' : 'text-white/40'}`}>{anilistMessage}</p>}
-
-                  {/* Manual Token Fallback */}
-                  <div className="pt-4 border-t border-white/[0.06]">
-                    <details className="group">
-                      <summary className="text-xs text-white/30 hover:text-white/50 cursor-pointer select-none font-semibold">
-                        Advanced: Manual Token Entry
-                      </summary>
-                      <div className="mt-3 space-y-3">
-                        <label className="text-xs text-white/40 block font-semibold uppercase tracking-wider">Manual Access Token</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="password"
-                            value={anilistTokenInput}
-                            onChange={(e) => setAnilistTokenInput(e.target.value)}
-                            placeholder="Paste manual AniList access token"
-                            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-accent/50"
-                          />
-                          <button
-                            onClick={connectAniListManual}
-                            disabled={anilistLoading || !anilistTokenInput}
-                            className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 rounded-xl text-xs font-semibold cursor-pointer text-white"
-                          >
-                            Save Manual Token
-                          </button>
-                        </div>
-                        <p className="text-[11px] text-white/30 leading-relaxed">
-                          Alternatively, you can generate a token via AniList's developer portal/client authorization flow and paste it here directly.
-                        </p>
-                      </div>
-                    </details>
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Metadata Providers */}
-              <SettingSection title="Metadata Providers" description="API keys for movie and show detail pages.">
-                <SettingRow label="TMDB API Key" description="Optional. Leave empty to use the app's built-in TMDB key.">
-                  <input
-                    type="text"
-                    value={store.tmdbApiKey}
-                    onChange={(e) => store.setTmdbApiKey(e.target.value)}
-                    placeholder="Using built-in app key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <SettingRow label="TVDB API Key" description="Optional. Leave empty to use the app's built-in TVDB key.">
-                  <input
-                    type="text"
-                    value={store.tvdbApiKey}
-                    onChange={(e) => store.setTvdbApiKey(e.target.value)}
-                    placeholder="Using built-in app key"
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Discord Rich Presence */}
-              <SettingSection title="Discord Rich Presence" description="Show what you're watching on your Discord profile.">
-                <SettingRow label="Enable Discord Rich Presence" description="Requires Discord desktop app to be running.">
-                  <SettingToggle checked={store.discordRichPresence} onChange={(v) => store.setDiscordRichPresence(v)} />
-                </SettingRow>
-              </SettingSection>
-
-              {/* OpenRouter AI */}
-              <SettingSection title="OpenRouter AI" description="AI-powered natural language searches and subtitle translation.">
-                <SettingRow label="API Key" description="Get your API key at openrouter.ai">
-                  <input
-                    type="password"
-                    value={store.openrouterApiKey}
-                    onChange={(e) => store.setOpenrouterApiKey(e.target.value)}
-                    placeholder="sk-or-v1-..."
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <SettingRow label="Model" description="Select the AI model for search and translation.">
-                  <select
-                    value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'}
-                    onChange={(e) => {
-                      if (e.target.value === 'custom') {
-                        store.setOpenrouterModel('custom-model-id')
-                      } else {
-                        store.setOpenrouterModel(e.target.value)
-                      }
-                    }}
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+              <SettingSection title="Watch data sources" description="Continue Watching, resume positions, and watched status can use every connected service or one selected source.">
+                <SettingRow label="Use for watch data" description="Every service combines connected accounts and local progress. Choose one source to limit watch data to it.">
+                  <SelectMenu
+                    value={store.primaryProgressProvider}
+                    onChange={(event) => store.setPrimaryProgressProvider(event.target.value as import('../stores/appStore').ProgressSelection)}
+                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
-                    <option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
-                    <option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
-                    <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-                    <option value="deepseek/deepseek-chat">DeepSeek V3</option>
-                    <option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option>
-                    <option value="custom">Custom Model</option>
-                  </select>
+                    <option value="all">Every service</option>
+                    <option value="local">Local</option>
+                    <option value="trakt" disabled={!store.traktConnected}>Trakt{store.traktConnected ? '' : ' — not connected'}</option>
+                    <option value="simkl" disabled={!store.simklConnected}>Simkl{store.simklConnected ? '' : ' — not connected'}</option>
+                    <option value="anilist" disabled={!store.anilistConnected}>AniList{store.anilistConnected ? '' : ' — not connected'}</option>
+                    <option value="pmdb" disabled={!store.pmdbApiKey}>PublicMetaDB{store.pmdbApiKey ? '' : ' — not connected'}</option>
+                    <option value="mdblist" disabled={!store.mdblistApiKey && !hasMdblistOAuth()}>MDBList{store.mdblistApiKey || hasMdblistOAuth() ? '' : ' — not connected'}</option>
+                  </SelectMenu>
                 </SettingRow>
-                {!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && (
-                  <SettingRow label="Custom Model ID" description="Enter any valid OpenRouter model identifier.">
-                    <input
-                      type="text"
-                      value={store.openrouterModel === 'custom-model-id' ? '' : store.openrouterModel}
-                      onChange={(e) => store.setOpenrouterModel(e.target.value)}
-                      placeholder="e.g. anthropic/claude-3.5-sonnet"
-                      className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-mono focus:outline-none focus:border-accent/50"
-                    />
-                  </SettingRow>
-                )}
+              </SettingSection>
+              <AccountsHub integrations={[
+                {
+                  id: 'trakt', name: 'Trakt', iconService: 'trakt', group: 'history', wide: true,
+                  description: 'Watch history · Ratings · Lists',
+                  state: isConnected ? 'connected' : traktPolling ? 'syncing' : traktError ? 'needs-attention' : 'not-connected',
+                  account: store.traktAccount?.name ?? store.traktAccount?.username,
+                  message: traktError || undefined,
+                  primaryLabel: 'Connect Trakt', onPrimary: handleTraktConnect, isAccount: true,
+                  onDisconnect: handleTraktDisconnect,
+                  setup: traktCode ? <div className="rounded-xl border border-white/[.08] bg-white/[.04] p-3 text-sm text-white/70">Open <a className="text-accent underline" href={traktCode.verificationUrl} target="_blank" rel="noreferrer">{traktCode.verificationUrl}</a> and enter <strong className="ml-1 font-mono text-white">{traktCode.userCode}</strong>.</div> : undefined,
+                },
+                {
+                  id: 'simkl', name: 'Simkl', iconService: 'simkl', group: 'history', description: 'Watchlist · Watching · History',
+                  state: simklLoading ? 'syncing' : (simklStatus.connected || store.simklConnected) ? 'connected' : simklNotice && !simklNotice.startsWith('Waiting') ? 'needs-attention' : 'not-connected',
+                  account: simklStatus.account?.username ?? store.simklAccount?.username, detail: simklLastSync ? `Last synced ${new Date(simklLastSync).toLocaleString()}` : undefined, message: simklNotice || undefined,
+                  primaryLabel: 'Connect Simkl', onPrimary: handleSimklConnect, showAdvancedLink: true, isAccount: true, onSync: handleSimklSync, onDisconnect: handleSimklDisconnect,
+                  setup: simklAuthStarted ? <div className="space-y-3"><p className="text-sm text-white/60">Aurales opened Simkl in your browser. Approve access there; this window will finish automatically.</p></div> : undefined,
+                },
+                {
+                  id: 'anilist', name: 'AniList', iconService: 'anilist', group: 'history', description: 'Anime progress · Lists · History',
+                  state: anilistLoading ? 'syncing' : store.anilistConnected ? 'connected' : anilistMessage && /failed|missing/i.test(anilistMessage) ? 'needs-attention' : 'not-connected',
+                  account: store.anilistAccount ? `@${store.anilistAccount.name}` : undefined, message: anilistMessage || undefined,
+                  primaryLabel: store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList', onPrimary: handleAnilistConnect, showAdvancedLink: true, isAccount: true, onSync: syncAniListNow, syncLabel: 'Sync Now', onDisconnect: handleAnilistDisconnect,
+                  setup: <div className="space-y-3"><p className="text-sm text-white/60">Use a personal access token only if browser authorization is unavailable.</p><div className="flex gap-2"><input type="password" value={anilistTokenInput} onChange={(e) => setAnilistTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && connectAniListManual()} placeholder="Manual access token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={connectAniListManual} disabled={anilistLoading || !anilistTokenInput} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save token</button></div></div>,
+                },
+                {
+                  id: 'torbox', name: 'TorBox', iconService: 'torbox', group: 'streaming', description: 'Resolves cached torrent links locally for playback',
+                  state: torBoxLoading ? 'syncing' : torBoxUser ? 'connected' : getTorBoxToken() || (torBoxMessage && /error|failed|expired|invalid|authenticate/i.test(torBoxMessage)) ? 'needs-attention' : 'not-connected',
+                  statusLabel: torBoxUser ? 'Connected' : undefined,
+                  account: torBoxUser?.email, detail: torBoxUser ? (['Free', 'Essential', 'Pro', 'Standard'][torBoxUser.plan] || `Plan ${torBoxUser.plan}`) : undefined, message: torBoxMessage || undefined,
+                  primaryLabel: 'Connect with TorBox', onPrimary: handleTorBoxConnect, isAccount: false, onDisconnect: handleTorBoxDisconnect,
+                  setup: <div className="space-y-4">{torBoxDevice && <div className="rounded-xl border border-accent/20 bg-accent/[.06] p-4"><p className="text-xs font-bold uppercase tracking-[.14em] text-accent/80">Finish on TorBox</p><p className="mt-2 text-sm text-white/65">Open the TorBox device page and enter this code:</p><div className="mt-3 flex flex-wrap items-center justify-between gap-3"><strong className="font-mono text-2xl tracking-[.18em] text-white">{torBoxDevice.code}</strong><a href={torBoxDevice.verification_url || torBoxDevice.friendly_verification_url} target="_blank" rel="noreferrer" className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Open TorBox ↗</a></div><p className="mt-3 text-xs text-white/45">This code expires in 10 minutes. Aurales will finish connecting automatically.</p></div>}<div><p className="text-xs font-bold uppercase tracking-[.14em] text-white/40">Use an API key instead</p><p className="mt-2 text-sm text-white/55">Aurales stores the key in this profile and uses it to resolve cached torrent links locally before handing the playable URL to the player.</p><div className="mt-3 flex gap-2"><input type="password" value={torBoxTokenInput} onChange={(e) => setTorBoxTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleTorBoxManualConnect()} placeholder="TorBox API key" aria-label="TorBox API key" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleTorBoxManualConnect} disabled={torBoxLoading || !torBoxTokenInput.trim()} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Verify & save</button></div><a href="https://torbox.app/settings" target="_blank" rel="noreferrer" className="mt-3 inline-block text-xs font-semibold text-accent hover:underline">Find your API key in TorBox settings ↗</a></div></div>,
+                },
+                {
+                  id: 'stremio', name: 'Stremio', iconService: 'stremio', group: 'ecosystem', wide: true, description: 'Library · Addons · History',
+                  state: stremioLoading ? 'syncing' : stremioAuth ? 'connected' : stremioError ? 'needs-attention' : 'not-connected', account: stremioAuth?.email, message: stremioError || undefined,
+                  primaryLabel: 'Connect Stremio', onPrimary: handleStremioLogin, primaryOpensManage: true, isAccount: true, onSync: handleStremioSync, onDisconnect: handleStremioDisconnect,
+                  setup: <div className="space-y-3"><div className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold text-white/60">Email<input type="email" value={stremioEmail} onChange={(e) => setStremioEmail(e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label><label className="text-xs font-semibold text-white/60">Password<input type="password" value={stremioPassword} onChange={(e) => setStremioPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleStremioLogin()} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /></label></div><button type="button" onClick={handleStremioLogin} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Login & import addons</button><label className="block text-xs font-semibold text-white/60">Or use an AuthKey<div className="mt-1.5 flex gap-2"><input type="password" value={stremioAuthKey} onChange={(e) => setStremioAuthKey(e.target.value)} className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={handleStremioAuthKeyImport} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white">Import</button></div></label></div>,
+                },
+                {
+                  id: 'mdblist', name: 'MDBList', iconService: 'mdblist', group: 'history', description: 'Ratings · Watchlist · Lists · History',
+                  state: mdblistOAuthPolling || mdblistConnChecking ? 'syncing' : getStoredMdblistTokens() ? 'connected' : mdblistConnStatus && !mdblistConnStatus.connected ? 'needs-attention' : 'not-connected',
+                  statusLabel: getStoredMdblistTokens() ? 'Connected' : store.mdblistApiKey ? 'Key configured' : undefined, isAccount: true, isConfigured: Boolean(store.mdblistApiKey), account: mdblistConnStatus?.user?.username ? `@${mdblistConnStatus.user.username}` : undefined, message: mdblistConnStatus?.error,
+                  primaryLabel: getStoredMdblistTokens() ? 'Manage' : 'Connect MDBList', onPrimary: handleMdblistOAuthConnect, showAdvancedLink: true, onDisconnect: handleMdblistOAuthDisconnect,
+                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onFocus={() => { mdblistApiKeyAtFocusRef.current = store.mdblistApiKey }} onBlur={() => { if (mdblistApiKeyAtFocusRef.current !== store.mdblistApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
+                },
+                {
+                  id: 'pmdb', name: 'PublicMetaDB', iconService: 'pmdb', group: 'history', description: 'History · Scrobbles · Skip data',
+                  state: pmdbConnChecking ? 'syncing' : pmdbConnStatus && !pmdbConnStatus.connected ? 'needs-attention' : store.pmdbApiKey ? 'connected' : 'not-connected', statusLabel: store.pmdbApiKey ? (pmdbConnStatus?.connected ? 'Connection healthy' : 'Key configured') : 'Not configured', isConfigured: Boolean(store.pmdbApiKey), message: pmdbConnStatus?.connected ? undefined : pmdbConnStatus?.error,
+                  primaryLabel: store.pmdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true,
+                  setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.pmdbApiKey} onFocus={() => { pmdbApiKeyAtFocusRef.current = store.pmdbApiKey }} onBlur={() => { if (pmdbApiKeyAtFocusRef.current !== store.pmdbApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }} placeholder="pm-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testPmdbConnection} disabled={!store.pmdbApiKey || pmdbConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{pmdbConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div>{pmdbConnStatus && <p className={`text-xs ${pmdbConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{pmdbConnStatus.connected ? '✓ Connection successful' : `⚠ ${pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}`}</p>}</div>,
+                },
+                { id: 'introdb', name: 'IntroDB', iconService: 'introdb', group: 'playback', description: 'Intro · Recap · Credits', state: store.introdbApiKey ? 'connected' : 'not-connected', statusLabel: store.introdbApiKey ? 'Key configured' : 'Using Aurales key', isConfigured: Boolean(store.introdbApiKey), primaryLabel: store.introdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its default IntroDB key unless you provide a personal key.</p><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.introdbApiKey} onChange={(e) => store.setIntrodbApiKey(e.target.value)} placeholder="Optional personal API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex gap-3 text-xs text-white/60"><span>Intro</span><span>Recap</span><span>Credits</span></div><a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div> },
+                { id: 'discord', name: 'Discord Rich Presence', iconService: 'discord', group: 'playback', description: 'Show what you’re watching on Discord', state: store.discordRichPresence ? 'connected' : 'not-connected', statusLabel: store.discordRichPresence ? 'Enabled' : 'Disabled', isConfigured: store.discordRichPresence, primaryLabel: 'Manage', onPrimary: () => undefined, hidePrimaryAction: true, inlineControl: <PresenceToggle checked={store.discordRichPresence} onChange={store.setDiscordRichPresence} /> },
+                { id: 'fanart', name: 'Fanart.tv', iconService: 'fanart', group: 'metadata', description: 'Poster · Backdrop · Logo artwork', state: store.fanartApiKey ? 'connected' : 'not-connected', statusLabel: store.fanartApiKey ? 'Key configured' : 'No personal key', isConfigured: Boolean(store.fanartApiKey), primaryLabel: store.fanartApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.fanartApiKey} onChange={(e) => store.setFanartApiKey(e.target.value)} placeholder="Optional Fanart.tv API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://fanart.tv/get-an-api-key" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div> },
+                { id: 'tmdb', name: 'TMDB', iconService: 'tmdb', group: 'metadata', description: 'Movies · Series metadata', state: 'connected', statusLabel: store.tmdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tmdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TMDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tmdbApiKey} onChange={(e) => store.setTmdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tmdbApiKey && <button type="button" onClick={() => store.setTmdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
+                { id: 'tvdb', name: 'TheTVDB', iconService: 'tvdb', group: 'metadata', description: 'TV metadata · Episode data', state: 'connected', statusLabel: store.tvdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tvdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TVDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tvdbApiKey} onChange={(e) => store.setTvdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tvdbApiKey && <button type="button" onClick={() => store.setTvdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
+                { id: 'openrouter', name: 'OpenRouter', iconService: 'openrouter', group: 'ai', wide: true, description: 'AI search · Subtitle translation', state: store.openrouterApiKey ? 'connected' : 'not-connected', statusLabel: store.openrouterApiKey ? 'Key configured' : 'Not configured', isConfigured: Boolean(store.openrouterApiKey), detail: store.openrouterApiKey ? store.openrouterModel : undefined, primaryLabel: store.openrouterApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.openrouterApiKey} onChange={(e) => store.setOpenrouterApiKey(e.target.value)} placeholder="sk-or-v1-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a><label className="block text-xs font-semibold text-white/60">Model<select value={['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) ? store.openrouterModel : 'custom'} onChange={(e) => store.setOpenrouterModel(e.target.value === 'custom' ? 'custom-model-id' : e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-[#171714] px-3 py-2 text-sm text-white outline-none focus:border-accent/50"><option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option><option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option><option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option><option value="deepseek/deepseek-chat">DeepSeek V3</option><option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option><option value="custom">Custom model</option></select></label>{!['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'meta-llama/llama-3.3-70b-instruct', 'deepseek/deepseek-chat', 'meta-llama/llama-3-8b-instruct:free'].includes(store.openrouterModel) && <label className="block text-xs font-semibold text-white/60">Custom model ID<input value={store.openrouterModel === 'custom-model-id' ? '' : store.openrouterModel} onChange={(e) => store.setOpenrouterModel(e.target.value)} className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>}</div> },
+              ]} />
+
+            </>
+          )}
+
+          {activeTab === 'upcoming' && (
+            <>
+              <SettingSection title="Home shelf" description="Show release dates that matter to your current library without changing connected-service data.">
+                <SettingRow label="Show Upcoming on Home" description="Adds the landscape Upcoming shelf alongside Continue Watching."><SettingToggle checked={upcomingPrefs.showOnHome} onChange={(showOnHome) => updateUpcomingPrefs({ showOnHome })} /></SettingRow>
+                <SettingRow label="Look ahead" description="Only show releases within this window."><SettingSelect value={upcomingPrefs.horizonDays} onChange={(value) => updateUpcomingPrefs({ horizonDays: Number(value) })} options={[3, 7, 14, 30, 60, 90].map((value) => ({ value, label: `${value} days` }))} /></SettingRow>
+              </SettingSection>
+              <SettingSection title="Release sources" description="Upcoming combines your local library with connected services. Connected lists are read-only.">
+                <SettingRow label="Local Plan to Watch / Watchlist" description="Include titles saved in Aurales."><SettingToggle checked={upcomingPrefs.includeLocalWatchlist} onChange={(includeLocalWatchlist) => updateUpcomingPrefs({ includeLocalWatchlist })} /></SettingRow>
+                <SettingRow label="Local Continue Watching" description="Prioritize new episodes and seasons for titles you are actively watching."><SettingToggle checked={upcomingPrefs.includeContinueWatching} onChange={(includeContinueWatching) => updateUpcomingPrefs({ includeContinueWatching })} /></SettingRow>
+                <SettingRow label="Connected Plan to Watch / Watchlists" description="Include Trakt and Simkl watchlists when those accounts are connected."><SettingToggle checked={upcomingPrefs.includeConnectedWatchlists} onChange={(includeConnectedWatchlists) => updateUpcomingPrefs({ includeConnectedWatchlists })} /></SettingRow>
+                <SettingRow label="Connected Currently Watching" description="Prioritize Trakt, Simkl, and AniList titles that are in progress."><SettingToggle checked={upcomingPrefs.includeConnectedWatching} onChange={(includeConnectedWatching) => updateUpcomingPrefs({ includeConnectedWatching })} /></SettingRow>
               </SettingSection>
             </>
           )}
@@ -1661,22 +2056,38 @@ export default function SettingsPage() {
                           <img src={addon.manifest.logo} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
                         )}
                         <div className="min-w-0">
-                          <div className="text-sm font-bold text-white truncate">{addon.manifest.name}</div>
-                          <div className="text-xs text-white/35 truncate mt-0.5">{addon.manifest.description || addon.url}</div>
+                          <input
+                            defaultValue={addon.displayName ?? addon.manifest.name}
+                            onBlur={(event) => store.renameAddon(addon.manifest.id, event.target.value)}
+                            onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                            aria-label={`Rename ${addon.manifest.name}`}
+                            className="w-full max-w-sm rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-bold text-white outline-none hover:border-white/10 hover:bg-white/[0.04] focus:border-accent/50 focus:bg-white/[0.06]"
+                          />
+                          <div className="text-xs text-white/60 truncate mt-0.5">{addon.manifest.description || addon.url}</div>
 
                         </div>
                       </div>
-                      <button
-                        onClick={() => store.removeAddon(addon.manifest.id)}
-                        className="text-xs text-red-400 hover:text-red-300 font-semibold transition-colors flex-shrink-0 ml-3 cursor-pointer"
-                      >
-                        Remove
-                      </button>
+                      <div className="ml-3 flex flex-shrink-0 items-center gap-3">
+                        <a
+                          href={getAddonConfigureUrl(addon.url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg bg-white/[0.07] px-3 py-1.5 text-xs font-semibold text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+                        >
+                          Configure
+                        </a>
+                        <button
+                          onClick={() => store.removeAddon(addon.manifest.id)}
+                          className="text-xs text-red-400 hover:text-red-300 font-semibold transition-colors cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
                   ))
                 ) : (
                   <div className="px-6 py-8 text-center">
-                    <p className="text-sm text-white/30 italic">No custom addons installed.</p>
+                    <p className="text-sm text-white/50 italic">No custom addons installed.</p>
                   </div>
                 )}
               </SettingSection>
@@ -1688,89 +2099,124 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'interface' && (
             <>
-              {/* Accent Color */}
-              <SettingSection title="Accent Color" description="Choose your interface highlight color.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-3 items-center">
-                    {(['green', 'purple', 'blue', 'red', 'orange', 'pink', 'white'] as const).map((color) => {
-                      const colorClasses: Record<string, { bg: string; border: string }> = {
-                        green: { bg: 'bg-[#10b981]', border: 'border-[#10b981]' },
-                        purple: { bg: 'bg-[#8b5cf6]', border: 'border-[#8b5cf6]' },
-                        blue: { bg: 'bg-[#3b82f6]', border: 'border-[#3b82f6]' },
-                        red: { bg: 'bg-[#ef4444]', border: 'border-[#ef4444]' },
-                        orange: { bg: 'bg-[#f97316]', border: 'border-[#f97316]' },
-                        pink: { bg: 'bg-[#ec4899]', border: 'border-[#ec4899]' },
-                        white: { bg: 'bg-white', border: 'border-white' },
-                      }
-                      const active = store.accentColor === color
-                      return (
-                        <button
-                          key={color}
-                          onClick={() => store.setAccentColor(color)}
-                          className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer capitalize ${
-                            active
-                              ? 'bg-white text-black border-white shadow-lg scale-105'
-                              : 'bg-white/5 border-white/5 text-white/70 hover:bg-white/10 hover:text-white'
-                          }`}
-                        >
-                          <span className={`w-3.5 h-3.5 rounded-full ${colorClasses[color].bg} ${active ? 'ring-2 ring-black' : ''}`} />
-                          <span>{color}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
-              {/* Startup Page */}
-              <SettingSection title="Startup Page" description="Which page Aurales lands on at launch.">
-                <SettingRow label="Default start page">
-                  <select
-                    value={store.defaultStartPage}
-                    onChange={(e) => store.setDefaultStartPage(e.target.value as 'home' | 'discover' | 'collections' | 'search')}
-                    className="w-56 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="home">Home Dashboard</option>
-                    <option value="discover">Discover</option>
-                    <option value="collections">Collections</option>
-                    <option value="search">Search</option>
-                  </select>
+              <SettingSection title="Appearance" description="Tune the unified Aurales interface to your screen and viewing setup.">
+                <SettingRow label="Background" description="Choose a soft charcoal, subtle slate gradient, or pure OLED black.">
+                  <SettingSelect
+                    label="Interface background"
+                    value={store.themeBackground}
+                    onChange={(value) => store.setThemeBackground(value as 'graphite' | 'slate' | 'oled')}
+                    options={[
+                      { value: 'graphite', label: 'Graphite' },
+                      { value: 'slate', label: 'Slate' },
+                      { value: 'oled', label: 'Pure Black (OLED)' },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
+                  <SettingSelect
+                    label="Navigation style"
+                    value={store.navigationStyle}
+                    onChange={(value) => store.setNavigationStyle(value as 'sidebar' | 'topbar')}
+                    options={[
+                      { value: 'sidebar', label: 'Sidebar' },
+                      { value: 'topbar', label: 'Cinematic top bar' },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow label="Entries per row" description="Choose how many titles each horizontal shelf shows before the Show all shortcut.">
+                  <SettingSelect
+                    label="Entries per row"
+                    value={store.rowEntryCount}
+                    onChange={(value) => store.setRowEntryCount(Number(value) as 10 | 15 | 20 | 25)}
+                    className="w-32"
+                    options={[
+                      { value: 10, label: '10' },
+                      { value: 15, label: '15' },
+                      { value: 20, label: '20' },
+                      { value: 25, label: '25' },
+                    ]}
+                  />
                 </SettingRow>
               </SettingSection>
 
-              {/* Discovery Preferences */}
-              <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
-                <SettingRow label="Region">
-                  <select
-                    value={store.discoveryRegion}
-                    onChange={(e) => store.setDiscoveryRegion(e.target.value)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    {['US', 'GB', 'DE', 'FR', 'ES', 'IT', 'CA', 'AU', 'JP', 'KR', 'IN', 'BR'].map((region) => (
-                      <option key={region} value={region}>{region}</option>
-                    ))}
-                  </select>
+              <SettingSection title="Home presentation" description="Choose how the unified Cinematic Home presents featured artwork and shelves.">
+                <SettingRow label="Hero layout" description="Dynamic Banner uses the inset carousel. Fixed Focus turns the active shelf into a full-screen TV browsing experience.">
+                  <SettingSelect
+                    label="Home hero layout"
+                    value={store.homeHeroMode}
+                    onChange={(value) => store.setHomeHeroMode(value as 'dynamic' | 'fixed')}
+                    className="w-52"
+                    options={[
+                      { value: 'dynamic', label: 'Dynamic Banner' },
+                      { value: 'fixed', label: 'Fixed Focus' },
+                    ]}
+                  />
                 </SettingRow>
-                <SettingRow label="Minimum rating">
-                  <select
-                    value={store.discoveryMinRating}
-                    onChange={(e) => store.setDiscoveryMinRating(Number(e.target.value))}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
-                  >
-                    {[0, 5, 6, 7, 8].map((rating) => (
-                      <option key={rating} value={rating}>{rating === 0 ? 'Any' : `${rating}+ / 10`}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
-                  <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
+                <SettingRow label="Card focus animations" description="Animate focused-card expansion in Dynamic Banner and the artwork/detail handoff in Fixed Focus.">
+                  <SettingToggle checked={store.homeCardAnimations} onChange={(enabled) => store.setHomeCardAnimations(enabled)} />
                 </SettingRow>
               </SettingSection>
 
-              {/* Ratings on Cards */}
+              {/* Card overlays */}
               <SettingSection>
                 <SettingRow label="Show Ratings on Media Cards" description="Render rating badges on card thumbnails.">
                   <SettingToggle checked={store.showRatingsOnCards} onChange={(v) => store.setShowRatingsOnCards(v)} />
+                </SettingRow>
+                <SettingRow label="Show Genre on Media Cards" description="Display genre label on poster cards. Disabling can speed up catalog loading.">
+                  <SettingToggle checked={store.showGenreOnCards} onChange={(v) => store.setShowGenreOnCards(v)} />
+                </SettingRow>
+                <SettingRow label="Poster trailer previews" description="Play a trailer when hovering poster cards.">
+                  <SettingToggle checked={store.posterTrailerPreviews} onChange={(v) => store.setPosterTrailerPreviews(v)} />
+                </SettingRow>
+                <SettingRow label="Poster trailer hover delay" description="Choose how long to hover before poster trailers start.">
+                  <SettingSelect
+                    label="Poster trailer hover delay"
+                    value={store.posterTrailerHoverDelayMs}
+                    onChange={(value) => store.setPosterTrailerHoverDelayMs(Number(value))}
+                    className="w-40"
+                    options={[
+                      { value: 0, label: 'No delay' },
+                      { value: 250, label: '0.25 seconds' },
+                      { value: 500, label: '0.5 seconds' },
+                      { value: 750, label: '0.75 seconds' },
+                      { value: 1000, label: '1 second' },
+                      { value: 1500, label: '1.5 seconds' },
+                      { value: 2000, label: '2 seconds' },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow label="Poster trailer sound" description="Play poster hover trailers with audio when available. Muted previews can use sharper visual-only streams.">
+                  <SettingToggle checked={store.posterTrailerSound} onChange={(v) => store.setPosterTrailerSound(v)} />
+                </SettingRow>
+                <SettingRow label="Trailer volume" description="Controls audio volume for hero and poster trailers when they are unmuted.">
+                  <div className="flex w-48 items-center gap-3">
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={store.trailerVolume}
+                      onChange={(e) => store.setTrailerVolume(Number(e.target.value))}
+                      className="w-full accent-white"
+                    />
+                    <span className="w-10 text-right text-xs font-semibold text-white/60">{store.trailerVolume}%</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Hero trailer delay" description="Automatically starts a muted trailer in the Hero banner after this delay.">
+                  <SettingSelect
+                    label="Hero trailer delay"
+                    value={store.heroTrailerDelay}
+                    onChange={(value) => store.setHeroTrailerDelay(Number(value))}
+                    className="w-40"
+                    options={[
+                      { value: 0, label: 'Off' },
+                      { value: 3, label: '3 seconds' },
+                      { value: 5, label: '5 seconds' },
+                      { value: 10, label: '10 seconds' },
+                      { value: 15, label: '15 seconds' },
+                      { value: 30, label: '30 seconds' },
+                    ]}
+                  />
                 </SettingRow>
               </SettingSection>
 
@@ -1803,7 +2249,7 @@ export default function SettingsPage() {
                           className={`flex items-center justify-between p-3 rounded-xl border text-left transition-colors cursor-pointer ${
                             enabled
                               ? 'bg-accent/10 border-accent/40 text-white'
-                              : 'bg-white/[0.03] border-white/[0.06] text-white/40 hover:bg-white/[0.06] hover:text-white/70'
+                              : 'bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/70'
                           }`}
                         >
                           <div className="flex items-center gap-2.5">
@@ -1820,80 +2266,25 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* Poster Size */}
-              <SettingSection title="Poster Size" description="Scale posters and cards across Home, Discover, and your library.">
-                <div className="px-6 py-4">
-                  <div className="flex flex-wrap gap-2">
-                    {(['compact', 'default', 'large', 'huge'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { compact: 'Compact', default: 'Default', large: 'Large', huge: 'Huge' }
-                      const active = store.posterSize === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setPosterSize(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {labelMap[opt]}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </SettingSection>
-
               {/* Spoilers */}
               <SettingSection title="Spoilers" description="Blur episode artwork, titles, and descriptions for unwatched episodes.">
                 <SettingRow label="Blur spoilers" description="Hides episode details until you have watched them.">
-                  <SettingToggle checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
+                  <SettingToggle label="Blur spoilers" checked={store.blurSpoilers} onChange={(v) => store.setBlurSpoilers(v)} />
                 </SettingRow>
                 <SettingRow label="Blur thumbnails">
-                  <SettingToggle checked={store.blurThumbnails} onChange={(v) => store.setBlurThumbnails(v)} />
+                  <SettingToggle label="Blur thumbnails" checked={store.blurThumbnails} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurThumbnails(v)} />
                 </SettingRow>
                 <SettingRow label="Blur titles">
-                  <SettingToggle checked={store.blurTitles} onChange={(v) => store.setBlurTitles(v)} />
+                  <SettingToggle label="Blur titles" checked={store.blurTitles} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurTitles(v)} />
                 </SettingRow>
                 <SettingRow label="Blur descriptions">
-                  <SettingToggle checked={store.blurDescriptions} onChange={(v) => store.setBlurDescriptions(v)} />
+                  <SettingToggle label="Blur descriptions" checked={store.blurDescriptions} disabled={!store.blurSpoilers} onChange={(v) => store.setBlurDescriptions(v)} />
                 </SettingRow>
                 <SettingRow label="Keep next episode visible" description="Leave the episode you are up to clear, blur only those after it.">
-                  <SettingToggle checked={store.keepNextEpisodeVisible} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
+                  <SettingToggle label="Keep next episode visible" checked={store.keepNextEpisodeVisible} disabled={!store.blurSpoilers} onChange={(v) => store.setKeepNextEpisodeVisible(v)} />
                 </SettingRow>
               </SettingSection>
 
-              {/* Continue Watching screenshots */}
-              <SettingSection title="Continue Watching Screenshots" description="Save a frame when you back out so the card shows where you left off.">
-                <div className="px-6 py-4">
-                  <label className="text-[10px] text-white/35 mb-2 block font-extrabold uppercase tracking-wider">Keep frames for</label>
-                  <div className="flex flex-wrap gap-2">
-                    {(['none', '1_week', '30_days', '3_months', '6_months', '1_year'] as const).map((opt) => {
-                      const labelMap: Record<string, string> = { none: 'None', '1_week': '1 week', '30_days': '30 days', '3_months': '3 months', '6_months': '6 months', '1_year': '1 year' }
-                      const active = store.keepFramesFor === opt
-                      return (
-                        <button
-                          key={opt}
-                          onClick={() => store.setKeepFramesFor(opt)}
-                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
-                          }`}
-                        >
-                          {labelMap[opt]}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-                <SettingRow label="Clear all saved frames" description={`${store.savedFramesCount} frames stored.`}>
-                  <button
-                    onClick={() => { store.setSavedFramesCount(0); alert('Cleared all saved frames.') }}
-                    disabled={store.savedFramesCount === 0}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-white/[0.06]"
-                  >
-                    Clear all
-                  </button>
-                </SettingRow>
-              </SettingSection>
             </>
           )}
 
@@ -1902,9 +2293,8 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'metadata' && (
             <>
-              <h3 className="text-sm font-bold text-amber-400/80 mb-3">Metadata Ownership</h3>
-              <SettingSection description="Addons provide streams and catalogs. Aurales resolves and displays clean metadata itself.">
-                <SettingRow label="App-managed metadata" description="Use Aurales providers as the authority for titles, artwork, descriptions, IDs, and media type.">
+              <SettingSection title="Metadata Source" description="Aurales resolves titles, artwork, and descriptions from its own providers instead of using addon metadata.">
+                <SettingRow label="Use Aurales metadata" description="Prefer Aurales providers over addon-supplied titles, artwork, and descriptions.">
                   <SettingToggle checked={store.appManagedMetadata} onChange={store.setAppManagedMetadata} />
                 </SettingRow>
                 <SettingRow label="Use addon metadata fallback" description="Only display addon metadata when app provider lookup fails.">
@@ -1914,82 +2304,21 @@ export default function SettingsPage() {
                   <SettingToggle checked={store.preferTvdbAnimeSeasons} onChange={store.setPreferTvdbAnimeSeasons} />
                 </SettingRow>
                 <SettingRow label="Anime titles" description="English is preferred in Auto mode, followed by Romaji and native titles.">
-                  <select value={store.animeTitleLanguage} onChange={(event) => store.setAnimeTitleLanguage(event.target.value as typeof store.animeTitleLanguage)} className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white">
+                  <SelectMenu value={store.animeTitleLanguage} onChange={(event) => store.setAnimeTitleLanguage(event.target.value as typeof store.animeTitleLanguage)} className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white">
                     <option value="auto">Auto</option>
                     <option value="english">English</option>
                     <option value="romaji">Romaji</option>
                     <option value="native">Native / Japanese</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Clear app metadata cache" description="Remove normalized metadata and addon-to-media mappings.">
                   <button onClick={() => clearAppMetadataCache().then(() => window.location.reload())} className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold">Clear Cache</button>
                 </SettingRow>
               </SettingSection>
 
-              {/* Movies */}
-              <h3 className="text-sm font-bold text-amber-400/80 mb-3">Movies</h3>
-              <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch movie metadata from.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['tmdb', 'tvdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setMovieMetadataSource(src)}
-                        className={`px-5 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.movieMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'tmdb' ? 'TMDb' : 'TVDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
-              </SettingSection>
-
-              {/* Series */}
-              <h3 className="text-sm font-bold text-amber-400/80 mt-8 mb-3">Series</h3>
-              <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch series metadata from.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['tvdb', 'tmdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setSeriesMetadataSource(src)}
-                        className={`px-5 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.seriesMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'tmdb' ? 'TMDb' : 'TVDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
-              </SettingSection>
-
               {/* Anime */}
               <h3 className="text-sm font-bold text-amber-400/80 mt-8 mb-3">Anime</h3>
               <SettingSection>
-                <SettingRow label="Primary source" description="Where to fetch anime titles and descriptions from. Season structure always comes from TVDb.">
-                  <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08]">
-                    {(['anilist', 'mal', 'kitsu', 'tvdb', 'tmdb'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setAnimeMetadataSource(src)}
-                        className={`px-4 py-2 text-sm font-semibold transition-colors cursor-pointer ${
-                          store.animeMetadataSource === src
-                            ? 'bg-white/15 text-white'
-                            : 'text-white/50 hover:text-white/70'
-                        }`}
-                      >
-                        {src === 'anilist' ? 'AniList' : src === 'mal' ? 'MAL' : src === 'kitsu' ? 'Kitsu' : src === 'tvdb' ? 'TVDb' : 'TMDb'}
-                      </button>
-                    ))}
-                  </div>
-                </SettingRow>
                 <SettingRow label="Hide unreleased anime seasons" description="Hide seasons where no episodes have aired yet.">
                   <SettingToggle checked={store.hideUnairedAnimeSeasons} onChange={store.setHideUnairedAnimeSeasons} />
                 </SettingRow>
@@ -2013,141 +2342,51 @@ export default function SettingsPage() {
                     className="px-4 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 text-sm font-semibold rounded-xl transition-all border border-amber-500/20"
                     onClick={async () => {
                       await store.clearAnimeCache()
-                      alert('Anime cache cleared. Re-open any anime to re-fetch metadata.')
                     }}
                   >
                     Clear Cache
                   </button>
                 </SettingRow>
-                <p className="text-xs text-white/40 mt-2 px-1">Anime is displayed like normal shows using TVDB seasons and episodes. Addon metadata is ignored for anime display — addons are only used for streams and IDs.</p>
+                <p className="text-xs text-white/60 mt-2 px-1">Anime is displayed like normal shows using TVDB seasons and episodes. Addon metadata is ignored for anime display — addons are only used for streams and IDs.</p>
               </SettingSection>
 
             </>
           )}
 
           {/* ═══════════════════════════════════════════════
-              SEARCH TAB
+              ARTWORK TAB
               ═══════════════════════════════════════════════ */}
-          {activeTab === 'search' && (
-            <SearchSettingsSection />
+          {activeTab === 'artwork' && (
+            <ArtworkSettingsSection />
           )}
 
           {/* ═══════════════════════════════════════════════
               PROGRESS TAB
               ═══════════════════════════════════════════════ */}
+          {activeTab === 'profiles' && <ProfilesSettings />}
+
+          {activeTab === 'sync' && <AuralesSyncSettings />}
+
           {activeTab === 'progress' && (
             <>
               {/* ─── Global Settings ─── */}
-              <SettingSection title="Continue Watching" description="Configure progress tracking sources and display.">
-                <div className="px-6 py-4">
-                  <label className="text-xs text-white/40 mb-1.5 block font-semibold uppercase tracking-wider">Source</label>
-                  <div className="flex gap-1.5 bg-white/[0.03] rounded-xl p-1 border border-white/[0.06]">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => store.setContinueWatchingSource(src)}
-                        className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all capitalize cursor-pointer ${
-                          store.continueWatchingSource === src
-                            ? 'bg-accent/15 text-accent border border-accent/20 font-bold'
-                            : 'text-white/40 hover:text-white border border-transparent'
-                        }`}
-                      >
-                        <span className="inline-flex items-center justify-center gap-1.5">
-                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'anilist' ? 'AniList' : src}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-white/30 mt-1.5">Choose where Continue Watching is saved on this device.</p>
-                </div>
-
+              <SettingSection title="Continue Watching" description="Uses the primary progress service selected in Accounts. Use that service's ‘Save Resume Position’ below to opt out of sending playback updates.">
                 <SettingRow label="Continue Watching Items" description="How many items appear in Continue Watching.">
-                  <button
-                    onClick={() => {
-                      const current = store.continueWatchingLimit
-                      const next = current === 5 ? 10 : current === 10 ? 20 : current === 20 ? 50 : 5
-                      store.setContinueWatchingLimit(next)
-                    }}
-                    className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-sm text-white font-semibold cursor-pointer hover:bg-white/[0.08] transition-colors"
+                  <SelectMenu
+                    value={store.continueWatchingLimit}
+                    onChange={(e) => store.setContinueWatchingLimit(Number(e.target.value))}
+                    className="w-44"
                   >
-                    {store.continueWatchingLimit} items
-                  </button>
+                    <option value={5}>5 items</option>
+                    <option value={10}>10 items</option>
+                    <option value={20}>20 items</option>
+                    <option value={50}>50 items</option>
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Watch status on posters" description="Show Continue Watching progress and watched checkmarks on poster cards.">
+                  <SettingToggle checked={store.showPosterWatchStatus} onChange={(enabled) => store.setShowPosterWatchStatus(enabled)} />
                 </SettingRow>
 
-                <div className="px-6 py-4">
-                  <div className="mb-3">
-                    <span className="text-sm text-white">Watched Checkmarks</span>
-                    <p className="text-[12px] text-white/35 mt-0.5">Choose which providers mark movies and episodes as watched.</p>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {(['local', 'trakt', 'simkl', 'pmdb', 'anilist'] as const).map((src) => {
-                      const enabled = store.watchedCheckmarkSources.includes(src)
-                      return (
-                        <button
-                          key={src}
-                          onClick={() => {
-                            const next = enabled
-                              ? store.watchedCheckmarkSources.filter((s) => s !== src)
-                              : [...store.watchedCheckmarkSources, src]
-                            store.setWatchedCheckmarkSources(next.length ? next : ['local'])
-                          }}
-                          className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                            enabled ? 'bg-accent/15 border-accent/25 text-accent' : 'bg-white/5 border-white/5 text-white/40 hover:text-white'
-                          }`}
-                        >
-                          {enabled && (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          )}
-                          <ServiceIcon service={src} className="w-3.5 h-3.5" />
-                          {src === 'pmdb' ? 'PMDB' : src === 'simkl' ? 'Simkl' : src === 'anilist' ? 'AniList' : src}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-
-                <SettingRow label="Watchlist Button" description="Bookmark button target next to Play.">
-                  <select
-                    value={store.watchlistButtonTarget}
-                    onChange={(e) => store.setWatchlistButtonTarget(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="local">Local</option>
-                    <option value="trakt">Trakt</option>
-                    <option value="simkl">Simkl</option>
-                    <option value="pmdb">PMDB</option>
-                    <option value="anilist">AniList (anime only)</option>
-                  </select>
-                </SettingRow>
-              </SettingSection>
-
-              {/* ─── Anime Tracking ─── */}
-              <SettingSection title="Anime Tracking" description="Choose your anime progress provider and watched source.">
-                <SettingRow label="Provider" description="Where anime watch progress is tracked.">
-                  <select
-                    value={store.animeTrackingProvider}
-                    onChange={(e) => store.setAnimeTrackingProvider(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="anilist">AniList</option>
-                    <option value="simkl">Simkl</option>
-                    <option value="trakt">Trakt</option>
-                    <option value="local">Local Only</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="Show Watched From" description="Which service displays watched checkmarks in episode lists.">
-                  <select
-                    value={store.animeShowWatchedFrom}
-                    onChange={(e) => store.setAnimeShowWatchedFrom(e.target.value as any)}
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
-                  >
-                    <option value="all">All Sources</option>
-                    <option value="provider">Current Provider Only</option>
-                  </select>
-                </SettingRow>
               </SettingSection>
 
               {/* ─── Per-Service Settings ─── */}
@@ -2181,7 +2420,7 @@ export default function SettingsPage() {
                   setSaveResume: store.setTraktSaveResumePosition,
                   syncFreqValue: store.traktSyncFrequency,
                   setSyncFreq: store.setTraktSyncFrequency,
-                  syncAction: null,
+                  syncAction: store.traktConnected ? () => { syncProviderNow('trakt') } : null,
                   syncLoading: false,
                   lastSync: null,
                   exportAction: null,
@@ -2229,9 +2468,25 @@ export default function SettingsPage() {
                   setSaveResume: store.setPmdBSaveResumePosition,
                   syncFreqValue: store.pmdbSyncFrequency,
                   setSyncFreq: store.setPmdBSyncFrequency,
-                  syncAction: () => { store.setPmdBLastSyncTime(new Date().toLocaleString()) },
+                  syncAction: () => { syncProviderNow('pmdb') },
                   syncLoading: false,
                   lastSync: store.pmdbLastSyncTime || null,
+                  exportAction: null,
+                  clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
+                },
+                {
+                  id: 'mdblist' as const,
+                  label: 'MDBList',
+                  scrobbleKey: 'mdblist',
+                  scrobbleValue: store.scrobbleMdblist,
+                  setScrobble: store.setScrobbleMdblist,
+                  saveResumeValue: store.mdblistSaveResumePosition,
+                  setSaveResume: store.setMdblistSaveResumePosition,
+                  syncFreqValue: store.mdblistSyncFrequency,
+                  setSyncFreq: store.setMdblistSyncFrequency,
+                  syncAction: () => { syncProviderNow('mdblist') },
+                  syncLoading: false,
+                  lastSync: store.mdblistLastSyncTime || null,
                   exportAction: null,
                   clearAction: () => { cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS) },
                 },
@@ -2256,7 +2511,7 @@ export default function SettingsPage() {
 
                   {svc.setSyncFreq && svc.syncFreqValue !== null && (
                     <SettingRow label="Sync Frequency" description="How often to pull data in the background.">
-                      <select
+                      <SelectMenu
                         value={svc.syncFreqValue}
                         onChange={(e) => svc.setSyncFreq!(e.target.value)}
                         className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer text-white font-semibold"
@@ -2265,7 +2520,7 @@ export default function SettingsPage() {
                         <option value="every_5">Every 5 Minutes</option>
                         <option value="every_15">Every 15 Minutes</option>
                         <option value="manual">Manual Only</option>
-                      </select>
+                      </SelectMenu>
                     </SettingRow>
                   )}
 
@@ -2300,13 +2555,13 @@ export default function SettingsPage() {
                 </SettingSection>
               ))}
 
-              {simklError && (
-                <p className={`text-xs px-1 ${simklError.startsWith('Sync completed') || simklError.startsWith('Synced') ? 'text-white/40' : 'text-red-400'}`}>
-                  {simklError}
+              {simklNotice && (
+                <p className={`text-xs px-1 ${simklNotice.startsWith('Sync completed') || simklNotice.startsWith('Synced') ? 'text-white/60' : 'text-red-400'}`}>
+                  {simklNotice}
                 </p>
               )}
               {anilistMessage && (
-                <p className={`text-xs px-1 ${anilistMessage.includes('failed') ? 'text-red-400' : 'text-white/40'}`}>
+                <p className={`text-xs px-1 ${anilistMessage.includes('failed') ? 'text-red-400' : 'text-white/60'}`}>
                   {anilistMessage}
                 </p>
               )}
@@ -2316,49 +2571,53 @@ export default function SettingsPage() {
           {/* ═══════════════════════════════════════════════
               LANGUAGES TAB
               ═══════════════════════════════════════════════ */}
-          {activeTab === 'languages' && (
+          {/* ═══════════════════════════════════════════════
+              AUDIO & SUBTITLES TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'subtitles' && (
             <>
-              {/* Subtitle Languages */}
-              <SettingSection title="Subtitle Languages" description="Auto-select subtitle tracks on playback. First match wins.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
-                    {store.preferredSubtitles.length === 0 ? (
-                      <span className="text-xs text-white/30 italic">No preferred subtitle languages. System default will be used.</span>
-                    ) : (
-                      store.preferredSubtitles.map((code) => {
-                        const lang = APP_LANGUAGES.find((l) => l.code === code)
-                        if (!lang) return null
-                        return (
-                          <span key={code} className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent/15 border border-accent/30 text-accent font-semibold rounded-full text-xs">
-                            <span>{lang.flag} {lang.name}</span>
-                            <button onClick={() => store.setPreferredSubtitles(store.preferredSubtitles.filter((c) => c !== code))} className="hover:text-white transition-colors cursor-pointer">x</button>
-                          </span>
-                        )
-                      })
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-                    {APP_LANGUAGES.filter((lang) => !store.preferredSubtitles.includes(lang.code)).map((lang) => (
-                      <button
-                        key={lang.code}
-                        onClick={() => store.setPreferredSubtitles([...store.preferredSubtitles, lang.code])}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
-                      >
-                        <span>{lang.flag}</span>
-                        <span>{lang.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              <SettingSection title="Default Audio & Subtitles" description="Aurales chooses your first matching language, then the fallback if it is unavailable.">
+                <SettingRow label="Preferred audio" description="First choice for spoken audio.">
+                  <SelectMenu value={store.preferredAudio[0] || ''} onChange={(e) => store.setPreferredAudio([e.target.value, store.preferredAudio[1]].filter((code, index, all): code is string => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Audio fallback" description="Used when preferred audio is not available.">
+                  <SelectMenu value={store.preferredAudio[1] || ''} onChange={(e) => store.setPreferredAudio([store.preferredAudio[0] || 'en', e.target.value].filter((code, index, all) => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    <option value="">None</option>{APP_LANGUAGES.filter((language) => language.code !== store.preferredAudio[0]).map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Preferred subtitles" description="First choice for subtitle tracks.">
+                  <SelectMenu value={store.preferredSubtitles[0] || ''} onChange={(e) => store.setPreferredSubtitles([e.target.value, store.preferredSubtitles[1]].filter((code, index, all): code is string => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    {APP_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Subtitle fallback" description="Used when preferred subtitles are not available.">
+                  <SelectMenu value={store.preferredSubtitles[1] || ''} onChange={(e) => store.setPreferredSubtitles([store.preferredSubtitles[0] || 'en', e.target.value].filter((code, index, all) => Boolean(code) && all.indexOf(code) === index))} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white">
+                    <option value="">None</option>{APP_LANGUAGES.filter((language) => language.code !== store.preferredSubtitles[0]).map((language) => <option key={language.code} value={language.code}>{language.name}</option>)}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="For matching audio" description="What to show when the chosen audio already matches subtitle language.">
+                  <SelectMenu value={store.subtitleMode} onChange={(e) => store.setSubtitleMode(e.target.value as 'show' | 'forced' | 'hide')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="show">Show subtitles</option><option value="forced">Only signs & foreign parts</option><option value="hide">Hide subtitles</option></SelectMenu>
+                </SettingRow>
+                <SettingRow label="Prefer SDH subtitles" description="Choose SDH/closed-caption tracks when a matching language is available.">
+                  <SettingToggle checked={store.preferSdhSubtitles} onChange={store.setPreferSdhSubtitles} />
+                </SettingRow>
+                <SettingRow label="Anime audio" description="Sub prioritizes Japanese audio; Dub prioritizes your preferred audio.">
+                  <SelectMenu value={store.animeAudioMode} onChange={(e) => store.setAnimeAudioMode(e.target.value as 'sub' | 'dub')} className="w-64 px-3 py-2 bg-white/[.04] border border-white/[.08] rounded-xl text-sm text-white"><option value="sub">Sub (Japanese audio)</option><option value="dub">Dub (preferred audio)</option></SelectMenu>
+                </SettingRow>
               </SettingSection>
-
+              <div className="hidden">
               {/* Audio Languages */}
               <SettingSection title="Audio Languages" description="Auto-switch to the best audio track match. Primary language first.">
-                <div className="px-6 py-4 space-y-4">
-                  <div className="min-h-[60px] w-full p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-wrap gap-2 items-center">
+                <div className="px-6 py-5 space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-sm font-bold text-white/85">Preferred languages</p>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-meta font-bold text-white/60">{store.preferredAudio.length} selected</span>
+                  </div>
+                  <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
                     {store.preferredAudio.length === 0 ? (
-                      <span className="text-xs text-white/30 italic">No preferred audio languages. System default will be used.</span>
+                      <span className="text-xs text-white/50 italic">No preferred audio languages. System default will be used.</span>
                     ) : (
                       store.preferredAudio.map((code) => {
                         const lang = APP_LANGUAGES.find((l) => l.code === code)
@@ -2373,170 +2632,509 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                  <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/60 transition-colors hover:text-white/85">
+                      Add another language
+                      <span className="text-lg font-light text-white/60 transition-transform group-open:rotate-45">+</span>
+                    </summary>
+                    <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {APP_LANGUAGES.filter((lang) => !store.preferredAudio.includes(lang.code)).map((lang) => (
                       <button
                         key={lang.code}
                         onClick={() => store.setPreferredAudio([...store.preferredAudio, lang.code])}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-xl text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.025] hover:bg-white/[0.06] border border-white/[0.06] rounded-lg text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
                       >
                         <span>{lang.flag}</span>
                         <span>{lang.name}</span>
                       </button>
                     ))}
+                    </div>
+                  </details>
+                </div>
+              </SettingSection>
+
+              {/* Subtitle Preferences */}
+              <SettingSection title="Subtitle Preferences" description="Choose how subtitles should appear when playback starts.">
+                <div className="px-6 py-5 space-y-5">
+                  <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-2">
+                    <div className="px-2.5 pb-2 pt-1 text-meta font-bold uppercase tracking-[0.16em] text-white/60">Playback behavior</div>
+                    <div className="grid gap-2 md:grid-cols-3">
+                    {[
+                      { id: 'show', title: 'Show subtitles', description: 'Always select your preferred subtitle language.', symbol: 'CC' },
+                      { id: 'forced', title: 'Only signs & foreign parts', description: 'Show forced tracks only, for on-screen text and foreign dialogue.', symbol: 'ƒ' },
+                      { id: 'hide', title: 'Hide subtitles', description: 'Start playback with subtitles turned off.', symbol: '×' },
+                    ].map((mode) => {
+                      const active = store.subtitleMode === mode.id
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => store.setSubtitleMode(mode.id as 'show' | 'forced' | 'hide')}
+                          className={`group relative min-h-[96px] rounded-xl border px-3.5 py-3 text-left transition-all cursor-pointer ${active ? 'border-accent/70 bg-accent/10 shadow-[0_0_0_1px_rgba(16,185,129,0.1)]' : 'border-transparent bg-transparent hover:border-white/[0.1] hover:bg-white/[0.04]'}`}
+                        >
+                          <span className={`mb-2 grid h-7 w-7 place-items-center rounded-md text-meta font-black ${active ? 'bg-accent text-black' : 'bg-white/[0.08] text-white/60'}`}>{mode.symbol}</span>
+                          <span className={`block text-sm font-bold ${active ? 'text-white' : 'text-white/75'}`}>{mode.title}</span>
+                          <span className="mt-1 block text-meta leading-relaxed text-white/60">{mode.description}</span>
+                          {active && <span className="absolute right-3 top-3 text-xs font-black text-accent">✓</span>}
+                        </button>
+                      )
+                    })}
+                    </div>
+                  </div>
+                  {store.subtitleMode === 'forced' && <p className="rounded-xl border border-amber-400/15 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-100/75">Forced tracks are supplied by the stream. If none are available, subtitles stay hidden.</p>}
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold text-white/85">Preferred languages</p>
+                      <p className="mt-0.5 text-label text-white/60">Used to choose the best matching track.</p>
+                    </div>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-meta font-bold text-white/60">{store.preferredSubtitles.length} selected</span>
+                  </div>
+                  <div className="min-h-[52px] w-full px-3 py-2.5 rounded-xl bg-white/[0.025] border border-white/[0.06] flex flex-wrap gap-2 items-center">
+                    {store.preferredSubtitles.length === 0 ? (
+                      <span className="text-xs text-white/50 italic">No preferred subtitle languages. System default will be used.</span>
+                    ) : (
+                      store.preferredSubtitles.map((code) => {
+                        const lang = APP_LANGUAGES.find((l) => l.code === code)
+                        if (!lang) return null
+                        return (
+                          <span key={code} className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent/15 border border-accent/30 text-accent font-semibold rounded-full text-xs">
+                            <span>{lang.flag} {lang.name}</span>
+                            <button onClick={() => store.setPreferredSubtitles(store.preferredSubtitles.filter((c) => c !== code))} className="hover:text-white transition-colors cursor-pointer">x</button>
+                          </span>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <details className="group rounded-xl border border-white/[0.06] bg-white/[0.015]">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-white/60 transition-colors hover:text-white/85">
+                      Add another language
+                      <span className="text-lg font-light text-white/60 transition-transform group-open:rotate-45">+</span>
+                    </summary>
+                    <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                    {APP_LANGUAGES.filter((lang) => !store.preferredSubtitles.includes(lang.code)).map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => store.setPreferredSubtitles([...store.preferredSubtitles, lang.code])}
+                        className="flex items-center gap-2 px-3 py-2 bg-white/[0.025] hover:bg-white/[0.06] border border-white/[0.06] rounded-lg text-xs font-medium text-left text-white/70 hover:text-white transition-all cursor-pointer"
+                      >
+                        <span>{lang.flag}</span>
+                        <span>{lang.name}</span>
+                      </button>
+                    ))}
+                    </div>
+                  </details>
+                </div>
+              </SettingSection>
+
+              </div>
+
+              {/* Subtitle Styling */}
+              <SettingSection title="Subtitle Design" description="Choose a starting style, then fine-tune how subtitles look in the player.">
+                <div className="px-6 py-5 space-y-6">
+                  {/* Preset Styles */}
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Style presets</span>
+                      <p className="mt-1 text-xs text-white/45">Pick a look to update all design controls at once.</p>
+                    </div>
+                    <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
+                      {[
+                        { id: 'standard', title: 'Standard', desc: 'Clear outline', sample: 'text-white [text-shadow:0_1px_3px_#000,0_0_2px_#000]' },
+                        { id: 'boxed', title: 'Boxed', desc: 'Dark backdrop', sample: 'bg-black/75 px-1.5 text-white' },
+                        { id: 'classic', title: 'Classic', desc: 'Cinema yellow', sample: 'text-yellow-300 [text-shadow:0_1px_3px_#000]' },
+                        { id: 'minimal', title: 'Minimal', desc: 'Soft shadow', sample: 'text-white [text-shadow:0_2px_5px_#000]' },
+                        { id: 'bold', title: 'Bold', desc: 'High contrast', sample: 'font-black text-white [text-shadow:0_1px_2px_#000,0_0_3px_#000]' },
+                      ].map((preset) => {
+                        const active = store.subtitlePreset === preset.id
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => store.setSubtitlePreset(preset.id as any)}
+                            className={`group relative min-h-[112px] overflow-hidden rounded-2xl border p-3.5 text-left transition-all cursor-pointer ${
+                              active ? 'border-accent/55 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(var(--accent-rgb),.08)]' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05]'
+                            }`}
+                          >
+                            <div className="mb-3 grid h-11 place-items-center overflow-hidden rounded-xl border border-white/[0.06] bg-[radial-gradient(circle_at_30%_20%,rgba(var(--accent-rgb),.12),transparent_55%),linear-gradient(145deg,rgba(255,255,255,.06),rgba(255,255,255,.015))]">
+                              <span className={`rounded text-sm ${preset.sample}`}>Subtitle</span>
+                            </div>
+                            <p className={`text-xs font-bold ${active ? 'text-accent' : 'text-white/85'}`}>{preset.title}</p>
+                            <p className="mt-0.5 text-meta text-white/45">{preset.desc}</p>
+                            {active && <span className="absolute right-2.5 top-2.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-black text-black">✓</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.72fr)]">
+                    <div className="space-y-5">
+                  {/* AA Font */}
+                  <div className="space-y-2">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Typography</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
+                      {/* Font Size */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Font Size</span>
+                          <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
+                        </div>
+                        <input
+                          type="range" min="16" max="64" step="1"
+                          value={store.subtitleFontSize}
+                          onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                        <p className="text-meta text-white/50">Size at 720p reference - scales with screen</p>
+                      </div>
+
+                      {/* Scale */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Scale</span>
+                          <span className="text-accent font-bold">{store.subtitleScale.toFixed(1)}x</span>
+                        </div>
+                        <input
+                          type="range" min="0.5" max="2.5" step="0.1"
+                          value={store.subtitleScale}
+                          onChange={(e) => store.setSubtitleScale(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Bold & Italic Toggles */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Bold</span>
+                        <SettingToggle label="Bold subtitles" checked={store.subtitleBold} onChange={(v) => store.setSubtitleBold(v)} />
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Italic</span>
+                        <SettingToggle label="Italic subtitles" checked={store.subtitleItalic} onChange={(v) => store.setSubtitleItalic(v)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Colors */}
+                  <div className="space-y-2">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Colors</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] divide-y divide-white/[0.04]">
+                      {/* Text Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Text Color</span>
+                        <SelectMenu
+                          aria-label="Subtitle text colour" value={store.subtitleColor}
+                          onChange={(e) => store.setSubtitleColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#FFFFFF">White</option>
+                          <option value="#FFFF00">Yellow (Classic)</option>
+                          <option value="#000000">Black</option>
+                          <option value="#00FFFF">Cyan</option>
+                          <option value="#00FF00">Green</option>
+                          <option value="#FF88CC">Pink</option>
+                          <option value="#888888">Gray</option>
+                        </SelectMenu>
+                      </div>
+
+                      {/* Outline Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Outline Color</span>
+                        <SelectMenu
+                          aria-label="Subtitle outline colour" value={store.subtitleOutlineColor}
+                          onChange={(e) => store.setSubtitleOutlineColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#000000">Black</option>
+                          <option value="#FFFFFF">White</option>
+                          <option value="#FFFF00">Yellow</option>
+                          <option value="#888888">Gray</option>
+                        </SelectMenu>
+                      </div>
+
+                      {/* Background Color */}
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <span className="text-xs font-semibold text-white/70">Background Color</span>
+                        <SelectMenu
+                          aria-label="Subtitle background colour" value={store.subtitleBgColor}
+                          onChange={(e) => store.setSubtitleBgColor(e.target.value)}
+                          className="w-36 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="#000000">Black</option>
+                          <option value="#FFFFFF">White</option>
+                          <option value="#888888">Gray</option>
+                        </SelectMenu>
+                      </div>
+
+                      {/* Background Opacity */}
+                      <div className="px-5 py-4 space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Background Opacity</span>
+                          <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
+                        </div>
+                        <input
+                          type="range" min="0" max="1" step="0.05"
+                          value={store.subtitleBgOpacity}
+                          onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Outline & Shadow */}
+                  <div className="space-y-2">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Readability</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
+                      {/* Style select */}
+                      <div className="flex items-center justify-between pb-1">
+                        <span className="text-xs font-semibold text-white/70">Style</span>
+                        <SelectMenu
+                          aria-label="Subtitle outline and shadow style" value={store.subtitleBorderStyle}
+                          onChange={(e) => store.setSubtitleBorderStyle(e.target.value as any)}
+                          className="w-40 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="outline">Outline & Shadow</option>
+                          <option value="shadow">Shadow Only</option>
+                          <option value="none">None</option>
+                        </SelectMenu>
+                      </div>
+
+                      {/* Outline Thickness */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Outline Thickness</span>
+                          <span className="text-accent font-bold">{store.subtitleOutlineThickness.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="4.0" step="0.1"
+                          value={store.subtitleOutlineThickness}
+                          onChange={(e) => store.setSubtitleOutlineThickness(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Shadow Offset */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Shadow Offset</span>
+                          <span className="text-accent font-bold">{store.subtitleShadowOffset.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="5.0" step="0.5"
+                          value={store.subtitleShadowOffset}
+                          onChange={(e) => store.setSubtitleShadowOffset(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Shadow Opacity */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Shadow Opacity</span>
+                          <span className="text-accent font-bold">{Math.round(store.subtitleShadowOpacity * 100)}%</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="1.0" step="0.05"
+                          value={store.subtitleShadowOpacity}
+                          onChange={(e) => store.setSubtitleShadowOpacity(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Position */}
+                  <div className="space-y-2">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Position</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
+                      {/* Vertical Position */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Vertical Position</span>
+                          <span className="text-accent font-bold">{store.subtitleVerticalPosition}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-meta text-white/50 w-10 text-left">Higher</span>
+                          <input
+                            type="range" min="50" max="150" step="1"
+                            value={store.subtitleVerticalPosition}
+                            onChange={(e) => store.setSubtitleVerticalPosition(Number(e.target.value))}
+                            className="flex-grow h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                          />
+                          <span className="text-meta text-white/50 w-10 text-right">Lower</span>
+                        </div>
+                        <p className="text-meta text-white/50">100 = Default. Lower values move up, higher values push down.</p>
+                      </div>
+
+                      {/* Alignment */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Alignment</span>
+                        <div className="flex bg-white/[0.06] rounded-xl overflow-hidden border border-white/[0.08] p-0.5">
+                          {(['left', 'center', 'right'] as const).map((align) => (
+                            <button
+                              key={align}
+                              type="button"
+                              onClick={() => store.setSubtitleAlignment(align)}
+                              className={`px-4 py-1.5 rounded-lg text-xs font-bold capitalize transition-all cursor-pointer ${
+                                store.subtitleAlignment === align
+                                  ? 'bg-white text-black shadow-md'
+                                  : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              {align}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Horizontal Margin */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Horizontal Margin</span>
+                          <span className="text-accent font-bold">{store.subtitleHorizontalMargin}px</span>
+                        </div>
+                        <input
+                          type="range" min="0" max="100" step="1"
+                          value={store.subtitleHorizontalMargin}
+                          onChange={(e) => store.setSubtitleHorizontalMargin(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Advanced */}
+                  <div className="space-y-2">
+                    <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Advanced</span>
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 space-y-4">
+                      {/* Text Blur */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-white/70">Text Blur</span>
+                          <span className="text-accent font-bold">{store.subtitleTextBlur.toFixed(1)}</span>
+                        </div>
+                        <input
+                          type="range" min="0.0" max="5.0" step="0.1"
+                          value={store.subtitleTextBlur}
+                          onChange={(e) => store.setSubtitleTextBlur(Number(e.target.value))}
+                          className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
+                        />
+                      </div>
+
+                      {/* Scale with Window Size */}
+                      <div className="flex items-center justify-between border-t border-white/[0.04] pt-4">
+                        <span className="text-xs font-semibold text-white/70">Scale with Window Size</span>
+                        <SettingToggle label="Scale subtitles with window size" checked={store.subtitleScaleWithWindow} onChange={(v) => store.setSubtitleScaleWithWindow(v)} />
+                      </div>
+
+                      {/* ASS Style Override */}
+                      <div className="space-y-2 border-t border-white/[0.04] pt-4">
+                        <div className="flex items-center justify-between pb-1">
+                          <span className="text-xs font-semibold text-white/70">ASS Style Override</span>
+                          <SelectMenu
+                            aria-label="ASS style override" value={store.subtitleAssOverride}
+                            onChange={(e) => store.setSubtitleAssOverride(e.target.value as any)}
+                            className="w-48 px-3 py-1.5 bg-black/30 border border-white/[0.08] rounded-xl text-xs text-white focus:outline-none focus:border-accent/40"
+                          >
+                            <option value="apply">Apply Style Overrides</option>
+                            <option value="scale_only">Scale Only</option>
+                            <option value="ignore">Ignore Styles</option>
+                          </SelectMenu>
+                        </div>
+                        <p className="text-meta text-white/50">ASS override controls how styled subtitle files are handled. 'Scale Only' is recommended.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                    </div>
+                    <div className="space-y-3 xl:sticky xl:top-6">
+                  {/* Preview */}
+                  <div className="space-y-2">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <span className="text-meta font-bold uppercase tracking-[0.16em] text-white/50">Live preview</span>
+                        <p className="mt-1 text-xs text-white/45">Updates as you make changes.</p>
+                      </div>
+                      <span className="rounded-full border border-accent/20 bg-accent/[0.08] px-2.5 py-1 text-meta font-bold text-accent">PLAYER</span>
+                    </div>
+                    <div className="relative flex min-h-[280px] items-end overflow-hidden rounded-2xl border border-white/[0.08] bg-[#080a0d] p-6 shadow-[0_24px_60px_rgba(0,0,0,.28)]">
+                      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_22%_18%,rgba(var(--accent-rgb),.25),transparent_34%),radial-gradient(circle_at_78%_46%,rgba(72,88,120,.28),transparent_38%),linear-gradient(155deg,#1a2028_0%,#0b0e13_52%,#050607_100%)]" />
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 to-transparent" />
+                      <div className="pointer-events-none absolute left-[12%] top-[22%] h-20 w-32 rounded-full bg-white/[0.035] blur-xl" />
+                      <div className="relative z-10 mb-5 w-full" style={{
+                        textAlign: store.subtitleAlignment as any,
+                      }}>
+                        <span
+                          className="px-2.5 py-1 rounded select-none"
+                          style={{
+                            fontSize: `${Math.round(store.subtitleFontSize * store.subtitleScale * 0.75)}px`,
+                            fontWeight: store.subtitleBold ? 'bold' : 'normal',
+                            fontStyle: store.subtitleItalic ? 'italic' : 'normal',
+                            color: store.subtitleColor,
+                            backgroundColor: `rgba(${parseInt(store.subtitleBgColor.replace('#','').substring(0,2),16) || 0}, ${parseInt(store.subtitleBgColor.replace('#','').substring(2,4),16) || 0}, ${parseInt(store.subtitleBgColor.replace('#','').substring(4,6),16) || 0}, ${store.subtitleBgOpacity})`,
+                            filter: store.subtitleTextBlur > 0 ? `blur(${store.subtitleTextBlur}px)` : 'none',
+                            textShadow: store.subtitleBorderStyle === 'outline'
+                              ? `0 0 ${store.subtitleOutlineThickness}px ${store.subtitleOutlineColor}, 0 0 1px ${store.subtitleOutlineColor}, 1px 1px 0 ${store.subtitleOutlineColor}, -1px -1px 0 ${store.subtitleOutlineColor}`
+                              : store.subtitleBorderStyle === 'shadow'
+                                ? `${store.subtitleShadowOffset}px ${store.subtitleShadowOffset}px ${store.subtitleShadowOffset * 2}px rgba(0,0,0,${store.subtitleShadowOpacity})`
+                                : 'none'
+                          }}
+                        >
+                          This is how your subtitles will look.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Reset to Defaults */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => store.resetSubtitleSettings()}
+                      className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl border border-white/[0.07] bg-white/[0.025] hover:border-white/[0.14] hover:bg-white/[0.05] text-white/60 hover:text-white text-xs font-semibold transition-all cursor-pointer active:scale-[0.99]"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      Reset to Defaults
+                    </button>
+                  </div>
+                    </div>
                   </div>
                 </div>
               </SettingSection>
-            </>
-          )}
 
-          {/* ═══════════════════════════════════════════════
-              FILTERS TAB
-              ═══════════════════════════════════════════════ */}
-          {activeTab === 'filters' && (
-            <>
-              <div className="flex items-center justify-between gap-4 mb-2 -mt-2">
-                <div className="relative flex-1 max-w-md">
-                  <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                    <circle cx="11" cy="11" r="8" />
-                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <input
-                    type="text"
-                    value={filterSearch}
-                    onChange={(e) => setFilterSearch(e.target.value)}
-                    placeholder="Search filters..."
-                    className="w-full pl-10 pr-4 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white placeholder-white/30 focus:outline-none focus:border-accent/50 transition-all"
-                  />
+
+              {/* Subtitle Translation */}
+              <SettingSection title="Live Translation" description="AI-powered subtitle translation via OpenRouter.">
+                <SettingRow label="Translate subtitles" description="Create and prefer an AI-translated track on playback.">
+                  <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
+                </SettingRow>
+                <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
+                  <SelectMenu
+                    value={store.subtitleTranslationLang}
+                    onChange={(e) => {
+                      const language = e.target.value
+                      store.setSubtitleTranslationLang(language)
+                      store.setSubtitleTranslationEnabled(Boolean(language))
+                    }}
+                    className="w-40 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
+                  >
+                    <option value="">None</option>
+                    {APP_LANGUAGES.map((lang) => (
+                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                    ))}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
+                  <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
+                </SettingRow>
+                <div className="px-6 py-3 text-xs text-white/50 leading-relaxed">
+                  {store.openrouterApiKey ? 'Ready (OpenRouter)' : 'OpenRouter API key required'}.
+                  Subtitle text is sent to OpenRouter. No account data or viewing history is included.
                 </div>
-                <button
-                  onClick={handleResetFilters}
-                  className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white border border-white/[0.08] rounded-xl text-sm font-semibold transition-colors cursor-pointer flex-shrink-0"
-                >
-                  Reset to Defaults
-                </button>
-              </div>
-
-              {filterConfig.groups.map((group) => {
-                const groupFilters = filterConfig.filters.filter(
-                  (f) => f.groupId === group.id &&
-                  (f.name.toLowerCase().includes(filterSearch.toLowerCase()) || f.pattern.toLowerCase().includes(filterSearch.toLowerCase()))
-                )
-                if (groupFilters.length === 0) return null
-
-                const allEnabled = groupFilters.every((f) => f.isEnabled)
-                const toggleAllInGroup = () => {
-                  const targetState = !allEnabled
-                  const nextFilters = filterConfig.filters.map((f) =>
-                    f.groupId === group.id ? { ...f, isEnabled: targetState } : f
-                  )
-                  const nextConfig = { ...filterConfig, filters: nextFilters }
-                  setFilterConfig(nextConfig)
-                  saveStreamRegexFilterConfig(nextConfig)
-                  setStreamRegexJson(JSON.stringify(nextConfig, null, 2))
-                }
-
-                // Score group: compact pill grid
-                if (group.id === 'gp') {
-                  return (
-                    <SettingSection key={group.id}>
-                      <div className="px-6 py-4">
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: group.color }} />
-                            <h3 className="text-[15px] font-semibold text-white">{group.name} Filters</h3>
-                          </div>
-                          <button onClick={toggleAllInGroup} className="text-xs text-accent hover:underline font-semibold cursor-pointer">
-                            {allEnabled ? 'Disable All' : 'Enable All'}
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
-                          {groupFilters.map((filter) => {
-                            const filled = filter.tagStyle.includes('filled')
-                            const bordered = filter.tagStyle.includes('bordered')
-                            const bg = filled ? cssColorFromFilterColor(filter.tagColor, 'transparent') : 'transparent'
-                            const border = bordered ? cssColorFromFilterColor(filter.borderColor, group.color) : 'transparent'
-                            const textCol = cssColorFromFilterColor(filter.textColor, '#FFFFFF')
-
-                            return (
-                              <button
-                                key={filter.id}
-                                onClick={() => handleToggleFilter(filter.id)}
-                                className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer ${
-                                  filter.isEnabled
-                                    ? 'bg-accent/10 border-accent/40 text-white'
-                                    : 'bg-white/[0.02] border-white/[0.06] text-white/40 hover:bg-white/[0.04]'
-                                }`}
-                              >
-                                <span
-                                  className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-black leading-none shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] mb-1"
-                                  style={{ backgroundColor: filter.isEnabled ? bg : 'transparent', border: `1px solid ${filter.isEnabled ? border : '#ffffff20'}`, color: filter.isEnabled ? textCol : 'inherit' }}
-                                >
-                                  {filter.name}
-                                </span>
-                                <span className="text-[9px] font-mono opacity-50 truncate max-w-full">{filter.name}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    </SettingSection>
-                  )
-                }
-
-                // Other groups: detailed rows
-                return (
-                  <SettingSection key={group.id}>
-                    <div className="px-6 pt-4 pb-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: group.color }} />
-                          <h3 className="text-[15px] font-semibold text-white">{group.name} Filters</h3>
-                        </div>
-                        <button onClick={toggleAllInGroup} className="text-xs text-accent hover:underline font-semibold cursor-pointer">
-                          {allEnabled ? 'Disable All' : 'Enable All'}
-                        </button>
-                      </div>
-                    </div>
-                    {groupFilters.map((filter) => {
-                      const filled = filter.tagStyle.includes('filled')
-                      const bordered = filter.tagStyle.includes('bordered')
-                      const bg = filled ? cssColorFromFilterColor(filter.tagColor, 'transparent') : 'transparent'
-                      const border = bordered ? cssColorFromFilterColor(filter.borderColor, group.color) : 'transparent'
-                      const textCol = cssColorFromFilterColor(filter.textColor, '#FFFFFF')
-
-                      return (
-                        <div key={filter.id} className="flex items-center justify-between px-6 py-3.5">
-                          <div className="flex items-center gap-4 min-w-0 mr-4">
-                            <SettingToggle checked={filter.isEnabled} onChange={() => handleToggleFilter(filter.id)} />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2.5 flex-wrap">
-                                <span className="text-sm font-semibold text-white">{filter.name}</span>
-                                <span
-                                  className="inline-flex h-6.5 items-center gap-1 rounded-lg px-2 text-[10px] font-black leading-none shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]"
-                                  style={{ backgroundColor: bg, border: `1.5px solid ${border}`, color: textCol }}
-                                >
-                                  {filter.imageURL ? (
-                                    <img src={filter.imageURL} alt="" className="h-3 max-w-[40px] object-contain" />
-                                  ) : (
-                                    <span>{filter.name}</span>
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                            filter.isEnabled ? 'bg-accent/15 text-accent border border-accent/20' : 'bg-white/5 text-white/35 border border-white/5'
-                          }`}>
-                            {filter.isEnabled ? 'Enabled' : 'Disabled'}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </SettingSection>
-                )
-              })}
+              </SettingSection>
             </>
           )}
 
@@ -2553,244 +3151,166 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              <SettingSection
-                title="Developer / Player Debug"
-                description="Run mpv through a minimal path with no scrobbling, progress polling, metadata work, custom arguments, or automatic restart."
-              >
-                <SettingRow
-                  label="Isolated Playback Mode"
-                  description="Use this to determine whether freezes originate in mpv/the stream or in Aurales' full player integration."
-                >
-                  <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
-                </SettingRow>
-                <SettingRow label="Isolated hardware decoding" description="Compare auto-safe GPU decoding against software decoding.">
-                  <select
-                    value={store.isolatedPlaybackHwdec}
-                    onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
-                    className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="auto-safe">Auto-safe</option>
-                    <option value="no">Software only</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
-                  <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
-                </SettingRow>
-                <div className="flex gap-3 px-6 py-4">
-                  <button
-                    onClick={async () => {
-                      const path = await invoke<string | null>('select_local_video_file')
-                      if (!path) return
-                      store.setIsolatedPlaybackMode(true)
-                      setPlayerDebugTest({ url: path, title: 'Local isolation test' })
-                    }}
-                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
-                  >
-                    Test Local File
-                  </button>
-                  <button
-                    onClick={() => {
-                      store.setIsolatedPlaybackMode(true)
-                      setPlayerDebugTest({
-                        url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-                        title: 'Stable HTTP isolation test',
-                      })
-                    }}
-                    className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15"
-                  >
-                    Test Direct HTTP
-                  </button>
-                  <button
-                    onClick={async () => {
-                      const logs = await invoke<string[]>('get_player_debug_logs')
-                      await navigator.clipboard.writeText(logs.join('\n'))
-                    }}
-                    className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1]"
-                  >
-                    Copy Player Logs
-                  </button>
-                  <button
-                    onClick={() => invoke('clear_player_debug_logs')}
-                    className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-semibold text-white/65 hover:text-white"
-                  >
-                    Clear Logs
-                  </button>
-                </div>
-              </SettingSection>
+              {/* Cache mode */}
+              <section className="space-y-3">
+                <h3 className="px-1 text-sm font-semibold text-white/65">Cache Mode</h3>
+                <SettingSection>
+                  <SettingRow label="Cache mode" description="Choose where streamed video is cached. Changes apply when starting the next video.">
+                    <SelectMenu value={store.videoCacheMode} onChange={(e) => store.setVideoCacheMode(e.target.value as 'memory' | 'disk' | 'auto')} className="w-44">
+                      <option value="memory">Memory</option>
+                      <option value="disk">Disk</option>
+                      <option value="auto">Auto</option>
+                    </SelectMenu>
+                  </SettingRow>
+                </SettingSection>
+              </section>
 
-              {/* Hardware Decoding */}
-              <SettingSection title="Hardware Decoding" description="Offload video decoding to your GPU for smoother playback.">
-                <SettingRow label="Decoding API">
-                  <select
-                    value={store.hwdecMode}
-                    onChange={(e) => store.setHwdecMode(e.target.value as any)}
-                    className="w-64 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="auto">Auto-detect (Recommended)</option>
-                    <option value="no">Disabled (Software)</option>
-                    <option value="videotoolbox">macOS (VideoToolbox)</option>
-                    <option value="nvdec">NVIDIA (nvdec)</option>
-                    <option value="vaapi">Intel/AMD Linux (vaapi)</option>
-                  </select>
-                </SettingRow>
-              </SettingSection>
-
-              {/* Buffer */}
-              <SettingSection title="Buffer Cache" description="Adjust cache to prevent buffering on slow networks.">
-                <SettingRow label="Cache limit">
-                  <select
-                    value={store.cacheBufferSize}
-                    onChange={(e) => store.setCacheBufferSize(e.target.value as any)}
-                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
-                  >
-                    <option value="default">Default (150MB)</option>
-                    <option value="large">Large (256MB)</option>
-                    <option value="aggressive">Aggressive (512MB)</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="Cache duration (seconds)" description="Amount of stream time to buffer ahead.">
-                  <input
-                    type="number"
-                    min="5"
-                    max="600"
-                    value={store.mpvCacheSecs}
-                    onChange={(e) => store.setMpvCacheSecs(Number(e.target.value) || 60)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </SettingRow>
-                <SettingRow label="Network timeout (seconds)" description="Connection timeout before giving up on a stream.">
-                  <input
-                    type="number"
-                    min="5"
-                    max="120"
-                    value={store.mpvNetworkTimeout}
-                    onChange={(e) => store.setMpvNetworkTimeout(Number(e.target.value) || 15)}
-                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </SettingRow>
-              </SettingSection>
-
-              {/* Advanced Player Settings */}
-              <SettingSection title="Advanced Player Options" description="Configure custom parameters for the mpv player.">
-                <SettingRow label="Custom mpv arguments" description="Pass additional CLI flags to mpv (space-separated, e.g. --alang=eng --volume-max=150).">
-                  <input
-                    type="text"
-                    placeholder="e.g. --alang=eng --volume-max=150"
-                    value={store.mpvCustomArgs}
-                    onChange={(e) => store.setMpvCustomArgs(e.target.value)}
-                    className="w-96 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold focus:outline-none focus:border-accent/50"
-                  />
-                </SettingRow>
-                <div className="px-6 py-4">
-                  <button
-                    onClick={() => {
-                      if (confirm("Are you sure you want to reset all player settings to safe defaults?")) {
-                        store.resetPlayerSettings()
-                      }
-                    }}
-                    className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-200 rounded-xl text-sm font-semibold transition-all"
-                  >
-                    Reset Player Settings to Safe Defaults
-                  </button>
-                </div>
-              </SettingSection>
-
-              {/* Audio Passthrough */}
-              <SettingSection>
-                <SettingRow label="Digital Audio Passthrough" description="Output compressed formats (Dolby Atmos, DTS) to an external receiver.">
-                  <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
-                </SettingRow>
-              </SettingSection>
+              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl">
+                <details className="group">
+                  <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Troubleshooting</h3>
+                      <p className="text-sm text-white/60 mt-0.5">Isolated playback mode for diagnosing player issues.</p>
+                    </div>
+                    <svg className="w-4 h-4 text-white/60 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+                  </summary>
+                  <div className="divide-y divide-white/[0.04]">
+                    <SettingRow
+                      label="Isolated Playback Mode"
+                      description="Runs mpv without scrobbling, progress polling, or metadata to isolate player issues."
+                    >
+                      <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
+                    </SettingRow>
+                    <SettingRow label="Isolated hardware decoding" description="Compare GPU decoding against software decoding.">
+                      <SelectMenu
+                        value={store.isolatedPlaybackHwdec}
+                        onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
+                        className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                      >
+                        <option value="auto-safe">Auto-safe</option>
+                        <option value="no">Software only</option>
+                      </SelectMenu>
+                    </SettingRow>
+                    <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
+                      <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
+                    </SettingRow>
+                    <div className="flex flex-wrap gap-3 px-6 py-4">
+                      <button
+                        onClick={async () => {
+                          const path = await invoke<string | null>('select_local_video_file')
+                          if (!path) return
+                          store.setIsolatedPlaybackMode(true)
+                          setPlayerDebugTest({ url: path, title: 'Local isolation test' })
+                        }}
+                        className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer"
+                      >
+                        Test Local File
+                      </button>
+                      <button
+                        onClick={() => {
+                          store.setIsolatedPlaybackMode(true)
+                          setPlayerDebugTest({
+                            url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+                            title: 'Stable HTTP isolation test',
+                          })
+                        }}
+                        className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer"
+                      >
+                        Test Direct HTTP
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const logs = await invoke<string[]>('get_player_debug_logs')
+                          await navigator.clipboard.writeText(logs.join('\n'))
+                        }}
+                        className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1] cursor-pointer"
+                      >
+                        Copy Player Logs
+                      </button>
+                    </div>
+                  </div>
+                </details>
+              </div>
 
               {/* Auto-skip */}
               <SettingSection>
-                <SettingRow label="Auto-skip intros, recaps, and credits" description="Jump over skip ranges from PublicMetaDB or IntroDB.">
-                  <SettingToggle checked={store.autoSkipSegments} onChange={(v) => store.setAutoSkipSegments(v)} />
+                <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
+                  <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
+                </SettingRow>
+                <SettingRow label="Automatic Stream Recovery" description="When a Smart Play source fails, preserve your playback session and continue with the next compatible source.">
+                  <SettingToggle checked={store.automaticStreamRecovery} onChange={(v) => store.setAutomaticStreamRecovery(v)} />
+                </SettingRow>
+                <SettingRow label="Playback source preload" description="Smart checks one Continue Watching title and up to three healthy addons. Aggressive keeps five titles warm.">
+                  <SettingSelect
+                    value={store.playbackPreloadMode}
+                    onChange={(value) => store.setPlaybackPreloadMode(value as 'off' | 'smart' | 'aggressive')}
+                    options={[
+                      { value: 'off', label: 'Off' },
+                      { value: 'smart', label: 'Smart' },
+                      { value: 'aggressive', label: 'Aggressive' },
+                    ]}
+                  />
                 </SettingRow>
               </SettingSection>
 
-              {/* Subtitle Styling */}
-              <SettingSection title="Subtitle Styling" description="Customize subtitle appearance inside the player.">
-                <div className="px-6 py-4 space-y-6">
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Font Size</span>
-                      <span className="text-accent font-bold">{store.subtitleFontSize}px</span>
-                    </div>
-                    <input
-                      type="range" min="16" max="64"
-                      value={store.subtitleFontSize}
-                      onChange={(e) => store.setSubtitleFontSize(Number(e.target.value))}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-white">Background Opacity</span>
-                      <span className="text-accent font-bold">{Math.round(Number(store.subtitleBgOpacity) * 100)}%</span>
-                    </div>
-                    <input
-                      type="range" min="0" max="1" step="0.05"
-                      value={store.subtitleBgOpacity}
-                      onChange={(e) => store.setSubtitleBgOpacity(e.target.value)}
-                      className="w-full h-1.5 bg-black/45 rounded-lg appearance-none cursor-pointer accent-accent"
-                    />
-                  </div>
-                  {/* Preview */}
-                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04] flex items-center justify-center min-h-[90px] relative overflow-hidden">
-                    <div className="absolute inset-0 bg-cover bg-center opacity-30" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=300&auto=format&fit=crop')` }} />
-                    <div className="relative z-10 text-center font-bold tracking-wide" style={{ fontSize: `${store.subtitleFontSize * 0.75}px`, textShadow: '0 2px 2px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.9)' }}>
-                      <span className="px-2 py-0.5 rounded" style={{ backgroundColor: `rgba(0, 0, 0, ${store.subtitleBgOpacity})` }}>
-                        Subtitles Preview text
-                      </span>
-                    </div>
-                  </div>
-                </div>
+              <SettingSection title="Skip Segments" description="Control buttons and automatic skipping independently. Segment times come from PublicMetaDB or IntroDB.">
+                <SettingRow label="Show Skip Intro button" description="Show a player button during recaps and intros.">
+                  <SettingToggle checked={store.showSkipIntroButton} onChange={store.setShowSkipIntroButton} />
+                </SettingRow>
+                <SettingRow label="Automatically skip intros" description="Jump past detected recaps and intros without waiting for input.">
+                  <SettingToggle checked={store.autoSkipIntro} onChange={store.setAutoSkipIntro} />
+                </SettingRow>
+                <SettingRow label="Show Skip Credits button" description="Show a player button when detected credits begin.">
+                  <SettingToggle checked={store.showSkipCreditsButton} onChange={store.setShowSkipCreditsButton} />
+                </SettingRow>
+                <SettingRow label="Automatically skip credits" description="Jump to the end of a detected credits segment.">
+                  <SettingToggle checked={store.autoSkipCredits} onChange={store.setAutoSkipCredits} />
+                </SettingRow>
               </SettingSection>
 
-              {/* Subtitle Translation */}
-              <SettingSection title="Subtitle Translation" description="AI-powered subtitle translation via OpenRouter.">
-                <SettingRow label="Translate subtitles" description="Create and prefer an AI-translated track on playback.">
-                  <SettingToggle checked={store.subtitleTranslationEnabled} onChange={(v) => store.setSubtitleTranslationEnabled(v)} />
+              <SettingSection title="Scrub Preview" description="Configure the thumbnail shown while seeking on the timeline.">
+                <SettingRow label="Full-file scrub previews" description="Generate preview thumbnails at any point in the stream. Turn off to keep timestamp-only seeking.">
+                  <SettingToggle checked={store.scrubThumbnailPreviews} onChange={store.setScrubThumbnailPreviews} />
                 </SettingRow>
-                <SettingRow label="Translate to" description="Translated track appears first in subtitle list.">
-                  <select
-                    value={store.subtitleTranslationLang}
-                    onChange={(e) => {
-                      const language = e.target.value
-                      store.setSubtitleTranslationLang(language)
-                      store.setSubtitleTranslationEnabled(Boolean(language))
-                    }}
-                    className="w-40 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
-                  >
-                    <option value="">None</option>
-                    {APP_LANGUAGES.map((lang) => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
+                <SettingRow label="Show loading indicator" description="Show a spinner and status while the player opens a stream.">
+                  <SettingToggle checked={store.showPlayerLoadingIndicator} onChange={store.setShowPlayerLoadingIndicator} />
                 </SettingRow>
-                <SettingRow label="Cues Ahead" description="Number of subtitle cues to pre-translate.">
-                  <select
-                    value={store.translationCuesAhead}
-                    onChange={(e) => store.setTranslationCuesAhead(Number(e.target.value))}
-                    className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
-                  >
-                    {[1, 2, 3, 5, 8, 10, 15, 20].map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </SettingRow>
-                <SettingRow label="Context-Aware Translation" description="Use surrounding dialogue for more natural translations.">
-                  <SettingToggle checked={store.contextAwareTranslation} onChange={(v) => store.setContextAwareTranslation(v)} />
-                </SettingRow>
-                <div className="px-6 py-3 text-xs text-white/30 leading-relaxed">
-                  {store.openrouterApiKey ? 'Ready (OpenRouter)' : 'OpenRouter API key required'}.
-                  Subtitle text is sent to OpenRouter. No account data or viewing history is included.
+              </SettingSection>
+
+              {/* Seek step */}
+              <SettingSection title="Seek Step" description="How far the arrow keys and the skip buttons jump.">
+                <div className="px-6 py-4">
+                  <div className="flex flex-wrap gap-2">
+                    {[5, 10, 15, 30, 60].map((secs) => {
+                      const active = store.seekStepSeconds === secs
+                      return (
+                        <button
+                          key={secs}
+                          onClick={() => store.setSeekStepSeconds(secs)}
+                          className={`h-8 flex items-center justify-center px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            active ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-white/60 hover:bg-white/10 hover:text-white border-transparent'
+                          }`}
+                        >
+                          {secs}s
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               </SettingSection>
 
               {/* Next episode prompt */}
-              <SettingSection title="Next Episode Prompt" description="When the Up Next pill appears before an episode ends.">
+              <SettingSection title="Next Episode" description="Show the next episode near an ending or credits chapter, with a near-end fallback.">
+                <SettingRow label="Automatically play next episode" description="Start the next episode when the Up Next countdown finishes. When off, the prompt waits for you.">
+                  <SettingToggle checked={store.autoPlayNextEpisode} onChange={store.setAutoPlayNextEpisode} />
+                </SettingRow>
+                <SettingRow label="Countdown duration" description="How long the Up Next prompt waits before starting playback.">
+                  <SettingSelect
+                    value={store.nextEpisodeCountdownSeconds}
+                    onChange={(value) => store.setNextEpisodeCountdownSeconds(Number(value) as 5 | 10 | 15 | 30)}
+                    options={[5, 10, 15, 30].map((seconds) => ({ value: seconds, label: `${seconds} seconds` }))}
+                  />
+                </SettingRow>
                 <div className="px-6 py-4">
                   <div className="flex flex-wrap gap-2">
                     {(['auto', 'off', '30s', '45s', '1m', '1.5m', '2m'] as const).map((opt) => {
@@ -2812,17 +3332,36 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
+              {/* Audio Passthrough */}
+              <SettingSection>
+                <SettingRow label="Digital Audio Passthrough" description="Use only with a compatible HDMI receiver. Leave off for normal speakers or headphones to avoid silent playback.">
+                  <SettingToggle checked={store.audioPassthrough} onChange={(v) => store.setAudioPassthrough(v)} />
+                </SettingRow>
+              </SettingSection>
+
               <p className="text-xs text-white/25 leading-relaxed px-1">
                 Scrobble, resume, watched checkmarks, and sync provider settings are under Progress & Sync.
               </p>
             </>
           )}
 
+          {activeTab === 'shortcuts' && <KeyboardShortcutsSettings />}
+
           {/* ═══════════════════════════════════════════════
               WATCH TOGETHER TAB
               ═══════════════════════════════════════════════ */}
           {activeTab === 'watch-together' && (
             <>
+              <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex gap-3.5 items-start mb-6">
+                <span className="text-amber-500 text-lg leading-none mt-0.5 select-none">⚠️</span>
+                <div>
+                  <h4 className="text-sm font-bold text-amber-200">Experimental Feature</h4>
+                  <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                    Watch Together is currently in experimental preview and may not function correctly. You may encounter synchronization issues, drift, or connection drops.
+                  </p>
+                </div>
+              </div>
+
               <SettingSection title="Server" description="WebSocket server for Watch Together rooms.">
                 <SettingRow label="Server URL" description="WebSocket URL of the Watch Together server.">
                   <input
@@ -2849,14 +3388,14 @@ export default function SettingsPage() {
 
               <SettingSection title="Room Defaults" description="Default settings for new rooms you create.">
                 <SettingRow label="Default control mode" description="Who can control playback in rooms you host.">
-                  <select
+                  <SelectMenu
                     value={wtStore.defaultControlMode}
                     onChange={(e) => wtStore.setDefaultControlMode(e.target.value as 'host_only' | 'everyone')}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
                   >
                     <option value="host_only">Host only</option>
                     <option value="everyone">Everyone can control</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Require ready check" description="Wait for all participants before starting playback.">
                   <SettingToggle checked={wtStore.requireReadyCheck} onChange={(v) => wtStore.setRequireReadyCheck(v)} />
@@ -2867,14 +3406,11 @@ export default function SettingsPage() {
                 <SettingRow label="Auto-copy invite link" description="Copy the room invite link when creating a room.">
                   <SettingToggle checked={wtStore.autoCopyInvite} onChange={(v) => wtStore.setAutoCopyInvite(v)} />
                 </SettingRow>
-                <SettingRow label="Allow different streams" description="Let guests use a different stream source than the host.">
-                  <SettingToggle checked={wtStore.allowGuestDifferentStream} onChange={(v) => wtStore.setAllowGuestDifferentStream(v)} />
-                </SettingRow>
               </SettingSection>
 
               <SettingSection title="Playback Sync" description="Fine-tune how playback synchronization works.">
                 <SettingRow label="Drift correction threshold" description="Seconds of drift before forcing a seek correction.">
-                  <select
+                  <SelectMenu
                     value={wtStore.driftThreshold}
                     onChange={(e) => wtStore.setDriftThreshold(Number(e.target.value))}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
@@ -2884,22 +3420,131 @@ export default function SettingsPage() {
                     <option value={3}>3 seconds</option>
                     <option value={5}>5 seconds</option>
                     <option value={10}>10 seconds</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
                 <SettingRow label="Sync interval" description="How often the host broadcasts its playback position.">
-                  <select
+                  <SelectMenu
                     value={wtStore.syncInterval}
                     onChange={(e) => wtStore.setSyncInterval(Number(e.target.value))}
                     className="bg-white/5 border border-white/8 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-white/20 cursor-pointer"
                   >
+                    <option value={0.5}>0.5 seconds</option>
+                    <option value={1}>1 second</option>
+                    <option value={2}>2 seconds</option>
                     <option value={3}>3 seconds</option>
                     <option value={5}>5 seconds</option>
                     <option value={10}>10 seconds</option>
                     <option value={15}>15 seconds</option>
-                  </select>
+                  </SelectMenu>
                 </SettingRow>
               </SettingSection>
             </>
+          )}
+
+          {/* ═══════════════════════════════════════════════
+              DISCOVERY TAB
+              ═══════════════════════════════════════════════ */}
+          {activeTab === 'discovery' && (
+            <div className="space-y-6">
+              {/* Discovery Preferences */}
+              <SettingSection title="Discovery Preferences" description="Tune regional availability and recommendation quality.">
+                <SettingRow label="Region">
+                  <SelectMenu
+                    value={store.discoveryRegion}
+                    onChange={(e) => store.setDiscoveryRegion(e.target.value)}
+                    className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    {[
+                      { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' }, { code: 'CA', name: 'Canada' },
+                      { code: 'AU', name: 'Australia' }, { code: 'NZ', name: 'New Zealand' },
+                      { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' }, { code: 'ES', name: 'Spain' },
+                      { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' }, { code: 'BE', name: 'Belgium' },
+                      { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' }, { code: 'DK', name: 'Denmark' },
+                      { code: 'FI', name: 'Finland' }, { code: 'PT', name: 'Portugal' }, { code: 'PL', name: 'Poland' },
+                      { code: 'AT', name: 'Austria' }, { code: 'CH', name: 'Switzerland' },
+                      { code: 'JP', name: 'Japan' }, { code: 'KR', name: 'South Korea' }, { code: 'IN', name: 'India' },
+                      { code: 'BR', name: 'Brazil' }, { code: 'MX', name: 'Mexico' }, { code: 'AR', name: 'Argentina' },
+                      { code: 'ZA', name: 'South Africa' }, { code: 'TR', name: 'Turkey' }, { code: 'RU', name: 'Russia' },
+                      { code: 'PH', name: 'Philippines' }, { code: 'TH', name: 'Thailand' },
+                    ].map((region) => (
+                      <option key={region.code} value={region.code}>{region.name}</option>
+                    ))}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Minimum rating">
+                  <SelectMenu
+                    value={store.discoveryMinRating}
+                    onChange={(e) => store.setDiscoveryMinRating(Number(e.target.value))}
+                    className="w-32 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer"
+                  >
+                    {[0, 5, 6, 7, 8].map((rating) => (
+                      <option key={rating} value={rating}>{rating === 0 ? 'Any' : `${rating}+ / 10`}</option>
+                    ))}
+                  </SelectMenu>
+                </SettingRow>
+                <SettingRow label="Include adult titles" description="Applies to all TMDB discovery rails.">
+                  <SettingToggle checked={store.discoveryIncludeAdult} onChange={(v) => store.setDiscoveryIncludeAdult(v)} />
+                </SettingRow>
+              </SettingSection>
+
+              {/* AUDIENCE PRESET MODES */}
+              <SettingSection title="Audience" description="Configure default age suitability rules and content filters.">
+                <div className="px-6 py-5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {AUDIENCE_OPTIONS.map(({ mode: m, title, subtitle }) => {
+                      const active = localPrefs.audienceMode === m
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => handlePrefsChange({ audienceMode: m })}
+                          className={`flex flex-col items-start p-4 rounded-xl text-left transition-all border cursor-pointer ${
+                            active
+                              ? 'bg-white text-black border-white shadow-xl scale-[1.01]'
+                              : 'bg-white/[0.03] text-white hover:bg-white/[0.06] border-white/[0.06] hover:border-white/10'
+                          }`}
+                        >
+                          <span className="text-sm font-black tracking-wide">{title}</span>
+                          <span className={`text-xs mt-1 ${active ? 'text-black/60' : 'text-white/60'}`}>{subtitle}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </SettingSection>
+
+              {/* ADVANCED WEIGHTS & FILTERS */}
+              <SettingSection title="Advanced Weights & Filters" description="Fine-tune scoring weights, languages, year ranges, keywords, and sorting.">
+                <div className="px-6 py-6">
+                  <DiscoverPrefsPanel
+                    localPrefs={localPrefs}
+                    onChange={handlePrefsChange}
+                    onReset={handleReset}
+                  />
+                </div>
+              </SettingSection>
+
+              {/* SAVE / CANCEL BAR */}
+              <div className="flex items-center justify-between pt-4 mt-6">
+                <span className="text-xs text-white/60">Ready to save</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="px-5 py-2 rounded-full text-xs font-semibold text-white/60 hover:text-white transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    className="px-6 py-2.5 rounded-full text-xs font-bold bg-white text-black hover:bg-white/90 active:scale-[0.97] transition-all cursor-pointer shadow-lg shadow-black/30"
+                  >
+                    Save Changes
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* ═══════════════════════════════════════════════
@@ -2907,6 +3552,9 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'advanced' && (
             <>
+              {/* App Update */}
+              <AppUpdateSection />
+
               {/* Backup & Restore */}
               <SettingSection title="Configuration Backup" description="Export or restore all local settings, tokens, and addon lists.">
                 <div className="px-6 py-4">
@@ -2914,7 +3562,7 @@ export default function SettingsPage() {
                     <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06] flex flex-col justify-between h-36">
                       <div>
                         <span className="text-sm font-semibold text-white">Export Backup</span>
-                        <p className="text-xs text-white/35 mt-1">Download configurations to your local drive.</p>
+                        <p className="text-xs text-white/60 mt-1">Includes API keys and service tokens. Keep the downloaded file private.</p>
                       </div>
                       <button
                         onClick={handleExportConfig}
@@ -2926,7 +3574,7 @@ export default function SettingsPage() {
                     <div className="bg-white/[0.03] rounded-xl p-4 border border-white/[0.06] flex flex-col justify-between h-36">
                       <div>
                         <span className="text-sm font-semibold text-white">Restore Backup</span>
-                        <p className="text-xs text-white/35 mt-1">Import a JSON backup to overwrite current settings.</p>
+                        <p className="text-xs text-white/60 mt-1">Import a JSON backup to overwrite current settings.</p>
                       </div>
                       <label className="w-full py-2 bg-white/5 border border-white/[0.08] hover:bg-white/10 text-white font-bold rounded-xl text-xs text-center transition-colors cursor-pointer block">
                         <span>Select Backup File</span>
@@ -2937,20 +3585,16 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              {/* Clear Image Cache */}
-              <SettingSection title="Backdrop Cache" description="Clear cached backdrop and poster image URLs.">
-                <SettingRow label="Clear Image Cache" description="Wipe backdrop cache items to force fresh links.">
-                  <button
-                    onClick={handleClearBackdropCache}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/[0.08] text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
-                  >
-                    Clear Cache
-                  </button>
-                </SettingRow>
-              </SettingSection>
-
               {/* Cache Management */}
               <CacheManagementSection />
+
+              {backdropCacheMessage && (
+                <div className="px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl">
+                  <p className="text-xs text-accent font-semibold">{backdropCacheMessage}</p>
+                </div>
+              )}
+
+              <ImageCacheSection onClearBackdropCache={handleClearBackdropCache} />
 
               {/* Factory Reset */}
               <SettingSection title="Danger Zone" description="Irreversible actions. Proceed with caution.">
@@ -2970,13 +3614,16 @@ export default function SettingsPage() {
 
         </div>
       </div>
+      )}
       {playerDebugTest && (
-        <NativeMpvPlayer
-          url={playerDebugTest.url}
-          title={playerDebugTest.title}
-          onClose={() => setPlayerDebugTest(null)}
-          onPickAnother={() => setPlayerDebugTest(null)}
-        />
+        <Suspense fallback={null}>
+          <NativeMpvPlayer
+            url={playerDebugTest.url}
+            title={playerDebugTest.title}
+            onClose={() => setPlayerDebugTest(null)}
+            onPickAnother={() => setPlayerDebugTest(null)}
+          />
+        </Suspense>
       )}
     </div>
   )

@@ -1,11 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { SearchResult } from '../types'
-import { applySearchResultArt } from '../services/artwork'
-import { getTmdbCardMetadata, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import type { SearchResult, WatchProgress } from '../types'
+import { applyInitialArtworkPreference, applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders, resolveBetterPoster } from '../services/artwork'
+import { getTmdbCardMetadata, getTmdbCleanPoster, getTmdbLandscapeBackdrop } from '../services/tmdb'
+import { isWatchedFromProviders, searchResultToLookup } from '../services/watchedStatus'
+import { getTrailerSource, type TrailerSource } from '../services/trailers'
+import { cachedImage, retryImageFromSource, warmCachedImage, watchStalledImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
-import { getLocalWatchedStatus, isWatchedFromProviders, searchResultToLookup } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
+import { cardArtworkUrl } from '../services/mediaPresentation'
+import { nativeTrailerPlayerSupported } from '../services/player'
+import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
+import { ensurePosterProgress, getPosterProgressSnapshot, subscribePosterProgress } from '../services/posterProgress'
+
+const TrailerPreview = React.lazy(() => import('./TrailerPreview'))
+const HeroMpvTrailer = React.lazy(() => import('./HeroMpvTrailer'))
 
 const TMDB_GENRES: Record<number, string> = {
   28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',
@@ -15,53 +24,332 @@ const TMDB_GENRES: Record<number, string> = {
   10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics',
 }
 
-interface MediaCardProps {
-  item: SearchResult
-  layout?: 'poster' | 'landscape'
-  disableArtOverride?: boolean
+const localProgressIndexes = new WeakMap<Map<string, WatchProgress>, Map<string, number>>()
+
+function useStalledArtwork(url?: string) {
+  const cleanupRef = useRef<(() => void) | undefined>(undefined)
+  return useCallback((image: HTMLImageElement | null) => {
+    cleanupRef.current?.()
+    cleanupRef.current = image ? watchStalledImage(image, url) : undefined
+  }, [url])
 }
 
-function MediaCard({ item, layout = 'poster', disableArtOverride = false }: MediaCardProps) {
-  const cardRef = useRef<HTMLButtonElement>(null)
-  const [isVisible, setIsVisible] = useState(false)
+function getLocalProgressIndex(entries: Map<string, WatchProgress>): Map<string, number> {
+  const cached = localProgressIndexes.get(entries)
+  if (cached) return cached
+  const index = new Map<string, number>()
+  for (const [key, progress] of entries) {
+    if (progress.completed || progress.durationSeconds <= 0) continue
+    const type = progress.mediaType === 'movie' ? 'movie' : 'series'
+    const pct = (progress.progressSeconds / progress.durationSeconds) * 100
+    const suffix = progress.season != null && progress.episode != null ? `:${progress.season}:${progress.episode}` : ''
+    const identifiers = [key, progress.id, progress.mediaId, progress.imdbId, progress.tmdbId,
+      progress.tmdbId != null ? `tmdb-${progress.tmdbId}` : undefined]
+    for (const identifier of identifiers) {
+      if (identifier == null) continue
+      const value = String(identifier)
+      for (const alias of suffix && value.endsWith(suffix) ? [value, value.slice(0, -suffix.length)] : [value]) {
+        const indexedKey = `${type}:${alias}`
+        index.set(indexedKey, Math.max(index.get(indexedKey) ?? 0, pct))
+      }
+    }
+    if (progress.title) {
+      const title = progress.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      if (title) {
+        const titleKey = `title:${type}:${title}`
+        index.set(titleKey, Math.max(index.get(titleKey) ?? 0, pct))
+      }
+    }
+  }
+  localProgressIndexes.set(entries, index)
+  return index
+}
 
-  // IntersectionObserver: only mark visible once, with 200px preload margin
-  useEffect(() => {
-    const el = cardRef.current
-    if (!el) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setIsVisible(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '200px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
+function progressIdAliases(ids: Array<string | number | null | undefined>): string[] {
+  const aliases = new Set<string>()
+  for (const id of ids) {
+    if (id == null) continue
+    const value = String(id).trim()
+    if (!value) continue
+    aliases.add(value)
+  }
+  return [...aliases]
+}
+
+interface MediaCardProps {
+  item: SearchResult
+  cardIndex?: number
+  layout?: 'poster' | 'ranked' | 'feature' | 'landscape'
+  disableArtOverride?: boolean
+  disableTrailerPreview?: boolean
+  rank?: number
+  onFocusItem?: (item: SearchResult, cardIndex?: number) => void
+  onUnfocusItem?: (item: SearchResult, cardIndex?: number) => void
+  cinematicMode?: boolean
+  cinematicFocused?: boolean
+  /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
+  cinematicExpand?: boolean
+  /** Fit special layouts into the fixed-home shelf rather than the page flow. */
+  fixedHome?: boolean
+}
+
+function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true, fixedHome = false }: MediaCardProps) {
+  const cardRef = useRef<HTMLButtonElement>(null)
+  const hoverTimerRef = useRef<number | null>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const hoverRequestRef = useRef(0)
+  const mouseFollowFrameRef = useRef<number | null>(null)
+  const mouseFollowPointerRef = useRef<{ card: HTMLButtonElement; x: number; y: number } | null>(null)
+  const isVisible = useVisibilityOnce(cardRef, { rootMargin: '200px' })
+  // Resolve the final Better Poster well before the card can enter view. The
+  // regular visibility gate remains tight so provider metadata still avoids
+  // fanning out during scroll.
+  const isPosterApproaching = useVisibilityOnce(cardRef, { rootMargin: '1000px' })
+  const [hoverTrailer, setHoverTrailer] = useState<TrailerSource | null>(null)
+  const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
+  const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
+  const [suppressPosterHover, setSuppressPosterHover] = useState(false)
+  const [reducedMotion, setReducedMotion] = useState(false)
+  const [seriesCompleted, setSeriesCompleted] = useState(false)
+  const [posterProviderWatched, setPosterProviderWatched] = useState(false)
+
   const navigate = useNavigate()
-  const displayItem = disableArtOverride ? item : applySearchResultArt(item)
-  const [imgError, setImgError] = useState(false)
-  const [backdropError, setBackdropError] = useState(false)
+  const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(new Set())
   const [resolvedBackdrop, setResolvedBackdrop] = useState<string | undefined>(undefined)
   const [resolvedPoster, setResolvedPoster] = useState<string | undefined>(undefined)
+  const [resolvedLogo, setResolvedLogo] = useState<string | undefined>(undefined)
+  const [cleanTmdbPoster, setCleanTmdbPoster] = useState<string | undefined>(undefined)
+  const [cleanTmdbLogo, setCleanTmdbLogo] = useState<string | undefined>(undefined)
+  const [resolvedCustomArt, setResolvedCustomArt] = useState<{ poster?: string; backdrop?: string; logo?: string }>({})
+  const [betterPosterUnavailable, setBetterPosterUnavailable] = useState(false)
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined)
-  const [providerWatched, setProviderWatched] = useState(false)
-  const watchProgress = useAppStore((s) => s.watchProgress)
-  const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
+  // Provider artwork is enrichment, not a prerequisite for a usable card.
+  // This becomes true on deliberate focus/hover, so a shelf of already
+  // artwork-rich catalog items does not fan out into dozens of requests.
+  const [detailIntent, setDetailIntent] = useState(false)
   const posterSize = useAppStore((s) => s.posterSize)
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
+  const compactSpecialLayouts = useAppStore((s) => s.interfaceTheme) === 'default'
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
+  const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)
+  const posterTrailerPreviews = useAppStore((s) => s.posterTrailerPreviews)
+  const posterTrailerHoverDelayMs = useAppStore((s) => s.posterTrailerHoverDelayMs)
+  const posterTrailerSound = useAppStore((s) => s.posterTrailerSound)
+  const preferredAudio = useAppStore((s) => s.preferredAudio)
+  const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
+  const artProviders = useAppStore((s) => s.artProviders)
+  const fanartApiKey = useAppStore((s) => s.fanartApiKey)
+  const customArtUrls = useAppStore((s) => s.customArtUrls)
+  const betterPosters = useAppStore((s) => s.betterPosters)
+  const showPosterWatchStatus = useAppStore((s) => s.showPosterWatchStatus)
+  const posterWatchedSourceFlags = useAppStore((s) => [s.traktConnected, s.simklConnected, Boolean(s.pmdbApiKey), Boolean(s.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens')), s.anilistConnected].map(Number).join(''))
+  const posterWatchedSources = useMemo(() => [
+    'local',
+    ...(posterWatchedSourceFlags[0] === '1' ? ['trakt'] : []),
+    ...(posterWatchedSourceFlags[1] === '1' ? ['simkl'] : []),
+    ...(posterWatchedSourceFlags[2] === '1' ? ['pmdb'] : []),
+    ...(posterWatchedSourceFlags[3] === '1' ? ['mdblist'] : []),
+    ...(posterWatchedSourceFlags[4] === '1' ? ['anilist'] : []),
+  ] as import('../services/watchedStatus').WatchedSource[], [posterWatchedSourceFlags])
+  const posterProgressConnections = posterWatchedSourceFlags
+  const allServiceProgress = useSyncExternalStore(subscribePosterProgress, getPosterProgressSnapshot, getPosterProgressSnapshot)
+  const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const addRecentlyWatched = useAppStore((s) => s.addRecentlyWatched)
+  const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
+  const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
+  // Search-result artwork reads provider settings from the store. Keep its
+  // derived object stable across ordinary card renders, but refresh it when
+  // either the source item or artwork settings change.
+  const displayItem = useMemo(
+    () => disableArtOverride ? item : applySearchResultArt(item),
+    // The helper reads artwork settings from the store, so its fingerprint is a deliberate dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [disableArtOverride, item, customArtKey],
+  )
+  const initialArtItem = useMemo(
+    () => disableArtOverride
+      ? displayItem
+      : applyInitialArtworkPreference(displayItem, displayItem.type, Boolean(displayItem.isAnime)),
+    [disableArtOverride, displayItem],
+  )
+  const customArt = useMemo(
+    () => disableArtOverride ? {} : getSearchResultCustomArt(item),
+    // The helper reads these store settings directly; this fingerprint keeps the memo in sync with them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [disableArtOverride, item, customArtKey],
+  )
+  const customPosterNeedsImdbId = betterPosters.enabled || customArtUrls.posterUrl.includes('{imdb_id}')
+  const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
+
+  const announceFocus = () => {
+    if (displayItem.type === 'movie') {
+      void import('../pages/MovieDetailPage')
+    } else {
+      void import('../pages/SeriesDetailPage')
+    }
+    const focusedItem = {
+      ...displayItem,
+      poster: posterUrl || initialArtItem.poster,
+      backdrop: backdropUrl || initialArtItem.backdrop,
+      logo: logoUrl || initialArtItem.logo,
+    }
+    onFocusItem?.(focusedItem, cardIndex)
+    window.dispatchEvent(new CustomEvent<SearchResult>('aurales:media-focus', { detail: focusedItem }))
+  }
+
+  useEffect(() => {
+    if (isVisible) ensurePosterProgress()
+  }, [isVisible, posterProgressConnections])
+
+  useEffect(() => {
+    if (!isPosterApproaching || disableArtOverride || !betterPosters.enabled || customArt.poster) return
+    let cancelled = false
+    setBetterPosterUnavailable(false)
+    void resolveBetterPoster(displayItem).then((poster) => {
+      if (cancelled) return
+      if (poster) setResolvedCustomArt((current) => current.poster === poster ? current : { ...current, poster })
+      else setBetterPosterUnavailable(true)
+    })
+    return () => { cancelled = true }
+  }, [isPosterApproaching, disableArtOverride, betterPosters.enabled, customArt.poster, displayItem])
+  const mouseFollowEnabled = !homeCardAnimations && !reducedMotion
+  const handleMouseFollow = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!mouseFollowEnabled) return
+    mouseFollowPointerRef.current = { card: event.currentTarget, x: event.clientX, y: event.clientY }
+    if (mouseFollowFrameRef.current) return
+    mouseFollowFrameRef.current = window.requestAnimationFrame(() => {
+      mouseFollowFrameRef.current = null
+      const pointer = mouseFollowPointerRef.current
+      if (!pointer) return
+      const bounds = pointer.card.getBoundingClientRect()
+      const horizontal = ((pointer.x - bounds.left) / bounds.width - 0.5) * 2
+      const vertical = ((pointer.y - bounds.top) / bounds.height - 0.5) * 2
+      pointer.card.style.setProperty('--mouse-card-tilt-x', `${(-vertical * 2).toFixed(2)}deg`)
+      pointer.card.style.setProperty('--mouse-card-tilt-y', `${(horizontal * 2).toFixed(2)}deg`)
+      pointer.card.style.setProperty('--mouse-card-shift-x', `${(horizontal * 1.5).toFixed(1)}px`)
+      pointer.card.style.setProperty('--mouse-card-shift-y', `${(vertical * 1).toFixed(1)}px`)
+    })
+  }
+  const resetMouseFollow = (card: HTMLButtonElement) => {
+    mouseFollowPointerRef.current = null
+    if (mouseFollowFrameRef.current) window.cancelAnimationFrame(mouseFollowFrameRef.current)
+    mouseFollowFrameRef.current = null
+    card.style.removeProperty('--mouse-card-tilt-x')
+    card.style.removeProperty('--mouse-card-tilt-y')
+    card.style.removeProperty('--mouse-card-shift-x')
+    card.style.removeProperty('--mouse-card-shift-y')
+  }
+
+  const completedIds = useAppStore((s) => s.completedIds)
+
+  const localProgressPct = useAppStore((s) => {
+    const index = getLocalProgressIndex(s.watchProgress)
+    const type = item.type === 'movie' ? 'movie' : 'series'
+    let pct: number | null = null
+    for (const key of [item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined]) {
+      if (key == null) continue
+      const match = index.get(`${type}:${key}`)
+      if (match != null) pct = Math.max(pct ?? 0, match)
+    }
+    const title = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+    const titlePct = index.get(`title:${type}:${title}`)
+    if (titlePct != null) pct = Math.max(pct ?? 0, titlePct)
+    return pct
+  })
+  const continueWatchingProgressPct = useAppStore((s) => {
+    const progress = s.continueWatchingProgress
+    const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+    const titleProgress = progress.get(`title:${item.type}:${normalizedTitle}`) ?? progress.get(`title:${normalizedTitle}`)
+    if (titleProgress != null) return titleProgress
+    for (const key of progressIdAliases([item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+      item.malId != null ? `mal-${item.malId}` : undefined,
+      item.anilistId != null ? `anilist-${item.anilistId}` : undefined])) {
+      const pct = progress.get(`${item.type}:${key}`) ?? progress.get(key)
+      if (pct != null) return pct
+    }
+    return null
+  })
 
   const ratingStr = useMemo(() => {
     if (!displayItem.rating) return null
-    const str = String(displayItem.rating)
-    return str.replace(/\/10$/, '').trim()
+    const n = Number(displayItem.rating)
+    if (isNaN(n)) return null
+    const formatted = n % 1 === 0 ? String(n) : n.toFixed(1)
+    return formatted.replace(/\/10$/, '').trim()
   }, [displayItem.rating])
+  const landscapeGenre = useMemo(() => {
+    const rawGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : undefined)
+      || resolvedGenre
+    return typeof rawGenre === 'object' && rawGenre
+      ? (rawGenre as { name?: string; title?: string }).name || (rawGenre as { title?: string }).title
+      : rawGenre
+  }, [displayItem.genreIds, displayItem.genres, resolvedGenre])
+
+  const getDisplayProvider = (item: SearchResult) => {
+    let provider: string | undefined
+    if (item.provider === 'addon') {
+      const genres = item.genres?.map((g) => g.toLowerCase()) || []
+      const isAnime = item.isAnime ||
+                      /^(mal|anilist)[-:]/i.test(item.id) ||
+                      genres.includes('anime') ||
+                      ((item.genreIds?.includes(16) || genres.includes('animation')) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || ''))
+      if (isAnime) {
+        provider = useAppStore.getState().animeMetadataSource ?? 'tvdb'
+      } else if (item.type === 'movie') {
+        provider = useAppStore.getState().movieMetadataSource ?? 'tmdb'
+      } else {
+        provider = useAppStore.getState().seriesMetadataSource ?? 'tmdb'
+      }
+    } else {
+      provider = item.provider
+    }
+
+    // TMDB and TVDB are metadata backends, not viewer-facing catalog labels.
+    // Keep them visible during development for diagnostics, but omit them from
+    // release cards without changing the underlying source/ID resolution.
+    return import.meta.env.PROD && /^(tmdb|tvdb)$/i.test(provider || '') ? null : provider
+  }
 
   const widthClass = useMemo(() => {
+    if (layout === 'feature') {
+      if (fixedHome) return 'w-[calc(var(--fixed-cinematic-card-height)*0.8)]'
+      if (compactSpecialLayouts) {
+        switch (posterSize) {
+          case 'compact': return 'w-[200px]'
+          case 'large': return 'w-[280px]'
+          case 'huge': return 'w-[330px]'
+          default: return 'w-[240px]'
+        }
+      }
+      switch (posterSize) {
+        case 'compact': return 'w-[260px]'
+        case 'large': return 'w-[360px]'
+        case 'huge': return 'w-[420px]'
+        case 'default':
+        default:
+          return 'w-[320px]'
+      }
+    }
+    if (layout === 'ranked') {
+      if (fixedHome) return 'w-[calc(var(--fixed-cinematic-card-height)*0.97)]'
+      if (compactSpecialLayouts) {
+        switch (posterSize) {
+          case 'compact': return 'w-[227px]'
+          case 'large': return 'w-[319px]'
+          case 'huge': return 'w-[362px]'
+          default: return 'w-[271px]'
+        }
+      }
+      switch (posterSize) {
+        case 'compact': return 'w-[255px]'
+        case 'large': return 'w-[380px]'
+        case 'huge': return 'w-[435px]'
+        case 'default':
+        default:
+          return 'w-[320px]'
+      }
+    }
     if (layout === 'landscape') {
       switch (posterSize) {
         case 'compact': return 'w-[240px]'
@@ -81,112 +369,307 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
           return 'w-[144px]'
       }
     }
-  }, [layout, posterSize])
+  }, [compactSpecialLayouts, fixedHome, layout, posterSize])
 
-  // Derive watched state from local progress
-  const { localCompleted, progressPct } = useMemo(() => {
-    const ids = [item.id, item.imdbId].filter(Boolean) as string[]
-    // Check direct movie/show match
-    for (const id of ids) {
-      const direct = watchProgress.get(id)
-      if (direct?.completed) return { localCompleted: true, progressPct: 100 }
-      if (direct && direct.durationSeconds > 0) {
-        return { localCompleted: false, progressPct: (direct.progressSeconds / direct.durationSeconds) * 100 }
-      }
+  const expandedPosterWidthClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'w-[299px]'
+      case 'large': return 'w-[469px]'
+      case 'huge': return 'w-[555px]'
+      case 'default':
+      default:
+        return 'w-[384px]'
     }
-    // Check episode entries (series): look for mediaId match
-    let hasAnyProgress = false
-    let hasCompleted = false
-    for (const [, p] of watchProgress.entries()) {
-      if (ids.includes(p.mediaId)) {
-        hasAnyProgress = true
-        if (p.completed) hasCompleted = true
-      }
+  }, [posterSize])
+
+  const expandedPosterHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[168px]'
+      case 'large': return 'h-[264px]'
+      case 'huge': return 'h-[312px]'
+      case 'default':
+      default:
+        return 'h-[216px]'
     }
-    if (hasCompleted) return { localCompleted: true, progressPct: 100 }
-    if (hasAnyProgress) return { localCompleted: false, progressPct: null }
-    return { localCompleted: false, progressPct: null }
-  }, [watchProgress, item.id, item.imdbId])
-  const isCompleted = localCompleted || providerWatched
+  }, [posterSize])
+
+  const posterSlotHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[214px]'
+      case 'large': return 'h-[310px]'
+      case 'huge': return 'h-[358px]'
+      case 'default':
+      default:
+        return 'h-[262px]'
+    }
+  }, [posterSize])
+
+  const expandedTrailerSlotHeightClass = useMemo(() => {
+    switch (posterSize) {
+      case 'compact': return 'h-[292px]'
+      case 'large': return 'h-[390px]'
+      case 'huge': return 'h-[438px]'
+      case 'default':
+      default:
+        return 'h-[342px]'
+    }
+  }, [posterSize])
+
+  const isSeriesCard = displayItem.type === 'series' && displayItem.season == null
+  const isCompleted = isSeriesCard ? seriesCompleted : posterProviderWatched
+  const allServiceProgressPct = progressIdAliases([item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+    item.anilistId != null ? `anilist-${item.anilistId}` : undefined,
+    item.malId != null ? `mal-${item.malId}` : undefined])
+    .reduce<number | null>((pct, id) => {
+      if (id == null) return pct
+      const match = allServiceProgress.get(`${item.type}:${id}`)
+      return match == null ? pct : Math.max(pct ?? 0, match)
+    }, null)
+  const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const allServiceTitleProgressPct = allServiceProgress.get(`title:${item.type}:${normalizedTitle}`)
+    ?? null
+  const progressPct = [localProgressPct, continueWatchingProgressPct, allServiceProgressPct, allServiceTitleProgressPct]
+    .reduce<number | null>((pct, value) => value == null ? pct : Math.max(pct ?? 0, value), null)
+  // Resume progress is independent of the watched-checkmark preference. A
+  // disabled checkmark overlay must not hide Continue Watching on Home rows.
+  const showPosterProgress = progressPct != null && progressPct > 2
+  const posterWatchBadge = showPosterWatchStatus && isCompleted && !showPosterProgress ? (
+    <span className="poster-watched-indicator absolute right-2 top-2 z-30 flex h-7 w-7 items-center justify-center rounded-full" aria-label="Watched" title="Watched">
+      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path d="m5 12 4 4L19 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </span>
+  ) : null
 
   useEffect(() => {
-    let cancelled = false
-    const lookup = searchResultToLookup(item)
-    if (watchedCheckmarkSources.length === 1 && watchedCheckmarkSources[0] === 'local') {
-      setProviderWatched(getLocalWatchedStatus(lookup, watchProgress))
-      return () => { cancelled = true }
+    if (!showPosterWatchStatus || !isVisible) {
+      setSeriesCompleted(false)
+      setPosterProviderWatched(false)
+      return
     }
-    isWatchedFromProviders(lookup, watchedCheckmarkSources, watchProgress)
-      .then((watched) => { if (!cancelled) setProviderWatched(watched) })
-      .catch(() => { if (!cancelled) setProviderWatched(false) })
-    return () => { cancelled = true }
-  }, [item.id, item.imdbId, item.tmdbId, item.tvdbId, item.malId, item.anilistId, item.type, item.season, item.episode, watchedCheckmarkSources, watchProgress])
-
-  useEffect(() => {
-    if (!isVisible) return
-    if (layout !== 'landscape' || displayItem.backdrop) return
-    const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
-    if (!tmdbId) return
-
     let cancelled = false
-    getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
-      .then((backdrop) => {
-        if (!cancelled && backdrop) setResolvedBackdrop(backdrop)
+    void isWatchedFromProviders(searchResultToLookup(displayItem), posterWatchedSources, useAppStore.getState().watchProgress)
+      .then((completed) => {
+        if (cancelled) return
+        setPosterProviderWatched(completed)
+        setSeriesCompleted(isSeriesCard && completed)
       })
-      .catch(() => undefined)
+      .catch(() => { if (!cancelled) { setPosterProviderWatched(false); setSeriesCompleted(false) } })
     return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.type, displayItem.backdrop])
+  }, [
+    isSeriesCard, isVisible, showPosterWatchStatus, posterWatchedSources, completedIds,
+    displayItem,
+  ])
+
+  useEffect(() => {
+    if (!isVisible || layout !== 'feature') return
+    let cancelled = false
+    setCleanTmdbPoster(undefined)
+    setCleanTmdbLogo(undefined)
+    ;(async () => {
+      try {
+        let tmdbId = displayItem.tmdbId || (/^tmdb[-:]/i.test(String(displayItem.id)) ? String(displayItem.id).replace(/^tmdb[-:]/i, '') : undefined)
+        if (!tmdbId && displayItem.imdbId) {
+          const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+          const found = await tmdbFindByExternalId(displayItem.imdbId, 'imdb_id')
+          tmdbId = found.tmdbId ? String(found.tmdbId) : undefined
+        }
+        if (!tmdbId) return
+        const [poster, metadata] = await Promise.all([
+          // Feature cards always use TMDB's textless artwork, regardless of
+          // the Better Posters preference used by the regular poster shelves.
+          getTmdbCleanPoster(displayItem.type, tmdbId),
+          getTmdbCardMetadata(displayItem.type, tmdbId, displayItem.imdbId),
+        ])
+        if (!cancelled) {
+          if (poster) setCleanTmdbPoster(poster)
+          if (metadata.englishLogo || metadata.logo) setCleanTmdbLogo(metadata.englishLogo || metadata.logo)
+        }
+      } catch (_) { /* keep the catalog poster as a last-resort fallback */ }
+    })()
+    return () => { cancelled = true }
+  }, [isVisible, layout, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
 
   useEffect(() => {
     if (!isVisible) return
     let cancelled = false
-    const tmdbId = displayItem.tmdbId || (String(displayItem.id).startsWith('tmdb-') ? String(displayItem.id).replace('tmdb-', '') : undefined)
+    setFailedImageUrls(new Set())
+    setResolvedPoster(undefined)
+    setResolvedBackdrop(undefined)
+    setResolvedCustomArt({})
+    // Preserve the addon's art without starting TMDB/TVDB/Fanart bridge and
+    // artwork requests for every card when managed metadata is disabled.
+    if (!appManagedMetadata) return
+    const tmdbId = displayItem.tmdbId || (/^tmdb[-:]/i.test(String(displayItem.id)) ? String(displayItem.id).replace(/^tmdb[-:]/i, '') : undefined)
     const imdbId = displayItem.imdbId || (String(displayItem.id).startsWith('tt') ? displayItem.id : undefined)
 
-    const needsVisibleArtwork = layout === 'landscape' ? !displayItem.backdrop : !displayItem.poster
-    if (needsVisibleArtwork) {
-      (async () => {
-        try {
-          let resolvedTmdbId = tmdbId
-          if (!resolvedTmdbId && imdbId) {
-            const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
-            const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
-            if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
-          }
-          if (resolvedTmdbId) {
-            const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId)
-            if (!cancelled) {
-              if (meta.poster) setResolvedPoster(meta.poster)
-              if (meta.backdrop) setResolvedBackdrop(meta.backdrop)
-              if (meta.genre) setResolvedGenre(meta.genre)
-            }
-          }
-        } catch { /* ignore */ }
-      })()
-    }
-    return () => { cancelled = true }
-  }, [isVisible, layout, displayItem.poster, displayItem.backdrop, displayItem.id, displayItem.tmdbId, displayItem.imdbId, displayItem.type])
+    const needsPoster = layout !== 'landscape' && !displayItem.poster
+    const needsBackdrop = layout === 'landscape' && !displayItem.backdrop
+    const needsGenre = showGenreOnCards && !displayItem.genres?.length && !displayItem.genreIds?.length
+    const hasInitialArtwork = layout === 'landscape'
+      ? Boolean(initialArtItem.backdrop || initialArtItem.poster)
+      : Boolean(initialArtItem.poster || initialArtItem.backdrop)
+    const wantsProviderArt = !disableArtOverride && (!hasInitialArtwork || detailIntent)
+    // A usable catalog poster must not short-circuit custom poster resolution.
+    // BetterPosters (and {imdb_id} custom templates) may still need us to
+    // bridge a TMDB/TVDB ID to IMDb. Previously that work only started after
+    // hover set detailIntent, making posters appear to update on hover.
+    const needsCustomPosterId = !disableArtOverride
+      && customPosterNeedsImdbId
+      // Better Posters owns its own queued IMDb bridge above. Running the
+      // generic artwork bridge as well doubled metadata work for every card
+      // entering the Home scroll buffer.
+      && !betterPosters.enabled
+      && !imdbId
+      && Boolean(tmdbId || displayItem.tvdbId)
 
-  const landscapeBackdrop = resolvedBackdrop || displayItem.backdrop
+    if (!needsPoster && !needsBackdrop && !needsGenre && !wantsProviderArt && !needsCustomPosterId) {
+      if (layout === 'landscape' && !displayItem.backdrop && tmdbId) {
+        getTmdbLandscapeBackdrop(displayItem.type, tmdbId)
+          .then((backdrop) => { if (!cancelled && backdrop) setResolvedBackdrop(backdrop) })
+          .catch(() => undefined)
+      }
+      return () => { cancelled = true }
+    }
+
+    ;(async () => {
+      try {
+        let resolvedTmdbId = tmdbId
+        let resolvedImdbId = imdbId
+        if (!resolvedTmdbId && imdbId) {
+          const { tmdbFindByExternalId } = await import('../services/metadataEnrich')
+          const found = await tmdbFindByExternalId(imdbId, 'imdb_id')
+          if (found.tmdbId) resolvedTmdbId = String(found.tmdbId)
+        }
+        if (!resolvedImdbId && (resolvedTmdbId || displayItem.tvdbId) && customPosterNeedsImdbId) {
+          const { resolveImdbId } = await import('../services/metadataEnrich')
+          resolvedImdbId = await resolveImdbId(
+            {
+              tmdbId: resolvedTmdbId || tmdbId,
+              tvdbId: displayItem.tvdbId as string | number | undefined,
+              anilistId: displayItem.anilistId,
+              malId: displayItem.malId,
+            },
+            displayItem.type === 'movie' ? 'movie' : 'series',
+          )
+          if (!cancelled && resolvedImdbId) {
+            setResolvedCustomArt(getSearchResultCustomArt({ ...displayItem, imdbId: resolvedImdbId }))
+          }
+        }
+
+        // Collect all art results first, then do a single batch state update
+        // to avoid intermediate renders that cause poster flickering.
+        let finalPoster: string | undefined
+        let finalBackdrop: string | undefined
+        let finalLogo: string | undefined
+        let finalGenre: string | undefined
+
+        if (resolvedTmdbId && (needsPoster || needsBackdrop || needsGenre)) {
+          const meta = await getTmdbCardMetadata(displayItem.type, resolvedTmdbId, resolvedImdbId)
+          if (meta.poster) finalPoster = meta.poster
+          if (meta.backdrop) finalBackdrop = meta.backdrop
+          if (meta.genre) finalGenre = meta.genre
+        }
+
+        if (wantsProviderArt) {
+          const providerArt = await resolveArtFromProviders(
+            displayItem.type,
+            { tmdbId: resolvedTmdbId || tmdbId, tvdbId: displayItem.tvdbId as string | number | undefined, imdbId: resolvedImdbId },
+            displayItem.isAnime,
+            layout === 'landscape' ? 'backdrop' : 'poster',
+          )
+          // Provider art takes priority over TMDB metadata art
+          if (providerArt.poster) finalPoster = providerArt.poster
+          if (providerArt.backdrop) finalBackdrop = providerArt.backdrop
+          if (providerArt.logo) finalLogo = providerArt.logo
+        }
+
+        if (cancelled) return
+
+        if (!cancelled) {
+          if (finalPoster) setResolvedPoster(finalPoster)
+          if (finalBackdrop) setResolvedBackdrop(finalBackdrop)
+          if (finalLogo) setResolvedLogo(finalLogo)
+          if (finalGenre) setResolvedGenre(finalGenre)
+        }
+      } catch (_) { /* ignore */ }
+    })()
+    return () => { cancelled = true }
+  }, [isVisible, layout, disableArtOverride, betterPosters.enabled, displayItem, showGenreOnCards, artProviderKey, fanartApiKey, customArtKey, customPosterNeedsImdbId, appManagedMetadata, detailIntent, initialArtItem.poster, initialArtItem.backdrop])
+
+  const pickWorkingUrl = (...urls: Array<string | undefined>) =>
+    urls.find((url) => url && !failedImageUrls.has(url))
+  // Never paint a catalog/default poster only to visibly replace it once the
+  // IMDb bridge returns. A known Better Poster is synchronous; otherwise wait
+  // for the shared resolution and use normal art solely as its fallback.
+  const waitingForBetterPoster = !disableArtOverride && betterPosters.enabled
+    && !customArt.poster && !resolvedCustomArt.poster && !betterPosterUnavailable
+  const posterUrl = cardArtworkUrl(
+    waitingForBetterPoster ? undefined : pickWorkingUrl(customArt.poster, resolvedCustomArt.poster, resolvedPoster, initialArtItem.poster),
+    'poster',
+    posterSize,
+  )
+  const backdropUrl = cardArtworkUrl(
+    pickWorkingUrl(customArt.backdrop, resolvedCustomArt.backdrop, resolvedBackdrop, initialArtItem.backdrop),
+    'landscape',
+    posterSize,
+  )
+  const logoUrl = pickWorkingUrl(customArt.logo, resolvedCustomArt.logo, resolvedLogo, initialArtItem.logo)
+  const landscapeBackdrop = backdropUrl
+  const markImageFailed = (url?: string) => {
+    if (!url) return
+    setFailedImageUrls((prev) => {
+      const next = new Set(prev)
+      next.add(url)
+      return next
+    })
+  }
+  const handleImageError = (event: React.SyntheticEvent<HTMLImageElement>, url?: string) => {
+    if (!retryImageFromSource(event.currentTarget, url)) markImageFailed(url)
+  }
+  const focusArtwork = backdropUrl || posterUrl
+  const cinematicArtwork = layout === 'feature' ? cleanTmdbPoster || posterUrl : posterUrl
+  const featureArtwork = cleanTmdbPoster || posterUrl || backdropUrl
+  const posterImageRef = useStalledArtwork(posterUrl)
+  const backdropImageRef = useStalledArtwork(backdropUrl)
+  const focusImageRef = useStalledArtwork(focusArtwork)
+  const cinematicImageRef = useStalledArtwork(cinematicArtwork)
+  const featureImageRef = useStalledArtwork(featureArtwork)
+  const warmDetailArtwork = useCallback(() => {
+    setDetailIntent(true)
+    void warmCachedImage(backdropUrl, 'backdrop')
+    void warmCachedImage(logoUrl)
+  }, [backdropUrl, logoUrl])
 
   const showContextMenu = useContextMenu((s) => s.show)
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    if (import.meta.env.DEV && e.shiftKey) {
+      window.dispatchEvent(new CustomEvent('aurales:art-debug', {
+        detail: {
+          item: displayItem,
+          displayed: { poster: posterUrl, backdrop: backdropUrl, logo: logoUrl },
+          layers: {
+            custom: customArt,
+            provider: { poster: resolvedPoster, backdrop: resolvedBackdrop, logo: resolvedLogo },
+            item: { poster: item.poster, backdrop: item.backdrop, logo: item.logo },
+          },
+        },
+      }))
+      return
+    }
     showContextMenu(e.clientX, e.clientY, { kind: 'media', item })
-  }, [item, showContextMenu])
+  }, [item, showContextMenu, displayItem, posterUrl, backdropUrl, logoUrl, customArt, resolvedPoster, resolvedBackdrop, resolvedLogo])
 
   const handleClick = () => {
+    warmDetailArtwork()
     try {
       addRecentlyWatched(displayItem)
-    } catch (e) {
-      console.error('[MediaCard] addRecentlyWatched failed:', e, displayItem)
-    }
+    } catch (_) { /* ignore */ }
     const path = item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`
-    console.log('[MediaCard] navigating to', path, 'item:', item.id, item.title)
     navigate(path, {
       state: {
-        poster: resolvedPoster || displayItem.poster,
-        backdrop: resolvedBackdrop || displayItem.backdrop,
+        poster: posterUrl,
+        backdrop: backdropUrl,
+        logo: logoUrl,
         title: displayItem.title,
         year: displayItem.year,
         rating: displayItem.rating,
@@ -196,87 +679,220 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
         tvdbId: displayItem.tvdbId,
         malId: displayItem.malId,
         anilistId: displayItem.anilistId,
+        isAnime: displayItem.isAnime,
         addonUrl: displayItem.addonUrl,
         provider: displayItem.provider,
         sourceAddonId: displayItem.sourceAddonId,
         sourceAddonItemId: displayItem.sourceAddonItemId,
+        sourceConnectionId: displayItem.sourceConnectionId,
+        sourceItemId: displayItem.sourceItemId,
+        addonMeta: displayItem.addonMeta,
       },
     })
   }
 
-  if (layout === 'landscape') {
+  const revealExpandedCard = useCallback(() => {
+    const card = cardRef.current
+    if (!card || !cinematicMode || !cinematicExpand) return
+    window.setTimeout(() => {
+      const row = card.closest<HTMLElement>('.cinematic-row-track')
+      if (!row) return
+      const cardRect = card.getBoundingClientRect()
+      const expandedViewport = card.querySelector<HTMLElement>('[data-hero-viewport]')
+      // Ranked previews intentionally overflow their fixed slot so opening one
+      // never reflows the shelf. Measure the visible viewport when deciding
+      // whether the row needs to scroll, not only the unchanged button slot.
+      const visualRect = expandedViewport?.getBoundingClientRect() ?? cardRect
+      const rowRect = row.getBoundingClientRect()
+      const inset = 24
+      if (visualRect.right > rowRect.right - inset) {
+        row.scrollBy({ left: visualRect.right - rowRect.right + inset, behavior: 'smooth' })
+      } else if (visualRect.left < rowRect.left + inset) {
+        row.scrollBy({ left: visualRect.left - rowRect.left - inset, behavior: 'smooth' })
+      }
+    }, 380)
+  }, [cinematicMode, cinematicExpand])
+
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!query) return
+    const sync = () => setReducedMotion(query.matches)
+    sync()
+    query.addEventListener?.('change', sync)
+    return () => query.removeEventListener?.('change', sync)
+  }, [])
+
+  useEffect(() => {
+    const closeTimer = closeTimerRef
+    return () => {
+      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+      if (closeTimer.current) window.clearTimeout(closeTimer.current)
+      hoverRequestRef.current += 1
+    }
+  }, [])
+
+  const closeHoverPreview = useCallback(() => {
+    if (hoverTimerRef.current) {
+      window.clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+    hoverRequestRef.current += 1
+    setSuppressPosterHover(true)
+    setNativeTrailerVisible(false)
+    setHoverTrailer(null)
+    setHoverPreviewOpen(false)
+  }, [])
+
+  const openHoverPreview = useCallback(() => {
+    setSuppressPosterHover(false)
+    // "Card focus animations" is the static-card mode as well as the
+    // expansion preference. Keep feature cards in their complete poster state
+    // in that mode: artwork, logo/title, and metadata must not disappear when
+    // a hover trailer takes ownership of the card.
+    if (disableTrailerPreview || !homeCardAnimations || fixedHome || (!['poster', 'ranked', 'feature'].includes(layout) && !cinematicMode) || reducedMotion || !posterTrailerPreviews) return
+    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+
+    hoverTimerRef.current = window.setTimeout(() => {
+      const tmdbId = displayItem.tmdbId || (/^tmdb[-:]/i.test(String(displayItem.id)) ? String(displayItem.id).replace(/^tmdb[-:]/i, '') : undefined)
+      const requestId = hoverRequestRef.current + 1
+      hoverRequestRef.current = requestId
+
+      getTrailerSource({
+        type: displayItem.type,
+        tmdbId,
+        imdbId: displayItem.imdbId,
+        title: displayItem.title,
+        year: displayItem.year,
+        language: trailerLanguage,
+      }).then((trailer) => {
+        if (hoverRequestRef.current !== requestId || !trailer) return
+        setHoverTrailer(trailer)
+        setHoverPreviewOpen(true)
+      }).catch(() => undefined)
+    }, posterTrailerHoverDelayMs)
+  }, [cinematicMode, disableTrailerPreview, displayItem.id, displayItem.imdbId, displayItem.tmdbId, displayItem.title, displayItem.type, displayItem.year, fixedHome, homeCardAnimations, layout, posterTrailerHoverDelayMs, posterTrailerPreviews, reducedMotion, trailerLanguage])
+
+  useEffect(() => {
+    // Turning the preference off while a card is hovered should restore its
+    // static presentation immediately rather than waiting for pointer leave.
+    if (!homeCardAnimations) closeHoverPreview()
+  }, [closeHoverPreview, homeCardAnimations])
+
+  const useNativeTrailerPlayer = nativeTrailerPlayerSupported()
+
+  if (cinematicMode) {
+    const cinematicGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+      || resolvedGenre
+    const focusMedia = landscapeBackdrop || posterUrl
+    const cinematicPoster = layout === 'feature' ? cleanTmdbPoster || posterUrl : posterUrl
+    const expanded = cinematicFocused && cinematicExpand
+    const cinematicTrailer = hoverPreviewOpen && hoverTrailer
+    const cinematicRanked = layout === 'ranked'
+    const cinematicFeature = layout === 'feature'
+    const cinematicSpecial = cinematicRanked || cinematicFeature
+    const cinematicLogo = cinematicFeature ? cleanTmdbLogo || logoUrl : logoUrl
+    const cinematicSpecialHeight = cinematicRanked
+      ? posterSize === 'compact' ? '240px' : posterSize === 'large' ? '350px' : posterSize === 'huge' ? '400px' : '300px'
+      : posterSize === 'compact' ? '325px' : posterSize === 'large' ? '450px' : posterSize === 'huge' ? '525px' : '400px'
+    const cinematicStyle = cinematicSpecial
+      ? ({ '--cinematic-special-height': cinematicSpecialHeight } as React.CSSProperties)
+      : undefined
+    const cinematicBaseWidth = cinematicRanked
+      ? 'w-[calc(var(--cinematic-special-height)*0.927)]'
+      : cinematicFeature
+        ? 'w-[calc(var(--cinematic-special-height)*0.8)]'
+        : 'w-[clamp(10rem,13vw,13rem)]'
+    const cinematicExpandedWidth = cinematicSpecial
+      ? 'w-[calc(var(--cinematic-special-height)*1.72)]'
+      : 'w-[min(38vw,38rem)]'
+    const cinematicViewportHeight = cinematicSpecial
+      ? 'h-[var(--cinematic-special-height)]'
+      : 'h-[clamp(15rem,19.5vw,19.5rem)]'
+    const cinematicViewportWidth = cinematicRanked
+      ? expanded
+        ? 'ml-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]'
+        : 'ml-[calc(var(--cinematic-special-height)*0.26)] w-[calc(var(--cinematic-special-height)*0.667)]'
+      : 'ml-0 w-full'
+    const cinematicOuterWidth = cinematicRanked
+      ? expanded
+        ? 'w-[calc(var(--cinematic-special-height)*0.26+min(38vw,38rem))]'
+        : cinematicBaseWidth
+      : expanded ? cinematicExpandedWidth : cinematicBaseWidth
+    const cinematicRankValue = rank || (cardIndex ?? 0) + 1
     return (
       <button
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
+        onFocus={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onBlur={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
+        data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
+        data-cinematic-expanded={expanded || undefined}
+        className={`relative flex-shrink-0 cursor-pointer overflow-visible text-left focus-ring transition-[width] duration-[var(--duration-card)] ease-expo ${cinematicOuterWidth}`}
+        style={cinematicStyle}
       >
-        <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
-          {landscapeBackdrop && !backdropError ? (
-            <img
-              src={landscapeBackdrop}
-              alt={displayItem.title}
-              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-              loading="lazy"
-              decoding="async"
-              onError={() => setBackdropError(true)}
-            />
-          ) : (resolvedPoster || displayItem.poster) && !imgError ? (
-            <img
-              src={resolvedPoster || displayItem.poster}
-              alt={displayItem.title}
-              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-              loading="lazy"
-              decoding="async"
-              onError={() => setImgError(true)}
-            />
+        {cinematicRanked && (
+          <span
+            aria-hidden="true"
+            className="media-rank h-[var(--cinematic-special-height)] opacity-100"
+            style={{ fontSize: 'calc(var(--cinematic-special-height) * 0.52)', width: 'calc(var(--cinematic-special-height) * 0.26)' }}
+          >
+            <span className="media-rank__value" data-digits={String(cinematicRankValue).length}>{cinematicRankValue}</span>
+          </span>
+        )}
+        <div data-hero-viewport className={`relative ${cinematicViewportHeight} ${cinematicViewportWidth} overflow-hidden rounded-2xl border border-white/10 transition-[width,margin,box-shadow,transform] duration-[var(--duration-card)] ease-expo ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${cinematicFocused ? 'shadow-[0_18px_55px_rgba(0,0,0,.7)]' : ''}`}>
+          {cinematicPoster && <img ref={cinematicImageRef} src={cachedImage(cinematicPoster)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${expanded || nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, cinematicPoster)} />}
+          {expanded && focusMedia && <img ref={focusImageRef} src={cachedImage(focusMedia)} alt="" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, focusMedia)} />}
+          {cinematicTrailer && (useNativeTrailerPlayer ? (
+            <React.Suspense fallback={null}><HeroMpvTrailer
+              trailer={cinematicTrailer}
+              muted={!posterTrailerSound}
+              className="absolute inset-0 z-[5]"
+              onEnded={closeHoverPreview}
+              onUnavailable={closeHoverPreview}
+              onPlayingChange={setNativeTrailerVisible}
+            /></React.Suspense>
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
-              <span className="text-2xl font-bold text-muted/30">{displayItem.title?.charAt(0) || '?'}</span>
-            </div>
-          )}
-          
-          {/* Permanent subtle dark gradient overlay for text readability */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95" />
-          
-          {/* Watched checkmark badge (landscape) */}
-          {isCompleted && (
-            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-accent flex items-center justify-center shadow-lg z-10">
-              <svg className="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
-                <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </div>
-          )}
-
-          {/* Rating badge (landscape) */}
-          {showRatingsOnCards && ratingStr && (
-            <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
-              <svg className="w-3 h-3 fill-current text-yellow-400" viewBox="0 0 24 24">
-                <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-              </svg>
-              <span>{ratingStr}</span>
-            </div>
-          )}
-
-          {/* In-progress bar (landscape) */}
-          {!isCompleted && progressPct != null && progressPct > 2 && (
-            <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-              <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />
-            </div>
-          )}
-
-          {/* Media Info Overlay */}
-          <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1">
-            <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-              {displayItem.title}
-            </h3>
-            <div className="flex items-center gap-2">
-              {displayItem.year && (
-                <span className="text-xs text-gray-300 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-                  {displayItem.year}
-                </span>
+            <React.Suspense fallback={null}><TrailerPreview trailer={cinematicTrailer} title={displayItem.title} muted={!posterTrailerSound} preferVideoOnly={!posterTrailerSound} eager showShade={false} placeholderUrl={focusMedia} className="absolute inset-0 z-[5]" /></React.Suspense>
+          ))}
+          {!cinematicPoster && !focusMedia && <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface text-3xl font-bold text-white/20">{displayItem.title?.charAt(0) || '?'}</div>}
+          <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-60'}`} />
+          {posterWatchBadge}
+          {cinematicFeature && (
+            <div data-feature-overlay className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-3 pt-16">
+              {cinematicLogo ? (
+                <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1.5 max-h-14 max-w-[78%] object-contain object-left drop-shadow-xl" loading="lazy" decoding="async" onError={(event) => handleImageError(event, cinematicLogo)} />
+              ) : (
+                <p className="truncate text-xs font-bold text-white/95">{displayItem.title}</p>
               )}
+              <p className="mt-1 truncate text-[11px] font-semibold text-white/70">
+                {[displayItem.type === 'movie' ? 'Movie' : 'Series', cinematicGenre, displayItem.year].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+          )}
+          {expanded && <div className="absolute inset-x-4 bottom-4 z-10">
+            {cinematicLogo ? <img src={cachedImage(cinematicLogo)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" /> : <h3 className="truncate text-base font-black text-white drop-shadow-xl">{displayItem.title}</h3>}
+          </div>}
+          {showPosterProgress && <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
+        </div>
+        <div className={`absolute top-full grid transition-[grid-template-rows,opacity] duration-300 ${cinematicRanked ? 'left-[calc(var(--cinematic-special-height)*0.26)] w-[min(38vw,38rem)]' : 'left-0 w-full'} ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+          <div className="overflow-hidden">
+            <div className="px-2 pt-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
+                {cinematicGenre && <span>{cinematicGenre}</span>}
+                {cinematicGenre && displayItem.year && <span className="text-white/50">•</span>}
+                {displayItem.year && <span>{displayItem.year}</span>}
+                {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
+                {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+              </div>
+              {displayItem.overview && <p className="line-clamp-3 max-w-none text-base leading-relaxed text-white/60">{displayItem.overview}</p>}
             </div>
           </div>
         </div>
@@ -284,77 +900,374 @@ function MediaCard({ item, layout = 'poster', disableArtOverride = false }: Medi
     )
   }
 
+  if (layout === 'feature') {
+    // This row is poster-led even though the cards are wider than the regular
+    // poster layout. Feature cards always prefer textless TMDB artwork before
+    // falling back to catalog art or a backdrop.
+    const featureArt = cleanTmdbPoster || posterUrl || landscapeBackdrop
+    const featureTrailer = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
+    const featureUsesNativeTrailer = Boolean(featureTrailer && useNativeTrailerPlayer)
+    const featureTrailerVisible = featureUsesNativeTrailer ? nativeTrailerVisible : Boolean(featureTrailer)
+    // The Home preference applies when this row is rendered through the
+    // standard Feature branch too (for example with Cinematic navigation but
+    // another interface theme). Its static state must look identical to the
+    // Dynamic Banner cinematic branch.
+    const staticFeaturePresentation = !homeCardAnimations
+    const featureOverlayVisible = staticFeaturePresentation || !featureTrailerVisible
+    const rawFeatureGenre = displayItem.genres?.[0]
+      || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+      || resolvedGenre
+    const featureGenre = typeof rawFeatureGenre === 'object' && rawFeatureGenre
+      ? (rawFeatureGenre as any).name || (rawFeatureGenre as any).title
+      : rawFeatureGenre
+    return (
+      <button
+        ref={cardRef}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+        onBlur={closeHoverPreview}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); closeHoverPreview() }}
+        data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
+        className={`group relative flex-shrink-0 cursor-pointer text-left focus-ring ${widthClass}`}
+      >
+        <div data-hero-viewport className={`relative aspect-[4/5] overflow-hidden rounded-[1.6rem] border border-white/10 shadow-[0_16px_45px_rgba(0,0,0,.28)] transition-[box-shadow,transform] duration-300 group-hover:shadow-[0_24px_60px_rgba(0,0,0,.45)] ${featureTrailer ? '' : 'group-hover:-translate-y-1.5'} ${nativeTrailerVisible ? 'native-trailer-hole bg-transparent' : 'bg-surface-elevated'}`}>
+          {!nativeTrailerVisible && (featureArt ? <img ref={featureImageRef} src={cachedImage(featureArt)} alt={displayItem.title} className={`h-full w-full object-cover transition-[transform,opacity] duration-500 group-hover:scale-[1.04] ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, featureArt)} /> : <div className={`grid h-full place-items-center bg-gradient-to-br from-surface-elevated to-surface text-5xl font-black text-white/20 ${featureTrailerVisible ? 'opacity-0' : 'opacity-100'}`}>{displayItem.title?.charAt(0) || '?'}</div>)}
+          {featureTrailer && (featureUsesNativeTrailer ? (
+            <React.Suspense fallback={null}><HeroMpvTrailer
+              trailer={featureTrailer}
+              muted={!posterTrailerSound}
+              className="absolute inset-0 z-20"
+              onEnded={closeHoverPreview}
+              onUnavailable={closeHoverPreview}
+              onPlayingChange={setNativeTrailerVisible}
+            /></React.Suspense>
+          ) : (
+            <React.Suspense fallback={null}><TrailerPreview
+              trailer={featureTrailer}
+              title={displayItem.title}
+              muted={!posterTrailerSound}
+              eager
+              showShade={false}
+              placeholderUrl={featureArt}
+              allowIframeFallback={false}
+              className="absolute inset-0 z-20"
+              onUnavailable={closeHoverPreview}
+            /></React.Suspense>
+          ))}
+          {(!nativeTrailerVisible || staticFeaturePresentation) && <div className={`absolute inset-0 z-10 bg-gradient-to-t from-black via-black/25 to-transparent transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`} />}
+          {posterWatchBadge}
+          {(!nativeTrailerVisible || staticFeaturePresentation) && <div data-feature-overlay className={`absolute inset-x-0 bottom-0 z-30 p-5 transition-opacity duration-200 ${featureOverlayVisible ? 'opacity-100' : 'opacity-0'}`}>
+            {cleanTmdbLogo ? <img src={cachedImage(cleanTmdbLogo)} alt={displayItem.title} className="mb-3 max-h-16 max-w-[72%] object-contain object-left drop-shadow-xl" /> : <h3 className="mb-2 line-clamp-2 text-xl font-black leading-tight text-white drop-shadow-xl">{displayItem.title}</h3>}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white/75">
+              <span>{displayItem.type === 'series' ? 'Series' : 'Movie'}</span>
+              {featureGenre && <><span className="text-white/60">·</span><span>{String(featureGenre)}</span></>}
+              {displayItem.year && <><span className="text-white/60">·</span><span>{displayItem.year}</span></>}
+            </div>
+          </div>}
+          {!nativeTrailerVisible && showPosterProgress && <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>}
+        </div>
+      </button>
+    )
+  }
+
+  if (layout === 'landscape') {
+    const cinematicLandscapeExpanded = cinematicMode && cinematicFocused && cinematicExpand
+    const cinematicWidth = cinematicMode
+      ? cinematicLandscapeExpanded ? 'w-[min(52vw,52rem)]' : 'w-[clamp(15rem,18vw,21rem)]'
+      : widthClass
+    return (
+      <button
+        ref={cardRef}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onFocus={() => { warmDetailArtwork(); announceFocus() }}
+        onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
+        onMouseMove={handleMouseFollow}
+        onMouseLeave={(event) => resetMouseFollow(event.currentTarget)}
+        data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+        data-mouse-follow={mouseFollowEnabled || undefined}
+        className={`flex-shrink-0 group cursor-pointer focus-ring text-left transition-[width,transform] duration-[var(--duration-card)] ease-expo ${cinematicWidth}`}
+      >
+        <div data-hero-viewport className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/[0.04] transition-[box-shadow,transform] duration-[var(--duration-slow)] ease-expo group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
+          {landscapeBackdrop ? (
+            <img
+              ref={backdropImageRef}
+              src={cachedImage(landscapeBackdrop)}
+              alt={displayItem.title}
+              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+              loading="lazy"
+              decoding="async"
+              onError={(event) => handleImageError(event, landscapeBackdrop)}
+            />
+          ) : posterUrl ? (
+            <img
+              ref={posterImageRef}
+              src={cachedImage(posterUrl)}
+              alt={displayItem.title}
+              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+              loading="lazy"
+              decoding="async"
+              onError={(event) => handleImageError(event, posterUrl)}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
+              <span className="text-2xl font-bold text-muted/30">{displayItem.title?.charAt(0) || '?'}</span>
+            </div>
+          )}
+
+          {/* Permanent subtle dark gradient overlay for text readability */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95" />
+
+          {/* Rating badge (landscape) */}
+          {showRatingsOnCards && ratingStr && (
+            <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-meta font-bold text-yellow-400">
+              <svg className="w-3 h-3 fill-current text-yellow-400" viewBox="0 0 24 24">
+                <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+              </svg>
+              <span>{ratingStr}</span>
+            </div>
+          )}
+          {posterWatchBadge}
+
+          {/* In-progress bar (landscape) */}
+          {showPosterProgress && (
+            <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>
+          )}
+
+          {/* Media Info Overlay */}
+          <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1">
+            {cinematicLandscapeExpanded && logoUrl ? (
+              <img src={cachedImage(logoUrl)} alt={displayItem.title} className="mb-1 max-h-16 max-w-[55%] object-contain object-left drop-shadow-xl" />
+            ) : (
+              <h3 className="text-sm md:text-base font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+                {displayItem.title}
+              </h3>
+            )}
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-white/75 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+              {showGenreOnCards && landscapeGenre && <span className="truncate">{String(landscapeGenre)}</span>}
+              {showGenreOnCards && landscapeGenre && displayItem.year && <span className="text-white/45">•</span>}
+              {displayItem.year && (
+                <span className="text-gray-300">
+                  {displayItem.year}
+                </span>
+              )}
+              {ratingStr && <><span className="text-white/45">•</span><span className="flex items-center gap-0.5 text-yellow-300"><svg className="h-3 w-3 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{ratingStr}</span></>}
+            </div>
+          </div>
+        </div>
+        {cinematicLandscapeExpanded && (
+          <div className="px-2 pt-4 pb-1 animate-[cinematic-panel-in_180ms_cubic-bezier(.16,1,.3,1)]">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-bold text-white/85">
+              {displayItem.genres?.slice(0, 2).map((genre) => {
+                const text = typeof genre === 'object' && genre ? (genre as any).name || (genre as any).title || JSON.stringify(genre) : genre
+                return <span key={text}>{text}</span>
+              })}
+              {displayItem.genres?.length && displayItem.year ? <span className="text-white/50">•</span> : null}
+              {displayItem.year && <span>{displayItem.year}</span>}
+              {ratingStr && <><span className="text-white/50">•</span><span>★ {ratingStr}</span></>}
+              {getDisplayProvider(displayItem) && <><span className="text-white/50">•</span><span className="capitalize">{getDisplayProvider(displayItem)}</span></>}
+            </div>
+            {displayItem.overview && <p className="line-clamp-3 max-w-none text-base leading-relaxed text-white/60">{displayItem.overview}</p>}
+          </div>
+        )}
+      </button>
+    )
+  }
+
+  const rawGenre = displayItem.genres?.[0]
+    || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
+    || resolvedGenre
+  const genre = typeof rawGenre === 'object' && rawGenre
+    ? (rawGenre as any).name || (rawGenre as any).title || JSON.stringify(rawGenre)
+    : rawGenre
+  const inlineTrailerPreview = hoverPreviewOpen && hoverTrailer ? hoverTrailer : null
+  const ranked = layout === 'ranked'
+  const rankedValue = rank || cardIndex! + 1
+  // Native mpv needs to mount before it can report the first decoded frame.
+  // The ranked preview may widen horizontally once a first frame is available,
+  // but keeps the poster's height so the shelf never shifts vertically.
+  const trailerExpanded = Boolean(inlineTrailerPreview && (!useNativeTrailerPlayer || nativeTrailerVisible))
+  // Ranked cards reserve a fixed number column. Keeping the poster's left edge
+  // and height identical in both states prevents the rank and artwork from
+  // jumping when the portrait smoothly widens into a trailer.
+  // Dynamic Cinematic shelves need a larger presentation than Classic rows:
+  // feature cards beside them are substantially taller, so sharing Classic's
+  // compact scale makes ranked artwork look detached from the hero. Fixed Home
+  // keeps its viewport-derived size because that shelf has a strict height.
+  // One custom property still keeps the rank, poster and preview in lockstep.
+  const rankedCardHeight = fixedHome
+    ? 'var(--fixed-cinematic-card-height)'
+    : !compactSpecialLayouts
+      ? posterSize === 'compact'
+        ? '260px'
+        : posterSize === 'large'
+          ? '390px'
+          : posterSize === 'huge'
+            ? '445px'
+            : '330px'
+      : posterSize === 'compact'
+        ? '210px'
+        : posterSize === 'large'
+          ? '282px'
+          : posterSize === 'huge'
+            ? '318px'
+            : '246px'
+  const rankedStyle = ranked
+    ? ({ '--ranked-card-height': rankedCardHeight } as React.CSSProperties)
+    : undefined
+  const rankedTrailerWidthClass = 'w-[calc(var(--ranked-card-height)*1.72)]'
+  const rankedTrailerHeightClass = 'h-[var(--ranked-card-height)]'
+  const rankedSlotHeightClass = 'h-[calc(var(--ranked-card-height)+1.5rem)]'
+  const rankedNumberSlotClass = 'ml-[calc(var(--ranked-card-height)*0.34)]'
+  const rankedPosterWidthClass = 'w-[calc(var(--ranked-card-height)*2/3)]'
+  const rankedExpandedContentWidthClass = 'w-[calc(var(--ranked-card-height)*1.35)]'
+  const rankedContentClass = `${rankedNumberSlotClass} ${trailerExpanded ? rankedExpandedContentWidthClass : rankedPosterWidthClass}`
+  // The numeral is sized from the poster it sits beside, not from the viewport.
+  // The previous clamp(11rem, 17vw, 16rem) grew on a different curve than the
+  // artwork, so the two drifted apart between window sizes. Keep a full-height
+  // feel while ensuring even a wide single digit stays inside its own gutter.
+  const rankedNumberFontSize = 'calc(var(--ranked-card-height) * 0.58)'
+  // Must mirror rankedNumberSlotClass exactly -- this is the poster's left
+  // offset, and the numeral column has to be the same width for the two to
+  // line up. Applied inline rather than as a derived `w-[..]` class because
+  // Tailwind only emits classes it can find literally in the source.
+  const rankedNumberSlotWidth = 'calc(var(--ranked-card-height) * 0.34)'
+  const rankedWidthClass = 'w-[calc(var(--ranked-card-height)*1.01)]'
+  const cardWidthClass = ranked
+    ? trailerExpanded ? rankedTrailerWidthClass : rankedWidthClass
+    : trailerExpanded ? expandedPosterWidthClass : widthClass
+  // A ranked row must not change its block height when preview details appear;
+  // otherwise every catalog below it gets reflowed on hover.
+  const cardSlotHeightClass = ranked ? rankedSlotHeightClass : trailerExpanded ? expandedTrailerSlotHeightClass : posterSlotHeightClass
+  const posterHoverClass = suppressPosterHover ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
+  const posterImageHoverClass = suppressPosterHover ? '' : 'group-hover:scale-105'
+
   return (
     <button
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      className={`flex-shrink-0 group cursor-pointer focus-ring transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${widthClass}`}
+      onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+      onMouseMove={handleMouseFollow}
+      onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); closeHoverPreview() }}
+      onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
+      onBlur={closeHoverPreview}
+      data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
+      data-mouse-follow={mouseFollowEnabled || undefined}
+      className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[var(--duration-card)] ease-expo ${cardWidthClass} ${cardSlotHeightClass}`}
+      style={rankedStyle}
     >
-      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-surface-elevated mb-2.5 border border-white/[0.04] transition-all duration-[400ms] ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:border-white/15 group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] group-hover:-translate-y-2 group-hover:scale-[1.04]">
-        {(resolvedPoster || displayItem.poster) && !imgError ? (
+      {/* The numeral occupies exactly the gutter the poster is offset by, and is
+          right-aligned with tabular figures inside it. Previously it was a
+          content-width box at -left-1: "1" and "10" therefore sat on different
+          left edges, double digits ran under the artwork, and rank 1 bled
+          outside the row's page gutter. Its size is expressed in ch of the slot
+          rather than vw so it tracks the poster instead of the viewport. */}
+      {ranked && (
+        <span
+          aria-hidden="true"
+          className={`media-rank ${rankedTrailerHeightClass}`}
+          style={{ fontSize: rankedNumberFontSize, width: rankedNumberSlotWidth }}
+        >
+          <span className="media-rank__value" data-digits={String(rankedValue).length}>
+            {rankedValue}
+          </span>
+        </span>
+      )}
+      <div data-hero-viewport className={`relative z-[1] rounded-lg overflow-hidden mb-2.5 border border-white/[0.04] transition-[width,box-shadow,transform] duration-[var(--duration-card)] ease-expo group-hover:shadow-[var(--shadow-card-hover)] group-focus-visible:border-accent/50 group-focus-visible:shadow-[var(--shadow-glow)] ${nativeTrailerVisible ? 'bg-transparent' : 'bg-surface-elevated'} ${ranked ? `${rankedContentClass} ${rankedTrailerHeightClass}` : ''} ${trailerExpanded && !ranked ? expandedPosterHeightClass : !ranked ? `aspect-[2/3] rounded-2xl ${posterHoverClass}` : `rounded-2xl ${posterHoverClass}`}`}>
+        {inlineTrailerPreview ? (
+          <div className="relative h-full w-full">
+            {posterUrl && <img ref={posterImageRef} src={cachedImage(posterUrl)} alt={displayItem.title} className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${nativeTrailerVisible ? 'opacity-0' : 'opacity-100'}`} loading="lazy" decoding="async" onError={(event) => handleImageError(event, posterUrl)} />}
+            {useNativeTrailerPlayer ? (
+              <React.Suspense fallback={null}><HeroMpvTrailer
+                trailer={inlineTrailerPreview}
+                muted={!posterTrailerSound}
+                className="absolute inset-0 z-[1]"
+                onEnded={closeHoverPreview}
+                onUnavailable={closeHoverPreview}
+                onPlayingChange={setNativeTrailerVisible}
+              /></React.Suspense>
+            ) : (
+              <React.Suspense fallback={null}><TrailerPreview
+                trailer={inlineTrailerPreview}
+                title={displayItem.title}
+                muted={!posterTrailerSound}
+                preferVideoOnly={!posterTrailerSound}
+                eager
+                showShade={false}
+                placeholderUrl={posterUrl}
+              /></React.Suspense>
+            )}
+          </div>
+        ) : posterUrl ? (
           <img
-            src={resolvedPoster || displayItem.poster}
+            ref={posterImageRef}
+            src={cachedImage(posterUrl)}
             alt={displayItem.title}
-            className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+            className={`w-full h-full object-cover transition-transform duration-500 ease-out ${posterImageHoverClass}`}
             loading="lazy"
             decoding="async"
-            onError={() => setImgError(true)}
+            onError={(event) => handleImageError(event, posterUrl)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
             <span className="text-3xl font-bold text-muted/30">{displayItem.title?.charAt(0) || '?'}</span>
           </div>
         )}
-        {/* Bottom gradient + genre label */}
-        <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
-        {(() => {
-          const genre = displayItem.genres?.[0]
-            || (displayItem.genreIds?.[0] ? TMDB_GENRES[displayItem.genreIds[0]] : null)
-            || resolvedGenre
-          return genre ? (
-            <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
-              <span className="text-[10px] font-semibold text-white/70 tracking-wide">
+
+        {/* Bottom gradient overlay with genre + rating */}
+        {!inlineTrailerPreview && <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />}
+        {!inlineTrailerPreview && (showGenreOnCards || showRatingsOnCards) && (
+          <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10 flex items-center justify-center gap-1.5">
+            {showGenreOnCards && genre && (
+              <span className="text-meta font-semibold text-white/70 tracking-wide">
                 {genre}
               </span>
-            </div>
-          ) : null
-        })()}
-        {/* Watched checkmark badge */}
-        {isCompleted && (
-          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-accent flex items-center justify-center shadow-lg z-10">
-            <svg className="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" strokeWidth="2.8" viewBox="0 0 24 24">
-              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            )}
+            {showGenreOnCards && genre && showRatingsOnCards && ratingStr && (
+              <span className="text-white/50">·</span>
+            )}
+            {showRatingsOnCards && ratingStr && (
+              <span className="flex items-center gap-0.5 text-meta font-bold text-yellow-400">
+                <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                </svg>
+                {ratingStr}
+              </span>
+            )}
           </div>
         )}
 
-        {/* Rating badge (poster) */}
-        {showRatingsOnCards && ratingStr && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 shadow-lg z-10 text-[10px] font-bold text-yellow-400">
-            <svg className="w-3 h-3 fill-current text-yellow-400" viewBox="0 0 24 24">
-              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-            </svg>
-            <span>{ratingStr}</span>
-          </div>
-        )}
         {import.meta.env.DEV && displayItem.metadataFallback && (
-          <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-[9px] font-bold z-20">metadata fallback</div>
+          <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-amber-500/90 text-black text-tag font-bold z-20">metadata fallback</div>
         )}
+        {posterWatchBadge}
 
         {/* In-progress bar */}
-        {!isCompleted && progressPct != null && progressPct > 2 && (
-          <div className="absolute bottom-0 inset-x-0 h-1 bg-black/40 z-10">
-            <div className="h-full bg-accent rounded-r-full" style={{ width: `${Math.min(progressPct, 100)}%` }} />
-          </div>
+        {showPosterProgress && (
+          <div className="poster-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progressPct!, 100))}><div className="poster-progress-indicator__value" style={{ width: `${Math.min(progressPct!, 100)}%` }} /></div>
         )}
       </div>
-      <h3 className="text-xs font-semibold text-gray-300 truncate group-hover:text-white transition-colors pl-1">
-        {displayItem.title}
-      </h3>
-      {displayItem.year && (
-        <p className="text-[11px] text-muted/80 pl-1 mt-0.5">{displayItem.year}</p>
-      )}
+      {!fixedHome && <>
+        {!ranked && <h3 className="text-xs font-semibold text-gray-300 truncate group-hover:text-white transition-colors pl-1">
+          {displayItem.title}
+        </h3>}
+        {inlineTrailerPreview ? (
+          ranked && trailerExpanded ? null : <>
+            {(genre || displayItem.year) && (
+              <p className="text-meta text-muted pl-1 mt-0.5 truncate">
+                {[genre, displayItem.year].filter(Boolean).join(' · ')}
+              </p>
+            )}
+          </>
+        ) : displayItem.year && (
+          <p className={`text-label text-muted pl-1 mt-0.5 ${ranked ? rankedNumberSlotClass : ''}`}>{displayItem.year}</p>
+        )}
+      </>}
     </button>
   )
 }

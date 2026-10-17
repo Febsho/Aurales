@@ -1,4 +1,7 @@
 import { traktFetch } from './auth'
+import { cachedFetch } from '../cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
+import { profileProviderCacheKey } from '../profiles'
 
 export interface TraktWatchedItem {
   plays: number
@@ -28,6 +31,30 @@ export async function getWatchedShows(): Promise<TraktWatchedItem[]> {
     show: item.show as TraktWatchedItem['show'],
     seasons: item.seasons as TraktWatchedItem['seasons'],
   }))
+}
+
+export interface TraktEpisodeProgress {
+  number: number
+  completed: boolean
+}
+
+export interface TraktSeasonProgress {
+  number: number
+  episodes: TraktEpisodeProgress[]
+}
+
+export async function getShowWatchedProgress(showId: string): Promise<TraktSeasonProgress[]> {
+  return cachedFetch<TraktSeasonProgress[]>(profileProviderCacheKey(`watched:trakt:show-progress:${showId}`, 'trakt'), async () => {
+    const data = await traktFetch(`/shows/${showId}/progress/watched`) as Record<string, unknown>
+    const seasons = data.seasons as { number: number; episodes: { number: number; completed: boolean }[] }[]
+    return (seasons || []).map((s) => ({
+      number: s.number,
+      episodes: (s.episodes || []).map((e) => ({ number: e.number, completed: e.completed })),
+    }))
+  }, {
+    category: CACHE_CATEGORIES.WATCHED_STATUS,
+    ttlSeconds: CACHE_TTLS.WATCHED_STATUS,
+  })
 }
 
 export async function getCollection(type: 'movies' | 'shows'): Promise<unknown[]> {
@@ -110,14 +137,13 @@ export async function convertToTraktNumbering(
   // Convert app (season, episode) to absolute
   let absolute = 0
   for (const s of appSeasonCounts) {
-    if (s.season >= appSeason) break
-    absolute += s.count
+    if (s.season < appSeason) absolute += s.count
   }
   absolute += appEpisode
 
   // Convert absolute to Trakt (season, episode)
   let remaining = absolute
-  for (const s of traktSeasons) {
+  for (const s of [...traktSeasons].sort((a, b) => a.number - b.number)) {
     if (remaining <= s.episodeCount) {
       return { season: s.number, episode: remaining }
     }
@@ -130,24 +156,50 @@ export async function getPlaybackProgress(): Promise<unknown[]> {
   return await traktFetch('/sync/playback') as unknown[]
 }
 
+/** Delete a single playback-progress entry (the id returned by /sync/playback). */
+export async function removePlaybackItem(id: string | number): Promise<void> {
+  await traktFetch(`/sync/playback/${id}`, { method: 'DELETE' })
+}
+
 export interface TraktSeasonSummary {
   number: number
   episodeCount: number
 }
 
 const traktSeasonCache = new Map<string, { data: TraktSeasonSummary[]; timestamp: number }>()
+const traktSeasonPending = new Map<string, Promise<TraktSeasonSummary[]>>()
 const TRAKT_SEASON_CACHE_TTL = 30 * 60 * 1000
+const MAX_TRAKT_SEASON_CACHE_ENTRIES = 300
 
 export async function getTraktShowSeasons(showImdbId: string): Promise<TraktSeasonSummary[]> {
   const cached = traktSeasonCache.get(showImdbId)
-  if (cached && Date.now() - cached.timestamp < TRAKT_SEASON_CACHE_TTL) return cached.data
+  if (cached && Date.now() - cached.timestamp < TRAKT_SEASON_CACHE_TTL) {
+    traktSeasonCache.delete(showImdbId)
+    traktSeasonCache.set(showImdbId, cached)
+    return cached.data
+  }
+  if (cached) traktSeasonCache.delete(showImdbId)
 
-  const raw = await traktFetch(`/shows/${showImdbId}/seasons`) as Record<string, unknown>[]
-  const seasons = raw
-    .filter((s) => typeof s.number === 'number' && (s.number as number) > 0)
-    .map((s) => ({ number: s.number as number, episodeCount: (s.episode_count ?? s.aired_episodes ?? 0) as number }))
-    .sort((a, b) => a.number - b.number)
+  const pending = traktSeasonPending.get(showImdbId)
+  if (pending) return pending
 
-  traktSeasonCache.set(showImdbId, { data: seasons, timestamp: Date.now() })
-  return seasons
+  const request = (async () => {
+    const raw = await traktFetch(`/shows/${showImdbId}/seasons`) as Record<string, unknown>[]
+    const seasons = raw
+      .filter((s) => typeof s.number === 'number' && (s.number as number) > 0)
+      .map((s) => ({ number: s.number as number, episodeCount: (s.episode_count ?? s.aired_episodes ?? 0) as number }))
+      .sort((a, b) => a.number - b.number)
+
+    traktSeasonCache.set(showImdbId, { data: seasons, timestamp: Date.now() })
+    while (traktSeasonCache.size > MAX_TRAKT_SEASON_CACHE_ENTRIES) {
+      const oldest = traktSeasonCache.keys().next().value
+      if (oldest === undefined) break
+      traktSeasonCache.delete(oldest)
+    }
+    return seasons
+  })().finally(() => {
+    if (traktSeasonPending.get(showImdbId) === request) traktSeasonPending.delete(showImdbId)
+  })
+  traktSeasonPending.set(showImdbId, request)
+  return request
 }

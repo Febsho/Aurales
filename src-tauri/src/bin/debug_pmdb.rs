@@ -4,8 +4,8 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let appdata = std::env::var("APPDATA")?;
     let db_path = PathBuf::from(appdata)
-        .join("com.orynt.app")
-        .join("orynt.db");
+        .join("com.aurales.app")
+        .join("aurales.db");
 
     println!("Connecting to DB: {}", db_path.display());
     let conn = Connection::open(db_path)?;

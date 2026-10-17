@@ -119,15 +119,20 @@ export async function getOverridesForMedia(localMediaId: string): Promise<AnimeM
 }
 
 function findSeasonMapping(result: AnimeMappingResult, seasonNumber: number): AnimeSeasonMapping | undefined {
-  return result.seasons.find((s) => s.seasonNumber === seasonNumber || s.tvdbSeasonNumber === seasonNumber)
+  // Provider season numbers can overlap another season's TVDB number. Prefer
+  // the explicit TVDB key, which is what the input is indexed by.
+  return result.seasons.find((s) => s.tvdbSeasonNumber === seasonNumber)
+    ?? result.seasons.find((s) => s.seasonNumber === seasonNumber)
 }
 
 function computeAbsoluteEpisode(result: AnimeMappingResult, season: number, episode: number): number {
-  let offset = 0
-  for (const s of result.seasons) {
-    if ((s.seasonNumber ?? s.tvdbSeasonNumber ?? 0) >= season) break
-    offset += s.episodeCount ?? 0
-  }
+  // Do not depend on provider response ordering, and exclude TVDB specials
+  // from the numbered episode sequence.
+  const offset = result.seasons.reduce((total, s) => {
+    const tvdbSeason = s.tvdbSeasonNumber ?? s.seasonNumber ?? 0
+    if (tvdbSeason <= 0 || tvdbSeason >= season) return total
+    return total + (s.episodeCount ?? 0)
+  }, 0)
   return offset + episode
 }
 

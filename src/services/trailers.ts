@@ -1,0 +1,380 @@
+import { invoke } from '@tauri-apps/api/core'
+import { getTmdbApiKey } from './apiKeys'
+import { cacheGet, cacheSet } from './cache/sqliteCache'
+import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { readBoundedResponseJson } from './network/boundedResponse'
+
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
+const TRAILER_METADATA_TIMEOUT_MS = 8_000
+const MAX_TRAILER_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
+export const TRAILERIO_MANIFEST_URL = 'https://trailerio.cc/manifest.json'
+const TRAILERIO_BASE_URL = new URL('.', TRAILERIO_MANIFEST_URL).toString().replace(/\/$/, '')
+
+export type TrailerSource = {
+  source: 'trailerio' | 'tmdb' | 'youtube'
+  site: 'Trailerio' | 'YouTube'
+  key: string
+  url: string
+  embedUrl: string
+  thumbnailUrl: string
+  /** A native HLS/MP4 URL supplied by Trailerio. */
+  directUrl?: string
+  language?: string
+  official?: boolean
+}
+
+interface TrailerLookupInput {
+  type: 'movie' | 'series' | 'show' | 'anime'
+  tmdbId?: string | number
+  imdbId?: string
+  title: string
+  year?: number
+  language?: string
+}
+
+type TrailerioLink = {
+  trailers?: string | string[]
+  provider?: string
+}
+
+type TrailerioResponse = {
+  meta?: { links?: TrailerioLink[] }
+}
+
+interface TmdbVideo {
+  id?: string
+  key?: string
+  site?: string
+  type?: string
+  official?: boolean
+  iso_639_1?: string | null
+  name?: string
+}
+
+const REJECT_YOUTUBE_TERMS = [
+  'fan trailer',
+  'concept trailer',
+  'reaction',
+  'review',
+  'explained',
+  'breakdown',
+  'ending',
+  'clip',
+]
+
+const TMDB_LANGUAGE_REGIONS: Record<string, string> = {
+  en: 'US', es: 'ES', fr: 'FR', de: 'DE', it: 'IT', pt: 'PT', ru: 'RU',
+  ja: 'JP', ko: 'KR', zh: 'CN', hi: 'IN', ar: 'SA', tr: 'TR', nl: 'NL',
+  pl: 'PL', uk: 'UA', cs: 'CZ', hu: 'HU', ro: 'RO', sv: 'SE', no: 'NO',
+  da: 'DK', fi: 'FI', he: 'IL', th: 'TH', vi: 'VN',
+}
+
+function tmdbLocale(language?: string): string {
+  const [rawLanguage, rawRegion] = (language || 'en').trim().replace('_', '-').split('-', 2)
+  const languageCode = rawLanguage.toLowerCase()
+  const region = rawRegion && /^[a-z]{2}$/i.test(rawRegion)
+    ? rawRegion.toUpperCase()
+    : TMDB_LANGUAGE_REGIONS[languageCode] || 'US'
+  return `${languageCode}-${region}`
+}
+
+function tmdbVideoLanguages(language?: string): string {
+  const languageCode = (language || 'en').trim().split(/[-_]/, 1)[0].toLowerCase()
+  return languageCode === 'en' ? 'en,null' : `${languageCode},en,null`
+}
+
+const pendingTrailerLookups = new Map<string, Promise<TrailerSource | null>>()
+// Hover previews are optional, but each unique title may fan out to Trailerio,
+// TMDB and YouTube. Bound that work when a pointer moves rapidly across a long
+// shelf; existing lookups remain deduplicated and higher-value cached sources
+// are still returned before this limit is checked.
+const MAX_PENDING_TRAILER_LOOKUPS = 8
+
+async function fetchTrailerMetadata<T>(url: string): Promise<{ response: Response; data: T | null }> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(new DOMException('Trailer metadata request timed out', 'TimeoutError')), TRAILER_METADATA_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    const data = response.ok ? await readBoundedResponseJson<T>(response, MAX_TRAILER_METADATA_RESPONSE_BYTES, 'Trailer metadata response').catch(() => null) : null
+    return { response, data }
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+function mediaTypeForTmdb(type: TrailerLookupInput['type']): 'movie' | 'tv' {
+  return type === 'movie' ? 'movie' : 'tv'
+}
+
+export function youtubeThumbnailUrl(key: string, quality: 'max' | 'high' = 'max'): string {
+  return `https://i.ytimg.com/vi/${key}/${quality === 'max' ? 'maxresdefault' : 'hqdefault'}.jpg`
+}
+
+export function buildYoutubeEmbedUrl(key: string, options: { muted?: boolean } = {}): string {
+  const pageOrigin = typeof window !== 'undefined' ? window.location?.origin : undefined
+  // YouTube rejects non-HTTP origins such as tauri://localhost when `origin` is
+  // supplied. The embed works without it because we do not need the iframe API.
+  const origin = pageOrigin && /^https?:\/\//.test(pageOrigin) ? pageOrigin : undefined
+  const params = new URLSearchParams({
+    autoplay: '1',
+    mute: options.muted === false ? '0' : '1',
+    playsinline: '1',
+    rel: '0',
+    modestbranding: '1',
+    controls: '0',
+    disablekb: '1',
+    fs: '0',
+    iv_load_policy: '3',
+    cc_load_policy: '0',
+    enablejsapi: '1',
+    autohide: '1',
+    showinfo: '0',
+    vq: 'highres',
+  })
+  if (origin) params.set('origin', origin)
+  return `https://www.youtube-nocookie.com/embed/${key}?${params.toString()}`
+}
+
+function makeYoutubeSource(key: string, source: TrailerSource['source'], language?: string, official?: boolean): TrailerSource {
+  return {
+    source,
+    site: 'YouTube',
+    key,
+    url: `https://www.youtube.com/watch?v=${key}`,
+    embedUrl: buildYoutubeEmbedUrl(key),
+    thumbnailUrl: youtubeThumbnailUrl(key),
+    language,
+    official,
+  }
+}
+
+function isValidYoutubeKey(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(value)
+}
+
+function scoreTmdbVideo(video: TmdbVideo, preferredLanguage?: string): number {
+  let score = 0
+  if (video.site === 'YouTube') score += 1000
+  if (video.type === 'Trailer') score += 500
+  if (video.official === true) score += 200
+  if (preferredLanguage && video.iso_639_1 === preferredLanguage) score += 80
+  if (video.iso_639_1 === 'en') score += 50
+  if (video.type === 'Teaser') score -= 70
+  return score
+}
+
+function pickTmdbTrailer(videos: TmdbVideo[], preferredLanguage?: string): TrailerSource | null {
+  const candidates = videos
+    .filter((video) => video.site === 'YouTube' && isValidYoutubeKey(video.key))
+    .sort((a, b) => scoreTmdbVideo(b, preferredLanguage) - scoreTmdbVideo(a, preferredLanguage))
+
+  const bestTrailer = candidates.find((video) => video.type === 'Trailer') || candidates[0]
+  return bestTrailer && bestTrailer.key
+    ? makeYoutubeSource(bestTrailer.key, 'tmdb', bestTrailer.iso_639_1 || undefined, bestTrailer.official)
+    : null
+}
+
+async function fetchTmdbTrailer(input: TrailerLookupInput): Promise<TrailerSource | null> {
+  if (!input.tmdbId) return null
+  const apiKey = getTmdbApiKey()
+  if (!apiKey) return null
+
+  const id = String(input.tmdbId).replace(/^tmdb[-:]/i, '')
+  if (!id) return null
+
+  const url = new URL(`${TMDB_BASE_URL}/${mediaTypeForTmdb(input.type)}/${id}/videos`)
+  url.searchParams.set('api_key', apiKey)
+  url.searchParams.set('language', tmdbLocale(input.language))
+  // Without this, titles whose trailers are tagged with another language (or
+  // untagged) return no results and we fall through to the YouTube scrape,
+  // which often surfaces foreign-subbed re-uploads.
+  url.searchParams.set('include_video_language', tmdbVideoLanguages(input.language))
+
+  const { response, data } = await fetchTrailerMetadata<{ results?: TmdbVideo[] }>(url.toString())
+  if (!response.ok) throw new Error(`TMDB trailer lookup failed: ${response.status}`)
+  const preferred = pickTmdbTrailer(data?.results || [], input.language)
+  if (preferred) return preferred
+
+  if (input.language && input.language !== 'en') {
+    const fallback = new URL(`${TMDB_BASE_URL}/${mediaTypeForTmdb(input.type)}/${id}/videos`)
+    fallback.searchParams.set('api_key', apiKey)
+    fallback.searchParams.set('language', 'en-US')
+    const { response: fallbackResponse, data: fallbackData } = await fetchTrailerMetadata<{ results?: TmdbVideo[] }>(fallback.toString())
+    if (fallbackResponse.ok) {
+      return pickTmdbTrailer(fallbackData?.results || [], 'en')
+    }
+  }
+
+  return null
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+// CJK detection covers kana, CJK ideographs, and hangul — used to reject
+// foreign-language trailer uploads unless the title itself is CJK.
+const containsCjk = (value: string) => /[぀-ヿ㐀-䶿一-鿿가-힯]/.test(value)
+
+function normalizeTrailerTitle(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    // Keep CJK and other non-Latin letters so localized trailer titles can
+    // match their catalog title instead of normalizing to an empty string.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+/**
+ * Search results must identify the whole title, not merely the franchise.
+ * Matching only the portion before a colon made "Spider-Man: Brand New Day"
+ * eligible for trailers from every older Spider-Man film.
+ */
+function matchesTrailerTitle(candidateTitle: string, title: string): boolean {
+  const expected = normalizeTrailerTitle(title)
+  const candidate = normalizeTrailerTitle(candidateTitle)
+  return expected.length > 0 && candidate.includes(expected)
+}
+
+export function extractYoutubeFallback(html: string, title: string): TrailerSource | null {
+  const seen = new Set<string>()
+  const matches = [...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"[\s\S]{0,2200}?"title":\{"runs":\[\{"text":"([^"]+)"/g)]
+
+  for (const match of matches) {
+    const key = match[1]
+    const candidateTitle = decodeHtml(match[2] || '').toLowerCase()
+    if (!isValidYoutubeKey(key) || seen.has(key)) continue
+    seen.add(key)
+    if (!candidateTitle.includes('trailer')) continue
+    if (!matchesTrailerTitle(candidateTitle, title)) continue
+    if (containsCjk(candidateTitle) && !containsCjk(title)) continue
+    if (REJECT_YOUTUBE_TERMS.some((term) => candidateTitle.includes(term))) continue
+    if (candidateTitle.includes('teaser') && matches.length > 1) continue
+    return makeYoutubeSource(key, 'youtube', undefined, candidateTitle.includes('official'))
+  }
+
+  // Do not fall back to an unlabelled watch URL. Search pages contain links to
+  // related and recommended videos, so accepting one here can play a trailer
+  // for a different entry in the same franchise.
+  return null
+}
+
+async function fetchYoutubeFallback(input: TrailerLookupInput): Promise<TrailerSource | null> {
+  const query = [input.title, input.year, 'official trailer'].filter(Boolean).join(' ')
+  const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
+  const html = await invoke<string>('http_get_text', { url })
+  return extractYoutubeFallback(html, input.title)
+}
+
+async function resolveTrailerioImdbId(input: TrailerLookupInput): Promise<string | null> {
+  const supplied = String(input.imdbId || '').trim()
+  if (/^tt\d+$/.test(supplied)) return supplied
+  if (!input.tmdbId) return null
+
+  const apiKey = getTmdbApiKey()
+  if (!apiKey) return null
+  const tmdbId = String(input.tmdbId).replace(/^tmdb[-:]/i, '')
+  if (!/^\d+$/.test(tmdbId)) return null
+
+  const url = new URL(`${TMDB_BASE_URL}/${mediaTypeForTmdb(input.type)}/${tmdbId}/external_ids`)
+  url.searchParams.set('api_key', apiKey)
+  const { response, data } = await fetchTrailerMetadata<{ imdb_id?: unknown }>(url.toString())
+  if (!response.ok) return null
+  return typeof data?.imdb_id === 'string' && /^tt\d+$/.test(data.imdb_id)
+    ? data.imdb_id
+    : null
+}
+
+/**
+ * Trailerio is a Stremio metadata addon that exposes publisher-hosted trailer
+ * streams (Apple TV HLS and Plex/IVA MP4) for IMDb IDs. Prefer it over a
+ * YouTube page so the hero player receives a real high-resolution stream.
+ */
+async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource | null> {
+  const imdbId = await resolveTrailerioImdbId(input)
+  if (!imdbId) return null
+
+  const mediaType = mediaTypeForTmdb(input.type) === 'movie' ? 'movie' : 'series'
+  const responseText = await invoke<string>('http_get_text', {
+    url: `${TRAILERIO_BASE_URL}/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`,
+  })
+  const payload = JSON.parse(responseText) as TrailerioResponse
+  const links = payload.meta?.links || []
+  const candidates = links.flatMap((link) => {
+    const urls = Array.isArray(link.trailers) ? link.trailers : [link.trailers]
+    return urls.filter((url): url is string => typeof url === 'string' && /^https:\/\//.test(url))
+      .map((url) => ({ url, provider: link.provider || 'Trailerio' }))
+  })
+  if (!candidates.length) return null
+
+  // Apple TV exposes adaptive HLS variants up to 1080p/10 Mbps. Prefer that
+  // master playlist for the Hero; Plex/IVA is retained as a direct MP4
+  // fallback (many of its "1080p" links resolve to 540p in practice).
+  const preferred = candidates.find(({ provider }) => /apple/i.test(provider))
+    || candidates.find(({ provider, url }) => /1080|plex|iva/i.test(provider) || /\.mp4(?:\?|$)/i.test(url))
+    || candidates[0]
+  return {
+    source: 'trailerio',
+    site: 'Trailerio',
+    key: `trailerio:${imdbId}`,
+    url: preferred.url,
+    embedUrl: '',
+    thumbnailUrl: '',
+    directUrl: preferred.url,
+    official: true,
+  }
+}
+
+export async function getTrailerSource(input: TrailerLookupInput): Promise<TrailerSource | null> {
+  const tmdbId = input.tmdbId ? String(input.tmdbId).replace(/^tmdb[-:]/i, '') : ''
+  const cacheKey = [
+    // v9 promotes Trailerio's IMDb-addressed results above TMDB and YouTube
+    // and invalidates older cached sources selected in the opposite order.
+    'trailer_source_v9',
+    mediaTypeForTmdb(input.type),
+    tmdbId || 'no-tmdb',
+    input.imdbId || 'no-imdb',
+    input.title.trim().toLowerCase(),
+    input.year || 'no-year',
+    input.language || 'en',
+  ].join(':')
+
+  const cached = await cacheGet<TrailerSource>(cacheKey)
+  if (cached?.data?.key) return cached.data
+
+  const pending = pendingTrailerLookups.get(cacheKey)
+  if (pending) return pending
+  if (pendingTrailerLookups.size >= MAX_PENDING_TRAILER_LOOKUPS) return null
+
+  // Trailer lookup is user-visible and must not wait behind catalog/artwork
+  // revalidation in the general cache queue. Resolve it immediately, dedupe
+  // concurrent Hero/poster requests, and persist only a successful source.
+  const request = (async (): Promise<TrailerSource | null> => {
+    try {
+      // Trailerio is addressed by an exact IMDb ID and supplies publisher-hosted
+      // streams, avoiding both ambiguous title searches and YouTube startup UI.
+      const trailerio = await fetchTrailerio(input).catch(() => null)
+      const source = trailerio
+        || await fetchTmdbTrailer(input).catch(() => null)
+        || await fetchYoutubeFallback(input).catch(() => null)
+      if (!source) return null
+      void cacheSet(cacheKey, source, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+      return source
+    } finally {
+      pendingTrailerLookups.delete(cacheKey)
+    }
+  })()
+  pendingTrailerLookups.set(cacheKey, request)
+  return request
+}
+
+export function preloadTrailerSource(input: TrailerLookupInput): void {
+  getTrailerSource(input).catch(() => undefined)
+}

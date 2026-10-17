@@ -4,6 +4,7 @@ import * as wsClient from '../../services/watch-together/wsClient'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Button from '../ui/Button'
+import { getActiveProfile } from '../../services/profiles'
 
 interface JoinRoomModalProps {
   open: boolean
@@ -25,20 +26,22 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
   useEffect(() => {
     if (open) {
       setRoomCode('')
-      setNickname(defaultNickname)
+      setNickname(defaultNickname || getActiveProfile().name)
       setError('')
       setTimeout(() => codeInputRef.current?.focus(), 100)
     }
   }, [open, defaultNickname])
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
-    setRoomCode(val)
+    let raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
+    if (raw.length > 4) raw = raw.slice(0, 4) + '-' + raw.slice(4)
+    setRoomCode(raw)
   }
 
   const handleJoin = async () => {
-    if (roomCode.length < 6) {
-      setError('Room code must be 6 characters')
+    const stripped = roomCode.replace(/-/g, '')
+    if (stripped.length < 8) {
+      setError('Room code must be 8 characters (e.g. ABCD-1234)')
       return
     }
     const trimmedName = nickname.trim()
@@ -79,17 +82,18 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
       title="Join Watch Room"
       description="Enter a room code to watch with friends"
       size="sm"
+      className="watch-together-modal"
     >
       <div className="flex flex-col gap-4">
         <Input
           ref={codeInputRef}
           label="Room code"
-          placeholder="ABCDEF"
+          placeholder="ABCD-1234"
           value={roomCode}
           onChange={handleRoomCodeChange}
           onKeyDown={handleKeyDown}
-          maxLength={6}
-          className="tracking-[0.3em] text-center font-mono text-lg uppercase"
+          maxLength={9}
+          className="tracking-[0.2em] text-center font-mono text-lg uppercase"
           icon={
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
@@ -126,7 +130,7 @@ export default function JoinRoomModal({ open, onClose }: JoinRoomModalProps) {
           variant="primary"
           fullWidth
           loading={loading}
-          disabled={roomCode.length < 6}
+          disabled={roomCode.replace(/-/g, '').length < 8}
           onClick={handleJoin}
           icon={
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">

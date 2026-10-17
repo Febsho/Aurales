@@ -12,6 +12,15 @@ export interface DiscordActivity {
   activityType?: number // 0=Playing, 3=Watching
 }
 
+const defaultBrowsingActivity: DiscordActivity = {
+  details: 'Browsing',
+  largeImage: 'aurales_logo',
+  largeText: 'Aurales',
+  activityType: 3,
+}
+
+let browsingActivity: DiscordActivity = defaultBrowsingActivity
+
 export async function setDiscordActivity(activity: DiscordActivity): Promise<void> {
   await invoke('discord_set_activity', {
     details: activity.details,
@@ -24,6 +33,15 @@ export async function setDiscordActivity(activity: DiscordActivity): Promise<voi
     endTimestamp: activity.endTimestamp,
     activityType: activity.activityType,
   })
+}
+
+export async function setDiscordBrowsingActivity(activity?: DiscordActivity): Promise<void> {
+  browsingActivity = activity || defaultBrowsingActivity
+  await setDiscordActivity(browsingActivity)
+}
+
+export async function restoreDiscordBrowsingActivity(): Promise<void> {
+  await setDiscordActivity(browsingActivity)
 }
 
 export async function clearDiscordActivity(): Promise<void> {

@@ -4,6 +4,7 @@ import { tvdbProvider } from './tvdb'
 import { resolveAnimeIds, lookupByTvdbId, lookupByAniListId, lookupByMalId, lookupByImdbId } from './animeLists'
 import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
+import { coordinatedJson } from './network/requestCoordinator'
 
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 
@@ -12,9 +13,14 @@ async function tmdbApiFetch(path: string, params: Record<string, string> = {}): 
   const url = new URL(`${TMDB_BASE}${path}`)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString())
-  if (!res.ok) throw new Error(`TMDB error: ${res.status}`)
-  return res.json()
+  return coordinatedJson(url.toString(), {}, {
+    label: 'TMDB',
+    kind: 'metadata',
+    dedupeKey: `${path}:${new URLSearchParams(params).toString()}`,
+    priority: 'visible',
+    timeoutMs: 12_000,
+    retry: 'none',
+  })
 }
 
 export async function tmdbFindByExternalId(
@@ -45,7 +51,7 @@ export async function tmdbFindByExternalId(
     }
 
     return {}
-  } catch {
+  } catch (_) {
     return {}
   }
 }
@@ -72,18 +78,19 @@ export async function resolveImdbId(
         tvdbId: ids.tvdbId != null ? Number(ids.tvdbId) : undefined,
         tmdbId: ids.tmdbId != null ? Number(ids.tmdbId) : undefined,
         imdbId: ids.imdbId,
+        contentType: mediaType,
       })
       if (resolved?.imdbId) return resolved.imdbId
     }
-  } catch { /* continue */ }
+  } catch (_) { /* continue */ }
 
   if (ids.tmdbId != null) {
     try {
-      const tmdbId = String(ids.tmdbId).replace('tmdb-', '')
+      const tmdbId = String(ids.tmdbId).replace(/^tmdb[-:]/i, '')
       const endpoint = mediaType === 'movie' ? 'movie' : 'tv'
       const data = (await tmdbApiFetch(`/${endpoint}/${tmdbId}/external_ids`)) as Record<string, unknown>
       if (data.imdb_id && typeof data.imdb_id === 'string') return data.imdb_id as string
-    } catch { /* continue */ }
+    } catch (_) { /* continue */ }
   }
 
   if (ids.tvdbId != null) {
@@ -94,7 +101,7 @@ export async function resolveImdbId(
         const data = (await tmdbApiFetch(`/${endpoint}/${found.tmdbId}/external_ids`)) as Record<string, unknown>
         if (data.imdb_id && typeof data.imdb_id === 'string') return data.imdb_id as string
       }
-    } catch { /* continue */ }
+    } catch (_) { /* continue */ }
   }
 
   return undefined
@@ -143,6 +150,7 @@ function mergeShowDetails(original: ShowDetails, provider: ShowDetails): ShowDet
     voteCount: provider.voteCount ?? original.voteCount,
     certification: provider.certification || original.certification,
     status: provider.status || original.status,
+    seriesType: provider.seriesType || original.seriesType,
     numberOfSeasons: provider.numberOfSeasons ?? original.numberOfSeasons,
     numberOfEpisodes: provider.numberOfEpisodes ?? original.numberOfEpisodes,
     seasons: provider.seasons.length > 0 ? provider.seasons : original.seasons,
@@ -162,7 +170,7 @@ function mergeShowDetails(original: ShowDetails, provider: ShowDetails): ShowDet
 }
 
 async function resolveTmdbIdForMovie(movie: MovieDetails): Promise<string | undefined> {
-  if (movie.tmdbId) return String(movie.tmdbId).replace('tmdb-', '')
+  if (movie.tmdbId) return String(movie.tmdbId).replace(/^tmdb[-:]/i, '')
 
   if (movie.imdbId) {
     const found = await tmdbFindByExternalId(movie.imdbId, 'imdb_id')
@@ -174,11 +182,20 @@ async function resolveTmdbIdForMovie(movie: MovieDetails): Promise<string | unde
     if (found.tmdbId) return String(found.tmdbId)
   }
 
+  if (movie.anilistId || movie.malId) {
+    const resolved = await resolveAnimeIds({
+      anilistId: movie.anilistId,
+      malId: movie.malId,
+      contentType: 'movie',
+    })
+    if (resolved?.tmdbId) return String(resolved.tmdbId)
+  }
+
   return undefined
 }
 
 async function resolveTmdbIdForShow(show: ShowDetails): Promise<string | undefined> {
-  if (show.tmdbId) return String(show.tmdbId).replace('tmdb-', '')
+  if (show.tmdbId) return String(show.tmdbId).replace(/^tmdb[-:]/i, '')
 
   if (show.imdbId) {
     const found = await tmdbFindByExternalId(show.imdbId, 'imdb_id')
@@ -193,7 +210,7 @@ async function resolveTmdbIdForShow(show: ShowDetails): Promise<string | undefin
   const anilistId = show.anilistId != null ? Number(show.anilistId) : undefined
   const malId = show.malId != null ? Number(show.malId) : undefined
   if (anilistId || malId) {
-    const resolved = await resolveAnimeIds({ anilistId, malId })
+    const resolved = await resolveAnimeIds({ anilistId, malId, contentType: 'series' })
     if (resolved?.tmdbId) return String(resolved.tmdbId)
   }
 
@@ -201,12 +218,12 @@ async function resolveTmdbIdForShow(show: ShowDetails): Promise<string | undefin
 }
 
 async function resolveTvdbIdForShow(show: ShowDetails): Promise<string | undefined> {
-  if (show.tvdbId) return String(show.tvdbId).replace('tvdb-', '')
+  if (show.tvdbId) return String(show.tvdbId).replace(/^tvdb[-:]/i, '')
 
   const anilistId = show.anilistId != null ? Number(show.anilistId) : undefined
   const malId = show.malId != null ? Number(show.malId) : undefined
   if (anilistId || malId) {
-    const resolved = await resolveAnimeIds({ anilistId, malId })
+    const resolved = await resolveAnimeIds({ anilistId, malId, contentType: 'series' })
     if (resolved?.tvdbId) return String(resolved.tvdbId)
   }
 
@@ -218,7 +235,7 @@ async function fetchFromTmdbMovie(movie: MovieDetails): Promise<MovieDetails | n
   if (!tmdbId) return null
   try {
     return await tmdbProvider.getMovie(`tmdb-${tmdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -228,7 +245,7 @@ async function fetchFromTmdbShow(show: ShowDetails): Promise<ShowDetails | null>
   if (!tmdbId) return null
   try {
     return await tmdbProvider.getShow(`tmdb-${tmdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -238,7 +255,7 @@ async function fetchFromTvdbShow(show: ShowDetails): Promise<ShowDetails | null>
   if (!tvdbId) return null
   try {
     return await tvdbProvider.getShow(`tvdb-${tvdbId}`)
-  } catch {
+  } catch (_) {
     return null
   }
 }
@@ -260,7 +277,7 @@ export async function enrichMovieDetails(movie: MovieDetails): Promise<MovieDeta
       providerData = await fetchFromTmdbMovie(movie)
     }
 
-    let result = providerData ? mergeMovieDetails(movie, providerData) : { ...movie }
+    const result = providerData ? mergeMovieDetails(movie, providerData) : { ...movie }
 
     if (!result.imdbId) {
       result.imdbId = await resolveImdbId(
@@ -292,7 +309,7 @@ export async function enrichShowDetails(show: ShowDetails, isAnime?: boolean): P
           const entries = await lookupByMalId(malId)
           if (entries.length > 0) isAnime = true
         } else if (show.tvdbId) {
-          const entries = await lookupByTvdbId(Number(String(show.tvdbId).replace('tvdb-', '')))
+          const entries = await lookupByTvdbId(Number(String(show.tvdbId).replace(/^tvdb[-:]/i, '')))
           if (entries.length > 0) isAnime = true
         } else if (show.imdbId) {
           const entry = await lookupByImdbId(show.imdbId)
@@ -308,9 +325,10 @@ export async function enrichShowDetails(show: ShowDetails, isAnime?: boolean): P
       try {
         const resolved = await resolveAnimeIds({
           anilistId, malId,
-          tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace('tvdb-', '')) : undefined,
-          tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace('tmdb-', '')) : undefined,
+          tvdbId: show.tvdbId ? Number(String(show.tvdbId).replace(/^tvdb[-:]/i, '')) : undefined,
+          tmdbId: show.tmdbId ? Number(String(show.tmdbId).replace(/^tmdb[-:]/i, '')) : undefined,
           imdbId: show.imdbId,
+          contentType: 'series',
         })
         if (resolved) {
           console.log('[enrich] anime IDs resolved:', resolved)
@@ -355,7 +373,7 @@ export async function enrichShowDetails(show: ShowDetails, isAnime?: boolean): P
 
     console.log('[enrich] provider result:', providerData ? { seasons: providerData.seasons.length, cast: providerData.cast.length, title: providerData.title } : 'null')
 
-    let result = providerData ? mergeShowDetails(show, providerData) : { ...show }
+    const result = providerData ? mergeShowDetails(show, providerData) : { ...show }
 
     if (!result.imdbId) {
       result.imdbId = await resolveImdbId(

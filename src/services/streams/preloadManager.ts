@@ -1,0 +1,553 @@
+import type { StreamResult } from '../../types'
+import { fetchAddonStreamsStrict, getStreamAddons, type InstalledAddon } from '../addons'
+import { useAppStore } from '../../stores/appStore'
+import { tmdbProvider } from '../tmdb'
+import { canonicalStreamKey, resolveNextEpisodeWith, streamUrlIsTimeSensitive, streamUrlTtlSeconds } from './preloadUtils'
+export { canonicalStreamKey } from './preloadUtils'
+import { cacheGet, cacheGetMany, cacheSet } from '../cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../cache/constants'
+import { addonServerScope } from '../cache/homeRowCacheKeys'
+import { loadStreamCandidatesNative } from './streamCandidateLoader'
+import type { RequestPriority } from '../network/requestCoordinator'
+
+export const StreamPreloadPriority = {
+  PLAYBACK: 100,
+  DETAILS_OPEN: 90,
+  CONTINUE_CURRENT: 80,
+  CONTINUE_NEXT_EPISODE: 70,
+  IDLE_PREDICTION: 10,
+} as const
+export type StreamPreloadPriority = typeof StreamPreloadPriority[keyof typeof StreamPreloadPriority]
+
+function priorityName(value: number): string {
+  return Object.entries(StreamPreloadPriority).find(([, priority]) => priority === value)?.[0] || String(value)
+}
+
+function requestPriority(value: number): RequestPriority {
+  if (value >= StreamPreloadPriority.PLAYBACK) return 'playback'
+  if (value >= StreamPreloadPriority.DETAILS_OPEN) return 'interactive'
+  return 'background'
+}
+
+export type PreloadedStream = StreamResult & { addonId: string; addonName: string }
+
+export interface StreamPreloadRequest {
+  mediaType: 'movie' | 'series'
+  mediaId: string
+  imdbId?: string
+  tmdbId?: string | number
+  seasonEpisode?: { season: number; episode: number }
+  sourceAddonId?: string
+  sourceAddonItemId?: string
+}
+
+interface AddonCacheEntry {
+  streams: StreamResult[]
+  fetchedAt: number
+  expiresAt: number
+  staleUntil: number
+}
+
+export interface AddonPerformanceStats {
+  addonId: string
+  averageLatencyMs: number
+  successRate: number
+  averageResultCount: number
+  consecutiveFailures: number
+  lastSuccessAt?: number
+  lastFailureAt?: number
+  samples: number
+}
+
+type UpdateCallback = (streams: PreloadedStream[], status: { cached: boolean; complete: boolean }) => void
+
+interface QueueJob {
+  id: string
+  mediaKey: string
+  addonId: string
+  priority: number
+  sequence: number
+  run: () => Promise<AddonCacheEntry>
+  resolve: (entry: AddonCacheEntry) => void
+  reject: (error: unknown) => void
+  started?: boolean
+  signal?: AbortSignal
+  promote?: (priority: number) => void
+}
+
+interface AggregateFlight {
+  priority: number
+  promise: Promise<PreloadedStream[]>
+  subscribers: Set<UpdateCallback>
+  latest: PreloadedStream[]
+}
+
+const MAX_CONCURRENCY = 4
+const MAX_QUEUED_JOBS = 128
+const ADDON_TIMEOUT_MS = 8_000
+// Addons occasionally answer before their upstream index has caught up. Keep
+// a tiny cooldown to prevent retry storms, but retry soon when the user opens
+// the selector again.
+const NEGATIVE_TTL_SECONDS = 60
+const EPISODE_TTL_SECONDS = 45 * 60
+const MOVIE_TTL_SECONDS = 12 * 60 * 60
+const STALE_WINDOW_MS = 24 * 60 * 60 * 1000
+const PERF_STORAGE_KEY = 'aurales_stream_preload_addon_stats_v1'
+
+const devLog = (...args: unknown[]) => { if (import.meta.env.DEV) console.log('[StreamPreload]', ...args) }
+
+function cleanId(value: string | number | undefined): string {
+  return String(value ?? '').trim().replace(/:(\d+):(\d+)$/, '')
+}
+
+function supportsStreams(addon: InstalledAddon, type: string): boolean {
+  return addon.manifest.resources.some((resource) => {
+    if (resource === 'stream') return true
+    return typeof resource === 'object' && resource?.name === 'stream' && (!resource.types || resource.types.includes(type))
+  })
+}
+
+function allStreamAddons(type: 'movie' | 'series'): InstalledAddon[] {
+  const map = new Map<string, InstalledAddon>()
+  for (const addon of getStreamAddons(type)) map.set(addon.manifest.id, addon)
+  for (const addon of useAppStore.getState().addons) {
+    if (addon.enabled && supportsStreams(addon, type)) map.set(addon.manifest.id, addon)
+  }
+  return [...map.values()]
+}
+
+function cacheKey(mediaKey: string, addon: InstalledAddon, streamId: string): string {
+  // v2 drops the old seven-minute negative cache. A temporary empty result
+  // from an addon must not make a title look unavailable for an entire session.
+  // The same manifest ID can move to another server. Keep its cached streams
+  // isolated by a hashed server scope without persisting credentials embedded
+  // in the addon URL.
+  return `stream_preload:v3:${mediaKey}:${addonServerScope(addon.url)}:${addon.manifest.id}:${streamId}`
+}
+
+export async function resolveNextEpisode(
+  request: StreamPreloadRequest,
+  loadSeason = async (tmdbId: string | number, season: number) => (await tmdbProvider.getSeason(`tmdb-${tmdbId}`, season)).episodes,
+): Promise<{ season: number; episode: number } | undefined> {
+  return resolveNextEpisodeWith(request, loadSeason)
+}
+
+function safeTtl(request: StreamPreloadRequest, streams: StreamResult[]): number {
+  if (streams.length === 0) return NEGATIVE_TTL_SECONDS
+  let ttl = request.seasonEpisode ? EPISODE_TTL_SECONDS : MOVIE_TTL_SECONDS
+  for (const stream of streams) {
+    if (!stream.url) continue
+    ttl = streamUrlTtlSeconds(stream.url, ttl)
+  }
+  return ttl
+}
+
+function cachedStreamsForUse(entry: AddonCacheEntry, expired: boolean): StreamResult[] {
+  if (!expired) return entry.streams
+  // The 24-hour stale window is useful for stable provider URLs, but signed
+  // links often stop working at or before their regular TTL. Keep stable
+  // streams as fallbacks while excluding links that may already be revoked.
+  return entry.streams.filter((stream) => !stream.url || !streamUrlIsTimeSensitive(stream.url))
+}
+
+class StreamPreloadManager {
+  private queue: QueueJob[] = []
+  private active = 0
+  private sequence = 0
+  private addonFlights = new Map<string, { promise: Promise<AddonCacheEntry>; job?: QueueJob }>()
+  private aggregateFlights = new Map<string, AggregateFlight>()
+  private performance = this.loadStats()
+  private homeReady = false
+  private continueWatchingReady = false
+  private startupScheduled = false
+  private startupGeneration = 0
+  private continueCandidates: Array<StreamPreloadRequest & { progressPct?: number }> = []
+  private pendingContinue: Array<StreamPreloadRequest & { progressPct?: number }> = []
+
+  constructor() {
+    useAppStore.subscribe((state, previous) => {
+      if (state.playbackPreloadMode === previous.playbackPreloadMode) return
+      this.startupGeneration += 1
+      this.startupScheduled = false
+      this.pendingContinue = state.playbackPreloadMode === 'aggressive'
+        ? this.continueCandidates.slice(0, 5)
+        : state.playbackPreloadMode === 'smart' ? this.continueCandidates.slice(0, 1) : []
+      if (state.playbackPreloadMode !== 'off') this.maybeScheduleStartup()
+    })
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        if (!this.startupScheduled) this.maybeScheduleStartup()
+      })
+    }
+  }
+
+  request(request: StreamPreloadRequest, options: { priority: StreamPreloadPriority; onUpdate?: UpdateCallback } = { priority: StreamPreloadPriority.PLAYBACK }): Promise<PreloadedStream[]> {
+    const mediaKey = canonicalStreamKey(request)
+    const flightKey = `${mediaKey}:addons:${this.configurationKey(request.mediaType)}`
+    const existing = this.aggregateFlights.get(flightKey)
+    if (existing) {
+      if (options.onUpdate) { existing.subscribers.add(options.onUpdate); if (existing.latest.length) options.onUpdate(existing.latest, { cached: true, complete: false }) }
+      if (options.priority > existing.priority) {
+        existing.priority = options.priority
+        this.promote(mediaKey, options.priority)
+        devLog(`Promoted job to ${priorityName(options.priority)}: ${mediaKey}`)
+      }
+      devLog(`Reusing in-flight request: ${mediaKey}`)
+      return existing.promise
+    }
+
+    const flight: AggregateFlight = { priority: options.priority, promise: Promise.resolve([]), subscribers: new Set(options.onUpdate ? [options.onUpdate] : []), latest: [] }
+    flight.promise = this.execute(request, mediaKey, flight).finally(() => this.aggregateFlights.delete(flightKey))
+    this.aggregateFlights.set(flightKey, flight)
+    return flight.promise
+  }
+
+  configurationKey(mediaType: StreamPreloadRequest['mediaType']): string {
+    return allStreamAddons(mediaType)
+      .map((addon) => `${addon.manifest.id}:${addonServerScope(addon.url)}`)
+      .sort()
+      .join('|')
+  }
+
+  /** Re-query only the providers that failed in the current selector session. */
+  async retryAddons(request: StreamPreloadRequest, addonIds: string[]): Promise<PreloadedStream[]> {
+    const wanted = new Set(addonIds)
+    if (!wanted.size) return []
+    const mediaKey = canonicalStreamKey(request)
+    const candidates = allStreamAddons(request.mediaType).filter((addon) => wanted.has(addon.manifest.id))
+    const responses = await Promise.all(candidates.map(async (addon) => {
+      const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId ? request.sourceAddonItemId : cleanId(request.mediaId)
+      if (!baseId) return [] as PreloadedStream[]
+      const streamId = request.seasonEpisode ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
+      try {
+        const entry = await this.fetchAddon(request, mediaKey, addon, streamId, StreamPreloadPriority.PLAYBACK)
+        return this.decorate(entry.streams, addon)
+      } catch { return [] as PreloadedStream[] }
+    }))
+    return responses.flat()
+  }
+
+  markHomeReady(): void {
+    this.homeReady = true
+    this.maybeScheduleStartup()
+  }
+
+  setContinueWatching(items: Array<StreamPreloadRequest & { progressPct?: number }>): void {
+    this.continueCandidates = items.slice(0, 5)
+    const mode = useAppStore.getState().playbackPreloadMode
+    this.pendingContinue = mode === 'aggressive'
+      ? this.continueCandidates.slice(0, 5)
+      : mode === 'smart' ? this.continueCandidates.slice(0, 1) : []
+    this.continueWatchingReady = true
+    this.maybeScheduleStartup()
+  }
+
+  private maybeScheduleStartup(): void {
+    if (useAppStore.getState().playbackPreloadMode === 'off') return
+    if (!this.homeReady || !this.continueWatchingReady || this.startupScheduled || this.pendingContinue.length === 0) return
+    this.startupScheduled = true
+    const generation = ++this.startupGeneration
+    const run = async () => {
+      if (generation !== this.startupGeneration) return
+      if (useAppStore.getState().playbackPreloadMode === 'off' || !navigator.onLine) {
+        this.startupScheduled = false
+        return
+      }
+      devLog(`Idle startup preload: ${this.pendingContinue.length} Continue Watching targets`)
+      for (const item of this.pendingContinue) {
+        if (generation !== this.startupGeneration) return
+        if (!navigator.onLine) { this.startupScheduled = false; return }
+        this.request(item, { priority: StreamPreloadPriority.CONTINUE_CURRENT }).catch(() => undefined)
+        if (item.mediaType === 'series' && item.seasonEpisode && (item.progressPct || 0) >= 85) {
+          const next = await resolveNextEpisode(item)
+          if (generation !== this.startupGeneration) return
+          if (next) this.request({ ...item, seasonEpisode: next }, { priority: StreamPreloadPriority.CONTINUE_NEXT_EPISODE }).catch(() => undefined)
+        }
+      }
+    }
+    // Give React/layout/image work a quiet window first. requestIdleCallback
+    // alone may fire immediately on fast machines, which would still compete
+    // with Home's first meaningful paint.
+    window.setTimeout(() => {
+      const idle = window.requestIdleCallback
+      if (idle) idle(() => { void run() }, { timeout: 6_000 })
+      else window.setTimeout(() => { void run() }, 1_000)
+    }, 1_250)
+  }
+
+  private async execute(request: StreamPreloadRequest, mediaKey: string, flight: AggregateFlight): Promise<PreloadedStream[]> {
+    if (!navigator.onLine && flight.priority < StreamPreloadPriority.DETAILS_OPEN) return []
+    const addons = allStreamAddons(request.mediaType).sort((a, b) => this.addonScore(b.manifest.id) - this.addonScore(a.manifest.id))
+    const mode = useAppStore.getState().playbackPreloadMode
+    if (!addons.length) return []
+    const results = new Map<string, PreloadedStream[]>()
+    const processAddon = async (addon: InstalledAddon): Promise<boolean> => {
+      const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId
+        ? request.sourceAddonItemId
+        : cleanId(request.mediaId)
+      if (!baseId) return false
+      const streamId = request.seasonEpisode ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
+      const key = cacheKey(mediaKey, addon, streamId)
+      const cached = await cacheGet<AddonCacheEntry>(key)
+      const now = Date.now()
+      if (cached?.data && cached.data.staleUntil > now) {
+        const cachedExpired = cached.stale || cached.data.expiresAt <= now
+        const decorated = this.decorate(cachedStreamsForUse(cached.data, cachedExpired), addon)
+        results.set(addon.manifest.id, decorated)
+        devLog(`${cached.data.expiresAt > now && !cached.stale ? 'Cache HIT' : 'Cache STALE'}: ${mediaKey} / ${addon.manifest.id}`)
+        this.emit(flight, results, true, false)
+        if (decorated.length > 0 && cached.data.expiresAt > now) return true
+      }
+      if (!cached?.data || cached.stale || cached.data.expiresAt <= now) {
+        const usable = await this.fetchAddon(request, mediaKey, addon, streamId, flight.priority).then((entry) => {
+          results.set(addon.manifest.id, this.decorate(entry.streams, addon))
+          this.emit(flight, results, false, false)
+          return entry.streams.length > 0
+        }).catch(() => false)
+        return usable
+      }
+      return (cached?.data.streams.length || 0) > 0
+    }
+
+    if (flight.priority < StreamPreloadPriority.PLAYBACK && mode === 'smart') {
+      let attempted = 0
+      for (const addon of addons) {
+        if (flight.priority < StreamPreloadPriority.PLAYBACK) {
+          if ((this.performance[addon.manifest.id]?.consecutiveFailures || 0) >= 3) continue
+          if (attempted >= 3) break
+          attempted += 1
+        }
+        const usable = await processAddon(addon)
+        // A Play action promotes this shared flight. Once promoted, continue
+        // progressively through every remaining addon instead of returning the
+        // limited preparation result to the player.
+        if (usable && flight.priority < StreamPreloadPriority.PLAYBACK) break
+      }
+    } else {
+      let nativeHandled = false
+      if (flight.priority >= StreamPreloadPriority.PLAYBACK) {
+        const streamIds = addons.map((addon) => {
+          const baseId = addon.manifest.id === request.sourceAddonId && request.sourceAddonItemId
+            ? request.sourceAddonItemId
+            : cleanId(request.mediaId)
+          return request.seasonEpisode && baseId ? `${baseId}:${request.seasonEpisode.season}:${request.seasonEpisode.episode}` : baseId
+        })
+        const streamId = streamIds[0]
+        if (streamId && streamIds.every((candidate) => candidate === streamId)) {
+          const missing: InstalledAddon[] = []
+          const now = Date.now()
+          const addonCacheKeys = addons.map((addon) => cacheKey(mediaKey, addon, streamId))
+          const cachedEntries = await cacheGetMany<AddonCacheEntry>(addonCacheKeys)
+          for (let index = 0; index < addons.length; index += 1) {
+            const addon = addons[index]
+            const cached = cachedEntries.get(addonCacheKeys[index])
+            if (cached?.data && cached.data.staleUntil > now) {
+              const cachedExpired = cached.stale || cached.data.expiresAt <= now
+              results.set(addon.manifest.id, this.decorate(cachedStreamsForUse(cached.data, cachedExpired), addon))
+              this.emit(flight, results, true, false)
+            }
+            if (!cached?.data || cached.stale || cached.data.expiresAt <= now) missing.push(addon)
+          }
+          if (missing.length === 0) {
+            nativeHandled = true
+          } else {
+            const started = performance.now()
+            try {
+              const native = await loadStreamCandidatesNative(request.mediaType, streamId, missing, {
+                cancelGroup: `streams:preload:${mediaKey}`,
+                priority: 'playback',
+              })
+              const failed = new Set(native.failures.map((failure) => failure.addonId))
+              const addonLatencies = new Map((native.latencies || []).map(({ addonId, latencyMs }) => [addonId, latencyMs]))
+              const latency = Math.round(performance.now() - started)
+              const compatibilityFallbacks: Promise<boolean>[] = []
+              for (const addon of missing) {
+                const streams = native.candidates.filter((stream) => stream.addonId === addon.manifest.id)
+                if (failed.has(addon.manifest.id)) {
+                  // The native transport can fail independently of the
+                  // compatibility transport. Retry only the failed providers
+                  // instead of treating a partial batch as a complete result.
+                  compatibilityFallbacks.push(processAddon(addon))
+                  continue
+                }
+                this.recordStats(addon.manifest.id, true, addonLatencies.get(addon.manifest.id) ?? latency, streams.length)
+                const undecorated = streams.map(({ addonId: _addonId, addonName: _addonName, ...stream }) => stream)
+                const ttl = safeTtl(request, undecorated)
+                const entry = { streams: undecorated, fetchedAt: Date.now(), expiresAt: Date.now() + ttl * 1000, staleUntil: Date.now() + ttl * 1000 + STALE_WINDOW_MS }
+                // cacheSet updates the in-memory cache synchronously. SQLite
+                // persistence must not delay a playback-priority batch from
+                // exposing streams to the player.
+                void cacheSet(cacheKey(mediaKey, addon, streamId), entry, { category: CACHE_CATEGORIES.STREAM_PRELOAD, ttlSeconds: ttl })
+                results.set(addon.manifest.id, streams)
+                this.emit(flight, results, false, false)
+              }
+              await Promise.all(compatibilityFallbacks)
+              nativeHandled = true
+            } catch (error) {
+              devLog('Native candidate batch unavailable; using compatibility scheduler', error)
+            }
+          }
+        }
+      }
+      if (!nativeHandled) await Promise.all(addons.map(processAddon))
+    }
+    const final = [...results.values()].flat()
+    flight.latest = final
+    for (const subscriber of flight.subscribers) subscriber(final, { cached: false, complete: true })
+    return final
+  }
+
+  private decorate(streams: StreamResult[], addon: InstalledAddon): PreloadedStream[] {
+    return streams.map((stream) => ({ ...stream, addonId: addon.manifest.id, addonName: addon.displayName || addon.manifest.name }))
+  }
+
+  private emit(flight: AggregateFlight, results: Map<string, PreloadedStream[]>, cached: boolean, complete: boolean): void {
+    flight.latest = [...results.values()].flat()
+    for (const subscriber of flight.subscribers) subscriber(flight.latest, { cached, complete })
+  }
+
+  private fetchAddon(request: StreamPreloadRequest, mediaKey: string, addon: InstalledAddon, streamId: string, priority: number): Promise<AddonCacheEntry> {
+    const addonScope = addonServerScope(addon.url)
+    const flightKey = `${mediaKey}:${addonScope}:${addon.manifest.id}:${streamId}`
+    const existing = this.addonFlights.get(flightKey)
+    if (existing) {
+      if (existing.job && priority > existing.job.priority) {
+        existing.job.priority = priority
+        existing.job.promote?.(priority)
+      }
+      return existing.promise
+    }
+    let jobRef: QueueJob | undefined
+    const promise = new Promise<AddonCacheEntry>((resolve, reject) => {
+      const job: QueueJob = {
+        id: flightKey, mediaKey, addonId: addon.manifest.id, priority, sequence: this.sequence++, resolve, reject,
+        started: false,
+        run: async () => {
+          const controller = new AbortController()
+          job.signal = controller.signal
+          const timeout = window.setTimeout(() => controller.abort(), ADDON_TIMEOUT_MS)
+          const started = performance.now()
+          try {
+            const streams = await fetchAddonStreamsStrict(addon.url, request.mediaType, streamId, controller.signal, requestPriority(job.priority))
+            const latency = Math.round(performance.now() - started)
+            this.recordStats(addon.manifest.id, true, latency, streams.length)
+            const ttl = safeTtl(request, streams)
+            const entry = { streams, fetchedAt: Date.now(), expiresAt: Date.now() + ttl * 1000, staleUntil: Date.now() + ttl * 1000 + STALE_WINDOW_MS }
+            // The stream result is already usable; keep native cache IPC out
+            // of the critical path to stream selection and playback.
+            void cacheSet(cacheKey(mediaKey, addon, streamId), entry, { category: CACHE_CATEGORIES.STREAM_PRELOAD, ttlSeconds: ttl })
+            devLog(`Addon ${addon.manifest.id} completed in ${latency}ms with ${streams.length} results`)
+            return entry
+          } catch (error) {
+            const latency = Math.round(performance.now() - started)
+            this.recordStats(addon.manifest.id, false, latency, 0)
+            devLog(`Addon ${addon.manifest.id} ${controller.signal.aborted ? `timed out after ${ADDON_TIMEOUT_MS}ms` : 'failed'}`)
+            throw error
+          } finally {
+            window.clearTimeout(timeout)
+            job.signal = undefined
+          }
+        },
+      }
+      job.promote = (nextPriority) => {
+        if (!job.started || !job.signal || job.signal.aborted) return
+        // Re-enter the same coordinated request with a stronger priority. The
+        // request coordinator deduplicates by addon URL and stream ID, so this
+        // upgrades the in-flight request without opening a second connection.
+        void fetchAddonStreamsStrict(addon.url, request.mediaType, streamId, job.signal, requestPriority(nextPriority)).catch(() => undefined)
+      }
+      jobRef = job
+      if (this.queue.length >= MAX_QUEUED_JOBS) {
+        let lowestIndex = -1
+        for (let index = 0; index < this.queue.length; index += 1) {
+          if (lowestIndex < 0 || this.queue[index].priority < this.queue[lowestIndex].priority) lowestIndex = index
+        }
+        const lowest = lowestIndex >= 0 ? this.queue[lowestIndex] : undefined
+        if (!lowest || lowest.priority >= priority) {
+          reject(new Error('Stream preload queue is full'))
+          return
+        }
+        this.queue.splice(lowestIndex, 1)
+        lowest.reject(new Error('Stream preload displaced by higher-priority work'))
+      }
+      this.queue.push(job)
+      this.drain()
+    }).finally(() => this.addonFlights.delete(flightKey))
+    this.addonFlights.set(flightKey, { promise, job: jobRef })
+    return promise
+  }
+
+  private drain(): void {
+    while (this.active < MAX_CONCURRENCY && this.queue.length) {
+      this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence)
+      const job = this.queue.shift()!
+      job.started = true
+      this.active++
+      job.run().then(job.resolve, job.reject).finally(() => { this.active--; this.drain() })
+    }
+  }
+
+  private promote(mediaKey: string, priority: number): void {
+    for (const { job } of this.addonFlights.values()) {
+      if (!job || job.mediaKey !== mediaKey || priority <= job.priority) continue
+      job.priority = priority
+      job.promote?.(priority)
+    }
+    this.drain()
+  }
+
+  private loadStats(): Record<string, AddonPerformanceStats> {
+    if (typeof localStorage === 'undefined') return {}
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(PERF_STORAGE_KEY) || '{}')
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const stats: Record<string, AddonPerformanceStats> = {}
+      for (const [addonId, value] of Object.entries(parsed)) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const raw = value as Partial<AddonPerformanceStats>
+        const finite = (number: unknown, fallback = 0) => typeof number === 'number' && Number.isFinite(number) ? number : fallback
+        stats[addonId] = {
+          addonId,
+          averageLatencyMs: Math.max(0, finite(raw.averageLatencyMs)),
+          successRate: Math.max(0, Math.min(1, finite(raw.successRate))),
+          averageResultCount: Math.max(0, finite(raw.averageResultCount)),
+          consecutiveFailures: Math.max(0, Math.floor(finite(raw.consecutiveFailures))),
+          samples: Math.max(0, Math.floor(finite(raw.samples))),
+          ...(typeof raw.lastSuccessAt === 'number' && Number.isFinite(raw.lastSuccessAt) ? { lastSuccessAt: raw.lastSuccessAt } : {}),
+          ...(typeof raw.lastFailureAt === 'number' && Number.isFinite(raw.lastFailureAt) ? { lastFailureAt: raw.lastFailureAt } : {}),
+        }
+      }
+      return stats
+    }
+    catch { return {} }
+  }
+
+  private recordStats(addonId: string, success: boolean, latency: number, count: number): void {
+    const old = this.performance[addonId] || { addonId, averageLatencyMs: latency, successRate: success ? 1 : 0, averageResultCount: count, consecutiveFailures: 0, samples: 0 }
+    const samples = old.samples + 1
+    const next: AddonPerformanceStats = {
+      ...old, samples,
+      averageLatencyMs: Math.round((old.averageLatencyMs * old.samples + latency) / samples),
+      successRate: (old.successRate * old.samples + (success ? 1 : 0)) / samples,
+      averageResultCount: (old.averageResultCount * old.samples + count) / samples,
+      consecutiveFailures: success ? 0 : old.consecutiveFailures + 1,
+      ...(success ? { lastSuccessAt: Date.now() } : { lastFailureAt: Date.now() }),
+    }
+    this.performance[addonId] = next
+    // Performance ranking is optional. A WebView storage quota must not turn
+    // a successfully fetched stream list into an apparent addon failure.
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(PERF_STORAGE_KEY, JSON.stringify(this.performance))
+    } catch (error) {
+      console.warn('[streams] could not persist preload performance stats', error)
+    }
+  }
+
+  private addonScore(addonId: string): number {
+    const stats = this.performance[addonId]
+    if (!stats) return 0
+    return stats.successRate * 1_000 + Math.min(stats.averageResultCount, 20) * 10 - stats.averageLatencyMs / 100 - stats.consecutiveFailures * 100
+  }
+}
+
+export const streamPreloadManager = new StreamPreloadManager()

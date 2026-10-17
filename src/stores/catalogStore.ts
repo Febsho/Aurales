@@ -13,6 +13,7 @@ interface CatalogStore {
   cache: Record<string, CatalogCache>
   setCache: (rowId: string, data: Omit<CatalogCache, 'timestamp'>) => void
   getCache: (rowId: string) => CatalogCache | undefined
+  clearRowCache: (rowId: string) => void
   clearCache: () => void
 }
 
@@ -33,5 +34,11 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
     if (Date.now() - entry.timestamp > CACHE_TTL) return undefined
     return entry
   },
+  clearRowCache: (rowId) =>
+    set((state) => {
+      const cache = { ...state.cache }
+      delete cache[rowId]
+      return { cache }
+    }),
   clearCache: () => set({ cache: {} }),
 }))

@@ -1,0 +1,239 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      # Both builds update the same draft release and its latest.json updater
+      # manifest. Running them concurrently can make one upload delete or
+      # replace the asset while the other is updating it.
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: ubuntu-22.04
+            # Only the AppImage is uploaded by tauri-action. A .deb is built
+            # separately below as an internal Flatpak assembly input.
+            args: '--config src-tauri/tauri.linux.conf.json --bundles appimage'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const packageVersion = require('./package.json').version;
+          const packageLock = require('./package-lock.json');
+          const packageLockVersion = packageLock.version;
+          const packageLockRootVersion = packageLock.packages?.['']?.version;
+          const tauriVersion = require('./src-tauri/tauri.conf.json').version;
+          const cargoManifest = fs.readFileSync('./src-tauri/Cargo.toml', 'utf8');
+          const cargoVersion = cargoManifest.match(/^version = "([^"]+)"/m)?.[1];
+          const cargoLock = fs.readFileSync('./src-tauri/Cargo.lock', 'utf8');
+          const cargoLockVersion = cargoLock.match(/\[\[package\]\]\nname = "aurales-app"\nversion = "([^"]+)"/)?.[1];
+          const versions = { packageVersion, packageLockVersion, packageLockRootVersion, tauriVersion, cargoVersion, cargoLockVersion };
+          if (Object.values(versions).some((version) => version !== expected)) {
+            throw new Error(`Tag v${expected} does not match project versions: ${JSON.stringify(versions)}`);
+          }
+          console.log(`Building Aurales v${expected}`);
+          NODE
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libx11-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libfuse2 mpv libmpv1 ffmpeg
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run release tests
+        run: npm test
+
+      - name: Prepare bundled Linux media runtime
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v mpv)" \
+            src-tauri/binaries/mpv-x86_64-unknown-linux-gnu
+          cp -L "$(command -v ffmpeg)" \
+            src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          # Do not exit awk early: GitHub Actions enables pipefail, so an early
+          # reader exit gives ldconfig SIGPIPE and fails the step with code 141.
+          libmpv_path="$(
+            ldconfig -p | awk \
+              '$1 ~ /^libmpv\.so\.[12]$/ && path == "" { path=$NF } END { print path }'
+          )"
+          test -f "$libmpv_path"
+          cp -L "$libmpv_path" "src-tauri/binaries/$(basename "$libmpv_path")"
+          curl -fsSL -o src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu \
+            https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+          chmod +x \
+            src-tauri/binaries/mpv-x86_64-unknown-linux-gnu \
+            src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu \
+            src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu
+          ls -la src-tauri/binaries
+
+      - name: Prepare bundled mpv and yt-dlp (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          $tmp = Join-Path $env:RUNNER_TEMP 'mpv'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+
+          # Fetch the latest shinchiro mpv-winbuild release (includes libmpv)
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest' -Headers @{ 'User-Agent' = 'aurales-ci' }
+
+          # mpv-x86_64 archive: mpv.exe + d3dcompiler_43.dll
+          $mpvAsset = $rel.assets | Where-Object { $_.name -match '^mpv-x86_64-\d' } | Select-Object -First 1
+          $mpv7z = Join-Path $env:RUNNER_TEMP 'mpv.7z'
+          Invoke-WebRequest -Uri $mpvAsset.browser_download_url -OutFile $mpv7z
+          & 7z x $mpv7z -o"$tmp" -y | Out-Null
+          Copy-Item (Join-Path $tmp 'mpv.exe') 'src-tauri/binaries/mpv-x86_64-pc-windows-msvc.exe' -Force
+          foreach ($dll in @('d3dcompiler_43.dll')) {
+            $src = Join-Path $tmp $dll
+            if (Test-Path $src) { Copy-Item $src "src-tauri/binaries/$dll" -Force }
+          }
+
+          # mpv-dev-x86_64 archive: libmpv-2.dll
+          $devAsset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d' } | Select-Object -First 1
+          $dev7z = Join-Path $env:RUNNER_TEMP 'mpv-dev.7z'
+          Invoke-WebRequest -Uri $devAsset.browser_download_url -OutFile $dev7z
+          & 7z x $dev7z -o"$tmp" -y libmpv-2.dll | Out-Null
+          Copy-Item (Join-Path $tmp 'libmpv-2.dll') 'src-tauri/binaries/libmpv-2.dll' -Force
+
+          # Fetch the latest yt-dlp binary
+          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe' -UserAgent 'aurales-ci'
+
+          Write-Host "Bundled binaries:"
+          Get-ChildItem src-tauri/binaries | Format-Table Name,Length -AutoSize
+
+      - name: Build and release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AURALES_UPDATE_TOKEN: ${{ secrets.AURALES_UPDATE_TOKEN }}
+          VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+          VITE_TVDB_API_KEY: ${{ secrets.VITE_TVDB_API_KEY }}
+          VITE_SIMKL_CLIENT_ID: ${{ secrets.VITE_SIMKL_CLIENT_ID }}
+          VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
+          VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
+          VITE_TRAKT_CLIENT_SECRET: ${{ secrets.VITE_TRAKT_CLIENT_SECRET }}
+          VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+          ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
+          VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Aurales v__VERSION__'
+          releaseBody: |
+            ## Downloads
+
+            **Windows:** use the NSIS setup `.exe` (recommended) or the `.msi`.
+
+            **Linux:** use the `.AppImage` for a portable download or the
+            `.flatpak` bundle for a sandboxed installation. Both packages
+            include mpv, libmpv, FFmpeg, and yt-dlp.
+
+            See the generated release notes below for the changes in this version.
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      # This is deliberately built after tauri-action so it cannot be detected
+      # and uploaded as a public release asset.
+      - name: Build internal Flatpak input
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
+          VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+          ANILIST_CLIENT_SECRET: ${{ secrets.ANILIST_CLIENT_SECRET || secrets.VITE_ANILIST_CLIENT_SECRET }}
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
+        run: |
+          npm run tauri build -- --config src-tauri/tauri.linux.conf.json --bundles deb
+          cp src-tauri/target/release/bundle/deb/*.deb packaging/flatpak/aurales.deb
+
+      - name: Upload internal Flatpak input
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurales-flatpak-input
+          path: packaging/flatpak/aurales.deb
+          retention-days: 1
+
+  flatpak:
+    name: release (Flatpak)
+    needs: release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download internal Flatpak input
+        uses: actions/download-artifact@v4
+        with:
+          name: aurales-flatpak-input
+          path: packaging/flatpak
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Aurales_${{ steps.version.outputs.value }}_amd64.flatpak
+          manifest-path: packaging/flatpak/com.aurales.app.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+
+      - name: Upload Flatpak to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: Aurales_${{ steps.version.outputs.value }}_amd64.flatpak

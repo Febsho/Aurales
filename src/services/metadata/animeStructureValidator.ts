@@ -1,4 +1,5 @@
 import type { AppSeason, AnimeStructureValidation } from './types'
+import { invoke } from '@tauri-apps/api/core'
 
 export function validateAnimeTvdbStructure(
   seasons: AppSeason[],
@@ -14,24 +15,16 @@ export function validateAnimeTvdbStructure(
   if (
     nonSpecialSeasons.length === 1 &&
     nonSpecialSeasons[0].seasonNumber === 1 &&
-    nonSpecialSeasons[0].episodes.length > 13
+    nonSpecialSeasons[0].episodes.length > 13 &&
+    expectedMultiSeason
   ) {
     const eps = nonSpecialSeasons[0].episodes
-    const allAbsoluteMatchEpisode = eps.every(
-      (e) => e.absoluteEpisodeNumber != null && e.episodeNumber === e.absoluteEpisodeNumber,
-    )
-
-    if (allAbsoluteMatchEpisode) {
-      suspiciousSingleSeasonFlattening = true
-      reason = 'All episode numbers match absolute numbers in a single high-count season'
-    }
-
     const hasLateEpisodes = eps.some(
       (e) => e.episodeNumber >= 13 || (e.absoluteEpisodeNumber != null && e.absoluteEpisodeNumber >= 13),
     )
-    if (hasLateEpisodes && expectedMultiSeason) {
+    if (hasLateEpisodes) {
       suspiciousSingleSeasonFlattening = true
-      reason = reason || 'Single season with 13+ episodes where multi-season expected from relations'
+      reason = 'Single season with 13+ episodes where multi-season expected from relations'
     }
   }
 
@@ -52,6 +45,36 @@ export function validateAnimeTvdbStructure(
     seasonCount,
     totalEpisodeCount,
     score: scoreAnimeStructure(seasons, expectedMultiSeason),
+  }
+}
+
+/**
+ * Uses the native aggregate validator when its compact DTO is supported.
+ * The synchronous implementation remains the compatibility authority for
+ * browser builds, older binaries, and any unexpected IPC failure.
+ */
+export async function validateAnimeTvdbStructureWithNativeFallback(
+  seasons: AppSeason[],
+  expectedMultiSeason = false,
+): Promise<AnimeStructureValidation> {
+  try {
+    return await invoke<AnimeStructureValidation>('validate_anime_tvdb_structure', {
+      request: {
+        expectedMultiSeason,
+        seasons: seasons.map((season) => ({
+          seasonNumber: season.seasonNumber,
+          airDate: season.airDate,
+          episodes: season.episodes.map((episode) => ({
+            episodeNumber: episode.episodeNumber,
+            absoluteEpisodeNumber: episode.absoluteEpisodeNumber,
+            isReleased: episode.isReleased,
+            airDate: episode.airDate,
+          })),
+        })),
+      },
+    })
+  } catch {
+    return validateAnimeTvdbStructure(seasons, expectedMultiSeason)
   }
 }
 

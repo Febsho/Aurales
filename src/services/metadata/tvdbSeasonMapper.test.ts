@@ -43,8 +43,52 @@ function makeSeasonSummary(seasonNumber: number, title?: string): AppSeason {
 }
 
 describe('mapTvdbSeasons', () => {
+  it('preserves a long first season when later seasons are shorter', async () => {
+    mockedGetSeason.mockImplementation(async (_id, season) => ({
+      seasonNumber: season,
+      name: `Season ${season}`,
+      episodes: Array.from({ length: season === 1 ? 50 : 12 }, (_, index) => ({
+        id: `${season}-${index + 1}`, seasonNumber: season, episodeNumber: index + 1,
+        name: `Episode ${index + 1}`, airDate: '2020-01-01',
+      })),
+    }))
+    const result = await mapTvdbSeasons(123, [makeSeasonSummary(1), makeSeasonSummary(2)])
+    expect(result[0].episodes).toHaveLength(50)
+    expect(result[1].episodes[0].absoluteEpisodeNumber).toBe(51)
+  })
+
+  it('bounds pending season requests while fetching the selected season first', async () => {
+    const releases: Array<() => void> = []
+    mockedGetSeason.mockImplementation((_id, season) => new Promise(resolve => {
+      releases.push(() => resolve({ seasonNumber: season, name: `Season ${season}`, episodes: [] }))
+    }))
+    const request = mapTvdbSeasons(123, [1, 2, 3, 4].map(n => makeSeasonSummary(n)), { prioritySeason: 3 })
+    expect(mockedGetSeason).toHaveBeenCalledTimes(2)
+    expect(mockedGetSeason.mock.calls[0]).toEqual(['tvdb-123', 3, 'interactive'])
+    releases.shift()!()
+    await vi.waitFor(() => expect(mockedGetSeason).toHaveBeenCalledTimes(3))
+    releases.shift()!()
+    await vi.waitFor(() => expect(mockedGetSeason).toHaveBeenCalledTimes(4))
+    for (const release of releases) release()
+    await request
+  })
+
   beforeEach(() => {
+    vi.useRealTimers()
     vi.clearAllMocks()
+  })
+
+  it('returns when a page-critical TVDB season request exceeds its deadline', async () => {
+    vi.useFakeTimers()
+    mockedGetSeason.mockImplementation(() => new Promise(() => {}))
+
+    const request = mapTvdbSeasons(123, [makeSeasonSummary(1)], {
+      requestTimeoutMs: 100,
+    })
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(request).resolves.toEqual([])
+    vi.useRealTimers()
   })
 
   it('preserves TVDB season numbers for multi-season anime', async () => {

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useWatchTogetherStore } from '../../stores/watchTogetherStore'
 import * as wsClient from '../../services/watch-together/wsClient'
+import WatchTogetherAvatar from './WatchTogetherAvatar'
 
 function formatRelativeTime(timestamp: number): string {
   const now = Date.now()
@@ -46,38 +47,44 @@ export default function RoomChat() {
 
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Chat</h3>
+      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Chat</h3>
 
       {/* Messages */}
       <div
         ref={containerRef}
-        className="h-48 overflow-y-auto rounded-xl bg-white/[0.02] border border-white/[0.06] p-2 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-white/10"
+        className="watch-together-surface watch-together-surface--subtle h-48 overflow-y-auto rounded-xl border p-2 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-white/10"
       >
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
-            <p className="text-[11px] text-white/20">No messages yet</p>
+            <p className="text-label text-white/20">No messages yet</p>
           </div>
         ) : (
           messages.map((msg) => {
             const isMe = msg.userId === currentUserId
+            const sender = currentRoom?.participants.find((participant) => participant.id === msg.userId)
             return (
               <div
                 key={msg.id}
                 className={[
-                  'flex flex-col px-2.5 py-1.5 rounded-lg max-w-[85%]',
-                  isMe ? 'self-end bg-accent/10' : 'self-start bg-white/[0.04]',
+                  'flex w-fit min-w-0 gap-2 px-2.5 py-1.5 rounded-lg max-w-[85%]',
+                  isMe ? 'self-end bg-accent/10' : 'watch-together-surface self-start',
                 ].join(' ')}
               >
-                <div className="flex items-center gap-1.5">
-                  <span className={[
-                    'text-[10px] font-semibold',
-                    isMe ? 'text-accent/80' : 'text-white/40',
-                  ].join(' ')}>
-                    {isMe ? 'You' : msg.userName}
-                  </span>
-                  <span className="text-[9px] text-white/20">{formatRelativeTime(msg.sentAt)}</span>
+                <div className="watch-together-avatar mt-0.5 h-6 w-6 shrink-0 overflow-hidden rounded-md text-tag font-bold text-white/60">
+                  <WatchTogetherAvatar participant={sender} name={msg.userName} isCurrentUser={isMe} />
                 </div>
-                <p className="text-xs text-white/80 leading-relaxed break-words">{msg.message}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={[
+                      'text-meta font-semibold',
+                      isMe ? 'text-accent/80' : 'text-white/60',
+                    ].join(' ')}>
+                      {isMe ? 'You' : msg.userName}
+                    </span>
+                    <span className="text-tag text-white/20">{formatRelativeTime(msg.sentAt)}</span>
+                  </div>
+                  <p className="text-xs text-white/80 leading-relaxed break-words [overflow-wrap:anywhere]">{msg.message}</p>
+                </div>
               </div>
             )
           })
@@ -90,12 +97,13 @@ export default function RoomChat() {
         <input
           ref={inputRef}
           type="text"
+          maxLength={wsClient.MAX_WATCH_TOGETHER_CHAT_MESSAGE_CHARS}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           className={[
-            'flex-1 bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] rounded-lg',
+            'watch-together-input flex-1 border rounded-lg',
             'text-xs text-white placeholder-white/30 px-3 py-2',
             'transition-all duration-200',
             'focus:outline-none focus:bg-white/[0.1] focus:border-white/20',
@@ -108,7 +116,7 @@ export default function RoomChat() {
             'w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-200 cursor-pointer',
             message.trim()
               ? 'bg-accent text-black hover:bg-accent-hover'
-              : 'bg-white/[0.06] text-white/20 pointer-events-none',
+              : 'watch-together-control text-white/20 pointer-events-none',
           ].join(' ')}
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">

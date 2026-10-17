@@ -1,23 +1,59 @@
-import { useState, useEffect, useRef } from 'react'
-import { useAppStore } from '../stores/appStore'
-import { getSimklPlaybackProgress } from '../services/simkl/playback'
+import { lazy, Suspense, useState, useEffect, useRef, forwardRef, useLayoutEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
+import { connectedProgressSources, useAppStore, type ProgressSelection } from '../stores/appStore'
+import { refreshSimklPlaybackCache } from '../services/simkl/playback'
 import { getPlaybackProgress as getTraktPlaybackProgress } from '../services/trakt/sync'
 import { getPMDBPlaybackProgress } from '../services/pmdb'
+import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
-import { getTmdbLandscapeBackdrop, tmdbProvider } from '../services/tmdb'
-import StreamSelector from './StreamSelector'
-import type { HomeRowConfig } from '../types'
+import { tmdbProvider } from '../services/tmdb'
+import { compareTimestampsNewestFirst } from '../services/timestamps'
+// Lazy: StreamSelector pulls in the full player stack; only load it on demand
+const StreamSelector = lazy(() => import('./StreamSelector'))
+import type { HomeRowConfig, SearchResult } from '../types'
+import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
+import { cachedImage, warmCachedImages } from '../services/imageCache'
+import { streamPreloadManager } from '../services/streams/preloadManager'
+import {
+  getContinueWatchingAccountScope,
+  clearContinueWatchingStartupSnapshot,
+  mergeContinueWatchingPresentation,
+  readContinueWatchingStartupSnapshot,
+  writeContinueWatchingStartupSnapshot,
+  type ContinueWatchingSnapshotItem,
+  type ContinueWatchingSource,
+} from '../services/cache/homeStartupSnapshot'
+import { markContinueWatchingSettled, waitForHeroImageSettled } from '../services/cache/homeStartupCoordinator'
+import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
+import { continueWatchingKey, continueWatchingVisibility, suppressContinueWatching } from '../services/continueWatchingPolicy'
+import { getServerCatalogItems, listServerCatalogs, type ServerCatalogItem } from '../services/serverIntegrations'
 
-type SourceType = 'local' | 'simkl' | 'trakt' | 'pmdb' | 'anilist'
+type SourceType = ContinueWatchingSource
 
-const SOURCE_OPTIONS: { value: SourceType; label: string }[] = [
-  { value: 'local', label: 'Local' },
-  { value: 'simkl', label: 'Simkl' },
-  { value: 'trakt', label: 'Trakt' },
-  { value: 'pmdb', label: 'PMDB' },
-  { value: 'anilist', label: 'AniList' },
+const PROGRESS_SOURCE_OPTIONS: { id: ProgressSelection; label: string }[] = [
+  { id: 'all', label: 'Every service' },
+  { id: 'local', label: 'Local' },
+  { id: 'trakt', label: 'Trakt' },
+  { id: 'simkl', label: 'Simkl' },
+  { id: 'anilist', label: 'AniList' },
+  { id: 'pmdb', label: 'PublicMetaDB' },
+  { id: 'mdblist', label: 'MDBList' },
 ]
+
+function revealContinueCard(card: HTMLElement) {
+  const row = card.closest<HTMLElement>('.cinematic-row-track, .cw-track')
+  if (!row) return
+  const cardRect = card.getBoundingClientRect()
+  const rowRect = row.getBoundingClientRect()
+  const inset = 24
+  if (cardRect.right > rowRect.right - inset) {
+    row.scrollBy({ left: cardRect.right - rowRect.right + inset, behavior: 'smooth' })
+  } else if (cardRect.left < rowRect.left + inset) {
+    row.scrollBy({ left: cardRect.left - rowRect.left - inset, behavior: 'smooth' })
+  }
+}
 
 interface ContinueWatchingRowProps {
   row: HomeRowConfig
@@ -25,24 +61,28 @@ interface ContinueWatchingRowProps {
   headerRightControls?: React.ReactNode
 }
 
-interface ContinueWatchingItem {
-  id: string
-  mediaId: string
-  mediaType: 'movie' | 'series'
-  title: string
-  subtitle?: string
-  poster?: string
-  backdrop?: string
-  season?: number
-  episode?: number
-  progressSeconds: number
-  durationSeconds: number
-  progressPct: number
-  imdbId?: string
-  tmdbId?: number
-  malId?: number
-  anilistId?: number
-  updatedAt: string
+type ContinueWatchingItem = ContinueWatchingSnapshotItem
+
+function continueContentFingerprint(items: ContinueWatchingItem[]): string {
+  return JSON.stringify(items.map((item) => [
+    item.id, item.mediaId, item.mediaType, item.title, item.subtitle,
+    item.poster, item.backdrop, item.season, item.episode,
+    item.progressSeconds, item.durationSeconds, item.progressPct,
+    item.imdbId, item.tmdbId, item.malId, item.anilistId,
+    item.sourceConnectionId, item.sourceItemId, item.updatedAt,
+  ]))
+}
+
+function continueEnrichmentKey(phase: 'metadata' | 'artwork', cacheKey: string, item: ContinueWatchingItem): string {
+  // These queued tasks resolve to a whole presentation item, not just shared
+  // metadata. Include source and playback state so a concurrent provider or
+  // progress refresh cannot reuse another item's captured result.
+  return JSON.stringify([
+    phase, cacheKey, item.progressSource, item.mediaType, item.id, item.mediaId,
+    item.imdbId, item.tmdbId, item.anilistId, item.malId,
+    item.sourceConnectionId, item.sourceItemId, item.season, item.episode,
+    item.title, item.updatedAt, item.progressSeconds, item.durationSeconds, item.progressPct,
+  ])
 }
 
 function normalizeResumeMediaId(mediaId: string, season?: number, episode?: number): string {
@@ -51,10 +91,96 @@ function normalizeResumeMediaId(mediaId: string, season?: number, episode?: numb
   return mediaId.endsWith(suffix) ? mediaId.slice(0, -suffix.length) : mediaId
 }
 
+// Module-level cache survives component remounts (e.g. switching tabs and back),
+// so the row shows its last result instantly and revalidates in the background
+// instead of flashing a loading skeleton and refetching from scratch each time.
+const cwItemsCache = new Map<string, ContinueWatchingItem[]>()
+const cwRevalidatedThisSession = new Set<string>()
+const MAX_CW_SESSION_CACHE_ENTRIES = 50
+const CW_ALL_SOURCE_REFRESH_MS = 30_000
+const cwAllSourceCache = new Map<string, { expiresAt: number; items: ContinueWatchingItem[] }>()
+const cwAllSourceFlights = new Map<string, Promise<ContinueWatchingItem[]>>()
+
+function getCachedCwItems(key: string): ContinueWatchingItem[] | undefined {
+  const cached = cwItemsCache.get(key)
+  if (!cached) return undefined
+  cwItemsCache.delete(key)
+  cwItemsCache.set(key, cached)
+  return cached
+}
+
+function rememberCwItems(key: string, items: ContinueWatchingItem[]): void {
+  cwItemsCache.delete(key)
+  cwItemsCache.set(key, items)
+  while (cwItemsCache.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+    const oldest = cwItemsCache.keys().next().value
+    if (oldest === undefined) break
+    cwItemsCache.delete(oldest)
+    cwRevalidatedThisSession.delete(oldest)
+  }
+}
+
+function rememberCwRevalidation(key: string): void {
+  cwRevalidatedThisSession.delete(key)
+  cwRevalidatedThisSession.add(key)
+  while (cwRevalidatedThisSession.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+    const oldest = cwRevalidatedThisSession.values().next().value
+    if (oldest === undefined) break
+    cwRevalidatedThisSession.delete(oldest)
+  }
+}
+
+function jellyfinTicksToSeconds(value: unknown): number {
+  const ticks = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(ticks) && ticks > 0 ? Math.floor(ticks / 10_000_000) : 0
+}
+
+function serverContinueWatchingItem(item: ServerCatalogItem): ContinueWatchingItem | null {
+  const raw = item.raw as { UserData?: { PlaybackPositionTicks?: unknown; Played?: unknown; LastPlayedDate?: unknown }; RunTimeTicks?: unknown }
+  const progressSeconds = jellyfinTicksToSeconds(raw.UserData?.PlaybackPositionTicks)
+  const durationSeconds = jellyfinTicksToSeconds(raw.RunTimeTicks)
+  if (!progressSeconds || raw.UserData?.Played === true) return null
+  return {
+    id: `server:${item.sourceConnectionId}:${item.sourceItemId}`,
+    mediaId: item.id,
+    mediaType: item.type,
+    title: item.title,
+    subtitle: item.season != null && item.episode != null ? `S${item.season} E${item.episode}` : undefined,
+    poster: item.poster,
+    backdrop: item.backdrop,
+    season: item.season,
+    episode: item.episode,
+    progressSeconds,
+    durationSeconds,
+    progressPct: durationSeconds > 0 ? (progressSeconds / durationSeconds) * 100 : 0,
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId != null ? Number(item.tmdbId) || undefined : undefined,
+    malId: item.malId != null ? Number(item.malId) || undefined : undefined,
+    anilistId: item.anilistId != null ? Number(item.anilistId) || undefined : undefined,
+    sourceConnectionId: item.sourceConnectionId,
+    sourceItemId: item.sourceItemId,
+    updatedAt: typeof raw.UserData?.LastPlayedDate === 'string' ? raw.UserData.LastPlayedDate : new Date(0).toISOString(),
+  }
+}
+
 export default function ContinueWatchingRow({ row, headerLeftControls, headerRightControls }: ContinueWatchingRowProps) {
-  const [items, setItems] = useState<ContinueWatchingItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const primaryProgressProvider = useAppStore((s) => s.primaryProgressProvider)
+  const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
+  const source = primaryProgressProvider as SourceType
+  const accountScope = getContinueWatchingAccountScope(source)
+  const startupSnapshot = readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+  const cwKey = `${source}:${accountScope || 'unscoped'}:${continueWatchingLimit}`
+
+  const [items, setItems] = useState<ContinueWatchingItem[]>(() => getCachedCwItems(cwKey) ?? startupSnapshot ?? [])
+  const [itemsCacheKey, setItemsCacheKey] = useState(cwKey)
+  const [loading, setLoading] = useState(() => !cwItemsCache.has(cwKey) && !startupSnapshot)
   const [error, setError] = useState<string | null>(null)
+  const [remoteRefreshRevision, setRemoteRefreshRevision] = useState(0)
+  useEffect(() => {
+    const refresh = () => setRemoteRefreshRevision((revision) => revision + 1)
+    window.addEventListener('aurales:mdblist-auth-changed', refresh)
+    return () => window.removeEventListener('aurales:mdblist-auth-changed', refresh)
+  }, [])
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
     mediaType: 'movie' | 'series'
@@ -65,23 +191,76 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     tmdbId?: number
     malId?: number
     anilistId?: number
+    sourceConnectionId?: string
+    sourceItemId?: string
   } | null>(null)
+  const [cwMenu, setCwMenu] = useState<{ x: number; y: number; item: ContinueWatchingItem } | null>(null)
+  const cwMenuRef = useRef<HTMLDivElement>(null)
+  const [sourceMenu, setSourceMenu] = useState<{ x: number; y: number } | null>(null)
 
-  const watchProgress = useAppStore((s) => s.watchProgress)
-  const updateHomeRow = useAppStore((s) => s.updateHomeRow)
-  const continueWatchingSource = useAppStore((s) => s.continueWatchingSource)
-  const continueWatchingLimit = useAppStore((s) => s.continueWatchingLimit)
-  const setContinueWatchingSource = useAppStore((s) => s.setContinueWatchingSource)
-  const keepFramesFor = useAppStore((s) => s.keepFramesFor)
-  const source = (row.sourceType || continueWatchingSource) as SourceType
+  const navigate = useNavigate()
+  const watchProgress = useAppStore((s) => (source === 'local' || source === 'all') && !streamSelectorData ? s.watchProgress : null)
+  const setWatchProgress = useAppStore((s) => s.setWatchProgress)
+  const setContinueWatchingProgress = useAppStore((s) => s.setContinueWatchingProgress)
+  const setPrimaryProgressProvider = useAppStore((s) => s.setPrimaryProgressProvider)
+  const traktConnected = useAppStore((s) => s.traktConnected)
+  const simklConnected = useAppStore((s) => s.simklConnected)
+  const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const pmdbConnected = useAppStore((s) => Boolean(s.pmdbApiKey))
+  const mdblistConnected = useAppStore((s) => Boolean(s.mdblistApiKey)) || hasMdblistOAuth()
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed'
+  const [focusedFixedItemId, setFocusedFixedItemId] = useState<string | null>(null)
+  const posterSize = useAppStore((s) => s.posterSize)
+  // Landscape cards scale with the global poster-size setting so the Continue
+  // Watching row fits the same way the poster rows do.
+  const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
   const scrollRef = useRef<HTMLDivElement>(null)
+  const currentCachedItems = getCachedCwItems(cwKey) || startupSnapshot || []
+  // On a source/account change, never expose items captured for the previous
+  // cache key while the new source is loading. Keep the old row only while its
+  // player modal is open, because returning the loading tree would unmount it.
+  const displayItems = itemsCacheKey === cwKey || streamSelectorData ? items : currentCachedItems
 
-  const changeSource = (next: SourceType) => {
-    updateHomeRow(row.id, { sourceType: next })
-    if (next === 'local' || next === 'trakt' || next === 'simkl' || next === 'pmdb' || next === 'anilist') {
-      setContinueWatchingSource(next)
+  // This row is small, already visible on Home, and is revisited frequently.
+  // Do not let native lazy loading leave an empty 16:9 frame during a fast
+  // vertical scroll; use the same disk/session cache as every other shelf.
+  useEffect(() => {
+    void warmCachedImages(displayItems.flatMap((item) => [item.backdrop, item.poster]))
+  }, [displayItems])
+
+  // Make the selected service's resume data available to poster cards outside
+  // Home too. This is fed from the same cached-first list shown in this row.
+  useEffect(() => {
+    setContinueWatchingProgress(displayItems)
+  }, [displayItems, setContinueWatchingProgress])
+
+  useEffect(() => {
+    const clear = (event: Event) => {
+      const clearedSource = (event as CustomEvent<SourceType>).detail
+      for (const key of cwItemsCache.keys()) if (key.startsWith(`${clearedSource}:`)) cwItemsCache.delete(key)
+      for (const key of cwRevalidatedThisSession) if (key.startsWith(`${clearedSource}:`)) cwRevalidatedThisSession.delete(key)
+      if (clearedSource === source) setRemoteRefreshRevision((revision) => revision + 1)
     }
-  }
+    window.addEventListener('aurales:cw-cache-clear', clear)
+    return () => window.removeEventListener('aurales:cw-cache-clear', clear)
+  }, [source])
+
+  useEffect(() => {
+    if (!cwMenu) return
+    const handle = (e: MouseEvent) => {
+      if (cwMenuRef.current && !cwMenuRef.current.contains(e.target as Node)) setCwMenu(null)
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCwMenu(null)
+    }
+    document.addEventListener('mousedown', handle)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [cwMenu])
 
   const scroll = (direction: 'left' | 'right') => {
     if (!scrollRef.current) return
@@ -96,15 +275,37 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     // unmount the portal and stop the native player.
     if (streamSelectorData) return
     let cancelled = false
-    setLoading(true)
+    // Show the cached result for this source immediately; only fall back to the
+    // loading skeleton when we have nothing cached yet. Either way we revalidate
+    // in the background below and update the cache when it resolves.
+    const cached = getCachedCwItems(cwKey) || readContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+    if (cached) { setItems(cached); setItemsCacheKey(cwKey); setLoading(false) } else { setLoading(true) }
     setError(null)
 
-    const loadProgress = async () => {
-      try {
-        let list: ContinueWatchingItem[] = []
+    if (source !== 'local' && source !== 'all' && cached && cwRevalidatedThisSession.has(cwKey)) {
+      markContinueWatchingSettled()
+      return () => { cancelled = true }
+    }
 
-        if (source === 'local') {
-          const localItems = Array.from(watchProgress.values())
+    const loadProgress = async () => {
+      let revalidated = false
+      try {
+        await waitForHeroImageSettled()
+        if (cancelled) return
+        let list: ContinueWatchingItem[] = []
+        const enrichItem = <T,>(id: string, execute: () => Promise<T>) => scheduleTask(metadataTaskQueue, {
+          id: `cw-enrich:${id}`,
+          dedupKey: `cw-enrich:${id}`,
+          priority: 'low',
+          group: 'metadata',
+          execute,
+        })
+
+        const loadSourceUncached = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
+          let sourceList: ContinueWatchingItem[] = []
+          const providerCached = activeSource === source ? cached : readContinueWatchingStartupSnapshot(activeSource, getContinueWatchingAccountScope(activeSource), continueWatchingLimit)
+        if (activeSource === 'local') {
+          const localItems = Array.from(watchProgress?.values() ?? [])
             .filter((i) => !i.completed && i.progressSeconds > 5)
             .map((i) => {
               const pct = i.durationSeconds > 0 ? (i.progressSeconds / i.durationSeconds) * 100 : 0
@@ -126,9 +327,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updatedAt || new Date(0).toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = localItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        } else if (source === 'simkl') {
-          const simklRaw = await getSimklPlaybackProgress()
+          const serverCatalogs = await listServerCatalogs().catch(() => [])
+          const serverResults = await Promise.allSettled(serverCatalogs
+            .filter((catalog) => catalog.kind === 'continue-watching')
+            .map((catalog) => getServerCatalogItems(catalog.connectionId, catalog.catalogId, 100)))
+          const serverItems = serverResults.flatMap((result) => result.status === 'fulfilled'
+            ? result.value.map(serverContinueWatchingItem).filter((item): item is ContinueWatchingItem => item !== null)
+            : [])
+          sourceList = [...localItems, ...serverItems].sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
+        } else if (activeSource === 'simkl') {
+          const simklRaw = await refreshSimklPlaybackCache()
           const simklItems: ContinueWatchingItem[] = simklRaw
             .filter((i) => i.progress != null && i.progress > 0 && i.progress < 85)
             .map((i) => {
@@ -145,7 +353,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 const cleanedFanart = backdrop.startsWith('/') ? backdrop.slice(1) : backdrop
                 backdrop = `https://simkl.in/fanart/${cleanedFanart}_medium.jpg`
               }
-              const defaultDuration = i.type === 'movie' ? 120 * 60 : 45 * 60
+              const defaultDuration = i.type === 'movie' ? 120 * 60 : i.type === 'anime' ? 24 * 60 : 45 * 60
               const progressSec = Math.floor((i.progress / 100) * defaultDuration)
 
               return {
@@ -167,20 +375,20 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               } satisfies ContinueWatchingItem
             })
             .filter(Boolean) as ContinueWatchingItem[]
-          list = simklItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        } else if (source === 'trakt') {
+          sourceList = simklItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
+        } else if (activeSource === 'trakt') {
           const traktRaw = await getTraktPlaybackProgress() as any[]
           const traktItems: ContinueWatchingItem[] = traktRaw
             .filter((i) => i.progress != null && i.progress > 0 && i.progress < 85)
             .map((i) => {
               const isMovie = i.type === 'movie'
               const title = isMovie ? i.movie?.title : i.show?.title
-              const year = isMovie ? i.movie?.year : i.show?.year
               const imdbId = isMovie ? i.movie?.ids?.imdb : i.show?.ids?.imdb
               const tmdbId = isMovie ? i.movie?.ids?.tmdb : i.show?.ids?.tmdb
               const season = isMovie ? undefined : i.episode?.season
               const episode = isMovie ? undefined : i.episode?.number
-              const defaultDuration = isMovie ? 120 * 60 : 45 * 60
+              const runtime = isMovie ? i.movie?.runtime : i.episode?.runtime
+              const defaultDuration = runtime ? runtime * 60 : (isMovie ? 120 * 60 : 24 * 60)
               const progressSec = Math.floor((i.progress / 100) * defaultDuration)
 
               return {
@@ -199,30 +407,10 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.paused_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = traktItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = traktItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
+          sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
-          // Since Trakt doesn't return artwork URLs, fetch posters in the background for items missing posters
-          if (!cancelled && list.length > 0) {
-            const resolvedList = await Promise.all(
-              list.map(async (item) => {
-                if (item.poster && item.backdrop) return item
-                try {
-                  if (item.mediaType === 'movie' && item.tmdbId) {
-                    const meta = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
-                    return { ...item, poster: meta.poster, backdrop: meta.backdrop }
-                  } else if (item.mediaType === 'series' && item.tmdbId) {
-                    const meta = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
-                    return { ...item, poster: meta.poster, backdrop: meta.backdrop }
-                  }
-                } catch {
-                  // Ignore TMDB fetch errors
-                }
-                return item
-              })
-            )
-            list = resolvedList
-          }
-        } else if (source === 'pmdb') {
+        } else if (activeSource === 'pmdb') {
           const pmdbRaw = await getPMDBPlaybackProgress()
           const pmdbItems: ContinueWatchingItem[] = pmdbRaw
             .filter((i) => i.position_ms > 0 && (!i.runtime_ms || (i.position_ms / i.runtime_ms) < 0.85))
@@ -249,167 +437,408 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 updatedAt: i.updated_at || i.updated || i.paused_at || i.created_at || new Date().toISOString(),
               } satisfies ContinueWatchingItem
             })
-          list = pmdbItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          sourceList = pmdbItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
+          sourceList = mergeContinueWatchingPresentation(sourceList, providerCached || [])
 
-          // Since PMDB doesn't return metadata, fetch title & posters from TMDB
-          if (!cancelled && list.length > 0) {
-            const resolvedList = await Promise.all(
-              list.map(async (item) => {
-                try {
-                  if (item.mediaType === 'movie' && item.tmdbId) {
-                    const meta = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
-                    return {
-                      ...item,
-                      mediaId: meta.imdbId || item.mediaId,
-                      imdbId: meta.imdbId,
-                      title: meta.title || 'Movie',
-                      poster: meta.poster,
-                      backdrop: meta.backdrop
-                    }
-                  } else if (item.mediaType === 'series' && item.tmdbId) {
-                    const meta = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
-                    return {
-                      ...item,
-                      mediaId: meta.imdbId || item.mediaId,
-                      imdbId: meta.imdbId,
-                      title: meta.title || 'Show',
-                      poster: meta.poster,
-                      backdrop: meta.backdrop
-                    }
-                  }
-                } catch (e) {
-                  console.error('Failed to enrich PMDB item from TMDB:', e)
-                }
-                return item
-              })
-            )
-            list = resolvedList
-          }
-        } else if (source === 'anilist') {
-          list = await getAniListContinueWatching()
+        } else if (activeSource === 'mdblist') {
+          const [playbackRaw, upNextRaw] = await Promise.all([
+            getMdblistPlaybackProgress(),
+            getMdblistUpNext(),
+          ])
+
+          const playbackItems: ContinueWatchingItem[] = playbackRaw
+            .filter((i) => i.progress > 0 && i.progress < 80)
+            .map((i) => {
+              const media = i.movie || i.show || {}
+              const ids = media.ids || {}
+              const isMovie = i.type === 'movie'
+              const ep = i.episode as any
+              const defaultDuration = i.runtime ? i.runtime * 60 : (isMovie ? 120 * 60 : 45 * 60)
+              const progressSec = Math.floor((i.progress / 100) * defaultDuration)
+              const imdbId = ids.imdb || media.imdb_id
+              const tmdbId = ids.tmdb ? Number(ids.tmdb) : (media.tmdb_id ? Number(media.tmdb_id) : undefined)
+
+              return {
+                id: `mdblist-pb-${i.id}`,
+                mediaId: String(imdbId || (tmdbId ? `tmdb-${tmdbId}` : i.id)),
+                mediaType: (isMovie ? 'movie' : 'series') as 'movie' | 'series',
+                title: media.title || (isMovie ? 'Movie' : 'Show'),
+                subtitle: ep ? `S${ep.season} E${ep.number}` : undefined,
+                season: ep?.season,
+                episode: ep?.number,
+                progressSeconds: progressSec,
+                durationSeconds: defaultDuration,
+                progressPct: i.progress,
+                imdbId,
+                tmdbId,
+                updatedAt: i.paused_at || i.updated_at || new Date().toISOString(),
+              } satisfies ContinueWatchingItem
+            })
+
+          const upNextItems: ContinueWatchingItem[] = upNextRaw.map((u) => ({
+            id: `mdblist-upnext-${u.showId}-${u.season}-${u.episode}`,
+            mediaId: u.imdbId || (u.tmdbId ? `tmdb-${u.tmdbId}` : u.showId),
+            mediaType: 'series' as const,
+            title: u.title,
+            subtitle: `S${u.season} E${u.episode}`,
+            season: u.season,
+            episode: u.episode,
+            progressSeconds: 0,
+            durationSeconds: 0,
+            progressPct: 0,
+            imdbId: u.imdbId,
+            tmdbId: u.tmdbId,
+            updatedAt: u.lastWatchedAt || new Date().toISOString(),
+          }))
+
+          const seenIds = new Set(playbackItems.map((i) => i.mediaId))
+          const merged = [
+            ...playbackItems.sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt)),
+            ...upNextItems.filter((i) => !seenIds.has(i.mediaId)),
+          ]
+          const presentedMerged = mergeContinueWatchingPresentation(merged, providerCached || [])
+
+          sourceList = presentedMerged
+        } else if (activeSource === 'anilist') {
+          sourceList = await getAniListContinueWatching()
+        }
+          return sourceList.map((item) => ({ ...item, progressSource: activeSource }))
         }
 
-        if (!cancelled && list.length > 0) {
+        const loadSource = async (activeSource: Exclude<SourceType, 'all'>): Promise<ContinueWatchingItem[]> => {
+          // Local playback progress changes every few seconds. In "all"
+          // mode, reusing the other providers' short-lived results prevents
+          // each local checkpoint from triggering fresh Trakt/PMDB/MDBList/
+          // AniList requests. Auth-change events bump remoteRefreshRevision,
+          // while accountScope keeps one account's response out of another's.
+          if (source !== 'all' || activeSource === 'local') return loadSourceUncached(activeSource)
+          const account = getContinueWatchingAccountScope(activeSource) || 'unscoped'
+          const key = `${activeSource}:${account}:${continueWatchingLimit}:${remoteRefreshRevision}`
+          const cachedSource = cwAllSourceCache.get(key)
+          if (cachedSource && cachedSource.expiresAt > Date.now()) {
+            cwAllSourceCache.delete(key)
+            cwAllSourceCache.set(key, cachedSource)
+            return cachedSource.items
+          }
+          cwAllSourceCache.delete(key)
+          const pending = cwAllSourceFlights.get(key)
+          if (pending) return pending
+
+          const request = loadSourceUncached(activeSource).then((items) => {
+            cwAllSourceCache.set(key, { expiresAt: Date.now() + CW_ALL_SOURCE_REFRESH_MS, items })
+            while (cwAllSourceCache.size > MAX_CW_SESSION_CACHE_ENTRIES) {
+              const oldest = cwAllSourceCache.keys().next().value
+              if (oldest === undefined) break
+              cwAllSourceCache.delete(oldest)
+            }
+            return items
+          }).finally(() => {
+            if (cwAllSourceFlights.get(key) === request) cwAllSourceFlights.delete(key)
+          })
+          cwAllSourceFlights.set(key, request)
+          return request
+        }
+
+        if (source === 'all') {
+          const results = await Promise.allSettled(connectedProgressSources(useAppStore.getState()).map(loadSource))
+          const seen = new Set<string>()
+          list = results.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+            .sort((a, b) => compareTimestampsNewestFirst(a.updatedAt, b.updatedAt))
+            .filter((item) => {
+              const episode = `:${item.season ?? ''}:${item.episode ?? ''}`
+              const prefix = `${item.mediaType}:`
+              const mediaSource = item.sourceConnectionId
+                ? `server:${item.sourceConnectionId}`
+                : item.progressSource || 'local'
+              const aliases = [item.imdbId && `imdb:${item.imdbId}`, item.tmdbId && `tmdb:${item.tmdbId}`,
+                item.anilistId && `anilist:${item.anilistId}`, item.malId && `mal:${item.malId}`, `media:${mediaSource}:${item.mediaId}`]
+                .filter(Boolean).map((alias) => `${prefix}${alias}${episode}`)
+              if (aliases.some((alias) => seen.has(alias))) return false
+              aliases.forEach((alias) => seen.add(alias))
+              return true
+            })
+        } else {
+          list = await loadSource(source)
+        }
+
+        list = mergeContinueWatchingPresentation(list, cached || [])
+        markContinueWatchingSettled()
+
+        if (!cancelled) {
           list = await Promise.all(
-            list.map(async (item) => {
+            list.map((item) => enrichItem(continueEnrichmentKey('metadata', cwKey, item), async () => {
               if (!item.tmdbId) return item
               try {
-                if (item.mediaType === 'series' && item.season != null && item.episode != null) {
-                  const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
-                  if (keepFramesFor !== 'none' && episode.still) return { ...item, backdrop: episode.still }
+                if (item.mediaType === 'series') {
+                  let updated = { ...item }
+                  if (!item.poster || !item.imdbId || /^(Show \d+|Untitled)$/.test(item.title)) {
+                    const show = await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
+                    updated = {
+                      ...updated,
+                      mediaId: show.imdbId || updated.mediaId,
+                      imdbId: show.imdbId || updated.imdbId,
+                      title: show.title || updated.title,
+                      poster: show.poster || updated.poster,
+                      backdrop: show.backdrop || updated.backdrop,
+                    }
+                  }
+                  if (item.season != null && item.episode != null) {
+                    const episode = await tmdbProvider.getEpisode(`tmdb-${item.tmdbId}`, item.season, item.episode)
+                    if (episode.still) updated.backdrop = episode.still
+                    if (episode.runtime && episode.runtime > 0) {
+                      const runtimeSec = episode.runtime * 60
+                      updated.durationSeconds = runtimeSec
+                      updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                    }
+                  }
+                  return updated
                 }
 
                 if (item.mediaType === 'movie') {
-                  const backdrop = await getTmdbLandscapeBackdrop('movie', item.tmdbId)
-                  if (backdrop) return { ...item, backdrop }
+                  const movie = await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
+                  const updated = {
+                    ...item,
+                    mediaId: movie.imdbId || item.mediaId,
+                    imdbId: movie.imdbId || item.imdbId,
+                    title: movie.title || item.title,
+                    poster: movie.poster || item.poster,
+                  }
+                  if (movie.backdrop) updated.backdrop = movie.backdrop
+                  if (movie.runtime && movie.runtime > 0) {
+                    const runtimeSec = movie.runtime * 60
+                    updated.durationSeconds = runtimeSec
+                    updated.progressSeconds = Math.floor((item.progressPct / 100) * runtimeSec)
+                  }
+                  return updated
                 }
 
-                if (!item.backdrop) {
-                  const backdrop = await getTmdbLandscapeBackdrop('series', item.tmdbId)
-                  if (backdrop) return { ...item, backdrop }
-                }
-              } catch {
+              } catch (_) {
                 // Keep local/provider artwork if TMDB cannot enrich the row.
               }
               return item
-            })
+            }))
+          )
+
+          // Posters go through the same artwork pipeline as every other card
+          // (custom art URLs, then the preferred art provider), instead of
+          // whatever the sync provider (Simkl/Trakt/…) returned.
+          list = await Promise.all(
+            list.map((item) => enrichItem(continueEnrichmentKey('artwork', cwKey, item), async () => {
+              try {
+                const custom = getSearchResultCustomArt({
+                  id: item.mediaId,
+                  title: item.title,
+                  type: item.mediaType,
+                  imdbId: item.imdbId,
+                  tmdbId: item.tmdbId != null ? String(item.tmdbId) : undefined,
+                  malId: item.malId,
+                  anilistId: item.anilistId,
+                } as unknown as SearchResult)
+                const provider = await resolveArtFromProviders(
+                  item.mediaType,
+                  { tmdbId: item.tmdbId, imdbId: item.imdbId },
+                  Boolean(item.malId || item.anilistId),
+                )
+                const poster = custom.poster || provider.poster || item.poster
+                return poster !== item.poster ? { ...item, poster } : item
+              } catch (_) {
+                return item
+              }
+            }))
           )
         }
 
         if (!cancelled) {
-          setItems(list.filter((i) => i.backdrop || i.poster).slice(0, continueWatchingLimit))
+          // Presentation cleanup is local/profile-scoped. It deliberately
+          // hides noise without mutating provider history or watchlists.
+          const candidate = list.filter((i) => i.backdrop || i.poster).filter((i) => continueWatchingVisibility({
+            id: i.id, mediaId: i.mediaId, mediaType: i.mediaType, imdbId: i.imdbId, tmdbId: i.tmdbId, season: i.season, episode: i.episode,
+            progressSeconds: i.progressSeconds, durationSeconds: i.durationSeconds, completed: false, updatedAt: i.updatedAt,
+          }).visible).slice(0, continueWatchingLimit)
+          const visible = source !== 'local' && source !== 'all' && candidate.length === 0 && cached?.length ? cached : candidate
+          if (accountScope) {
+            if (visible.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, visible)
+            else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+          }
+          const previous = getCachedCwItems(cwKey) || cached || []
+          const contentChanged = continueContentFingerprint(visible) !== continueContentFingerprint(previous)
+          rememberCwItems(cwKey, visible)
+          setContinueWatchingProgress(visible)
+          if (itemsCacheKey !== cwKey || source === 'local' || source === 'all' || contentChanged) setItems(visible)
+          setItemsCacheKey(cwKey)
+          streamPreloadManager.setContinueWatching(visible.slice(0, 5).map((item) => ({
+            mediaType: item.mediaType,
+            mediaId: item.imdbId || item.mediaId,
+            imdbId: item.imdbId,
+            tmdbId: item.tmdbId,
+            seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+            progressPct: item.progressPct,
+          })))
         }
+        revalidated = !cancelled
       } catch (err: any) {
         if (!cancelled) {
           setError(err?.message || 'Failed to load Continue Watching.')
+          setItemsCacheKey(cwKey)
         }
       } finally {
+        if (source !== 'local' && source !== 'all' && revalidated) rememberCwRevalidation(cwKey)
         if (!cancelled) {
           setLoading(false)
+          markContinueWatchingSettled()
         }
       }
     }
 
     loadProgress()
     return () => { cancelled = true }
-  }, [source, watchProgress, continueWatchingLimit, streamSelectorData])
+    // itemsCacheKey is intentionally read from the request's starting render;
+    // tracking its completion update here would launch a redundant fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, accountScope, cwKey, watchProgress, continueWatchingLimit, streamSelectorData, remoteRefreshRevision, setContinueWatchingProgress, traktConnected, simklConnected, anilistConnected, pmdbConnected, mdblistConnected])
 
-  // ── Source selector (always rendered in header) ─────────────────────────────
-  const sourceSelector = (
-    <div className="flex items-center gap-0.5 bg-white/5 rounded-lg p-0.5">
-      {SOURCE_OPTIONS.map((opt) => (
-        <button
-          key={opt.value}
-          onClick={() => changeSource(opt.value)}
-          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${
-            source === opt.value
-              ? 'bg-white/15 text-white'
-              : 'text-white/40 hover:text-white/70'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
+  const displayTitle = row.title
+  const sourceConnections: Record<ProgressSelection, boolean> = {
+    all: true,
+    local: true,
+    trakt: traktConnected,
+    simkl: simklConnected,
+    anilist: anilistConnected,
+    pmdb: pmdbConnected,
+    mdblist: mdblistConnected,
+  }
+  const titleClassName = cinematic
+    ? 'text-sm font-light tracking-wider uppercase text-white/60'
+    : 'text-xl font-bold tracking-tight text-white/95'
+  const sourceTitle = (
+    <h2
+      className={`${titleClassName} cursor-context-menu`}
+      title="Right-click to select the progress source"
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setCwMenu(null)
+        setSourceMenu({ x: event.clientX, y: event.clientY })
+      }}
+    >
+      {displayTitle}
+    </h2>
   )
+  const sourceMenuPortal = sourceMenu ? (
+    <ContinueWatchingSourceMenu
+      x={sourceMenu.x}
+      y={sourceMenu.y}
+      selected={primaryProgressProvider}
+      connections={sourceConnections}
+      onSelect={(nextSource) => {
+        setPrimaryProgressProvider(nextSource)
+        setSourceMenu(null)
+      }}
+      onClose={() => setSourceMenu(null)}
+    />
+  ) : null
 
-  if (loading) {
+  const playItem = (item: ContinueWatchingItem) => setStreamSelectorData({
+    mediaId: item.mediaId,
+    mediaType: item.mediaType,
+    title: item.title,
+    artwork: { poster: item.poster, backdrop: item.backdrop },
+    seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+    startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
+    tmdbId: item.tmdbId,
+    malId: item.malId,
+    anilistId: item.anilistId,
+    sourceConnectionId: item.sourceConnectionId,
+    sourceItemId: item.sourceItemId,
+  })
+
+  const announceHeroFocus = (item: ContinueWatchingItem) => {
+    window.dispatchEvent(new CustomEvent<SearchResult>('aurales:media-focus', {
+      detail: {
+        id: item.mediaId,
+        title: item.title,
+        type: item.mediaType,
+        provider: 'continue-watching',
+        poster: item.poster,
+        backdrop: item.backdrop,
+        imdbId: item.imdbId,
+        tmdbId: item.tmdbId,
+        malId: item.malId,
+        anilistId: item.anilistId,
+        isAnime: Boolean(item.anilistId || item.malId),
+        season: item.season,
+        episode: item.episode,
+      },
+    }))
+  }
+
+  const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!cinematic || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > button'))
+    const index = cards.indexOf(document.activeElement as HTMLElement)
+    const next = cards[index + (event.key === 'ArrowRight' ? 1 : -1)]
+    if (!next) return
+    event.preventDefault()
+    next.focus({ preventScroll: true })
+    next.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+  }
+
+  if (loading || (itemsCacheKey !== cwKey && !streamSelectorData)) {
     return (
       <div className="mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+            {sourceTitle}
           </div>
           <div className="flex items-center gap-3">
-            {sourceSelector}
             {headerRightControls}
           </div>
         </div>
-        <div className="flex gap-4 overflow-x-hidden px-6 pb-2 animate-pulse">
+        <div className="flex gap-4 overflow-x-hidden px-6 pt-4 -mt-4 pb-4 animate-pulse">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="flex-shrink-0 w-72 aspect-video bg-neutral-800/40 rounded-xl" />
           ))}
         </div>
+        {sourceMenuPortal}
       </div>
     )
   }
 
-  if (error || items.length === 0) {
+  if (((itemsCacheKey === cwKey || streamSelectorData) && error) || displayItems.length === 0) {
     return (
       <div className="mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+            {sourceTitle}
           </div>
           <div className="flex items-center gap-3">
-            {sourceSelector}
             {headerRightControls}
           </div>
         </div>
         <div className="px-6">
-          <div className="flex gap-4 overflow-x-hidden pb-2">
+          <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
-                <span className="text-[11px] text-white/15 select-none">Nothing in progress</span>
+                <span className="text-label text-white/60 select-none">Nothing in progress</span>
               </div>
             ))}
           </div>
         </div>
+        {sourceMenuPortal}
       </div>
     )
   }
 
   return (
-    <div className="mb-8">
-      <div className="flex items-center justify-between px-6 mb-4">
+    <section className={`cw-fixed mb-8 ${cinematic ? 'cinematic-media-row !mb-0' : ''}`}>
+      <div className="flex items-center justify-between px-6 mb-4 relative z-[60]">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          <h2 className="text-xl font-bold tracking-tight text-white/95">{row.title}</h2>
+          {sourceTitle}
         </div>
         <div className="flex items-center gap-3">
-          {sourceSelector}
           {headerRightControls}
           <div className="flex gap-1">
             <button
@@ -434,43 +863,108 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto overscroll-x-contain px-6 pb-2 scrollbar-none"
+        onKeyDown={handleRowKeyDown}
+        className={`flex overflow-x-auto overflow-y-visible overscroll-x-contain scrollbar-none scroll-gpu ${cinematic ? 'cw-track items-center pt-4 -mt-4 pb-4 px-8 gap-5 snap-x snap-mandatory scroll-px-8 relative z-50' : 'pt-4 -mt-4 pb-6 px-6 gap-4'}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
       >
-        {items.map((item) => {
+        {/* ── Cinematic: Resume Spotlight layout ────────────────────── */}
+        {cinematic && displayItems.map((item) => {
           const progressPercent = Math.min(100, Math.max(0, item.progressPct))
+          const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
+          const fixedFocused = fixedHome && focusedFixedItemId === item.id
+          const artwork = item.backdrop || item.poster
           return (
             <button
               key={item.id}
-              onClick={() => {
-                setStreamSelectorData({
-                  mediaId: item.mediaId,
-                  mediaType: item.mediaType,
-                  title: item.title,
-                  artwork: { poster: item.poster, backdrop: item.backdrop },
-                  seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
-                  startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
-                  tmdbId: item.tmdbId,
-                  malId: item.malId,
-                  anilistId: item.anilistId,
-                })
+              onClick={() => playItem(item)}
+              onMouseEnter={() => {
+                setFocusedFixedItemId(item.id)
+                announceHeroFocus(item)
               }}
-              className="flex-shrink-0 w-72 group cursor-pointer focus:outline-none text-left transition-all duration-300"
+              onFocus={(event) => {
+                setFocusedFixedItemId(item.id)
+                announceHeroFocus(item)
+                const card = event.currentTarget
+                window.setTimeout(() => revealContinueCard(card), 80)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setCwMenu({ x: e.clientX, y: e.clientY, item })
+              }}
+              data-fixed-focused={fixedFocused || undefined}
+              className="cw-card snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring"
             >
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated border border-white/5 transition-all duration-400 ease-out group-hover:border-white/20 group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.15)] group-hover:-translate-y-1.5 group-hover:scale-[1.03]">
-                {item.backdrop ? (
+              <div className="cw-card__frame relative overflow-hidden bg-surface-elevated border border-white/[0.08] rounded-xl group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
+                {/* 16:9 backdrop */}
+                {artwork ? (
                   <img
-                    src={item.backdrop}
+                    src={cachedImage(artwork)}
                     alt={item.title}
-                    className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-                    loading="lazy"
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]"
+                    loading="eager"
+                    draggable={false}
                   />
-                ) : item.poster ? (
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-br from-surface-elevated to-surface flex items-center justify-center">
+                    <span className="font-bold text-muted/30 text-lg">{item.title?.charAt(0) || '?'}</span>
+                  </div>
+                )}
+                {/* Dark gradient */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
+
+                {/* Liquid Glass Play Button Overlay */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-300 ease-out z-20">
+                  <span className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
+                    <svg className="w-6 h-6 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                  </span>
+                </div>
+
+                {/* Info overlay */}
+                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
+                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
+                    {item.subtitle ? (
+                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
+                    ) : (
+                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
+                    )}
+                    <span className="text-label text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                  </div>
+                </div>
+
+                {/* Progress bar. Scaled rather than resized on hover: animating
+                    height re-lays out the bar every frame, whereas a transform
+                    stays on the compositor. */}
+                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
+                </div>
+              </div>
+            </button>
+          )
+        })}
+        {/* ── Default: existing landscape cards ────────────────────── */}
+        {!cinematic && displayItems.map((item) => {
+          const progressPercent = Math.min(100, Math.max(0, item.progressPct))
+          const remaining = formatTime(Math.max(0, item.durationSeconds - item.progressSeconds))
+          return (
+            <button
+              key={item.id}
+              onClick={() => playItem(item)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setCwMenu({ x: e.clientX, y: e.clientY, item })
+              }}
+              className={`snap-start relative flex-shrink-0 group cursor-pointer text-left focus-ring transition-all duration-300 ease-out ${cwWidthClass} focus:outline-none`}
+            >
+              <div className="relative rounded-xl overflow-hidden bg-surface-elevated border border-white/[0.08] transition-all duration-300 ease-out aspect-video group-hover:border-white/30 group-focus-within:border-white/30 group-hover:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.5)] group-hover:bg-white/[0.03] group-focus-within:bg-white/[0.03]">
+                {/* 16:9 backdrop */}
+                {(item.backdrop || item.poster) ? (
                   <img
-                    src={item.poster}
+                    src={cachedImage(item.backdrop || item.poster)}
                     alt={item.title}
-                    className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
-                    loading="lazy"
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.04] group-focus-within:scale-[1.04]"
+                    loading="eager"
+                    draggable={false}
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-elevated to-surface">
@@ -479,41 +973,33 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 )}
 
                 {/* Permanent subtle dark gradient overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent transition-opacity duration-300 group-hover:from-black/95" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent transition-opacity duration-300 group-hover:from-black/95 group-hover:via-black/35" />
 
-                {/* Resume Play Icon Overlay on Hover */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                  <span className="w-12 h-12 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xl flex items-center justify-center">
-                    <svg className="w-6 h-6 ml-0.5 text-accent" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
+                {/* Liquid Glass Play Button Overlay */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-300 ease-out z-20">
+                  <span className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
+                    <svg className="w-5 h-5 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                   </span>
                 </div>
 
-                {/* Media Info Overlay */}
-                <div className="absolute bottom-4 left-3 right-3 flex flex-col gap-1 z-10">
-                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-                    {item.title}
-                  </h3>
-                  <div className="flex items-center gap-2">
+                {/* Info overlay */}
+                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
+                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
+                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
                     {item.subtitle ? (
-                      <span className="text-[10px] bg-accent/20 border border-accent/20 text-accent font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider">
-                        {item.subtitle}
-                      </span>
+                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
                     ) : (
-                      <span className="text-[10px] bg-white/10 text-gray-300 font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider">
-                        Movie
-                      </span>
+                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
                     )}
-                    <span className="text-[10px] text-gray-400 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-                      {formatTime(item.progressSeconds)} left
-                    </span>
+                    <span className="text-meta text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
                   </div>
                 </div>
 
-                {/* Thin progress bar at the bottom */}
-                <div className="absolute bottom-0 inset-x-0 h-1 bg-white/10">
-                  <div className="h-full bg-accent" style={{ width: `${progressPercent}%` }} />
+                {/* Progress bar. Scaled rather than resized on hover: animating
+                    height re-lays out the bar every frame, whereas a transform
+                    stays on the compositor. */}
+                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
                 </div>
               </div>
             </button>
@@ -522,20 +1008,270 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
       </div>
 
       {streamSelectorData && (
-        <StreamSelector
-          open={true}
-          onClose={() => setStreamSelectorData(null)}
-          mediaType={streamSelectorData.mediaType}
-          mediaId={streamSelectorData.mediaId}
-          title={streamSelectorData.title}
-          artwork={streamSelectorData.artwork}
-          seasonEpisode={streamSelectorData.seasonEpisode}
-          startTime={streamSelectorData.startTime}
-          tmdbId={streamSelectorData.tmdbId}
-          malId={streamSelectorData.malId}
-          anilistId={streamSelectorData.anilistId}
+        <Suspense fallback={null}>
+          <StreamSelector
+            open={true}
+            onClose={() => setStreamSelectorData(null)}
+            mediaType={streamSelectorData.mediaType}
+            mediaId={streamSelectorData.mediaId}
+            title={streamSelectorData.title}
+            artwork={streamSelectorData.artwork}
+            seasonEpisode={streamSelectorData.seasonEpisode}
+            startTime={streamSelectorData.startTime}
+            tmdbId={streamSelectorData.tmdbId}
+            malId={streamSelectorData.malId}
+            anilistId={streamSelectorData.anilistId}
+            sourceConnectionId={streamSelectorData.sourceConnectionId}
+            sourceItemId={streamSelectorData.sourceItemId}
+          />
+        </Suspense>
+      )}
+
+      {cwMenu && (
+        <ContinueWatchingMenu
+          ref={cwMenuRef}
+          x={cwMenu.x}
+          y={cwMenu.y}
+          item={cwMenu.item}
+          source={cwMenu.item.progressSource || source}
+          onClose={() => setCwMenu(null)}
+          onRemove={(removedItem) => {
+            // A removal is a visibility preference, never a destructive
+            // provider/history mutation. A meaningful replay clears it.
+            suppressContinueWatching(continueWatchingKey({ mediaId: removedItem.mediaId, mediaType: removedItem.mediaType, imdbId: removedItem.imdbId, tmdbId: removedItem.tmdbId, season: removedItem.season, episode: removedItem.episode }))
+            setItems((prev) => {
+              const next = prev.filter((i) => i.id !== removedItem.id)
+              rememberCwItems(cwKey, next)
+              if (accountScope) {
+                if (next.length) writeContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit, next)
+                else clearContinueWatchingStartupSnapshot(source, accountScope, continueWatchingLimit)
+              }
+              return next
+            })
+            setCwMenu(null)
+          }}
+          onGoTo={(item) => {
+            const path = item.mediaType === 'movie' ? `/movie/${item.mediaId}` : `/series/${item.mediaId}`
+            navigate(path, {
+              state: {
+                poster: item.poster,
+                backdrop: item.backdrop,
+                title: item.title,
+              },
+            })
+            setCwMenu(null)
+          }}
+          onPlay={(item) => {
+            setStreamSelectorData({
+              mediaId: item.mediaId,
+              mediaType: item.mediaType,
+              title: item.title,
+              artwork: { poster: item.poster, backdrop: item.backdrop },
+              seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+              startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
+              tmdbId: item.tmdbId,
+              malId: item.malId,
+              anilistId: item.anilistId,
+              sourceConnectionId: item.sourceConnectionId,
+              sourceItemId: item.sourceItemId,
+            })
+            setCwMenu(null)
+          }}
+          onRestart={(item) => {
+            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId, sourceConnectionId: item.sourceConnectionId, sourceItemId: item.sourceItemId })
+            setCwMenu(null)
+          }}
+          onMarkWatched={(item) => {
+            if ((item.progressSource || source) === 'local') {
+              const key = item.season != null && item.episode != null ? `${item.mediaId}:${item.season}:${item.episode}` : item.mediaId
+              setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId })
+            }
+            suppressContinueWatching(continueWatchingKey({ mediaId: item.mediaId, mediaType: item.mediaType, imdbId: item.imdbId, tmdbId: item.tmdbId, season: item.season, episode: item.episode }))
+            setItems((items) => items.filter((candidate) => candidate.id !== item.id)); setCwMenu(null)
+          }}
         />
       )}
-    </div>
+      {sourceMenuPortal}
+    </section>
   )
 }
+
+function ContinueWatchingSourceMenu({
+  x,
+  y,
+  selected,
+  connections,
+  onSelect,
+  onClose,
+}: {
+  x: number
+  y: number
+  selected: ProgressSelection
+  connections: Record<ProgressSelection, boolean>
+  onSelect: (source: ProgressSelection) => void
+  onClose: () => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [adjusted, setAdjusted] = useState({ x, y })
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    const rect = menu.getBoundingClientRect()
+    setAdjusted({
+      x: Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)),
+    })
+  }, [x, y])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
+
+  return createPortal(
+    <div className="fixed inset-0 z-[300]" onClick={onClose} onContextMenu={(event) => event.preventDefault()}>
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label="Continue Watching source"
+        className="context-menu-glass fixed min-w-[230px] rounded-2xl border border-white/[0.12]"
+        style={{ left: adjusted.x, top: adjusted.y, animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)' }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="relative">
+          <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <p className="text-sm font-semibold text-white">Continue Watching source</p>
+            <p className="text-label text-white/50 mt-0.5">Choose every connected service or one source</p>
+          </div>
+          <div className="px-1.5 py-1.5">
+            {PROGRESS_SOURCE_OPTIONS.map((option) => {
+              const connected = connections[option.id]
+              const active = selected === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={active}
+                  disabled={!connected}
+                  onClick={() => onSelect(option.id)}
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors"
+                >
+                  <span className={`w-4 text-center ${active ? 'text-accent' : 'text-white/25'}`}>{active ? '✓' : '○'}</span>
+                  <span className={`flex-1 text-sm ${active ? 'font-semibold text-white' : 'text-white/70'}`}>{option.label}</span>
+                  {!connected && <span className="text-[10px] font-semibold uppercase tracking-wide text-white/25">Not connected</span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+const ContinueWatchingMenu = forwardRef<
+  HTMLDivElement,
+  {
+    x: number
+    y: number
+    item: ContinueWatchingItem
+    source: SourceType
+    onClose: () => void
+    onRemove: (item: ContinueWatchingItem) => void
+    onGoTo: (item: ContinueWatchingItem) => void
+    onPlay: (item: ContinueWatchingItem) => void
+    onRestart: (item: ContinueWatchingItem) => void
+    onMarkWatched: (item: ContinueWatchingItem) => void
+  }
+>(({ x, y, item, source, onClose, onRemove, onGoTo, onPlay, onRestart, onMarkWatched }, ref) => {
+  const [adjusted, setAdjusted] = useState({ x, y })
+  const innerRef = useRef<HTMLDivElement>(null)
+  const setMenuRef = useCallback((element: HTMLDivElement | null) => {
+    innerRef.current = element
+    if (typeof ref === 'function') ref(element)
+    else if (ref) ref.current = element
+  }, [ref])
+
+  useLayoutEffect(() => {
+    const el = innerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const visibleHeight = Math.min(el.scrollHeight, vh - 16)
+    let ax = x
+    let ay = y
+    if (x + rect.width > vw - 8) ax = vw - rect.width - 8
+    if (y + visibleHeight > vh - 8) ay = vh - visibleHeight - 8
+    if (ax < 8) ax = 8
+    if (ay < 8) ay = 8
+    setAdjusted({ x: ax, y: ay })
+  }, [x, y])
+
+  const menu = (
+    <div className="fixed inset-0 z-[300]" onContextMenu={(e) => e.preventDefault()} onClick={onClose}>
+      <div
+        ref={setMenuRef}
+        onClick={(e) => e.stopPropagation()}
+        className="context-menu-glass fixed min-w-[240px] max-w-[280px] rounded-2xl border border-white/[0.12] overscroll-contain"
+        style={{
+          left: adjusted.x,
+          top: adjusted.y,
+          maxHeight: 'calc(100vh - 16px)',
+          overflowY: 'auto',
+          scrollbarWidth: 'thin',
+          animation: 'menuIn 150ms cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        <div className="absolute inset-0 bg-gradient-to-b from-white/[0.08] to-white/[0.02] pointer-events-none" />
+        <div className="relative">
+          <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.08]">
+            <div className="flex items-center gap-2.5">
+              {(item.backdrop || item.poster) && (
+                <img src={item.backdrop || item.poster} alt="" className="w-12 h-8 rounded-md object-cover flex-shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white truncate">{item.title}</p>
+                <p className="text-label text-white/60 mt-0.5">
+                  {item.subtitle || (item.mediaType === 'movie' ? 'Movie' : 'Series')}
+                  {source !== 'local' ? ` · ${source.charAt(0).toUpperCase() + source.slice(1)}` : ''}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="px-1.5 py-1.5">
+            <button onClick={() => onPlay(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              <span className="text-sm text-white/70">Resume Playing</span>
+            </button>
+            <button onClick={() => onRestart(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer"><span className="w-4 text-center text-white/50">↺</span><span className="text-sm text-white/70">Restart</span></button>
+            <button onClick={() => onMarkWatched(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer"><span className="w-4 text-center text-accent">✓</span><span className="text-sm text-white/70">Mark Watched</span></button>
+            <button onClick={() => onGoTo(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.08] transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-white/50" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span className="text-sm text-white/70">Go to {item.mediaType === 'movie' ? 'Movie' : 'Series'}</span>
+            </button>
+            <div className="my-1 border-t border-white/[0.06]" />
+            <button onClick={() => onRemove(item)} className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span className="text-sm text-red-400">Remove from Continue Watching</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  return createPortal(menu, document.body)
+})

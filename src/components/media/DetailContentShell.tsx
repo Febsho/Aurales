@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 interface DetailContentShellProps {
   title: string
@@ -10,110 +10,16 @@ interface DetailContentShellProps {
 }
 
 export default function DetailContentShell({
-  title,
-  logo,
-  imdbId,
+  title: _title,
+  logo: _logo,
+  imdbId: _imdbId,
   backdrop,
   children,
   className = '',
 }: DetailContentShellProps) {
-  const sectionRef = useRef<HTMLDivElement>(null)
-  const [logoError, setLogoError] = useState(false)
-  const [contentActive, setContentActive] = useState(false)
-  const logoUrl = logo || (imdbId ? `https://images.metahub.space/logo/medium/${imdbId}/img` : undefined)
-
-  useEffect(() => {
-    const section = sectionRef.current
-    if (!section) return
-    const scrollContainer = section.closest('main')
-    if (!scrollContainer) return
-
-    scrollContainer.classList.add('detail-snap-scroll')
-
-    let locked = false
-    const updateActive = () => {
-      setContentActive(scrollContainer.scrollTop >= section.offsetTop * 0.72)
-    }
-    const transitionTo = (top: number) => {
-      if (locked) return
-      locked = true
-      const startTop = scrollContainer.scrollTop
-      const distance = top - startTop
-      const duration = 720
-      const startTime = performance.now()
-      const previousBehavior = scrollContainer.style.scrollBehavior
-      scrollContainer.style.scrollBehavior = 'auto'
-
-      const animate = (now: number) => {
-        const progress = Math.min(1, (now - startTime) / duration)
-        const eased = progress < 0.5
-          ? 4 * progress * progress * progress
-          : 1 - Math.pow(-2 * progress + 2, 3) / 2
-        scrollContainer.scrollTop = startTop + distance * eased
-        updateActive()
-
-        if (progress < 1) {
-          window.requestAnimationFrame(animate)
-        } else {
-          scrollContainer.style.scrollBehavior = previousBehavior
-          locked = false
-        }
-      }
-
-      window.requestAnimationFrame(animate)
-    }
-    let consecutiveUpDelta = 0
-    const handleWheel = (event: WheelEvent) => {
-      if (event.shiftKey) return
-      const sectionTop = section.offsetTop
-      const currentTop = scrollContainer.scrollTop
-      const isOverHorizontalScroller = (event.target as HTMLElement | null)?.closest('.episode-scroll, .season-scroll')
-
-      if (locked) {
-        event.preventDefault()
-        return
-      }
-
-      // Snap down: at hero, scroll down → jump to content
-      if (event.deltaY > 20 && currentTop <= 4) {
-        event.preventDefault()
-        consecutiveUpDelta = 0
-        transitionTo(sectionTop)
-        return
-      }
-
-      // Snap up: in the content zone, scroll up → jump to hero
-      // Accumulate upward scroll intent so a single flick doesn't trigger it,
-      // but consecutive scroll-up events do. Resets on any downward scroll.
-      if (event.deltaY > 0) {
-        consecutiveUpDelta = 0
-        return
-      }
-
-      if (event.deltaY < -5 && currentTop > 0 && currentTop <= sectionTop + 200) {
-        consecutiveUpDelta += Math.abs(event.deltaY)
-        if (consecutiveUpDelta >= 60) {
-          if (!isOverHorizontalScroller) event.preventDefault()
-          consecutiveUpDelta = 0
-          transitionTo(0)
-        }
-      }
-    }
-
-    updateActive()
-    scrollContainer.addEventListener('scroll', updateActive, { passive: true })
-    scrollContainer.addEventListener('wheel', handleWheel, { passive: false })
-    return () => {
-      scrollContainer.classList.remove('detail-snap-scroll')
-      scrollContainer.removeEventListener('scroll', updateActive)
-      scrollContainer.removeEventListener('wheel', handleWheel)
-    }
-  }, [])
-
   return (
     <section
-      ref={sectionRef}
-      className={`detail-content-shell ${contentActive ? 'is-active' : ''} ${className}`}
+      className={`detail-content-shell ${className}`}
     >
       <div className="detail-content-shell__ambient" aria-hidden="true">
         {backdrop && <img src={backdrop} alt="" draggable={false} />}
@@ -121,18 +27,6 @@ export default function DetailContentShell({
       <div className="detail-content-shell__fade" aria-hidden="true" />
 
       <div className="detail-content-shell__inner">
-        <div className="detail-content-shell__brand">
-          {logoUrl && !logoError ? (
-            <img
-              src={logoUrl}
-              alt={title}
-              onError={() => setLogoError(true)}
-              draggable={false}
-            />
-          ) : (
-            <h2>{title}</h2>
-          )}
-        </div>
         {children}
       </div>
     </section>

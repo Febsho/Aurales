@@ -45,7 +45,7 @@ export default function Sheet({
       <div
         className={[
           'absolute bg-surface-elevated/95 backdrop-blur-3xl border-white/8',
-          'transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'transition-transform duration-300 ease-expo',
           isRight
             ? `top-0 right-0 bottom-0 w-full max-w-md border-l ${open ? 'translate-x-0' : 'translate-x-full'}`
             : `bottom-0 left-0 right-0 max-h-[80vh] border-t rounded-t-2xl ${open ? 'translate-y-0' : 'translate-y-full'}`,
@@ -58,7 +58,7 @@ export default function Sheet({
             <button
               onClick={onClose}
               className="w-8 h-8 rounded-lg flex items-center justify-center
-                bg-white/5 hover:bg-white/10 text-white/40 hover:text-white
+                bg-white/5 hover:bg-white/10 text-white/60 hover:text-white
                 transition-colors duration-200 cursor-pointer"
               aria-label="Close"
             >

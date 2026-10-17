@@ -2,14 +2,44 @@ import type { MetadataProvider, SearchResult, MovieDetails, ShowDetails, SeasonD
 import { getTvdbApiKey } from './apiKeys'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
+import { coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 
 const BASE_URL = 'https://api4.thetvdb.com/v4'
 
 let cachedToken: string | null = null
 let cachedTokenApiKey = ''
+let cachedTokenRequestId = 0
+let tokenRequestSequence = 0
+const tokenPromises = new Map<string, Promise<{ token: string; requestId: number }>>()
 
 const seriesDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
+const movieDataCache = new Map<string, { data: Record<string, unknown>; timestamp: number }>()
+const seriesDataPending = new Map<string, Promise<Record<string, unknown>>>()
+const movieDataPending = new Map<string, Promise<Record<string, unknown>>>()
 const SERIES_CACHE_TTL = 30 * 60 * 1000
+const MAX_TVDB_DETAIL_CACHE_ENTRIES = 400
+
+function getCachedDetail(cache: Map<string, { data: Record<string, unknown>; timestamp: number }>, id: string) {
+  const entry = cache.get(id)
+  if (!entry) return undefined
+  if (Date.now() - entry.timestamp >= SERIES_CACHE_TTL) {
+    cache.delete(id)
+    return undefined
+  }
+  cache.delete(id)
+  cache.set(id, entry)
+  return entry.data
+}
+
+function rememberDetail(cache: Map<string, { data: Record<string, unknown>; timestamp: number }>, id: string, data: Record<string, unknown>) {
+  cache.delete(id)
+  cache.set(id, { data, timestamp: Date.now() })
+  while (cache.size > MAX_TVDB_DETAIL_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+}
 
 export interface TvdbCardMetadata {
   title: string
@@ -20,55 +50,127 @@ export interface TvdbCardMetadata {
   genres?: string[]
 }
 
-async function getToken(): Promise<string> {
+async function getToken(): Promise<{ token: string; requestId: number }> {
   const apiKey = getTvdbApiKey()
-  if (cachedToken && cachedTokenApiKey === apiKey) return cachedToken
+  if (cachedToken && cachedTokenApiKey === apiKey) {
+    return { token: cachedToken, requestId: cachedTokenRequestId }
+  }
   cachedToken = null
-  const res = await fetch(`${BASE_URL}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ apikey: apiKey }),
-  })
-  if (!res.ok) throw new Error(`TVDB auth error: ${res.status}`)
-  const data = await res.json()
-  cachedToken = data.data.token
-  cachedTokenApiKey = apiKey
-  return cachedToken!
+  cachedTokenApiKey = ''
+  const existing = tokenPromises.get(apiKey)
+  if (existing) return existing
+
+  const requestId = ++tokenRequestSequence
+  const request = coordinatedJson<{ data: { token: string } }>(`${BASE_URL}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apikey: apiKey }),
+    }, {
+      label: 'TVDB',
+      kind: 'metadata',
+      dedupeKey: `auth:${requestId}`,
+      priority: 'interactive',
+      timeoutMs: 12_000,
+      retry: 'interactive-once',
+    })
+    .then((data) => {
+      const token = data.data.token
+      // A login for an old key may finish after credentials were changed.
+      // Return its token to its own callers, but never replace the active cache.
+      if (getTvdbApiKey() === apiKey) {
+        cachedToken = token
+        cachedTokenApiKey = apiKey
+        cachedTokenRequestId = requestId
+      }
+      return { token, requestId }
+    })
+    .finally(() => {
+      if (tokenPromises.get(apiKey) === request) tokenPromises.delete(apiKey)
+    })
+  tokenPromises.set(apiKey, request)
+  return request
 }
 
-async function tvdbFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
-  const token = await getToken()
+async function tvdbFetch(
+  path: string,
+  params: Record<string, string> = {},
+  request: { priority?: RequestPriority; cancelGroup?: string } = {},
+): Promise<unknown> {
+  const { token, requestId } = await getToken()
   const url = new URL(`${BASE_URL}${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString(), {
+  try {
+    return await coordinatedJson<unknown>(url.toString(), {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'eng' },
-  })
-  if (!res.ok) {
-    if (res.status === 401) {
+    }, {
+      label: 'TVDB',
+      kind: 'metadata',
+      dedupeKey: `auth:${requestId}:${path}:${new URLSearchParams(params).toString()}`,
+      priority: request.priority || 'visible',
+      cancelGroup: request.cancelGroup,
+      timeoutMs: 12_000,
+      retry: request.priority === 'background' ? 'none' : 'interactive-once',
+    })
+  } catch (error) {
+    if (error instanceof Error && /HTTP 401/.test(error.message)
+      && cachedToken === token && cachedTokenRequestId === requestId) {
       cachedToken = null
       cachedTokenApiKey = ''
-      return tvdbFetch(path, params)
+      cachedTokenRequestId = 0
     }
-    throw new Error(`TVDB error: ${res.status}`)
+    throw error
   }
-  return res.json()
 }
 
 async function getSeriesExtended(tvdbId: string): Promise<Record<string, unknown>> {
-  const cached = seriesDataCache.get(tvdbId)
-  if (cached && Date.now() - cached.timestamp < SERIES_CACHE_TTL) {
-    return cached.data
-  }
-  const data = await tvdbFetch(`/series/${tvdbId}/extended`) as Record<string, unknown>
-  const series = data.data as Record<string, unknown>
-  seriesDataCache.set(tvdbId, { data: series, timestamp: Date.now() })
-  return series
+  const cached = getCachedDetail(seriesDataCache, tvdbId)
+  if (cached) return cached
+  const pending = seriesDataPending.get(tvdbId)
+  if (pending) return pending
+  const request = (async () => {
+    const data = await tvdbFetch(`/series/${tvdbId}/extended`) as Record<string, unknown>
+    const series = data.data as Record<string, unknown>
+    rememberDetail(seriesDataCache, tvdbId, series)
+    return series
+  })().finally(() => {
+    if (seriesDataPending.get(tvdbId) === request) seriesDataPending.delete(tvdbId)
+  })
+  seriesDataPending.set(tvdbId, request)
+  return request
 }
 
-async function getSeasonEpisodes(seasonTvdbId: number): Promise<Record<string, unknown>[]> {
-  const data = await tvdbFetch(`/seasons/${seasonTvdbId}/extended`) as Record<string, unknown>
+async function getMovieExtended(tvdbId: string): Promise<Record<string, unknown>> {
+  const cleanId = tvdbId.replace('movie-', '')
+  const cached = getCachedDetail(movieDataCache, cleanId)
+  if (cached) return cached
+  const pending = movieDataPending.get(cleanId)
+  if (pending) return pending
+  const request = (async () => {
+    const data = await tvdbFetch(`/movies/${cleanId}/extended`) as Record<string, unknown>
+    const movie = data.data as Record<string, unknown>
+    rememberDetail(movieDataCache, cleanId, movie)
+    return movie
+  })().finally(() => movieDataPending.delete(cleanId))
+  movieDataPending.set(cleanId, request)
+  return request
+}
+
+async function getSeasonEpisodes(seasonTvdbId: number, priority: RequestPriority): Promise<Record<string, unknown>[]> {
+  const data = await tvdbFetch(`/seasons/${seasonTvdbId}/extended`, {}, { priority }) as Record<string, unknown>
   const season = data.data as Record<string, unknown>
   return (season.episodes as Record<string, unknown>[]) || []
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await mapper(items[index])
+    }
+  }))
+  return results
 }
 
 function getOfficialSeasons(series: Record<string, unknown>): Record<string, unknown>[] {
@@ -76,61 +178,171 @@ function getOfficialSeasons(series: Record<string, unknown>): Record<string, unk
     .filter((s) => (s.type as Record<string, unknown>)?.type === 'official')
 }
 
+export async function getTvdbSeason(
+  showId: string,
+  season: number,
+  priority: RequestPriority = 'visible',
+): Promise<SeasonDetails> {
+  const tvdbId = showId.replace(/^tvdb[-:]/i, '')
+  const cacheVariant = priority === 'background' ? 'raw-v2' : 'english-v2'
+
+  return cachedFetch<SeasonDetails>(`tvdb_season:${cacheVariant}:${tvdbId}:${season}`, async () => {
+    const series = await getSeriesExtended(tvdbId)
+    const officialSeasons = getOfficialSeasons(series)
+    const targetSeason = officialSeasons.find((s) => (s.number as number) === season)
+    if (!targetSeason) throw new Error(`TVDB season ${season} not found for series ${tvdbId}`)
+
+    const seasonTvdbId = Number(targetSeason.id)
+    const episodes = await getSeasonEpisodes(seasonTvdbId, priority)
+    const hasJapaneseText = (value: unknown) => typeof value === 'string' && /[぀-ヿ㐀-鿿]/.test(value)
+    // Interactive requests are the selected season and need complete English
+    // metadata. Only true background warming may skip translation requests.
+    const localizedEpisodes = priority !== 'background'
+      ? await mapLimit(episodes, 4, async (episode) => {
+        if (!hasJapaneseText(episode.name) && !hasJapaneseText(episode.overview)) return episode
+        const episodeId = Number(episode.id)
+        if (!episodeId) return episode
+        const translation = await tvdbFetch(`/episodes/${episodeId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
+        const english = translation?.data as Record<string, unknown> | undefined
+        return english ? { ...episode, name: english.name || episode.name, overview: english.overview || episode.overview } : episode
+      })
+      : episodes
+
+    return {
+      seasonNumber: season,
+      name: (targetSeason.name as string) || `Season ${season}`,
+      episodes: localizedEpisodes
+        .filter((e) => {
+          const origSeason = typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined
+          if (origSeason != null && origSeason !== season) {
+            console.log('[tvdb.getSeason] Filtering cross-season ep:', {
+              id: e.id, name: e.name, origSeason, requestedSeason: season,
+            })
+            return false
+          }
+          return true
+        })
+        .map((e) => ({
+          id: String(e.id),
+          episodeNumber: Number(e.number ?? e.airedEpisodeNumber),
+          seasonNumber: season,
+          name: e.name as string,
+          overview: e.overview as string,
+          airDate: e.aired as string,
+          runtime: e.runtime as number,
+          still: e.image as string | undefined,
+          rating: undefined,
+          voteCount: undefined,
+          debugSource: 'tvdb',
+          debugResolverStep: 'tvdbProvider.getSeason',
+          debugOriginalSeasonNumber: typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined,
+          debugOriginalEpisodeNumber: typeof (e.number ?? e.airedEpisodeNumber) === 'number' ? (e.number ?? e.airedEpisodeNumber) as number : undefined,
+          debugOriginalAbsoluteNumber: typeof e.absoluteNumber === 'number' ? e.absoluteNumber : undefined,
+        }))
+        .sort((a, b) => a.episodeNumber - b.episodeNumber),
+    }
+  }, { category: CACHE_CATEGORIES.TVDB_SEASON, ttlSeconds: CACHE_TTLS.TVDB_SEASON })
+}
+
 export const tvdbProvider: MetadataProvider = {
   id: 'tvdb',
   name: 'TVDB',
 
-  async search(query: string): Promise<SearchResult[]> {
-    const data = await tvdbFetch('/search', { query, type: 'series' }) as Record<string, unknown>
+  async search(query: string, _type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]> {
+    const data = await tvdbFetch('/search', { query, type: 'series' }, { priority: 'interactive', cancelGroup: context?.cancelGroup }) as Record<string, unknown>
     const results = (data.data as Record<string, unknown>[]) || []
-    return results.map((r) => ({
-      id: `tvdb-${r.tvdb_id || r.id}`,
-      title: r.name as string,
-      type: 'series' as const,
-      year: (r.first_air_time as string)?.slice(0, 4) ? parseInt((r.first_air_time as string).slice(0, 4)) : undefined,
-      poster: r.image_url as string | undefined,
-      overview: r.overview as string,
-      provider: 'tvdb',
-    }))
+    return results.map((r) => {
+      const rawTvdbId = r.tvdb_id || r.id
+      const tvdbId = Number(rawTvdbId)
+      return {
+        id: `tvdb-${rawTvdbId}`,
+        title: r.name as string,
+        type: 'series' as const,
+        year: (r.first_air_time as string)?.slice(0, 4) ? parseInt((r.first_air_time as string).slice(0, 4)) : undefined,
+        poster: r.image_url as string | undefined,
+        overview: r.overview as string,
+        tvdbId: Number.isFinite(tvdbId) ? tvdbId : undefined,
+        provider: 'tvdb',
+      }
+    })
   },
 
-  async getMovie(_id: string): Promise<MovieDetails> {
-    throw new Error('TVDB does not provide movie details')
+  async getMovie(id: string): Promise<MovieDetails> {
+    const tvdbId = id.replace(/^tvdb[-:]/i, '')
+    const movie = await getMovieExtended(tvdbId)
+
+    const artworks = (movie.artworks as Record<string, unknown>[]) || []
+    const isLandscape = (art: Record<string, unknown>) => {
+      const width = Number(art.width || art.thumbnailWidth || 0)
+      const height = Number(art.height || art.thumbnailHeight || 0)
+      return width > 0 && height > 0 && width / height >= 1.35
+    }
+    const backdropArt = artworks.find((a) => (a.type === 3 || a.type === 'background') && isLandscape(a))
+      || artworks.find(isLandscape)
+    const logoArt = artworks.find((a) => {
+      const type = String(a.type || a.artworkType || '').toLowerCase()
+      return type === '5' || type === '6' || type.includes('logo') || type.includes('clearlogo')
+    })
+    const backdrop = backdropArt?.image as string | undefined
+    const logo = logoArt?.image as string | undefined
+
+    return {
+      id,
+      title: movie.name as string,
+      originalTitle: movie.name as string,
+      year: movie.year ? parseInt(movie.year as string) : undefined,
+      releaseDate: undefined,
+      overview: movie.overview as string,
+      tagline: undefined,
+      runtime: movie.runtime as number,
+      rating: undefined,
+      voteCount: undefined,
+      genres: ((movie.genres as Record<string, unknown>[]) || []).map((g) => g.name as string),
+      poster: movie.image as string | undefined,
+      backdrop,
+      logo,
+      certification: undefined,
+      cast: [],
+      crew: [],
+      recommendations: [],
+      trailers: [],
+      imdbId: undefined,
+      tmdbId: undefined,
+      provider: 'tvdb',
+    }
   },
 
   async getShow(id: string): Promise<ShowDetails> {
-    const tvdbId = id.replace('tvdb-', '')
+    const tvdbId = id.replace(/^tvdb[-:]/i, '')
     const series = await getSeriesExtended(tvdbId)
 
     const officialSeasons = getOfficialSeasons(series)
     const currentYear = new Date().getFullYear()
     const hasJapanese = (value: unknown) => typeof value === 'string' && /[぀-ヿ㐀-鿿]/.test(value)
-    const seasons = await Promise.all(
-      officialSeasons
-        .filter((s) => {
-          const year = s.year as number | undefined
-          if (!year) return true
-          return year <= currentYear + 1
-        })
-        .map(async (s) => {
-          let name = s.name as string || `Season ${s.number}`
-          if (hasJapanese(name)) {
-            const seasonId = Number(s.id)
-            if (seasonId) {
-              const translation = await tvdbFetch(`/seasons/${seasonId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
-              const english = (translation?.data as Record<string, unknown> | undefined)
-              if (english?.name && typeof english.name === 'string') name = english.name
-            }
-          }
-          return {
-            seasonNumber: s.number as number,
-            name,
-            episodeCount: 0,
-            poster: s.image as string | undefined,
-            airDate: s.year ? `${s.year}-01-01` : undefined,
-          }
-        })
-    )
+    const seasonRecords = officialSeasons
+      .filter((s) => {
+        const year = s.year as number | undefined
+        if (!year) return true
+        return year <= currentYear + 1
+      })
+    const seasons = await mapLimit(seasonRecords, 4, async (s) => {
+      let name = s.name as string || `Season ${s.number}`
+      if (hasJapanese(name)) {
+        const seasonId = Number(s.id)
+        if (seasonId) {
+          const translation = await tvdbFetch(`/seasons/${seasonId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
+          const english = translation?.data as Record<string, unknown> | undefined
+          if (english?.name && typeof english.name === 'string') name = english.name
+        }
+      }
+      return {
+        seasonNumber: s.number as number,
+        name,
+        episodeCount: 0,
+        poster: s.image as string | undefined,
+        airDate: s.year ? `${s.year}-01-01` : undefined,
+      }
+    })
 
     const genres = ((series.genres as Record<string, unknown>[]) || []).map((g) => g.name as string)
 
@@ -140,21 +352,32 @@ export const tvdbProvider: MetadataProvider = {
       .slice(0, 20)
       .map((c) => ({
         id: String(c.peopleId || c.id || ''),
+        personProvider: 'tvdb' as const,
         name: (c.personName || c.name) as string,
         character: (c.name || c.personName) as string,
         profilePath: (c.personImgURL || c.image) as string | undefined,
       }))
 
     const artworks = (series.artworks as Record<string, unknown>[]) || []
-    const backdrop = artworks.find((a) => a.type === 3)?.image as string
-      || artworks.find((a) => a.type === 'background')?.image as string
-      || artworks[0]?.image as string | undefined
+    const isLandscape = (art: Record<string, unknown>) => {
+      const width = Number(art.width || art.thumbnailWidth || 0)
+      const height = Number(art.height || art.thumbnailHeight || 0)
+      return width > 0 && height > 0 && width / height >= 1.35
+    }
+    const backdropArt = artworks.find((a) => (a.type === 3 || a.type === 'background') && isLandscape(a))
+      || artworks.find(isLandscape)
+    const logoArt = artworks.find((a) => {
+      const type = String(a.type || a.artworkType || '').toLowerCase()
+      return type === '5' || type === '6' || type.includes('logo') || type.includes('clearlogo')
+    })
+    const backdrop = backdropArt?.image as string | undefined
+    const logo = logoArt?.image as string | undefined
 
     let seriesTitle = series.name as string
     let seriesOverview = series.overview as string
     if (hasJapanese(seriesTitle) || hasJapanese(seriesOverview)) {
       const translation = await tvdbFetch(`/series/${tvdbId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
-      const english = (translation?.data as Record<string, unknown> | undefined)
+      const english = translation?.data as Record<string, unknown> | undefined
       if (english?.name && typeof english.name === 'string') seriesTitle = english.name
       if (english?.overview && typeof english.overview === 'string') seriesOverview = english.overview
     }
@@ -171,6 +394,7 @@ export const tvdbProvider: MetadataProvider = {
       genres,
       poster: series.image as string | undefined,
       backdrop,
+      logo,
       certification: undefined,
       status: series.status?.toString(),
       numberOfSeasons: seasons.length,
@@ -183,62 +407,8 @@ export const tvdbProvider: MetadataProvider = {
     }
   },
 
-  async getSeason(showId: string, season: number): Promise<SeasonDetails> {
-    const tvdbId = showId.replace('tvdb-', '')
-
-    return cachedFetch<SeasonDetails>(`tvdb_season:${tvdbId}:${season}`, async () => {
-      const series = await getSeriesExtended(tvdbId)
-      const officialSeasons = getOfficialSeasons(series)
-      const targetSeason = officialSeasons.find((s) => (s.number as number) === season)
-      if (!targetSeason) throw new Error(`TVDB season ${season} not found for series ${tvdbId}`)
-
-      const seasonTvdbId = Number(targetSeason.id)
-      const episodes = await getSeasonEpisodes(seasonTvdbId)
-
-      const hasJapaneseText = (value: unknown) => typeof value === 'string' && /[぀-ヿ㐀-鿿]/.test(value)
-      const localizedEpisodes = await Promise.all(episodes.map(async (episode) => {
-        if (!hasJapaneseText(episode.name) && !hasJapaneseText(episode.overview)) return episode
-        const episodeId = Number(episode.id)
-        if (!episodeId) return episode
-        const translation = await tvdbFetch(`/episodes/${episodeId}/translations/eng`).catch(() => null) as Record<string, unknown> | null
-        const english = translation?.data as Record<string, unknown> | undefined
-        return english ? { ...episode, name: english.name || episode.name, overview: english.overview || episode.overview } : episode
-      }))
-
-      return {
-        seasonNumber: season,
-        name: (targetSeason.name as string) || `Season ${season}`,
-        episodes: localizedEpisodes
-          .filter((e) => {
-            const origSeason = typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined
-            if (origSeason != null && origSeason !== season) {
-              console.log('[tvdb.getSeason] Filtering cross-season ep:', {
-                id: e.id, name: e.name, origSeason, requestedSeason: season,
-              })
-              return false
-            }
-            return true
-          })
-          .map((e) => ({
-            id: String(e.id),
-            episodeNumber: Number(e.number ?? e.airedEpisodeNumber),
-            seasonNumber: season,
-            name: e.name as string,
-            overview: e.overview as string,
-            airDate: e.aired as string,
-            runtime: e.runtime as number,
-            still: e.image as string | undefined,
-            rating: undefined,
-            voteCount: undefined,
-            debugSource: 'tvdb',
-            debugResolverStep: 'tvdbProvider.getSeason',
-            debugOriginalSeasonNumber: typeof e.seasonNumber === 'number' ? e.seasonNumber : undefined,
-            debugOriginalEpisodeNumber: typeof (e.number ?? e.airedEpisodeNumber) === 'number' ? (e.number ?? e.airedEpisodeNumber) as number : undefined,
-            debugOriginalAbsoluteNumber: typeof e.absoluteNumber === 'number' ? e.absoluteNumber : undefined,
-          }))
-          .sort((a, b) => a.episodeNumber - b.episodeNumber),
-      }
-    }, { category: CACHE_CATEGORIES.TVDB_SEASON, ttlSeconds: CACHE_TTLS.TVDB_SEASON })
+  async getSeason(showId: string, season: number, priority: RequestPriority = 'visible'): Promise<SeasonDetails> {
+    return getTvdbSeason(showId, season, priority)
   },
 
   async getEpisode(showId: string, season: number, episode: number): Promise<EpisodeDetails> {
@@ -250,7 +420,7 @@ export const tvdbProvider: MetadataProvider = {
 }
 
 export async function getTvdbBanner(tvdbId: string | number): Promise<string | undefined> {
-  const id = String(tvdbId).replace('tvdb-', '')
+  const id = String(tvdbId).replace(/^tvdb[-:]/i, '')
   if (!id) return undefined
 
   const result = await cachedFetch<string | null>(`tvdb_banner:${id}`, async () => {
@@ -262,7 +432,7 @@ export async function getTvdbBanner(tvdbId: string | number): Promise<string | u
         return Number(typeVal) === 1 && typeof a.image === 'string'
       })
       return (banners[0]?.image as string) || null
-    } catch {
+    } catch (_) {
       return null
     }
   }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
@@ -270,7 +440,7 @@ export async function getTvdbBanner(tvdbId: string | number): Promise<string | u
 }
 
 export async function getTvdbCardMetadata(tvdbId: string | number): Promise<TvdbCardMetadata | null> {
-  const id = String(tvdbId).replace('tvdb-', '')
+  const id = String(tvdbId).replace(/^tvdb[-:]/i, '')
   if (!id) return null
 
   try {
@@ -285,7 +455,26 @@ export async function getTvdbCardMetadata(tvdbId: string | number): Promise<Tvdb
         genres: show.genres,
       }
     }, { category: CACHE_CATEGORIES.TVDB_CARD, ttlSeconds: CACHE_TTLS.TVDB_CARD })
-  } catch {
+  } catch (_) {
     return null
+  }
+}
+
+export async function getTvdbIdByRemoteId(remoteId: string): Promise<number | string | undefined> {
+  try {
+    const result = await cachedFetch<string | number | null>(`tvdb_remote_id:${remoteId}`, async () => {
+      const data = await tvdbFetch(`/search/remoteid/${remoteId}`) as Record<string, unknown>
+      const results = (data.data as Record<string, unknown>[]) || []
+      if (results.length === 0) return null
+      const match = results[0]
+      const idVal = match.tvdb_id || match.id
+      if (match.type === 'movie') {
+        return `movie-${idVal}`
+      }
+      return Number(idVal) || null
+    }, { category: CACHE_CATEGORIES.TVDB_REMOTE_ID, ttlSeconds: CACHE_TTLS.TVDB_REMOTE_ID })
+    return result ?? undefined
+  } catch (_) {
+    return undefined
   }
 }

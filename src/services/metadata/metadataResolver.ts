@@ -5,35 +5,92 @@ import { classifyMediaItem } from './metadataClassifier'
 import { resolveExternalIds } from './externalIdResolver'
 import { addonFallback, appMediaToSearchResult } from './metadataNormalizer'
 import { fetchAppProviderMetadata } from './metadataProviders'
+import { cacheClearCategory } from '../cache/sqliteCache'
+import { clearAnimeSeasonMemoryCache } from './animeSeasonCache'
 import type { AddonMediaInput, AppMediaItem } from './types'
 import type { SearchResult } from '../../types'
 
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
-const ANIME_RESOLVER_VERSION = 6
+const ANIME_RESOLVER_VERSION = 8
+const METADATA_CLASSIFIER_VERSION = 5
+export type MetadataEnrichmentMode = 'cache-only' | 'visible-card' | 'detail'
+
+function numericProviderId(value: string | number | undefined): number | undefined {
+  if (value == null) return undefined
+  const parsed = Number(String(value).trim().replace(/^[a-z_]+[-:]/i, ''))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
 
 function animeSettingsSignature(): string {
   const settings = useAppStore.getState()
   return [
+    settings.animeMetadataSource,
+    settings.animeMetadataFallback,
+    settings.animeTitleLanguage,
     settings.hideUnairedAnimeSeasons,
     settings.hideUnairedAnimeEpisodes,
     settings.includeAnimeSpecials,
     settings.useGenericAnimeSeasonLabels,
     settings.avoidJapaneseSeasonNames,
     settings.preferTvdbAnimeSeasons,
-  ].map(Number).join('')
+  ].map(String).join('|')
 }
 
 const pending = new Map<string, Promise<AppMediaItem>>()
-const cacheKey = (input: AddonMediaInput) => `${animeSettingsSignature()}:${input.addonId}:${input.id || input.imdbId || input.tmdbId || input.tvdbId || input.title}`
+let metadataGeneration = 0
+let metadataMutationQueue: Promise<void> = Promise.resolve()
+
+function serializeMetadataMutation<T>(mutation: () => Promise<T>): Promise<T> {
+  const queued = metadataMutationQueue.then(mutation, mutation)
+  metadataMutationQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
+
+function readAfterMetadataMutations<T>(read: () => Promise<T>): Promise<T> {
+  return metadataMutationQueue.then(read, read)
+}
+
+function metadataSettingsSignature(): string {
+  const settings = useAppStore.getState()
+  return [
+    settings.movieMetadataSource, settings.movieMetadataFallback,
+    settings.seriesMetadataSource, settings.seriesMetadataFallback,
+    settings.appManagedMetadata, settings.useAddonMetadataFallback,
+  ].map(String).join('|')
+}
+
+const cacheKey = (input: AddonMediaInput) => JSON.stringify([
+  metadataGeneration, metadataSettingsSignature(), input.addonId, input.addonUrl, input.addonType,
+  input.id, input.title, input.year, input.imdbId, input.tmdbId, input.tvdbId,
+  input.traktId, input.simklId, input.anilistId, input.malId,
+])
 
 const metadataMemCache = new Map<string, { item: AppMediaItem; ts: number }>()
 const MEM_CACHE_TTL = 5 * 60 * 1000
 
-function memCacheKey(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }): string {
-  return `${ids.id || ''}|${ids.imdbId || ''}|${ids.tmdbId || 0}|${ids.tvdbId || 0}|${ids.anilistId || 0}`
+type MetadataMemoryIdentity = {
+  id?: string
+  sourceAddonId?: string
+  sourceAddonItemId?: string
+  mediaType?: string
+  imdbId?: string
+  tmdbId?: number
+  tvdbId?: number
+  anilistId?: number
+  malId?: number
+  traktId?: number
+  simklId?: number
 }
 
-function memCacheGet(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }): AppMediaItem | null {
+function memCacheKey(ids: MetadataMemoryIdentity): string {
+  return JSON.stringify([
+    ids.sourceAddonId || '', ids.sourceAddonItemId || ids.id || '', ids.mediaType || '',
+    ids.imdbId || '', ids.tmdbId || 0, ids.tvdbId || 0, ids.anilistId || 0,
+    ids.malId || 0, ids.traktId || 0, ids.simklId || 0,
+  ])
+}
+
+function memCacheGet(ids: MetadataMemoryIdentity): AppMediaItem | null {
   const key = memCacheKey(ids)
   const entry = metadataMemCache.get(key)
   if (!entry) return null
@@ -44,7 +101,7 @@ function memCacheGet(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbI
   return entry.item
 }
 
-function memCacheSet(ids: { id?: string; imdbId?: string; tmdbId?: number; tvdbId?: number; anilistId?: number }, item: AppMediaItem): void {
+function memCacheSet(ids: MetadataMemoryIdentity, item: AppMediaItem): void {
   const key = memCacheKey(ids)
   metadataMemCache.set(key, { item, ts: Date.now() })
   if (metadataMemCache.size > 500) {
@@ -61,13 +118,13 @@ export async function getAppMetadataByIds(ids: {
   anilistId?: number
 }): Promise<AppMediaItem | null> {
   try {
-    const raw = await invoke<string | null>('get_app_metadata_by_ids', {
+    const raw = await readAfterMetadataMutations(() => invoke<string | null>('get_app_metadata_by_ids', {
       id: ids.id || null,
       imdbId: ids.imdbId || null,
       tmdbId: ids.tmdbId || null,
       tvdbId: ids.tvdbId || null,
       anilistId: ids.anilistId || null,
-    })
+    }))
     return raw ? JSON.parse(raw) as AppMediaItem : null
   } catch (e) {
     console.error('[metadata] getAppMetadataByIds error:', e)
@@ -84,7 +141,7 @@ export async function getAppMetadataByIdsBatch(items: {
 }[]): Promise<(AppMediaItem | null)[]> {
   if (items.length === 0) return []
   try {
-    const results = await invoke<(string | null)[]>('get_app_metadata_by_ids_batch', { items })
+    const results = await readAfterMetadataMutations(() => invoke<(string | null)[]>('get_app_metadata_by_ids_batch', { items }))
     return results.map((raw) => raw ? JSON.parse(raw) as AppMediaItem : null)
   } catch (e) {
     console.error('[metadata] getAppMetadataByIdsBatch error:', e)
@@ -92,18 +149,30 @@ export async function getAppMetadataByIdsBatch(items: {
   }
 }
 
-export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]): Promise<SearchResult[]> {
+export async function enrichSearchResultsWithAppMetadata(
+  items: SearchResult[],
+  options: { mode?: MetadataEnrichmentMode } = {},
+): Promise<SearchResult[]> {
   const settings = useAppStore.getState()
   if (!settings.appManagedMetadata) return items
+  const mode = options.mode || 'cache-only'
+  const generationAtLookupStart = metadataGeneration
+  const settingsSignatureAtLookupStart = metadataSettingsSignature()
 
   // 1. Check in-memory cache first, then batch-fetch remaining from DB
   const memResults: (AppMediaItem | null)[] = items.map((item) => {
     const ids = {
       id: item.id,
+      sourceAddonId: item.sourceAddonId || item.provider || item.addonUrl,
+      sourceAddonItemId: item.sourceAddonItemId || item.id,
+      mediaType: item.type,
       imdbId: item.imdbId,
-      tmdbId: item.tmdbId ? Number(item.tmdbId) : undefined,
-      tvdbId: item.tvdbId ? Number(item.tvdbId) : undefined,
-      anilistId: item.anilistId ? Number(item.anilistId) : undefined,
+      tmdbId: numericProviderId(item.tmdbId),
+      tvdbId: numericProviderId(item.tvdbId),
+      anilistId: numericProviderId(item.anilistId),
+      malId: numericProviderId(item.malId),
+      traktId: numericProviderId(item.traktId),
+      simklId: numericProviderId(item.simklId),
     }
     return memCacheGet(ids)
   })
@@ -114,22 +183,37 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   if (needsDbLookup.length > 0) {
     const batchInput = needsDbLookup.map((i) => ({
       id: items[i].id,
+      sourceAddonId: items[i].sourceAddonId || items[i].provider || items[i].addonUrl,
+      sourceAddonItemId: items[i].sourceAddonItemId || items[i].id,
+      mediaType: items[i].type,
       imdbId: items[i].imdbId,
-      tmdbId: items[i].tmdbId ? Number(items[i].tmdbId) : undefined,
-      tvdbId: items[i].tvdbId ? Number(items[i].tvdbId) : undefined,
-      anilistId: items[i].anilistId ? Number(items[i].anilistId) : undefined,
+      tmdbId: numericProviderId(items[i].tmdbId),
+      tvdbId: numericProviderId(items[i].tvdbId),
+      anilistId: numericProviderId(items[i].anilistId),
+      malId: numericProviderId(items[i].malId),
+      traktId: numericProviderId(items[i].traktId),
+      simklId: numericProviderId(items[i].simklId),
     }))
     const fetched = await getAppMetadataByIdsBatch(batchInput)
-    needsDbLookup.forEach((origIdx, batchIdx) => {
-      const item = fetched[batchIdx]
-      dbResults[origIdx] = item
-      if (item) memCacheSet(batchInput[batchIdx], item)
-    })
+    const lookupWasInvalidated = generationAtLookupStart !== metadataGeneration
+    if (lookupWasInvalidated) {
+      dbResults = items.map(() => null)
+    } else {
+      needsDbLookup.forEach((origIdx, batchIdx) => {
+        const item = fetched[batchIdx]
+        dbResults[origIdx] = item
+        if (item) memCacheSet(batchInput[batchIdx], item)
+      })
+    }
   }
 
   const cacheLookupResults = items.map((item, i) => {
     const raw = dbResults[i]
-    const cached = raw?.sourceMetadataProvider === 'fallback_addon' ? null : raw
+    const metadataSettingsAreStale = Boolean(raw && raw.metadataSettingsSignature !== metadataSettingsSignature())
+    const animeCacheIsStale = Boolean(raw && (raw.type === 'anime' || raw.isAnime) && (
+      raw.animeResolverVersion !== ANIME_RESOLVER_VERSION || raw.animeSettingsSignature !== animeSettingsSignature()
+    ))
+    const cached = raw?.sourceMetadataProvider === 'fallback_addon' || raw?.metadataClassifierVersion !== METADATA_CLASSIFIER_VERSION || metadataSettingsAreStale || animeCacheIsStale ? null : raw
     return { item, cached }
   })
 
@@ -138,9 +222,9 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   
   cacheLookupResults.forEach(({ item, cached }, index) => {
     if (!cached) {
-      const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
-      const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
-      const anilistId = item.anilistId ? Number(item.anilistId) : undefined
+      const tmdbId = numericProviderId(item.tmdbId)
+      const tvdbId = numericProviderId(item.tvdbId)
+      const anilistId = numericProviderId(item.anilistId)
       
       uncachedInputs.push({
         index,
@@ -154,37 +238,24 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
           tmdbId,
           tvdbId,
           anilistId,
+          rawAddonMeta: item,
         }
       })
     }
   })
 
   // 3. Resolve uncached items in batch with concurrency limit (e.g. 4)
-  if (uncachedInputs.length > 0) {
+  if (uncachedInputs.length > 0 && mode !== 'cache-only') {
     try {
       const resolvedList = await resolveMetadataBatch(
         uncachedInputs.map(x => x.input),
-        6
+        mode === 'visible-card' ? 1 : 3
       )
-      resolvedList.forEach((resolvedItem) => {
+      resolvedList.forEach((resolvedItem, resolvedIndex) => {
         if (!resolvedItem) return
         if (resolvedItem.sourceMetadataProvider === 'fallback_addon') return
-        const matched = cacheLookupResults.find(({ item }) => {
-          const tmdbId = item.tmdbId ? Number(item.tmdbId) : undefined
-          const tvdbId = item.tvdbId ? Number(item.tvdbId) : undefined
-          const anilistId = item.anilistId ? Number(item.anilistId) : undefined
-
-          return (
-            (resolvedItem.imdbId && resolvedItem.imdbId === item.imdbId) ||
-            (resolvedItem.tmdbId && resolvedItem.tmdbId === tmdbId) ||
-            (resolvedItem.tvdbId && resolvedItem.tvdbId === tvdbId) ||
-            (resolvedItem.anilistId && resolvedItem.anilistId === anilistId) ||
-            (resolvedItem.sourceAddonItemId && resolvedItem.sourceAddonItemId === item.id)
-          );
-        })
-        if (matched) {
-          matched.cached = resolvedItem
-        }
+        const targetIndex = uncachedInputs[resolvedIndex]?.index
+        if (targetIndex != null) cacheLookupResults[targetIndex].cached = resolvedItem
       })
     } catch (e) {
       console.error('[metadata] Batch enrichment failed:', e)
@@ -192,9 +263,20 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
   }
 
   // 4. Map everything to SearchResult
+  if (generationAtLookupStart !== metadataGeneration || settingsSignatureAtLookupStart !== metadataSettingsSignature()) {
+    return items
+  }
   return cacheLookupResults.map(({ item, cached }) => {
     if (cached) {
-      return appMediaToSearchResult(cached, item.addonUrl)
+      const result = appMediaToSearchResult(cached, item.addonUrl)
+      // Anime detection relies on genreIds/originalLanguage (dropped by the app
+      // metadata layer) and on isAnime — which is only 'anime'-typed for series,
+      // so anime MOVIES would otherwise look like plain movies. Carry the source
+      // item's fields forward so anime movies keep their AniList option and label.
+      const genreIds = result.genreIds ?? item.genreIds
+      const originalLanguage = result.originalLanguage ?? item.originalLanguage
+      const isAnime = result.isAnime || item.isAnime || Boolean(genreIds?.includes(16) && ['ja', 'zh', 'ko'].includes(originalLanguage || ''))
+      return { ...result, genreIds, originalLanguage, isAnime }
     }
     return item
   })
@@ -202,21 +284,38 @@ export async function enrichSearchResultsWithAppMetadata(items: SearchResult[]):
 
 export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMediaItem> {
   const key = cacheKey(input)
+  const generation = metadataGeneration
+  const settingsSignatureAtStart = metadataSettingsSignature()
   const existing = pending.get(key)
   if (existing) return existing
-  const task = (async () => {
+  const work = (async () => {
     const settings = useAppStore.getState()
     if (settings.appManagedMetadata) {
-      const cached = await invoke<string | null>('get_app_metadata_for_addon', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => null)
+      const cached = await readAfterMetadataMutations(() =>
+        invoke<string | null>('get_app_metadata_for_addon', { addonId: input.addonId, addonItemId: input.id || '' })
+      ).catch(() => null)
+      if (generation !== metadataGeneration) return resolveAppMetadata(input)
+      if (settingsSignatureAtStart !== metadataSettingsSignature()) return resolveAppMetadata(input)
       if (cached) {
-        const parsed = JSON.parse(cached) as AppMediaItem
-        if (parsed.sourceMetadataProvider === 'fallback_addon') {
-          await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
-        } else if (parsed.type === 'anime') {
+        let parsed: AppMediaItem | null = null
+        try {
+          parsed = JSON.parse(cached) as AppMediaItem
+        } catch (error) {
+          console.warn('[metadata] Discarding malformed cached metadata:', input.id, error)
+        }
+        if (!parsed) {
+          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+        } else if (parsed.sourceMetadataProvider === 'fallback_addon') {
+          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+        } else if (parsed.metadataClassifierVersion !== METADATA_CLASSIFIER_VERSION) {
+          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+        } else if (parsed.metadataSettingsSignature !== settingsSignatureAtStart) {
+          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+        } else if (parsed.type === 'anime' || parsed.isAnime) {
           const activeSettings = animeSettingsSignature()
           if (parsed.animeResolverVersion !== ANIME_RESOLVER_VERSION || parsed.animeSettingsSignature !== activeSettings) {
             console.log('[metadata] Anime cache stale, re-resolving:', input.id)
-            await invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' }).catch(() => undefined)
+            await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
           } else {
             return parsed
           }
@@ -236,58 +335,109 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
           avoidJapaneseSeasonNames: settings.avoidJapaneseSeasonNames ?? true,
         })
       : await fetchAppProviderMetadata(input, ids, kind)
+
+    if (item && kind !== 'anime') {
+      const genres = (item.genres || []).map((g) => g.toLowerCase())
+      const originalLanguage = String(item.originalLanguage || '').toLowerCase()
+      const isAnime = (genres.includes('animation') || genres.includes('anime')) && ['ja', 'zh', 'ko'].includes(originalLanguage)
+      if (isAnime) {
+        const animeItem = await resolveAnimeMetadata(input, ids, settings.animeTitleLanguage, settings.preferTvdbAnimeSeasons, {
+          hideUnairedSeasons: settings.hideUnairedAnimeSeasons,
+          hideUnairedEpisodes: settings.hideUnairedAnimeEpisodes,
+          includeSpecials: settings.includeAnimeSpecials,
+          useGenericSeasonLabels: settings.useGenericAnimeSeasonLabels ?? true,
+          avoidJapaneseSeasonNames: settings.avoidJapaneseSeasonNames ?? true,
+        }).catch(() => null)
+        if (animeItem) {
+          item = animeItem
+        }
+      }
+    }
+    if (settingsSignatureAtStart !== metadataSettingsSignature()) return resolveAppMetadata(input)
     if (item && kind === 'anime') {
-      try {
+      const ratingItem = item
+      // MDBList ratings are optional decoration. Do not keep episode metadata
+      // behind another network request; persist the rating when it arrives.
+      void (async () => {
         const { getMdblistRatings } = await import('../mdblist')
         const ratings = await getMdblistRatings({
-          mediaType: item.type === 'movie' ? 'movie' : 'series',
-          imdbId: item.imdbId,
-          tmdbId: item.tmdbId,
-          tvdbId: item.tvdbId,
+          mediaType: ratingItem.type === 'movie' ? 'movie' : 'series',
+          imdbId: ratingItem.imdbId,
+          tmdbId: ratingItem.tmdbId,
+          tvdbId: ratingItem.tvdbId,
         })
         const mal = ratings.find((r) => r.source === 'myanimelist')
         if (mal) {
           const val = parseFloat(mal.value)
           if (!isNaN(val)) {
-            item.rating = val
+            ratingItem.rating = val
           }
         }
-      } catch { /* ignore */ }
+        if (generation === metadataGeneration && settingsSignatureAtStart === metadataSettingsSignature() && ratingItem.sourceMetadataProvider !== 'fallback_addon') {
+          await serializeMetadataMutation(() => invoke('save_app_metadata', { mediaJson: JSON.stringify(ratingItem), addonId: input.addonId,
+            addonItemId: input.id || '', mediaType: ratingItem.type }).catch(() => undefined)
+          )
+        }
+      })().catch(() => undefined)
     }
+    if (settingsSignatureAtStart !== metadataSettingsSignature()) return resolveAppMetadata(input)
     if (!item) {
       if (!settings.useAddonMetadataFallback) throw new Error('No app metadata match')
       item = addonFallback({ ...input, ...ids }, kind)
     }
-    if (item && item.type === 'anime') {
+    if (item && (item.type === 'anime' || item.isAnime)) {
       item.animeResolverVersion = ANIME_RESOLVER_VERSION
       item.animeSettingsSignature = animeSettingsSignature()
     }
+    item.metadataClassifierVersion = METADATA_CLASSIFIER_VERSION
+    item.metadataSettingsSignature = settingsSignatureAtStart
+    if (generation !== metadataGeneration) return resolveAppMetadata(input)
     if (item.sourceMetadataProvider !== 'fallback_addon') {
-      await invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
+      await serializeMetadataMutation(() => invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
         addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
+      )
+    }
+    if (generation !== metadataGeneration || settingsSignatureAtStart !== metadataSettingsSignature()) {
+      return resolveAppMetadata(input)
     }
     return item
-  })().finally(() => pending.delete(key))
+  })()
+  const task = work.finally(() => {
+    if (pending.get(key) === task) pending.delete(key)
+  })
   pending.set(key, task)
   return task
 }
 
 export async function clearAppMetadataCache(): Promise<void> {
+  metadataGeneration += 1
   pending.clear()
   metadataMemCache.clear()
-  await invoke('clear_app_metadata')
-  const { cacheClearCategory } = await import('../cache/sqliteCache')
-  await Promise.all([
+  const cacheClear = Promise.all([
     cacheClearCategory('addon_catalog'),
     cacheClearCategory('provider_list'),
     cacheClearCategory('simkl_list'),
     cacheClearCategory('anime_mapping'),
   ])
+  clearAnimeSeasonMemoryCache(cacheClear)
+  await Promise.all([
+    serializeMetadataMutation(() => invoke('clear_app_metadata')),
+    cacheClear,
+  ])
 }
 
 export async function clearAnimeMetadataCache(): Promise<void> {
+  metadataGeneration += 1
   pending.clear()
   metadataMemCache.clear()
+  // Bump both cache generations synchronously before awaiting native/SQLite
+  // work so in-flight readers cannot revive snapshots being cleared. Provider
+  // lists also hold already-enriched SearchResults for anime.
+  const cacheClear = Promise.all([
+    cacheClearCategory('anime_mapping'),
+    cacheClearCategory('provider_list'),
+  ])
+  clearAnimeSeasonMemoryCache(cacheClear)
   // Clear all TVDB season caches from localStorage
   const keysToRemove: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
@@ -299,12 +449,15 @@ export async function clearAnimeMetadataCache(): Promise<void> {
   for (const key of keysToRemove) {
     localStorage.removeItem(key)
   }
-  await invoke('clear_app_metadata').catch(() => undefined)
+  await Promise.all([
+    serializeMetadataMutation(() => invoke('clear_anime_app_metadata')).catch(() => undefined),
+    cacheClear,
+  ])
   console.log('[metadata] Anime metadata cache cleared, removed', keysToRemove.length, 'season cache entries')
 }
 
-export async function resolveMetadataBatch(inputs: AddonMediaInput[], concurrency = 4): Promise<AppMediaItem[]> {
-  const results: AppMediaItem[] = []
+export async function resolveMetadataBatch(inputs: AddonMediaInput[], concurrency = 4): Promise<Array<AppMediaItem | null>> {
+  const results: Array<AppMediaItem | null> = new Array(inputs.length).fill(null)
   let cursor = 0
   await Promise.all(Array.from({ length: Math.min(concurrency, inputs.length) }, async () => {
     while (cursor < inputs.length) {
@@ -313,5 +466,5 @@ export async function resolveMetadataBatch(inputs: AddonMediaInput[], concurrenc
       if (item) results[index] = item
     }
   }))
-  return results.filter(Boolean)
+  return results
 }

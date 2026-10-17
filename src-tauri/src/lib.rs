@@ -1,14 +1,214 @@
 mod commands;
+mod core;
 mod db;
+mod image_cache;
+mod libmpv_player;
+mod native_secrets {
+    include!(concat!(env!("OUT_DIR"), "/native_secrets.rs"));
+}
+#[cfg(target_os = "linux")]
+mod linux_render_surface;
+mod seekr;
+mod thumbnails;
+mod ytproxy;
 
 use db::Database;
 use tauri::Manager;
 
+#[cfg(target_os = "linux")]
+enum RenderNodeChoice {
+    Preferred {
+        path: String,
+        force_shm_transport: bool,
+    },
+    Automatic,
+    None,
+}
+
+#[cfg(target_os = "linux")]
+fn is_enabled(value: Option<&str>) -> bool {
+    value
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn should_clear_legacy_packaged_renderer_override(
+    flatpak_id: Option<&str>,
+    is_appimage: bool,
+    explicit_software_renderer: bool,
+    webkit_disable_dmabuf: bool,
+    webkit_force_compositing: bool,
+) -> bool {
+    (flatpak_id == Some("com.aurales.app") || is_appimage)
+        && !explicit_software_renderer
+        && webkit_disable_dmabuf
+        && webkit_force_compositing
+}
+
+/// Select the render node belonging to the boot/display GPU. On hybrid systems
+/// this is more reliable than choosing a vendor: a secondary iGPU may expose a
+/// valid render node but still be unable to create an EGL display.
+#[cfg(target_os = "linux")]
+fn classify_render_nodes() -> RenderNodeChoice {
+    const NVIDIA_VENDOR: &str = "0x10de";
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return RenderNodeChoice::None;
+    };
+    let mut nodes: Vec<_> = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+        .collect();
+    nodes.sort_by_key(|entry| entry.file_name());
+    let mut available = Vec::new();
+    for entry in &nodes {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let device = std::path::Path::new("/dev/dri").join(&name);
+        if !device.exists() {
+            continue;
+        }
+        let boot_vga = std::fs::read_to_string(entry.path().join("device/boot_vga"))
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false);
+        let force_shm_transport = std::fs::read_to_string(entry.path().join("device/vendor"))
+            .map(|value| value.trim().eq_ignore_ascii_case(NVIDIA_VENDOR))
+            .unwrap_or(false);
+        if boot_vga {
+            return RenderNodeChoice::Preferred {
+                path: device.to_string_lossy().into_owned(),
+                force_shm_transport,
+            };
+        }
+        available.push((device, force_shm_transport));
+    }
+    match available.as_slice() {
+        [(device, force_shm_transport)] => RenderNodeChoice::Preferred {
+            path: device.to_string_lossy().into_owned(),
+            force_shm_transport: *force_shm_transport,
+        },
+        [] => RenderNodeChoice::None,
+        _ => RenderNodeChoice::Automatic,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        // Earlier Linux troubleshooting used environment overrides for both
+        // of these WebKit variables. Flatpak overrides survive application
+        // updates, while an AppImage can inherit them from its launcher, and
+        // force the software renderer, which cannot correctly composite the
+        // transparent WebView above GtkGLArea: controls leave stale copies and
+        // the video layer appears black while audio continues.  The supported
+        // escape hatch is AURALES_DISABLE_DMABUF_RENDERER; clear only this
+        // obsolete combination in packaged Aurales builds so installs self-heal.
+        let aurales_renderer_setting = std::env::var("AURALES_DISABLE_DMABUF_RENDERER").ok();
+        let explicit_software_renderer = is_enabled(aurales_renderer_setting.as_deref());
+        let flatpak_id = std::env::var("FLATPAK_ID").ok();
+        let webkit_disable_dmabuf = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+        let webkit_force_compositing = std::env::var("WEBKIT_FORCE_COMPOSITING_MODE").ok();
+        if should_clear_legacy_packaged_renderer_override(
+            flatpak_id.as_deref(),
+            std::env::var_os("APPIMAGE").is_some(),
+            explicit_software_renderer,
+            is_enabled(webkit_disable_dmabuf.as_deref()),
+            is_enabled(webkit_force_compositing.as_deref()),
+        ) {
+            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+            std::env::remove_var("WEBKIT_FORCE_COMPOSITING_MODE");
+        }
+
+        // WebKit's GPU (DMA-BUF) renderer is required for correct rendering of
+        // the transparent player window: the software fallback repaints only
+        // damaged regions (closed menus ghost over the video) and drops CSS
+        // filter effects (the blurred hero backdrop renders sharp). On hybrid
+        // systems WebKit must use the GPU that owns the display.
+        // Selecting a secondary render node can abort startup with "Could not
+        // create GBM EGL display"; disabling DMA-BUF avoids that crash but
+        // forces expensive software rendering. Prefer the boot/display GPU and
+        // retain AURALES_DISABLE_DMABUF_RENDERER=1 as an explicit safe fallback.
+        let disable_dmabuf = explicit_software_renderer;
+        let webkit_env_untouched = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+            && std::env::var_os("WEBKIT_WEB_RENDER_DEVICE_FILE").is_none()
+            && std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none();
+        if disable_dmabuf {
+            if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+            // Without the GPU renderer, forced compositing at least prevents
+            // stale-pixel ghosting on the transparent player window.
+            if std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none() {
+                std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+            }
+        } else if webkit_env_untouched {
+            match classify_render_nodes() {
+                RenderNodeChoice::Preferred {
+                    path,
+                    force_shm_transport,
+                } => {
+                    std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", path);
+                    // NVIDIA cannot always allocate WebKit's exportable GBM
+                    // buffers. SHM transport keeps GPU compositing enabled but
+                    // avoids that allocation path.
+                    if force_shm_transport {
+                        std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+                    }
+                }
+                RenderNodeChoice::Automatic => {}
+                RenderNodeChoice::None => {
+                    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+                    std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+                }
+            }
+        }
+
+        // The Linux player renders through GTK's GLArea and libmpv's Render
+        // API, so video/UI composition no longer depends on X11 window
+        // stacking. Native Wayland keeps pointer and keyboard input attached
+        // to the GTK WebView; XWayland can leave a borderless Tauri window
+        // visible but unable to receive interaction under KWin.
+        let native_wayland_requested = std::env::var("AURALES_NATIVE_WAYLAND")
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        let wayland_session = std::env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+        let force_x11 = std::env::var("AURALES_FORCE_X11")
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        if !force_x11 && (native_wayland_requested || wayland_session) {
+            std::env::set_var("GDK_BACKEND", "wayland");
+        } else if std::env::var_os("DISPLAY").is_some() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin({
+            let mut updater = tauri_plugin_updater::Builder::new();
+            let token = option_env!("AURALES_UPDATE_TOKEN").unwrap_or("");
+            if !token.is_empty() {
+                updater = updater
+                    .header("Authorization", format!("token {}", token))
+                    .unwrap();
+                updater = updater
+                    .header("Accept", "application/octet-stream")
+                    .unwrap();
+            }
+            updater.build()
+        })
+        .plugin(tauri_plugin_process::init())
+        .register_asynchronous_uri_scheme_protocol("imgcache", |ctx, request, responder| {
+            image_cache::handle_request(ctx.app_handle().clone(), request, responder);
+        })
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if let Err(error) = libmpv_player::initialize_numeric_locale() {
+                log::error!("[MPV LIB] {error}");
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -17,15 +217,39 @@ pub fn run() {
                 )?;
             }
 
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to get app data dir");
+            let app_dir = app.path().app_data_dir()?;
+            thumbnails::cleanup_thumbnail_cache(&app_dir);
 
-            let database = Database::new(app_dir).expect("failed to initialize database");
+            let database = Database::new(app_dir.clone())?;
             app.manage(database);
+            app.manage(core::detail_page::DetailPageCoordinator::default());
+
+            #[cfg(target_os = "windows")]
+            if let Err(error) = commands::repair_native_player_window_frame(app.handle().clone()) {
+                log::warn!("Could not initialize borderless Windows frame: {error}");
+            }
 
             Ok(())
+        })
+        // React timers can be throttled while a game owns focus. Repair the
+        // Win32 frame from the native event instead of waiting for the WebView.
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Focused(_) | tauri::WindowEvent::Resized(_)
+                )
+            {
+                if let Err(error) =
+                    commands::repair_native_player_window_frame(window.app_handle().clone())
+                {
+                    log::warn!("Could not refresh borderless Windows frame: {error}");
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_setting,
@@ -48,34 +272,63 @@ pub fn run() {
             commands::delete_app_metadata,
             commands::hard_reset_anime_metadata,
             commands::clear_app_metadata,
+            commands::clear_anime_app_metadata,
             commands::launch_mpv,
             commands::launch_embedded_mpv,
             commands::launch_minimal_mpv,
             commands::minimal_mpv_command,
             commands::stop_minimal_mpv,
             commands::get_minimal_player_state,
+            commands::get_embedded_player_supported,
             commands::get_embedded_player_running,
+            commands::get_embedded_player_session_id,
             commands::get_player_debug_logs,
             commands::clear_player_debug_logs,
             commands::select_local_video_file,
             commands::mpv_command,
+            commands::request_player_thumbnail,
+            commands::clear_player_thumbnail,
+            commands::start_thumbnail_generation,
+            commands::get_thumbnail_metadata,
+            commands::get_or_queue_scrub_thumbnail,
+            commands::prefetch_thumbnail_sprite,
+            commands::get_seekr_preview,
+            commands::clear_seekr_preview,
+            commands::get_thumbnail_debug_state,
             commands::mpv_get_property,
+            commands::get_player_snapshot,
             commands::resize_embedded_mpv,
             commands::setup_player_click_through,
+            commands::set_native_player_fullscreen,
             commands::stop_embedded_mpv,
             commands::pmdb_request,
+            commands::torbox_request,
             commands::http_get_text,
+            commands::http_probe_stream,
+            commands::http_request,
+            commands::ytproxy_port,
+            commands::innertube_player,
+            commands::github_release_notes,
+            commands::install_kind,
+            commands::install_flatpak_update,
+            commands::ytdlp_resolve,
             commands::openrouter_chat,
             commands::download_subtitle,
             commands::write_temp_subtitle,
             commands::read_temp_subtitle,
             commands::update_temp_subtitle,
+            commands::extract_embedded_subtitle,
             commands::request_simkl_pin,
             commands::check_simkl_pin,
+            commands::fetch_simkl_user,
             commands::start_simkl_callback_server,
+            commands::cancel_simkl_callback_server,
             commands::exchange_simkl_token,
+            commands::exchange_simkl_v2_token,
+            commands::refresh_simkl_v2_token,
             commands::open_simkl_auth,
             commands::start_anilist_callback_server,
+            commands::cancel_anilist_callback_server,
             commands::exchange_anilist_token,
             commands::discord_set_activity,
             commands::discord_clear_activity,
@@ -84,10 +337,92 @@ pub fn run() {
             commands::cache_entry_set,
             commands::cache_entry_get,
             commands::cache_entry_get_many,
+            commands::cache_entry_delete,
+            commands::cache_entry_delete_many,
             commands::cache_entry_clear_category,
             commands::cache_entry_clear_expired,
             commands::cache_entry_stats,
+            commands::normalize_provider_metadata,
+            commands::validate_anime_tvdb_structure,
+            commands::select_anime_title,
+            commands::resolve_anime_season_title,
+            commands::resolve_anime_episode_mapping,
+            commands::lookup_anime_mappings,
+            commands::resolve_anime_ids,
+            commands::load_detail_page,
+            commands::load_anime_season,
+            commands::load_addon_catalog,
+            commands::load_addon_meta,
+            commands::load_stream_candidates,
+            commands::rank_stream_candidates,
+            commands::sync_password_store,
+            commands::sync_password_load,
+            commands::sync_password_delete,
+            commands::sync_batch,
+            commands::list_server_connections,
+            commands::save_server_connection,
+            commands::remove_server_connection,
+            commands::set_server_connection_enabled,
+            commands::test_server_connection,
+            commands::refresh_server_catalog,
+            commands::list_server_catalogs,
+            commands::get_server_catalog_items,
+            commands::search_server_catalogs,
+            commands::get_server_streams,
+            image_cache::image_cache_configure,
+            image_cache::image_cache_stats,
+            image_cache::image_cache_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_renderer_tests {
+    use super::{is_enabled, should_clear_legacy_packaged_renderer_override};
+
+    #[test]
+    fn recognizes_explicit_renderer_fallback_values() {
+        for value in ["1", "true", "TRUE", "yes", "YeS"] {
+            assert!(is_enabled(Some(value)));
+        }
+        assert!(!is_enabled(None));
+        assert!(!is_enabled(Some("0")));
+        assert!(!is_enabled(Some("false")));
+    }
+
+    #[test]
+    fn clears_only_the_obsolete_packaged_renderer_pair() {
+        assert!(should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            false,
+            true,
+            true,
+        ));
+        assert!(should_clear_legacy_packaged_renderer_override(
+            None, true, false, true, true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            true,
+            true,
+            true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.example.other"),
+            false,
+            false,
+            true,
+            true,
+        ));
+        assert!(!should_clear_legacy_packaged_renderer_override(
+            Some("com.aurales.app"),
+            false,
+            false,
+            true,
+            false,
+        ));
+    }
 }

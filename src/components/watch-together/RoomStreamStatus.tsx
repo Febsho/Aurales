@@ -10,9 +10,9 @@ export default function RoomStreamStatus() {
 
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold text-white/40 uppercase tracking-wider">Stream Status</h3>
+      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Stream Status</h3>
 
-      <div className="rounded-xl bg-white/[0.02] border border-white/[0.06] overflow-hidden">
+      <div className="watch-together-surface watch-together-surface--subtle rounded-xl border overflow-hidden">
         {participants.map((p, i) => {
           let statusText: string
           let statusColor: string
@@ -37,7 +37,7 @@ export default function RoomStreamStatus() {
             )
           } else {
             statusText = 'No stream'
-            statusColor = 'text-white/30'
+            statusColor = 'text-white/50'
             statusIcon = (
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" />
@@ -51,12 +51,12 @@ export default function RoomStreamStatus() {
               key={p.id}
               className={[
                 'flex items-center justify-between px-3 py-2',
-                i < participants.length - 1 ? 'border-b border-white/[0.04]' : '',
+                i < participants.length - 1 ? 'watch-together-divider border-b' : '',
               ].join(' ')}
             >
               <div className="flex items-center gap-2 min-w-0">
-                <div className="w-5 h-5 rounded-md bg-white/[0.08] flex items-center justify-center flex-shrink-0 text-[10px] font-bold text-white/50">
-                  {p.name.charAt(0).toUpperCase()}
+                <div className="watch-together-avatar w-5 h-5 rounded-md overflow-hidden flex items-center justify-center flex-shrink-0 text-meta font-bold text-white/50">
+                  {p.avatar ? <img src={p.avatar} alt="" className="w-full h-full object-cover" /> : p.name.charAt(0).toUpperCase()}
                 </div>
                 <span className="text-xs text-white/60 truncate">
                   {p.name}
@@ -65,7 +65,7 @@ export default function RoomStreamStatus() {
               </div>
               <div className={`flex items-center gap-1.5 ${statusColor}`}>
                 {statusIcon}
-                <span className="text-[11px] font-medium">{statusText}</span>
+                <span className="text-label font-medium">{statusText}</span>
               </div>
             </div>
           )

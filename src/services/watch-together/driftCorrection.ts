@@ -6,8 +6,11 @@ export function shouldCorrectDrift(
   threshold: number,
   cooldownMs: number,
 ): { shouldSeek: boolean; targetTime: number } {
+  const elapsedMs = Number.isFinite(roomPlayback.lastUpdatedAt)
+    ? Math.max(0, Date.now() - roomPlayback.lastUpdatedAt)
+    : 0
   const estimatedRoomTime = roomPlayback.isPlaying
-    ? roomPlayback.currentTime + (Date.now() - roomPlayback.lastUpdatedAt) / 1000
+    ? roomPlayback.currentTime + elapsedMs / 1000
     : roomPlayback.currentTime
 
   const drift = Math.abs(localTime - estimatedRoomTime)

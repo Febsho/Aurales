@@ -12,6 +12,7 @@ export interface AnimeMappingInput {
   seasonNumber?: number
   episodeNumber?: number
   absoluteEpisodeNumber?: number
+  contentType?: 'movie' | 'series'
 }
 
 export interface TvdbEpisodeMappingInput {
@@ -77,12 +78,13 @@ export interface ProviderEpisodeMapping {
   }
 
   confidence: number
-  source: 'animeApi' | 'animeLists' | 'override'
+  source: 'anibridge' | 'animeApi' | 'animeLists' | 'override'
   updatedAt: string
 }
 
 export interface AnimeMappingResult {
   localMediaId: string
+  contentType?: 'movie' | 'series'
   tvdbId?: number
   tmdbId?: number
   anilistId?: number
@@ -95,7 +97,7 @@ export interface AnimeMappingResult {
 
   seasons: AnimeSeasonMapping[]
   confidence: number
-  source: 'animeApi' | 'animeLists' | 'override'
+  source: 'anibridge' | 'animeApi' | 'animeLists' | 'override'
   raw?: unknown
   updatedAt: string
 }
@@ -124,6 +126,7 @@ export interface AnimeMappingCacheKey {
   anilistId?: number
   malId?: number
   localMediaId?: string
+  contentType?: 'movie' | 'series'
 }
 
 export interface AnimeMappingOverride {

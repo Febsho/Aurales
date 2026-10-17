@@ -1,65 +1,157 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
+import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { useAppStore } from '../stores/appStore'
-import CreateRoomButton from './watch-together/CreateRoomButton'
-import JoinRoomModal from './watch-together/JoinRoomModal'
+import { getAppVersion } from '../services/updater'
+import { prefetchRoute } from '../services/routePrefetch'
+import { getActiveProfile, getProfiles, PROFILE_CHANGED_EVENT, setActiveProfile } from '../services/profiles'
+import ProfileAvatar from './profiles/ProfileAvatar'
+import { UsersRound } from 'lucide-react'
 
 const navItems = [
   { path: '/', label: 'Home', icon: HomeIcon, exact: true },
   { path: '/search', label: 'Search', icon: SearchIcon },
   { path: '/discover', label: 'Discover', icon: CompassIcon },
+  { path: '/watch-together', label: 'Watch Together', icon: TogetherIcon },
   { path: '/collections', label: 'Library', icon: LibraryIcon },
   { path: '/settings', label: 'Settings', icon: SettingsIcon },
-  { path: '/developer', label: 'Developer', icon: ToolIcon },
+  ...(import.meta.env.DEV ? [{ path: '/developer', label: 'Developer', icon: ToolIcon }] : []),
 ]
 
 export default function Sidebar() {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
-  const [joinModalOpen, setJoinModalOpen] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [switchingProfileId, setSwitchingProfileId] = useState<string | null>(null)
+  const [profileMenuPosition, setProfileMenuPosition] = useState({ left: 0, bottom: 0 })
+  const [, setProfileVersion] = useState(0)
   const location = useLocation()
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileTriggerRef = useRef<HTMLButtonElement>(null)
+  const profileMenuRef = useRef<HTMLDivElement>(null)
 
-  // Pinned = always visible, shifts content. Auto-hide = slides in on hover.
+  const handleMouseEnter = useCallback(() => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    setHovered(true)
+  }, [])
+
+  const handleMouseLeave = useCallback(() => {
+    if (profileMenuOpen) return
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = setTimeout(() => setHovered(false), 400)
+  }, [profileMenuOpen])
+
+  useEffect(() => {
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
+  }, [])
+  useEffect(() => { const refresh = () => setProfileVersion((value) => value + 1); window.addEventListener(PROFILE_CHANGED_EVENT, refresh); return () => window.removeEventListener(PROFILE_CHANGED_EVENT, refresh) }, [])
+
+  const updateProfileMenuPosition = useCallback(() => {
+    const rect = profileTriggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const menuWidth = 272
+    setProfileMenuPosition({
+      left: Math.min(rect.right + 12, window.innerWidth - menuWidth - 12),
+      bottom: Math.max(12, window.innerHeight - rect.bottom),
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!profileMenuOpen) return
+    setHovered(true)
+    updateProfileMenuPosition()
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (profileTriggerRef.current?.contains(target) || profileMenuRef.current?.contains(target)) return
+      setProfileMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setProfileMenuOpen(false)
+      profileTriggerRef.current?.focus()
+    }
+    window.addEventListener('resize', updateProfileMenuPosition)
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('resize', updateProfileMenuPosition)
+      document.removeEventListener('pointerdown', closeOnOutsidePress)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [profileMenuOpen, updateProfileMenuPosition])
+
+  const switchProfile = useCallback(async (profileId: string) => {
+    setSwitchingProfileId(profileId)
+    const switched = await setActiveProfile(profileId)
+    if (!switched) setSwitchingProfileId(null)
+  }, [])
+  const activeProfile = getActiveProfile()
+
+  // Pinned = always visible, shifts content. Auto-hide keeps an active-page
+  // pill on screen, then opens a floating menu over the page.
   const pinned = !autoHide
   const visible = pinned || hovered
+  const activeNavItem = navItems.find((item) => item.exact
+    ? location.pathname === item.path
+    : location.pathname.startsWith(item.path)) || navItems[0]
+  const ActiveNavIcon = activeNavItem.icon
+  const collapsedWidth = Math.min(14.5, Math.max(7.6, 5.2 + activeNavItem.label.length * 0.62))
 
   return (
     <>
-      {/* Invisible hit zone on left edge — only needed in auto-hide mode */}
-      {autoHide && (
-        <div
-          className="absolute top-0 left-0 bottom-0 w-3 z-30"
-          onMouseEnter={() => setHovered(true)}
-        />
-      )}
       <aside
-        onMouseEnter={() => !pinned && setHovered(true)}
-        onMouseLeave={() => !pinned && setHovered(false)}
+        onMouseEnter={() => !pinned && handleMouseEnter()}
+        onMouseLeave={() => !pinned && handleMouseLeave()}
         className={[
-          'flex flex-col z-30',
-          'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          'app-sidebar app-sidebar--glass flex flex-col',
           pinned
-            ? 'relative w-52 flex-shrink-0 bg-white/[0.05] border-r border-white/[0.06]'
+            ? 'relative z-30 w-52 flex-shrink-0 border-r border-white/[0.18] shadow-[8px_0_40px_rgba(0,0,0,0.32)]'
             : [
-                'absolute top-3 bottom-3 rounded-2xl overflow-hidden',
+                // Apple TV-style navigation: a compact active-page pill at the
+                // top left opens into an overlay menu without shifting content.
+                'app-sidebar--floating absolute top-5 left-5 z-40 overflow-hidden border border-white/[0.36]',
                 visible
-                  ? 'left-3 w-52 bg-white/[0.08] backdrop-blur-2xl saturate-150 border border-white/[0.1] shadow-[0_8px_40px_rgba(0,0,0,0.5)] opacity-100'
-                  : '-left-56 w-52 opacity-0 pointer-events-none',
+                  ? 'app-sidebar--liquid app-sidebar--expanded shadow-[0_18px_52px_rgba(0,0,0,0.30)]'
+                  : 'app-sidebar--liquid app-sidebar--collapsed shadow-[0_12px_34px_rgba(0,0,0,0.24)]',
               ].join(' '),
         ].join(' ')}
+        data-expanded={visible || undefined}
+        data-pinned={pinned || undefined}
+        style={!pinned ? { '--sidebar-collapsed-width': `${collapsedWidth}rem` } as CSSProperties : undefined}
       >
       {/* Logo + pin toggle */}
-      <div className="flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-accent/20 flex items-center justify-center flex-shrink-0">
-            <span className="text-accent font-black text-sm">A</span>
-          </div>
-          <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
+      {!pinned && (
+        <button
+          type="button"
+          onClick={handleMouseEnter}
+          onFocus={handleMouseEnter}
+          className="app-sidebar__collapsed-trigger flex h-11 items-center gap-2.5 whitespace-nowrap px-3.5 text-sm font-bold tracking-wide text-white/95 hover:bg-white/[0.14] hover:text-white focus:outline-none"
+          aria-label={`Open navigation; current page ${activeNavItem.label}`}
+          aria-expanded={visible}
+          tabIndex={visible ? -1 : 0}
+        >
+          <svg className="h-4 w-4 text-white/65" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+            <path d="m10 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <ActiveNavIcon className="h-[18px] w-[18px]" filled />
+          <span>{activeNavItem.label}</span>
+        </button>
+      )}
+      {pinned && <div className="app-sidebar__header flex items-center justify-between h-14 border-b border-white/[0.06] px-4">
+        <div className={`app-sidebar__brand flex items-center ${!pinned && !visible ? 'gap-0' : 'gap-2.5'}`}>
+          <img
+            src="/app-logo.png?v=3"
+            alt=""
+            className="w-8 h-8 object-contain flex-shrink-0"
+            draggable={false}
+          />
+          <span className="app-sidebar__label text-sm font-bold tracking-tight text-white whitespace-nowrap">Aurales</span>
         </div>
         <button
           onClick={toggle}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-white/60 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
           title={pinned ? 'Auto-hide sidebar' : 'Pin sidebar'}
         >
           {pinned ? (
@@ -72,11 +164,11 @@ export default function Sidebar() {
             </svg>
           )}
         </button>
-      </div>
+      </div>}
 
       {/* Nav items */}
-      <nav className="flex-1 flex flex-col gap-0.5 p-2 mt-1">
-        {navItems.map((item) => {
+      <nav aria-hidden={!visible} className={`app-sidebar__nav flex-1 flex flex-col gap-0.5 p-2 ${pinned ? 'mt-1' : 'my-2'}`}>
+        {navItems.map((item, index) => {
           const isActive = item.exact
             ? location.pathname === item.path
             : location.pathname.startsWith(item.path)
@@ -85,21 +177,26 @@ export default function Sidebar() {
             <NavLink
               key={item.path}
               to={item.path}
+              onMouseEnter={() => prefetchRoute(item.path)}
+              onFocus={() => { prefetchRoute(item.path); if (!pinned) setHovered(true) }}
+              onClick={() => { if (!pinned) setHovered(false) }}
+              tabIndex={visible ? 0 : -1}
+              style={{ '--sidebar-item-index': index } as CSSProperties}
               className={[
                 'flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5',
                 isActive
-                  ? 'bg-white/[0.12] text-white'
-                  : 'text-white/50 hover:text-white hover:bg-white/[0.06]',
+                  ? pinned ? 'bg-white/[0.12] text-white' : 'bg-white/[0.24] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.30),0_5px_16px_rgba(0,0,0,0.16)]'
+                  : 'text-white/75 hover:text-white hover:bg-white/[0.12]',
               ].join(' ')}
             >
               <item.icon
                 className={[
                   'w-[18px] h-[18px] flex-shrink-0 transition-colors duration-200',
-                  isActive ? 'text-white' : 'text-white/50 group-hover:text-white',
+                  isActive ? 'text-white' : 'text-white/65 group-hover:text-white',
                 ].join(' ')}
                 filled={isActive}
               />
-              <span className={`text-[13px] tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
+              <span className={`app-sidebar__label text-sm tracking-wide whitespace-nowrap ${isActive ? 'font-semibold' : 'font-medium'}`}>
                 {item.label}
               </span>
             </NavLink>
@@ -107,34 +204,45 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Watch Together */}
-      <div className="px-2 pb-1 flex flex-col gap-0.5">
-        <CreateRoomButton />
-        <button
-          onClick={() => setJoinModalOpen(true)}
-          className="flex items-center gap-3 rounded-xl transition-all duration-200 group cursor-pointer px-3 py-2.5 w-full text-white/50 hover:text-white hover:bg-white/[0.06]"
-        >
-          <svg
-            className="w-[18px] h-[18px] flex-shrink-0 text-white/50 group-hover:text-white transition-colors duration-200"
-            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round"
-          >
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-            <polyline points="10 17 15 12 10 7" />
-            <line x1="15" y1="12" x2="3" y2="12" />
-          </svg>
-          <span className="text-[13px] font-medium tracking-wide whitespace-nowrap">Join Room</span>
-        </button>
-      </div>
-
       {/* Footer */}
-      <div className="p-3 border-t border-white/[0.04]">
-        <div className="text-[10px] text-white/20 text-center font-medium tracking-wide">Aurales v0.1.0</div>
+      <div aria-hidden={!visible} className={`app-sidebar__footer p-3 border-t border-white/[0.10] ${!pinned ? 'bg-black/[0.08]' : 'border-white/[0.04]'}`}>
+        <div className="sidebar-profile-switcher mb-3" data-open={profileMenuOpen || undefined}>
+          <button ref={profileTriggerRef} onClick={() => setProfileMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-label={`Switch profile (currently ${activeProfile.name})`} tabIndex={visible ? 0 : -1} className="sidebar-profile-trigger">
+            <ProfileAvatar {...activeProfile} size="sm" className="!h-9 !w-9 !rounded-xl" />
+            <span className="sidebar-profile-trigger__copy"><span>{activeProfile.name}</span><small>Switch profile</small></span>
+            <svg className="sidebar-profile-chevron h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="m7 10 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          {profileMenuOpen && createPortal(
+            <div ref={profileMenuRef} role="menu" aria-label="Profiles" className="sidebar-profile-menu" style={{ left: profileMenuPosition.left, bottom: profileMenuPosition.bottom }}>
+              <div className="sidebar-profile-menu__label">Profiles</div>
+              {getProfiles().map((profile) => {
+                const current = profile.id === activeProfile.id
+                const switching = profile.id === switchingProfileId
+                return <button role="menuitem" key={profile.id} disabled={switchingProfileId !== null} onClick={() => { if (current) { setProfileMenuOpen(false); return }; void switchProfile(profile.id) }} className="sidebar-profile-menu-item">
+                  <ProfileAvatar {...profile} size="sm" className="!h-9 !w-9 !rounded-xl" />
+                  <span className="sidebar-profile-menu-item__copy"><span>{profile.name}</span><small>{switching ? 'Switching…' : current ? 'Current profile' : 'Switch profile'}</small></span>
+                  {current ? <span className="sidebar-profile-menu-item__check">✓</span> : <span className="sidebar-profile-menu-item__chevron">›</span>}
+                </button>
+              })}
+              <NavLink role="menuitem" to="/settings?tab=profiles" onClick={() => setProfileMenuOpen(false)} className="sidebar-profile-manage">
+                <span className="sidebar-profile-manage__icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg></span>
+                <span className="sidebar-profile-menu-item__copy"><span>Manage Profiles</span><small>Add, edit, or remove profiles</small></span>
+                <span className="sidebar-profile-menu-item__chevron">›</span>
+              </NavLink>
+            </div>,
+            document.body,
+          )}
+        </div>
+        <div className="text-meta text-white/20 text-center font-medium tracking-wide">Aurales v{getAppVersion()}</div>
       </div>
 
-      <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
     </aside>
     </>
   )
+}
+
+function TogetherIcon({ className, filled }: { className?: string; filled?: boolean }) {
+  return <UsersRound className={className} strokeWidth={filled ? 2.4 : 2} aria-hidden="true" />
 }
 
 function HomeIcon({ className, filled }: { className?: string; filled?: boolean }) {

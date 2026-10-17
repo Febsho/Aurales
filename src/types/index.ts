@@ -10,19 +10,35 @@ export interface SearchResult {
   overview?: string
   rating?: number
   provider: string
+  /** Original catalog namespace retained after adding an item to the local watchlist. */
+  watchlistIdentityProvider?: string
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
+  traktId?: number
+  simklId?: number
   season?: number
   episode?: number
   addonUrl?: string
   sourceAddonId?: string
   sourceAddonItemId?: string
+  /** Native media-server identity retained after canonical metadata matching. */
+  sourceConnectionId?: string
+  sourceItemId?: string
+  /** Full addon metadata when a catalog already supplied episode structure. */
+  addonMeta?: Record<string, unknown>
   metadataFallback?: boolean
   genreIds?: number[]
   genres?: string[]
+  voteCount?: number
+  popularity?: number
+  runtime?: number
+  releaseDate?: string
+  originalLanguage?: string
+  originCountry?: string[]
 }
 
 export interface MovieDetails {
@@ -41,6 +57,7 @@ export interface MovieDetails {
   backdrop?: string
   logo?: string
   certification?: string
+  originalLanguage?: string
   cast: CastMember[]
   crew: CrewMember[]
   recommendations: SearchResult[]
@@ -50,6 +67,7 @@ export interface MovieDetails {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   provider?: string
 }
 
@@ -69,8 +87,10 @@ export interface ShowDetails {
   logo?: string
   certification?: string
   status?: string
+  seriesType?: string
   numberOfSeasons?: number
   numberOfEpisodes?: number
+  originalLanguage?: string
   seasons: SeasonSummary[]
   cast: CastMember[]
   crew: CrewMember[]
@@ -81,6 +101,7 @@ export interface ShowDetails {
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
+  isAnime?: boolean
   provider?: string
 }
 
@@ -128,6 +149,8 @@ export interface EpisodeDetails {
 
 export interface CastMember {
   id: string
+  /** Provider that owns this person's ID. Only TMDB IDs can open the TMDB person page. */
+  personProvider?: 'tmdb' | 'tvdb' | 'addon'
   name: string
   character: string
   profilePath?: string
@@ -135,6 +158,8 @@ export interface CastMember {
 
 export interface CrewMember {
   id: string
+  /** Provider that owns this person's ID. Only TMDB IDs can open the TMDB person page. */
+  personProvider?: 'tmdb' | 'tvdb' | 'addon'
   name: string
   job: string
   department: string
@@ -153,7 +178,7 @@ export interface Video {
 export interface MetadataProvider {
   id: string
   name: string
-  search(query: string): Promise<SearchResult[]>
+  search(query: string, type?: 'movie' | 'series', context?: { cancelGroup?: string }): Promise<SearchResult[]>
   recommendationsForText?: (query: string, type: 'movie' | 'series') => Promise<SearchResult[]>
   getMovie(id: string): Promise<MovieDetails>
   getShow(id: string): Promise<ShowDetails>
@@ -165,6 +190,10 @@ export interface StremioAddonResource {
   name: string
   types?: string[]
   idPrefixes?: string[]
+  behaviorHints?: {
+    configurable?: boolean
+    configurationRequired?: boolean
+  }
 }
 
 export interface StremioAddonManifest {
@@ -205,6 +234,20 @@ export interface StreamResult {
   infoHash?: string
   fileIdx?: number
   behaviorHints?: Record<string, unknown>
+  /** Native media-server source details. Addons may omit these fields. */
+  directPlay?: boolean
+  directStream?: boolean
+  transcode?: boolean
+  container?: string
+  videoCodec?: string
+  audioCodec?: string
+  resolution?: string
+  bitrate?: number
+  hdr?: string
+  mediaSourceId?: string
+  audioTracks?: Record<string, unknown>[]
+  subtitleTracks?: Record<string, unknown>[]
+  chapters?: Record<string, unknown>[]
 }
 
 export interface SubtitleResult {
@@ -233,6 +276,7 @@ export interface DiscoverConfig {
   releaseRegion?: string
   certificationCountry?: string
   certification?: string
+  certificationLte?: string
   filterMode?: 'Exact' | 'Loose'
   
   // People, Companies, and Keywords
@@ -258,6 +302,8 @@ export interface DiscoverConfig {
   runtimeMax?: number
   releaseDateFrom?: string
   releaseDateTo?: string
+  /** Optional catalog cap. Omit for no result limit. */
+  maxResults?: number
   presetName?: string
 }
 
@@ -269,14 +315,15 @@ export interface HomeRowConfig {
   catalogType?: string
   catalogId?: string
   catalogExtra?: Record<string, string>
-  layout: 'poster' | 'landscape' | 'list' | 'continue' | 'hero'
+  layout: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list' | 'continue' | 'upcoming' | 'hero'
   enabled: boolean
   order: number
   /** Determines which data source drives this row */
-  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'anilist'
-  /** Provider-specific list key, for example Simkl/Trakt/PMDB/AniList status or list id */
+  sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'anilist' | 'jellyfin' | 'webdav'
+  /** Provider-specific list key, for example Simkl/Trakt/PMDB/MDBList/AniList status or list id */
   providerListId?: string
   sortBy?: 'default' | 'alphabetical'
+  showRank?: boolean
   discoverConfig?: DiscoverConfig
 }
 
