@@ -1632,6 +1632,16 @@ fn launch_mpv_with_window(
             std::process::id(),
             MPV_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst)
         );
+        #[cfg(target_os = "linux")]
+        let hwdec = match hwdec_mode.as_deref() {
+            Some("no") => "no",
+            // The embedded Linux OpenGL renderer shares frames with WebKit.
+            // Direct VA-API/NVDEC interop is driver-sensitive and can produce
+            // corrupted colors or dropped frames. Copy decoded frames back to
+            // system memory while retaining hardware decode where available.
+            _ => "auto-copy",
+        };
+        #[cfg(not(target_os = "linux"))]
         let hwdec = match hwdec_mode.as_deref() {
             Some("no") => "no",
             Some("d3d11va") => "d3d11va",
@@ -1733,7 +1743,10 @@ fn launch_mpv_with_window(
                 set_option("gpu-api", "d3d11".to_string())?;
                 set_option("d3d11-flip", "no".to_string())?;
             }
-            set_option("vd-lavc-dr", "yes".to_string())?;
+            // Let mpv choose direct rendering for the active VO and decoder.
+            // For Linux auto-copy this avoids forcing a GPU-memory path that
+            // bypasses the copies which keep libmpv/WebKit interop reliable.
+            set_option("vd-lavc-dr", "auto".to_string())?;
             set_option("terminal", "no".to_string())?;
             set_option(
                 "log-file",
