@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import { scheduleTask, startupTaskQueue, taskQueue, type TaskPriority } from './backgroundTaskQueue'
 import { requestCoordinator } from '../network/requestCoordinator'
+import { getPlatformCapabilities } from '../../platform/capabilities'
+import { webCacheClearCategory, webCacheClearExpired, webCacheDelete, webCacheDeleteMany, webCacheGet, webCacheGetMany, webCacheSet, webCacheStats, type WebCacheEntry } from '../../platform/web/cache'
 
 // [PERF] logs are dev-only — they add noise and cost in production builds
 const perfLog: (...args: unknown[]) => void = import.meta.env.DEV ? console.log : () => {}
@@ -51,7 +53,9 @@ function readCacheEntry(key: string): Promise<RawCacheEntry | null> {
   if (existing) return existing
   if (pendingCacheReads.size >= MAX_PENDING_CACHE_READS) return Promise.resolve(null)
 
-  const request = invoke<RawCacheEntry | null>('cache_entry_get', { key }).finally(() => {
+  const request = (getPlatformCapabilities().platform === 'web'
+    ? webCacheGet(key)
+    : invoke<RawCacheEntry | null>('cache_entry_get', { key })).finally(() => {
     if (pendingCacheReads.get(key) === request) pendingCacheReads.delete(key)
   })
   pendingCacheReads.set(key, request)
@@ -60,7 +64,9 @@ function readCacheEntry(key: string): Promise<RawCacheEntry | null> {
 
 function readCacheBatch(keys: string[]): Promise<RawCacheEntry[]> {
   if (pendingCacheBatchReads.size >= MAX_PENDING_CACHE_BATCH_READS) return Promise.resolve([])
-  const request = invoke<RawCacheEntry[]>('cache_entry_get_many', { keys }).finally(() => {
+  const request = (getPlatformCapabilities().platform === 'web'
+    ? webCacheGetMany(keys)
+    : invoke<RawCacheEntry[]>('cache_entry_get_many', { keys })).finally(() => {
     pendingCacheBatchReads.delete(request)
   })
   pendingCacheBatchReads.add(request)
@@ -148,7 +154,10 @@ export async function cacheGet<T>(key: string): Promise<CacheResult<T> | null> {
     try {
       data = JSON.parse(entry.value) as T
     } catch (_) {
-      void invoke('cache_entry_delete', { key: entry.key, expectedValue: entry.value }).catch(() => undefined)
+      const deletion = getPlatformCapabilities().platform === 'web'
+        ? webCacheDelete(entry.key, entry.value)
+        : invoke('cache_entry_delete', { key: entry.key, expectedValue: entry.value })
+      void deletion.catch(() => undefined)
       requestCoordinator.recordCacheMiss()
       return null
     }
@@ -177,12 +186,22 @@ export async function cacheSet(key: string, value: unknown, options: CacheOption
     const clearAtEnqueue = categoryClearPromises.get(options.category)
     if (clearAtEnqueue) await clearAtEnqueue
     if (generation !== categoryGeneration(options.category)) return
-    const write = invoke('cache_entry_set', {
-      key,
-      value: JSON.stringify(value),
-      category: options.category,
-      ttlSeconds: options.ttlSeconds,
-    })
+    const serialized = JSON.stringify(value)
+    const write = getPlatformCapabilities().platform === 'web'
+      ? webCacheSet({
+          key,
+          value: serialized,
+          category: options.category,
+          created_at: new Date(now).toISOString(),
+          expires_at: options.ttlSeconds == null ? null : new Date(now + options.ttlSeconds * 1000).toISOString(),
+          updated_at: new Date(now).toISOString(),
+        } satisfies WebCacheEntry)
+      : invoke('cache_entry_set', {
+          key,
+          value: serialized,
+          category: options.category,
+          ttlSeconds: options.ttlSeconds,
+        })
     const writes = categoryWrites.get(options.category) || new Set<Promise<unknown>>()
     writes.add(write)
     categoryWrites.set(options.category, writes)
@@ -193,6 +212,26 @@ export async function cacheSet(key: string, value: unknown, options: CacheOption
     }
   } catch (error) {
     console.warn('[Cache] set failed:', key, error)
+  }
+}
+
+/** Delete one cache entry from persistent storage and every in-memory index. */
+export async function cacheDelete(key: string): Promise<void> {
+  // Let an already-started read settle before deleting, so it cannot restore
+  // the stale value into the session cache after this operation completes.
+  const pendingRead = pendingCacheReads.get(key)
+  if (pendingRead) await pendingRead.catch(() => null)
+  sessionCache.delete(key)
+  sessionCategories.delete(key)
+  sessionMetadata.delete(key)
+  refreshedThisSession.delete(key)
+  refreshErrors.delete(key)
+  pendingRefreshes.delete(key)
+  pendingCategories.delete(key)
+  if (getPlatformCapabilities().platform === 'web') {
+    await webCacheDelete(key)
+  } else {
+    await invoke('cache_entry_delete', { key })
   }
 }
 
@@ -268,7 +307,10 @@ export async function cacheGetMany<T>(keys: string[]): Promise<Map<string, Cache
       }
     }
     if (corruptEntries.length) {
-      void invoke('cache_entry_delete_many', { entries: corruptEntries }).catch(() => undefined)
+      const deletion = getPlatformCapabilities().platform === 'web'
+        ? webCacheDeleteMany(corruptEntries)
+        : invoke('cache_entry_delete_many', { entries: corruptEntries })
+      void deletion.catch(() => undefined)
     }
     for (let index = 0; index < validEntries; index += 1) requestCoordinator.recordCacheHit()
     for (let index = validEntries; index < missingKeys.length; index += 1) requestCoordinator.recordCacheMiss()
@@ -305,7 +347,9 @@ export async function cacheClearCategory(category: string): Promise<number> {
   }
   const writesAtClear = [...(categoryWrites.get(category) || [])]
   const clear = Promise.allSettled(writesAtClear)
-    .then(() => invoke<number>('cache_entry_clear_category', { category }))
+    .then(() => getPlatformCapabilities().platform === 'web'
+      ? webCacheClearCategory(category)
+      : invoke<number>('cache_entry_clear_category', { category }))
     .catch(() => 0)
   categoryClearPromises.set(category, clear)
   try {
@@ -359,7 +403,9 @@ export async function cacheClearExpired(): Promise<number> {
     refreshErrors.delete(key)
   }
   try {
-    return await invoke<number>('cache_entry_clear_expired')
+    return getPlatformCapabilities().platform === 'web'
+      ? await webCacheClearExpired(now)
+      : await invoke<number>('cache_entry_clear_expired')
   } catch (_) {
     return 0
   }
@@ -367,7 +413,9 @@ export async function cacheClearExpired(): Promise<number> {
 
 export async function cacheStats(): Promise<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> }> {
   try {
-    return await invoke('cache_entry_stats')
+    return getPlatformCapabilities().platform === 'web'
+      ? await webCacheStats()
+      : await invoke('cache_entry_stats')
   } catch (_) {
     return { totalEntries: 0, expiredEntries: 0, byCategory: {} }
   }

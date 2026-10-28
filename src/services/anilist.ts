@@ -6,6 +6,7 @@ import { getTmdbApiKey } from './apiKeys'
 import { mapEpisodeToProviders, isConfidenceSufficient } from './anime-mapping'
 import { readBoundedResponseJson } from './network/boundedResponse'
 import type { TvdbEpisodeMappingInput } from './anime-mapping'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 const API_URL = 'https://graphql.anilist.co'
 const ANILIST_HTTP_TIMEOUT_MS = 15_000
@@ -314,6 +315,9 @@ export async function anilistRequest<T>(query: string, variables?: Record<string
         }
         const message = error instanceof Error ? error.message : String(error)
         if (!/failed to fetch|networkerror|load failed|timed? ?out|timeout|abort/i.test(message)) throw error
+        if (getPlatformCapabilities().platform === 'web') {
+          throw new Error('Could not reach AniList from this browser. Check your connection and try again.')
+        }
         try {
           const raw = await invoke<string>('http_request', { method: 'POST', url: API_URL, headers, body })
           data = JSON.parse(raw)

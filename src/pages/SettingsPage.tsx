@@ -4,6 +4,7 @@ import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext 
 import { useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
+import { getPlatformCapabilities } from '../platform/capabilities'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   getDeviceCode,
@@ -27,10 +28,12 @@ import { checkPMDBConnection } from '../services/pmdb'
 import type { PMDBConnectionStatus } from '../services/pmdb'
 import { cancelMdblistOAuthLogin, checkMdblistConnection, clearMdblistOAuth, exchangeMdblistPKCEToken, getMdblistClientId, getStoredMdblistTokens, hasMdblistOAuth, setMdblistClientId, startMdblistPKCELogin, waitForMdblistCallback, type MdblistUser } from '../services/mdblist'
 import { fetchAniListViewer, getAniListContinueWatching, getAniListToken, setAniListToken, syncAniListWatchedHistory } from '../services/anilist'
+import { buildAniListBrowserAuthUrl } from '../services/anilist/browserAuth'
 import { getSelfhstIconUrl } from '../services/serviceIcons'
 import type { TraktDeviceCode } from '../types'
 // Lazy: debug player only loads when the test player is opened
 const NativeMpvPlayer = lazy(() => import('../components/NativeMpvPlayer'))
+const InAppPlayer = lazy(() => import('../components/InAppPlayer'))
 import { cacheStats, cacheRuntimeStats, cacheClearCategory, cacheClearExpired, cacheClearAll } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { canSelfUpdate, checkForUpdate, downloadAndInstall, getAppVersion, getFlatpakInstallCommand, openFlatpakRelease } from '../services/updater'
@@ -40,6 +43,7 @@ import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsSettings'
 import { cancelTorBoxDeviceAuth, clearTorBoxToken, getTorBoxAuthGeneration, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
 import ProfilesSettings from '../components/settings/ProfilesSettings'
+import MediaWorkerSettings from '../components/settings/MediaWorkerSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
@@ -249,6 +253,20 @@ function PresenceToggle({ checked, onChange }: { checked: boolean; onChange: (ch
 }
 
 function AppUpdateSection() {
+  if (getPlatformCapabilities().platform === 'web') {
+    return (
+      <SettingSection title="App Update" description={`Aurales v${getAppVersion()}`}>
+        <div className="space-y-3 px-6 py-4">
+          <p className="text-sm text-white/65">This browser app updates when its Aurales site is redeployed. Refresh the page while online to load the current version.</p>
+          <a href="https://github.com/Febsho/Aurales/releases" target="_blank" rel="noreferrer" className="inline-block text-xs font-semibold text-accent hover:underline">View Aurales releases ↗</a>
+        </div>
+      </SettingSection>
+    )
+  }
+  return <NativeAppUpdateSection />
+}
+
+function NativeAppUpdateSection() {
   const [checking, setChecking] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
@@ -419,6 +437,7 @@ function AppUpdateSection() {
 }
 
 function CacheManagementSection() {
+  const isWeb = getPlatformCapabilities().platform === 'web'
   const [stats, setStats] = useState<{ totalEntries: number; expiredEntries: number; byCategory: Record<string, number> } | null>(null)
   const [cacheMessage, setCacheMessage] = useState('')
   const [runtimeStats, setRuntimeStats] = useState(cacheRuntimeStats())
@@ -471,7 +490,7 @@ function CacheManagementSection() {
   }
 
   return (
-    <SettingSection title="Performance & Cache" description="SQLite-backed cache for instant page loads.">
+    <SettingSection title="Performance & Cache" description={isWeb ? 'IndexedDB-backed cache for instant page loads.' : 'SQLite-backed cache for instant page loads.'}>
       {cacheMessage && (
         <div className="mx-6 mt-4 px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl">
           <p className="text-xs text-accent font-semibold">{cacheMessage}</p>
@@ -515,6 +534,7 @@ function CacheManagementSection() {
 }
 
 function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () => void }) {
+  const isWeb = getPlatformCapabilities().platform === 'web'
   const store = useAppStore()
   const [cacheInUseMb, setCacheInUseMb] = useState<number | null>(null)
   const [clearing, setClearing] = useState(false)
@@ -584,7 +604,9 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
       {/* Header */}
       <div className="px-6 pt-5 pb-1">
         <h3 className="text-sm font-semibold text-white">Image Cache</h3>
-        <p className="text-sm text-white/60 mt-0.5">Control how posters and backdrops are stored on this device.</p>
+        <p className="text-sm text-white/60 mt-0.5">{isWeb
+          ? 'Aurales controls artwork quality here. Your browser manages artwork caching and storage.'
+          : 'Control how posters and backdrops are stored on this device.'}</p>
       </div>
 
       <div className="divide-y divide-white/[0.04]">
@@ -607,8 +629,8 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
           <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">{currentQuality.desc}</p>
         </div>
 
-        {/* Disk Cache Size */}
-        <div>
+        {/* Disk cache controls are native-only; browsers own HTTP cache limits. */}
+        {!isWeb && <div>
           <div className="flex items-center justify-between gap-4 px-6 py-4">
             <p className="text-sm text-white font-medium">Disk Cache Size</p>
             <div className="relative">
@@ -624,10 +646,9 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
             </div>
           </div>
           <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How much disk space cached posters and backdrops may use. Older images are removed automatically when the limit is reached.</p>
-        </div>
+        </div>}
 
-        {/* Keep Images For */}
-        <div>
+        {!isWeb && <div>
           <div className="flex items-center justify-between gap-4 px-6 py-4">
             <p className="text-sm text-white font-medium">Keep Images For</p>
             <div className="relative">
@@ -643,10 +664,10 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
             </div>
           </div>
           <p className="px-6 pb-4 text-xs text-white/60 leading-relaxed -mt-1">How long images stay cached before they are re-downloaded. Longer keeps the app fast on slow connections; shorter picks up artwork changes sooner.</p>
-        </div>
+        </div>}
 
         {/* Cache in Use + Clear */}
-        <div className="px-6 py-4 space-y-3">
+        {!isWeb ? <div className="px-6 py-4 space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-sm text-white font-medium">Cache in Use</p>
             <span className="text-sm text-white/50 font-semibold tabular-nums">
@@ -666,7 +687,7 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
               {clearError ? 'The image cache could not be cleared. Try again.' : 'Images re-download as needed after clearing.'}
             </p>
           </div>
-        </div>
+        </div> : <p className="px-6 py-4 text-xs leading-relaxed text-white/60">Artwork uses the browser's HTTP cache. Its size and retention are controlled by the browser and cannot be measured or cleared by Aurales.</p>}
       </div>
     </div>
   )
@@ -843,7 +864,8 @@ export default function SettingsPage() {
   const handleSave = () => {
     setPrefs(localPrefs)
   }
-  const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string } | null>(null)
+  const [playerDebugTest, setPlayerDebugTest] = useState<{ url: string; title: string; objectUrl?: boolean } | null>(null)
+  const localVideoInputRef = useRef<HTMLInputElement>(null)
   const [addonUrl, setAddonUrl] = useState('')
   const [addonLoading, setAddonLoading] = useState(false)
   const [addonError, setAddonError] = useState('')
@@ -852,6 +874,14 @@ export default function SettingsPage() {
   const [traktError, setTraktError] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (playerDebugTest?.objectUrl) URL.revokeObjectURL(playerDebugTest.url)
+  }, [playerDebugTest])
+
+  const closePlayerDebugTest = () => {
+    setPlayerDebugTest(null)
+  }
 
 
   const simklStatus = getSimklConnectionStatus()
@@ -889,9 +919,10 @@ export default function SettingsPage() {
   const [mdblistConnChecking, setMdblistConnChecking] = useState(false)
   const mdblistAuthRunRef = useRef(0)
   const mdblistApiKeyAtFocusRef = useRef(store.mdblistApiKey)
-  const [mdblistClientIdInput] = useState(getMdblistClientId)
+  const [mdblistClientIdInput, setMdblistClientIdInput] = useState(getMdblistClientId)
   const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
+  const [anilistClientIdInput, setAnilistClientIdInput] = useState(() => localStorage.getItem('anilist_web_client_id') || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || '')
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
   const anilistAuthRunRef = useRef(0)
@@ -921,6 +952,10 @@ export default function SettingsPage() {
       setMdblistClientId(mdblistClientIdInput)
       const { authUrl, session } = await startMdblistPKCELogin()
       if (authRun !== mdblistAuthRunRef.current) return
+      if (getPlatformCapabilities().platform === 'web') {
+        window.location.assign(authUrl)
+        return
+      }
       setMdblistOAuthPolling(true)
 
       const callbackPromise = waitForMdblistCallback()
@@ -955,7 +990,12 @@ export default function SettingsPage() {
     setMdblistConnStatus(null)
   }
 
-  const getAnilistClientId = () => localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
+  const getAnilistClientId = () => {
+    if (getPlatformCapabilities().platform === 'web') {
+      return localStorage.getItem('anilist_web_client_id') || anilistClientIdInput.trim() || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || ''
+    }
+    return localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
+  }
 
   const cancelAniListCallback = () => {
     const cancellation = invoke<void>('cancel_anilist_callback_server', { provider: 'anilist' })
@@ -974,7 +1014,16 @@ export default function SettingsPage() {
       if (authRun !== anilistAuthRunRef.current) return
       const clientId = getAnilistClientId()
       if (!clientId) {
-        throw new Error('AniList client ID not configured.')
+        throw new Error('Set a browser AniList client ID first. Its AniList redirect URL must be https://anilist.co/api/v2/oauth/pin.')
+      }
+
+      if (getPlatformCapabilities().platform === 'web') {
+        const authUrl = buildAniListBrowserAuthUrl(clientId)
+        const popup = window.open(authUrl, '_blank')
+        if (!popup) throw new Error('The browser blocked AniList authorization. Allow popups for Aurales and try again.')
+        popup.opener = null
+        setAnilistMessage('AniList opened in a new tab. Copy the access token shown there, paste it below, and choose Save token.')
+        return
       }
 
       setAnilistMessage('Waiting for browser authorization callback...')
@@ -1646,6 +1695,9 @@ export default function SettingsPage() {
     setSimklLoading(true)
     try {
       await initiateSimklLogin()
+      // Browser OAuth leaves this page through a same-origin callback route;
+      // desktop OAuth remains in place and waits on the native loopback server.
+      if (getPlatformCapabilities().platform === 'web') return
       if (authRun !== simklAuthRunRef.current) return
       setSimklAuthStarted(true)
       setSimklError('Waiting for Simkl approval...')
@@ -1964,7 +2016,7 @@ export default function SettingsPage() {
                   state: anilistLoading ? 'syncing' : store.anilistConnected ? 'connected' : anilistMessage && /failed|missing/i.test(anilistMessage) ? 'needs-attention' : 'not-connected',
                   account: store.anilistAccount ? `@${store.anilistAccount.name}` : undefined, message: anilistMessage || undefined,
                   primaryLabel: store.anilistConnected ? 'Reconnect AniList' : 'Connect AniList', onPrimary: handleAnilistConnect, showAdvancedLink: true, isAccount: true, onSync: syncAniListNow, syncLabel: 'Sync Now', onDisconnect: handleAnilistDisconnect,
-                  setup: <div className="space-y-3"><p className="text-sm text-white/60">Use a personal access token only if browser authorization is unavailable.</p><div className="flex gap-2"><input type="password" value={anilistTokenInput} onChange={(e) => setAnilistTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && connectAniListManual()} placeholder="Manual access token" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={connectAniListManual} disabled={anilistLoading || !anilistTokenInput} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save token</button></div></div>,
+                  setup: <div className="space-y-3">{getPlatformCapabilities().platform === 'web' ? <><p className="text-sm text-white/60">Browser sign-in uses AniList’s implicit grant, then you paste the returned access token. Create a public AniList client and set its Redirect URL to <code className="text-white/80">https://anilist.co/api/v2/oauth/pin</code>.</p><div className="flex gap-2"><input type="text" inputMode="numeric" value={anilistClientIdInput} onChange={(e) => setAnilistClientIdInput(e.target.value)} placeholder="AniList browser client ID" aria-label="AniList browser client ID" className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={() => { const value = anilistClientIdInput.trim(); if (value) localStorage.setItem('anilist_web_client_id', value); else localStorage.removeItem('anilist_web_client_id'); setAnilistMessage(value ? 'AniList browser client ID saved on this device.' : 'AniList browser client ID cleared.') }} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white">Save ID</button></div><a href="https://anilist.co/settings/developer" target="_blank" rel="noreferrer" className="inline-block text-xs font-semibold text-accent hover:underline">Manage AniList clients ↗</a></> : <p className="text-sm text-white/60">Use a personal access token only if browser authorization is unavailable.</p>}<div className="flex gap-2"><input type="password" value={anilistTokenInput} onChange={(e) => setAnilistTokenInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && connectAniListManual()} placeholder={getPlatformCapabilities().platform === 'web' ? 'Paste access token from AniList' : 'Manual access token'} className="min-w-0 flex-1 rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 text-sm text-white outline-none focus:border-accent/50" /><button type="button" onClick={connectAniListManual} disabled={anilistLoading || !anilistTokenInput} className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Save token</button></div>{getPlatformCapabilities().platform === 'web' && <p className="text-[11px] text-white/40">AniList tokens grant access to your account and are stored in this browser’s local storage.</p>}</div>,
                 },
                 {
                   id: 'torbox', name: 'TorBox', iconService: 'torbox', group: 'streaming', description: 'Resolves cached torrent links locally for playback',
@@ -1985,7 +2037,7 @@ export default function SettingsPage() {
                   state: mdblistOAuthPolling || mdblistConnChecking ? 'syncing' : getStoredMdblistTokens() ? 'connected' : mdblistConnStatus && !mdblistConnStatus.connected ? 'needs-attention' : 'not-connected',
                   statusLabel: getStoredMdblistTokens() ? 'Connected' : store.mdblistApiKey ? 'Key configured' : undefined, isAccount: true, isConfigured: Boolean(store.mdblistApiKey), account: mdblistConnStatus?.user?.username ? `@${mdblistConnStatus.user.username}` : undefined, message: mdblistConnStatus?.error,
                   primaryLabel: getStoredMdblistTokens() ? 'Manage' : 'Connect MDBList', onPrimary: handleMdblistOAuthConnect, showAdvancedLink: true, onDisconnect: handleMdblistOAuthDisconnect,
-                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onFocus={() => { mdblistApiKeyAtFocusRef.current = store.mdblistApiKey }} onBlur={() => { if (mdblistApiKeyAtFocusRef.current !== store.mdblistApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
+                  setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its built-in key for ratings. Connect an account for lists and history, or add a personal API key for API access.</p>{getPlatformCapabilities().platform === 'web' && <div className="space-y-2"><label className="block text-xs font-semibold text-white/60">MDBList public OAuth client ID<input value={mdblistClientIdInput} onChange={(event) => setMdblistClientIdInput(event.target.value)} placeholder="Client ID registered for this site" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><button type="button" onClick={() => { setMdblistClientId(mdblistClientIdInput); setMdblistConnStatus(null) }} disabled={!mdblistClientIdInput.trim()} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Save client ID</button><p className="text-[11px] text-white/40">Register <code>{import.meta.env.VITE_MDBLIST_WEB_REDIRECT_URI || `${window.location.origin}/auth/mdblist/callback`}</code> as this client’s redirect URI. The ID is public; access tokens stay in this browser profile.</p><a href="https://mdblist.com/developer/" target="_blank" rel="noreferrer" className="inline-block text-xs font-semibold text-accent hover:underline">Manage MDBList clients ↗</a></div>}<label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.mdblistApiKey} onFocus={() => { mdblistApiKeyAtFocusRef.current = store.mdblistApiKey }} onBlur={() => { if (mdblistApiKeyAtFocusRef.current !== store.mdblistApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setMdblistApiKey(e.target.value); setMdblistConnStatus(null) }} placeholder="Optional MDBList API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testMdblistConnection} disabled={(!store.mdblistApiKey && !getStoredMdblistTokens()) || mdblistConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{mdblistConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://api.mdblist.com/docs/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div>{mdblistConnStatus && <p className={`text-xs ${mdblistConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{mdblistConnStatus.connected ? '✓ Connection successful' : `⚠ ${mdblistConnStatus.error ?? 'Connection failed'}`}</p>}</div>,
                 },
                 {
                   id: 'pmdb', name: 'PublicMetaDB', iconService: 'pmdb', group: 'history', description: 'History · Scrobbles · Skip data',
@@ -1994,7 +2046,16 @@ export default function SettingsPage() {
                   setup: <div className="space-y-4"><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.pmdbApiKey} onFocus={() => { pmdbApiKeyAtFocusRef.current = store.pmdbApiKey }} onBlur={() => { if (pmdbApiKeyAtFocusRef.current !== store.pmdbApiKey) notifyWatchedProviderAccountChanged() }} onChange={(e) => { store.setPmdBApiKey(e.target.value); setPmdbConnStatus(null) }} placeholder="pm-…" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={testPmdbConnection} disabled={!store.pmdbApiKey || pmdbConnChecking} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{pmdbConnChecking ? 'Testing…' : 'Test connection'}</button><a href="https://publicmetadb.com/" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div>{pmdbConnStatus && <p className={`text-xs ${pmdbConnStatus.connected ? 'text-emerald-200' : 'text-amber-200'}`}>{pmdbConnStatus.connected ? '✓ Connection successful' : `⚠ ${pmdbConnStatus.error ?? `HTTP ${pmdbConnStatus.status}`}`}</p>}</div>,
                 },
                 { id: 'introdb', name: 'IntroDB', iconService: 'introdb', group: 'playback', description: 'Intro · Recap · Credits', state: store.introdbApiKey ? 'connected' : 'not-connected', statusLabel: store.introdbApiKey ? 'Key configured' : 'Using Aurales key', isConfigured: Boolean(store.introdbApiKey), primaryLabel: store.introdbApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-4"><p className="text-sm text-white/60">Aurales uses its default IntroDB key unless you provide a personal key.</p><label className="block text-xs font-semibold text-white/60">API key<input type="password" value={store.introdbApiKey} onChange={(e) => store.setIntrodbApiKey(e.target.value)} placeholder="Optional personal API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><div className="flex gap-3 text-xs text-white/60"><span>Intro</span><span>Recap</span><span>Credits</span></div><a href="https://introdb.app/docs/api" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Documentation ↗</a></div> },
-                { id: 'discord', name: 'Discord Rich Presence', iconService: 'discord', group: 'playback', description: 'Show what you’re watching on Discord', state: store.discordRichPresence ? 'connected' : 'not-connected', statusLabel: store.discordRichPresence ? 'Enabled' : 'Disabled', isConfigured: store.discordRichPresence, primaryLabel: 'Manage', onPrimary: () => undefined, hidePrimaryAction: true, inlineControl: <PresenceToggle checked={store.discordRichPresence} onChange={store.setDiscordRichPresence} /> },
+                {
+                  id: 'discord', name: 'Discord Rich Presence', iconService: 'discord', group: 'playback',
+                  description: getPlatformCapabilities().platform === 'web' ? 'Available in the Aurales desktop app only' : 'Show what you’re watching on Discord',
+                  state: getPlatformCapabilities().platform === 'tauri' && store.discordRichPresence ? 'connected' : 'not-connected',
+                  statusLabel: getPlatformCapabilities().platform === 'web' ? 'Desktop only' : store.discordRichPresence ? 'Enabled' : 'Disabled',
+                  isConfigured: getPlatformCapabilities().platform === 'tauri' && store.discordRichPresence,
+                  primaryLabel: 'Manage', onPrimary: () => undefined, hidePrimaryAction: true,
+                  inlineControl: getPlatformCapabilities().platform === 'web' ? undefined : <PresenceToggle checked={store.discordRichPresence} onChange={store.setDiscordRichPresence} />,
+                  setup: getPlatformCapabilities().platform === 'web' ? <p className="text-sm text-white/65">Discord Rich Presence controls the Discord app running on this device, so it is only available in Aurales desktop.</p> : undefined,
+                },
                 { id: 'fanart', name: 'Fanart.tv', iconService: 'fanart', group: 'metadata', description: 'Poster · Backdrop · Logo artwork', state: store.fanartApiKey ? 'connected' : 'not-connected', statusLabel: store.fanartApiKey ? 'Key configured' : 'No personal key', isConfigured: Boolean(store.fanartApiKey), primaryLabel: store.fanartApiKey ? 'Manage' : 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><label className="block text-xs font-semibold text-white/60">Personal API key<input type="password" value={store.fanartApiKey} onChange={(e) => store.setFanartApiKey(e.target.value)} placeholder="Optional Fanart.tv API key" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label><a href="https://fanart.tv/get-an-api-key" target="_blank" rel="noreferrer" className="text-xs font-semibold text-accent hover:underline">Get API key ↗</a></div> },
                 { id: 'tmdb', name: 'TMDB', iconService: 'tmdb', group: 'metadata', description: 'Movies · Series metadata', state: 'connected', statusLabel: store.tmdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tmdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TMDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tmdbApiKey} onChange={(e) => store.setTmdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tmdbApiKey && <button type="button" onClick={() => store.setTmdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
                 { id: 'tvdb', name: 'TheTVDB', iconService: 'tvdb', group: 'metadata', description: 'TV metadata · Episode data', state: 'connected', statusLabel: store.tvdbApiKey ? 'Custom key configured' : 'Aurales default', isConfigured: Boolean(store.tvdbApiKey), primaryLabel: 'Configure', onPrimary: () => undefined, primaryOpensManage: true, setup: <div className="space-y-3"><p className="text-sm text-white/60">Aurales uses its built-in TVDB key by default. A custom key overrides it immediately.</p><label className="block text-xs font-semibold text-white/60">Custom API key<input type="password" value={store.tvdbApiKey} onChange={(e) => store.setTvdbApiKey(e.target.value)} placeholder="Using Aurales default" className="mt-1.5 w-full rounded-xl border border-white/[.08] bg-white/[.04] px-3 py-2 font-mono text-sm text-white outline-none focus:border-accent/50" /></label>{store.tvdbApiKey && <button type="button" onClick={() => store.setTvdbApiKey('')} className="text-xs font-semibold text-accent hover:underline">Reset to Aurales default</button>}</div> },
@@ -3143,13 +3204,23 @@ export default function SettingsPage() {
               ═══════════════════════════════════════════════ */}
           {activeTab === 'player' && (
             <>
-              {/* MPV Status */}
-              <SettingSection>
-                <div className="px-6 py-4 flex items-center gap-3">
-                  <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
-                  <p className="text-sm text-white/70 font-semibold">mpv is bundled with Aurales and ready for playback.</p>
-                </div>
-              </SettingSection>
+              {getPlatformCapabilities().platform === 'tauri' ? (
+                <SettingSection>
+                  <div className="px-6 py-4 flex items-center gap-3">
+                    <div className="w-3.5 h-3.5 rounded-full bg-accent animate-pulse" />
+                    <p className="text-sm text-white/70 font-semibold">mpv is bundled with Aurales and ready for playback.</p>
+                  </div>
+                </SettingSection>
+              ) : (
+                <SettingSection>
+                  <div className="px-6 py-4">
+                    <p className="text-sm text-white/80 font-semibold">Browser video playback</p>
+                    <p className="mt-1 text-xs text-white/50">Aurales uses your browser’s video engine and HLS support. Codec, subtitle, and streaming compatibility depend on the browser and source.</p>
+                  </div>
+                </SettingSection>
+              )}
+
+              {getPlatformCapabilities().platform === 'web' && <MediaWorkerSettings />}
 
               {/* Cache mode */}
               <section className="space-y-3">
@@ -3170,32 +3241,34 @@ export default function SettingsPage() {
                   <summary className="px-6 py-4 cursor-pointer select-none list-none flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-semibold text-white">Troubleshooting</h3>
-                      <p className="text-sm text-white/60 mt-0.5">Isolated playback mode for diagnosing player issues.</p>
+                      <p className="text-sm text-white/60 mt-0.5">{getPlatformCapabilities().platform === 'web' ? 'Test a local video in the browser player.' : 'Isolated playback mode for diagnosing player issues.'}</p>
                     </div>
                     <svg className="w-4 h-4 text-white/60 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
                   </summary>
                   <div className="divide-y divide-white/[0.04]">
-                    <SettingRow
-                      label="Isolated Playback Mode"
-                      description="Runs mpv without scrobbling, progress polling, or metadata to isolate player issues."
-                    >
-                      <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
-                    </SettingRow>
-                    <SettingRow label="Isolated hardware decoding" description="Compare GPU decoding against software decoding.">
-                      <SelectMenu
-                        value={store.isolatedPlaybackHwdec}
-                        onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
-                        className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                    {getPlatformCapabilities().platform === 'tauri' && <>
+                      <SettingRow
+                        label="Isolated Playback Mode"
+                        description="Runs mpv without scrobbling, progress polling, or metadata to isolate player issues."
                       >
-                        <option value="auto-safe">Auto-safe</option>
-                        <option value="no">Software only</option>
-                      </SelectMenu>
-                    </SettingRow>
-                    <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
-                      <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
-                    </SettingRow>
+                        <SettingToggle checked={store.isolatedPlaybackMode} onChange={store.setIsolatedPlaybackMode} />
+                      </SettingRow>
+                      <SettingRow label="Isolated hardware decoding" description="Compare GPU decoding against software decoding.">
+                        <SelectMenu
+                          value={store.isolatedPlaybackHwdec}
+                          onChange={(event) => store.setIsolatedPlaybackHwdec(event.target.value as 'auto-safe' | 'no')}
+                          className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
+                        >
+                          <option value="auto-safe">Auto-safe</option>
+                          <option value="no">Software only</option>
+                        </SelectMenu>
+                      </SettingRow>
+                      <SettingRow label="Allow resume seek" description="Off by default so seeking cannot affect an isolation test.">
+                        <SettingToggle checked={store.isolatedPlaybackResume} onChange={store.setIsolatedPlaybackResume} />
+                      </SettingRow>
+                    </>}
                     <div className="flex flex-wrap gap-3 px-6 py-4">
-                      <button
+                      {getPlatformCapabilities().platform === 'tauri' ? <button
                         onClick={async () => {
                           const path = await invoke<string | null>('select_local_video_file')
                           if (!path) return
@@ -3205,12 +3278,27 @@ export default function SettingsPage() {
                         className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer"
                       >
                         Test Local File
-                      </button>
+                      </button> : <>
+                        <input
+                          ref={localVideoInputRef}
+                          type="file"
+                          accept="video/*,.mkv,.avi,.mov,.webm,.mp4,.m4v"
+                          className="sr-only"
+                          aria-label="Choose a local video file"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0]
+                            if (!file) return
+                            setPlayerDebugTest({ url: URL.createObjectURL(file), title: file.name || 'Local video', objectUrl: true })
+                            event.currentTarget.value = ''
+                          }}
+                        />
+                        <button type="button" onClick={() => localVideoInputRef.current?.click()} className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/15 cursor-pointer">Test Local File</button>
+                      </>}
                       <button
                         onClick={() => {
                           store.setIsolatedPlaybackMode(true)
                           setPlayerDebugTest({
-                            url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+                            url: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
                             title: 'Stable HTTP isolation test',
                           })
                         }}
@@ -3218,7 +3306,7 @@ export default function SettingsPage() {
                       >
                         Test Direct HTTP
                       </button>
-                      <button
+                      {getPlatformCapabilities().platform === 'tauri' && <button
                         onClick={async () => {
                           const logs = await invoke<string[]>('get_player_debug_logs')
                           await navigator.clipboard.writeText(logs.join('\n'))
@@ -3226,7 +3314,7 @@ export default function SettingsPage() {
                         className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.1] cursor-pointer"
                       >
                         Copy Player Logs
-                      </button>
+                      </button>}
                     </div>
                   </div>
                 </details>
@@ -3617,12 +3705,17 @@ export default function SettingsPage() {
       )}
       {playerDebugTest && (
         <Suspense fallback={null}>
-          <NativeMpvPlayer
-            url={playerDebugTest.url}
-            title={playerDebugTest.title}
-            onClose={() => setPlayerDebugTest(null)}
-            onPickAnother={() => setPlayerDebugTest(null)}
-          />
+          {getPlatformCapabilities().platform === 'tauri' ? <NativeMpvPlayer
+              url={playerDebugTest.url}
+              title={playerDebugTest.title}
+              onClose={closePlayerDebugTest}
+              onPickAnother={closePlayerDebugTest}
+            /> : <InAppPlayer
+              url={playerDebugTest.url}
+              title={playerDebugTest.title}
+              onClose={closePlayerDebugTest}
+              onPickAnother={closePlayerDebugTest}
+            />}
         </Suspense>
       )}
     </div>

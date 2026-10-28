@@ -1,11 +1,10 @@
-import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import imageCacheAdapter from '../platform/imageCacheAdapter'
+import type { ImageCacheVariant } from '../platform/imageCacheAdapter'
 
 // Frontend side of the disk image cache (src-tauri/src/image_cache.rs).
 // cachedImage() rewrites a remote artwork URL to the imgcache:// protocol so
 // the Rust layer downloads it once and serves it from disk, honoring the
 // Settings → Image Cache size cap and max age.
-
-const isTauri = () => !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 
 const LEGACY_POSTER_PROXY_PREFIX = 'https://poster-cache.febsho.me/poster/'
 
@@ -24,28 +23,15 @@ export function recoverArtworkSource(url: string): string {
   return /^https?:\/\//i.test(candidate) ? candidate : url
 }
 
-export type ImageCacheVariant = 'card' | 'backdrop'
+export type { ImageCacheVariant } from '../platform/imageCacheAdapter'
 
 export function cachedImage(url: string, variant?: ImageCacheVariant): string
 export function cachedImage(url: string | undefined, variant?: ImageCacheVariant): string | undefined
 export function cachedImage(url: string | undefined, variant: ImageCacheVariant = 'card'): string | undefined {
   if (!url) return url
   const source = recoverArtworkSource(url)
-  if (!isTauri() || !/^https?:\/\//i.test(source)) return source
-  try {
-    // The native handler bounds concurrent misses and deduplicates requests
-    // for the same URL. convertFileSrc also emits the platform-correct custom
-    // protocol URL (imgcache:// on Linux, http://imgcache.localhost on Windows).
-    // Full-bleed detail artwork needs a larger cached derivative than a shelf
-    // card. A URL fragment creates a separate native cache key without
-    // changing the provider request (fragments are never sent over HTTP).
-    const cacheSource = variant === 'backdrop'
-      ? `${source}${source.includes('#') ? '&' : '#'}aurales-cache=backdrop`
-      : source
-    return convertFileSrc(cacheSource, 'imgcache')
-  } catch (_) {
-    return source
-  }
+  if (!/^https?:\/\//i.test(source)) return source
+  return imageCacheAdapter.cachedImage(source, variant)
 }
 
 /** Retry a failed custom-protocol request once with its original HTTPS URL.
@@ -71,7 +57,7 @@ export function watchStalledImage(
   url: string | undefined,
   timeoutMs = 5000,
 ): () => void {
-  if (!image || !url || !isTauri()) return () => {}
+  if (!image || !url || !imageCacheAdapter.usesCustomProtocol()) return () => {}
   const timer = window.setTimeout(() => {
     if (image.complete && image.naturalWidth > 0) return
     retryImageFromSource(image, url)
@@ -231,20 +217,13 @@ export function warmCachedImages(urls: Array<string | undefined>): Promise<void>
 }
 
 export async function configureImageCache(maxMb: number, keepDays: number): Promise<void> {
-  if (!isTauri()) return
-  await invoke('image_cache_configure', { maxMb, keepDays }).catch(() => undefined)
+  await imageCacheAdapter.configure(maxMb, keepDays)
 }
 
 export async function imageCacheStats(): Promise<{ bytes: number; files: number } | null> {
-  if (!isTauri()) return null
-  try {
-    return await invoke<{ bytes: number; files: number }>('image_cache_stats')
-  } catch (_) {
-    return null
-  }
+  return imageCacheAdapter.stats()
 }
 
 export async function clearImageCache(): Promise<void> {
-  if (!isTauri()) return
-  await invoke('image_cache_clear')
+  await imageCacheAdapter.clear()
 }

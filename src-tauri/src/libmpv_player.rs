@@ -37,7 +37,7 @@ const MPV_EVENT_SEEK: c_int = 20;
 const MPV_EVENT_PLAYBACK_RESTART: c_int = 21;
 const MPV_EVENT_PROPERTY_CHANGE: c_int = 22;
 const MPV_EVENT_QUEUE_OVERFLOW: c_int = 24;
-const MPV_EVENT_POLL_TIMEOUT_SECONDS: c_double = 0.01;
+const MPV_EVENT_POLL_TIMEOUT_SECONDS: c_double = 0.0;
 
 type MpvHandle = c_void;
 type MpvCreate = unsafe extern "C" fn() -> *mut MpvHandle;
@@ -64,6 +64,19 @@ type MpvRenderContextRender =
     unsafe extern "C" fn(*mut MpvRenderContext, *mut MpvRenderParam) -> c_int;
 #[cfg(target_os = "linux")]
 type MpvRenderContextFree = unsafe extern "C" fn(*mut MpvRenderContext);
+#[cfg(target_os = "linux")]
+type MpvRenderContextSetUpdateCallback = unsafe extern "C" fn(
+    *mut MpvRenderContext,
+    Option<unsafe extern "C" fn(*mut c_void)>,
+    *mut c_void,
+);
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" fn mark_render_pending(ctx: *mut c_void) {
+    // mpv invokes this on its own threads. Never call GTK or another mpv API
+    // here. The flag lives inside the Arc-owned player until context_free.
+    (*(ctx as *const AtomicBool)).store(true, Ordering::Release);
+}
 
 #[cfg(target_os = "linux")]
 const MPV_RENDER_PARAM_INVALID: c_int = 0;
@@ -75,6 +88,8 @@ const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
 #[cfg(target_os = "linux")]
 const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
+#[cfg(target_os = "linux")]
+const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 12;
 
 #[cfg(target_os = "linux")]
 #[repr(C)]
@@ -186,6 +201,8 @@ struct LibMpvApi {
     render_context_render: MpvRenderContextRender,
     #[cfg(target_os = "linux")]
     render_context_free: MpvRenderContextFree,
+    #[cfg(target_os = "linux")]
+    render_context_set_update_callback: MpvRenderContextSetUpdateCallback,
 }
 
 unsafe impl Send for LibMpvApi {}
@@ -212,10 +229,15 @@ pub(crate) struct LibMpvPlayer {
     api: Arc<LibMpvApi>,
     handle: *mut MpvHandle,
     destroyed: AtomicBool,
+    handle_terminated: AtomicBool,
+    #[cfg(target_os = "linux")]
+    unsupported_video_reported: AtomicBool,
     api_lock: Mutex<()>,
     session_id: String,
     #[cfg(target_os = "linux")]
     render_context: std::sync::Mutex<Option<usize>>,
+    #[cfg(target_os = "linux")]
+    render_update_pending: AtomicBool,
 }
 
 unsafe impl Send for LibMpvPlayer {}
@@ -236,10 +258,15 @@ impl LibMpvPlayer {
             api,
             handle,
             destroyed: AtomicBool::new(false),
+            handle_terminated: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            unsupported_video_reported: AtomicBool::new(false),
             api_lock: Mutex::new(()),
             session_id,
             #[cfg(target_os = "linux")]
             render_context: std::sync::Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            render_update_pending: AtomicBool::new(false),
         }))
     }
 
@@ -350,9 +377,8 @@ impl LibMpvPlayer {
             if player.destroyed.load(Ordering::SeqCst) {
                 return;
             }
-            // The Linux OpenGL renderer and playback commands use the same
-            // API mutex. Never leave it held for a long blocking event wait:
-            // mpv audio can keep advancing while rendering and seeks starve.
+            // Drain events without blocking commands behind an idle wait.
+            // Rendering uses its own context lock, independent of this mutex.
             let event =
                 unsafe { (player.api.wait_event)(player.handle, MPV_EVENT_POLL_TIMEOUT_SECONDS) };
             if player.destroyed.load(Ordering::SeqCst) {
@@ -360,15 +386,21 @@ impl LibMpvPlayer {
             }
             if event.is_null() {
                 drop(_api_guard);
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
             }
 
             let event = unsafe { &*event };
             if event.event_id == MPV_EVENT_NONE {
                 drop(_api_guard);
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
+            }
+            #[cfg(target_os = "linux")]
+            if event.event_id == MPV_EVENT_START_FILE {
+                player
+                    .unsupported_video_reported
+                    .store(false, Ordering::Release);
             }
             match event.event_id {
                 MPV_EVENT_SHUTDOWN => {
@@ -384,7 +416,8 @@ impl LibMpvPlayer {
                     if !event.data.is_null() {
                         unsafe {
                             handle_property_event(
-                                &player.session_id,
+                                &app,
+                                &player,
                                 event.data as *const MpvEventProperty,
                             )
                         };
@@ -488,13 +521,30 @@ impl LibMpvPlayer {
     }
 
     pub(crate) fn shutdown(&self) {
-        if !self.destroyed.swap(true, Ordering::SeqCst) {
-            // Destruction must still run after a panic while an API guard was
-            // held; skipping it on mutex poison would leak the native handle.
-            let _guard = self
-                .api_lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Serialize handle destruction against rendering, without making
+        // rendering depend on command/event processing during playback.
+        #[cfg(target_os = "linux")]
+        let _render_guard = self
+            .render_context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.destroyed.store(true, Ordering::SeqCst);
+        #[cfg(target_os = "linux")]
+        if _render_guard.is_some() {
+            // A busy GTK thread may not have serviced detach before its
+            // timeout. Keep the handle alive until that queued operation frees
+            // the GL context; terminating first would invalidate its pointers.
+            return;
+        }
+        self.terminate_handle();
+    }
+
+    fn terminate_handle(&self) {
+        let _guard = self
+            .api_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.handle_terminated.swap(true, Ordering::SeqCst) {
             unsafe {
                 (self.api.terminate_destroy)(self.handle);
             }
@@ -515,7 +565,9 @@ impl LibMpvPlayer {
         get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
     ) -> Result<(), String> {
         let mut slot = self.render_context.lock().map_err(|e| e.to_string())?;
-        let _api_guard = self.api_guard()?;
+        if self.destroyed.load(Ordering::SeqCst) {
+            return Err("mpv player is shutting down".to_string());
+        }
         if slot.is_some() {
             return Ok(());
         }
@@ -546,7 +598,19 @@ impl LibMpvPlayer {
             return Err("libmpv created a null OpenGL render context".to_string());
         }
         *slot = Some(context as usize);
+        (self.api.render_context_set_update_callback)(
+            context,
+            Some(mark_render_pending),
+            (&self.render_update_pending as *const AtomicBool)
+                .cast_mut()
+                .cast(),
+        );
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_render_update(&self) -> bool {
+        self.render_update_pending.swap(false, Ordering::AcqRel)
     }
 
     #[cfg(target_os = "linux")]
@@ -557,17 +621,9 @@ impl LibMpvPlayer {
         height: c_int,
     ) -> Result<(), String> {
         let slot = self.render_context.lock().map_err(|e| e.to_string())?;
-        // GTK calls this from its main thread. The event-pump thread holds
-        // `api_lock` while waiting in mpv_wait_event (up to 500 ms), so a
-        // blocking lock here stalls WebKit input/painting even though mpv's
-        // audio thread keeps playing. Rendering is periodic; skip this frame
-        // when another mpv API call is in flight and let the next GTK tick try
-        // again instead of freezing the application UI.
-        let _api_guard = match self.api_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
-            Err(std::sync::TryLockError::Poisoned(error)) => return Err(error.to_string()),
-        };
+        // mpv explicitly requires rendering to be independent of client API
+        // calls. A command can wait for a frame; taking api_lock here would
+        // starve that frame (or deadlock until mpv's internal timeout).
         if self.destroyed.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -582,7 +638,12 @@ impl LibMpvPlayer {
             internal_format: 0,
         };
         let mut flip_y: c_int = 1;
+        let mut block_for_target_time: c_int = 0;
         let mut params = [
+            MpvRenderParam {
+                param_type: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                data: (&mut block_for_target_time as *mut c_int).cast(),
+            },
             MpvRenderParam {
                 param_type: MPV_RENDER_PARAM_OPENGL_FBO,
                 data: (&mut fbo as *mut MpvOpenGlFbo).cast(),
@@ -605,12 +666,20 @@ impl LibMpvPlayer {
     #[cfg(target_os = "linux")]
     pub(crate) unsafe fn free_opengl_render_context(&self) {
         if let Ok(mut slot) = self.render_context.lock() {
-            let Ok(_api_guard) = self.api_guard() else {
-                return;
-            };
             if let Some(context) = slot.take() {
+                // context_free waits for pending callbacks, keeping their flag
+                // pointer valid until no mpv thread can access it anymore.
+                (self.api.render_context_set_update_callback)(
+                    context as *mut MpvRenderContext,
+                    None,
+                    std::ptr::null_mut(),
+                );
                 (self.api.render_context_free)(context as *mut MpvRenderContext);
+                self.render_update_pending.store(false, Ordering::Release);
             }
+        }
+        if self.destroyed.load(Ordering::SeqCst) {
+            self.shutdown();
         }
     }
 
@@ -755,6 +824,10 @@ fn load_api(dll_path: &Path) -> Result<LibMpvApi, String> {
             render_context_free: *library
                 .get(b"mpv_render_context_free\0")
                 .map_err(|e| e.to_string())?,
+            #[cfg(target_os = "linux")]
+            render_context_set_update_callback: *library
+                .get(b"mpv_render_context_set_update_callback\0")
+                .map_err(|e| e.to_string())?,
             _library: library,
         })
     }
@@ -813,7 +886,14 @@ fn json_arg_to_mpv_string(value: &Value) -> String {
     }
 }
 
-unsafe fn handle_property_event(session_id: &str, data: *const MpvEventProperty) {
+unsafe fn handle_property_event(
+    app: &tauri::AppHandle,
+    player: &LibMpvPlayer,
+    data: *const MpvEventProperty,
+) {
+    let session_id = &player.session_id;
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
     let property = &*data;
     if property.name.is_null() {
         return;
@@ -828,6 +908,23 @@ unsafe fn handle_property_event(session_id: &str, data: *const MpvEventProperty)
         mpv_raw_property_to_json(property.format, property.data)
     };
 
+    #[cfg(target_os = "linux")]
+    if crate::commands::is_current_player_session(session_id)
+        && crate::core::player::requires_dolby_vision_renderer(&name, &value)
+        && !player
+            .unsupported_video_reported
+            .swap(true, Ordering::AcqRel)
+    {
+        let message = "Dolby Vision Profile 5 requires a Dolby Vision renderer. The embedded Linux renderer cannot display this stream correctly; choose an HDR10 or SDR version.";
+        crate::commands::player_debug_log(format!("[MPV VIDEO] session={session_id} {message}"));
+        let _ = app.emit(
+            "mpv-video-unsupported",
+            serde_json::json!({
+                "sessionId": session_id,
+                "error": message,
+            }),
+        );
+    }
     crate::commands::cache_mpv_property(session_id, name, value);
 }
 

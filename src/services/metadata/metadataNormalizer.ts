@@ -1,6 +1,7 @@
 import type { MovieDetails, SearchResult, ShowDetails } from '../../types'
 import { invoke } from '@tauri-apps/api/core'
 import type { AddonMediaInput, AnimeTitleLanguage, AppMediaItem, AppSeason, MediaKind } from './types'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 
 const numberId = (value: unknown): number | undefined => {
   if (value === null || value === undefined) return undefined
@@ -33,6 +34,7 @@ export async function selectAnimeTitleWithNativeFallback(
   titles: { english?: string; romaji?: string; native?: string },
   preference: AnimeTitleLanguage,
 ): Promise<{ title: string; originalTitle?: string; localizedTitle?: string }> {
+  if (getPlatformCapabilities().platform === 'web') return selectAnimeTitle(titles, preference)
   try {
     return await invoke<{ title: string; originalTitle?: string; localizedTitle?: string }>('select_anime_title', { request: { titles, preference } })
   } catch (_) {
@@ -105,6 +107,7 @@ async function normalizeWithNativeFallback(
   input: AddonMediaInput,
   fallback: () => AppMediaItem,
 ): Promise<AppMediaItem> {
+  if (getPlatformCapabilities().platform === 'web') return fallback()
   // `numberId` intentionally accepts unusual legacy values (nested objects,
   // hexadecimal and fractional strings). They stay on the proven JS path:
   // moving this rare compatibility coercion offers no native-work benefit.

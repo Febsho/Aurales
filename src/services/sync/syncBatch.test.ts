@@ -4,14 +4,25 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
 import { runSyncBatch } from './syncBatch'
+import { saveMediaWorkerConfig } from '../mediaWorker'
 
 const input = {
   endpoint: 'https://sync.example', accessToken: 'secret', schemaVersion: 1,
   deviceId: 'device', deviceName: 'Desktop', cursor: '4', records: [], mode: 'sync' as const,
 }
 
+const storageValues = new Map<string, string>()
+const storage = {
+  get length() { return storageValues.size },
+  key: (index: number) => [...storageValues.keys()][index] ?? null,
+  getItem: (key: string) => storageValues.get(key) ?? null,
+  setItem: (key: string, value: string) => { storageValues.set(key, String(value)) },
+  removeItem: (key: string) => { storageValues.delete(key) },
+  clear: () => storageValues.clear(),
+}
+
 afterEach(() => vi.unstubAllGlobals())
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('localStorage', storage); storage.clear() })
 
 describe('coarse sync batch', () => {
   it('uses one native operation and preserves the server response', async () => {
@@ -30,6 +41,20 @@ describe('coarse sync batch', () => {
     await expect(runSyncBatch(input, fetcher)).resolves.toEqual({ cursor: '5', records: [] })
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect(invokeMock).not.toHaveBeenCalled()
+  })
+
+  it('uses the fixed Aurales Sync worker relay for a browser batch when configured', async () => {
+    vi.stubGlobal('window', {})
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'w'.repeat(40) })
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ status: 200, ok: true, body: JSON.stringify({ cursor: '5', records: [] }) }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(runSyncBatch(input)).resolves.toEqual({ cursor: '5', records: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://worker.example/v1/providers/aurales-sync')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      method: 'POST', path: '/v1/sync', bearerToken: 'secret',
+      body: JSON.stringify({ schemaVersion: 1, deviceId: 'device', deviceName: 'Desktop', cursor: '4', records: [] }),
+    })
   })
 
   it('uses the compatibility transport for an older binary without sync_batch', async () => {

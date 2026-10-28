@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { invokeMock, cacheGetMock, cacheSetMock, tmdbGetShowMock, tmdbGetMovieMock, tvdbGetShowMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -23,6 +23,8 @@ const show = {
 }
 
 describe('detail page compatibility loader', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   beforeEach(() => {
     vi.clearAllMocks()
     cacheGetMock.mockResolvedValue(null)
@@ -89,6 +91,28 @@ describe('detail page compatibility loader', () => {
       show,
       expect.objectContaining({ category: 'detail_page' }),
     )
+  })
+
+  it('uses the browser provider and shared web cache without attempting desktop IPC', async () => {
+    vi.stubGlobal('window', {})
+    tmdbGetShowMock.mockResolvedValue(show)
+    await expect(loadDetailPage('tmdb', '7')).resolves.toEqual(show)
+    expect(invokeMock).not.toHaveBeenCalled()
+    expect(cacheGetMock).toHaveBeenCalledWith('detail:series-provider:v3:tmdb:7:image:balanced')
+    expect(cacheSetMock).toHaveBeenCalledWith(
+      'detail:series-provider:v3:tmdb:7:image:balanced',
+      show,
+      expect.objectContaining({ category: 'detail_page' }),
+    )
+  })
+
+  it('loads browser movies directly through the existing provider client', async () => {
+    vi.stubGlobal('window', {})
+    const movie = { ...show, id: 'tmdb-11', title: 'Movie' }
+    tmdbGetMovieMock.mockResolvedValue(movie)
+    await expect(loadMovieDetailPage('11')).resolves.toEqual(movie)
+    expect(invokeMock).not.toHaveBeenCalled()
+    expect(tmdbGetMovieMock).toHaveBeenCalledWith('tmdb-11')
   })
 
   it('preserves cached empty and successful provider semantics for TVDB', async () => {

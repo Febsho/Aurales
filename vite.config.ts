@@ -21,5 +21,8 @@ export default defineConfig({
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
   },
-  test: { setupFiles: ['./src/test/setup.ts'] },
+  test: {
+    setupFiles: ['./src/test/setup.ts'],
+    exclude: ['tests/browser/**', 'tests/pwa/**', '**/node_modules/**', '**/dist/**'],
+  },
 })

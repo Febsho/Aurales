@@ -9,6 +9,7 @@ import {
   openFlatpakRelease,
   type UpdateInfo,
 } from '../services/updater'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 // Auto-update prompt: checks for an update shortly after launch and, when one
 // exists, shows a liquid-glass dialog with the GitHub release patch notes.
@@ -92,6 +93,7 @@ export default function UpdatePrompt() {
   const [selfUpdates, setSelfUpdates] = useState(true)
 
   useEffect(() => {
+    if (getPlatformCapabilities().platform !== 'tauri') return
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {

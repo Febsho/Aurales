@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { rankStreams, type ScoredStream, type SmartScoreContext, type SmartStream } from './smartScoring'
 import { streamFingerprint } from './reliabilityHistory'
+import { rankStreamsWithWorker } from '../mediaWorker'
 
 type RankPriority = 'playback' | 'interactive' | 'visible' | 'background'
 
@@ -121,6 +122,17 @@ export async function rankStreamCandidates(
       } catch (error) {
         if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleError()
         console.warn('[streams] Native ranking failed, using compatibility scorer:', error)
+      }
+    } else {
+      try {
+        const remote = await rankStreamsWithWorker(streams, context, options.signal)
+        if (remote) {
+          ensureCurrent(cancelGroup, key, generation, options.signal)
+          return remote
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw staleError()
+        console.warn('[streams] Optional Aurales worker ranking failed, using local scorer:', error)
       }
     }
 

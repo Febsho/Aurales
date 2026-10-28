@@ -1667,10 +1667,10 @@ fn launch_mpv_with_window(
                 // feature-length stream in RAM.
                 // Disk cache should make seeking resilient without eagerly
                 // downloading a feature-length remote stream in the background.
-                Some("disk") => ("yes", 1_800, "1GiB", "512MiB"),
-                // Auto keeps disk-backed seeking, but limits its working set to
-                // reduce write activity and heat on portable devices.
-                Some("auto") => ("yes", cache_secs, "256MiB", "128MiB"),
+                Some("disk") => ("yes", cache_secs, "1GiB", "512MiB"),
+                // Normal playback should not compete with cache-file writes.
+                // Explicit disk mode still keeps its larger seekable cache.
+                Some("auto") => ("no", cache_secs, "256MiB", "64MiB"),
                 _ => ("no", cache_secs, max_bytes, max_back_bytes),
             };
         let video_x = x.unwrap_or(0);
@@ -1747,6 +1747,13 @@ fn launch_mpv_with_window(
             // For Linux auto-copy this avoids forcing a GPU-memory path that
             // bypasses the copies which keep libmpv/WebKit interop reliable.
             set_option("vd-lavc-dr", "auto".to_string())?;
+            for &(name, value) in player::EMBEDDED_VIDEO_OPTIONS {
+                set_option(name, value.to_string())?;
+            }
+            #[cfg(target_os = "linux")]
+            // GTK presents on its frame clock. Do not let render() sleep on
+            // the UI thread until mpv's audio-clock deadline.
+            set_option("video-timing-offset", "0".to_string())?;
             set_option("terminal", "no".to_string())?;
             set_option(
                 "log-file",
@@ -1764,13 +1771,15 @@ fn launch_mpv_with_window(
             set_option("term-status-msg", "".to_string())?;
             set_option("keep-open", "no".to_string())?;
             set_option("sub-fix-timing", "yes".to_string())?;
-            set_option("demuxer-mkv-subtitle-preroll", "yes".to_string())?;
+            set_option("demuxer-mkv-subtitle-preroll", "index".to_string())?;
+            set_option("demuxer-mkv-probe-video-duration", "no".to_string())?;
             set_option("cache", "yes".to_string())?;
             set_option("cache-on-disk", cache_on_disk.to_string())?;
             // Start as soon as mpv has a decodable frame. The cache continues
             // to fill in the background, rather than making a cold stream wait
             // for its initial readahead target before playback is visible.
             set_option("cache-pause-initial", "no".to_string())?;
+            set_option("cache-pause-wait", "2".to_string())?;
             set_option("cache-secs", effective_cache_secs.to_string())?;
             set_option("demuxer-max-bytes", effective_max_bytes.to_string())?;
             set_option(
@@ -1839,6 +1848,7 @@ fn launch_mpv_with_window(
             video_height,
         ) {
             player_debug_log(format!("[LINUX RENDER] initialization failed: {error}"));
+            crate::linux_render_surface::detach(&player);
             player.shutdown();
             return Err(error);
         }
@@ -1851,7 +1861,7 @@ fn launch_mpv_with_window(
             "pause",
             "track-list",
             "sub-text",
-            "buffering",
+            "paused-for-cache",
             "cache-buffering-state",
             "demuxer-cache-duration",
             "eof-reached",
@@ -1863,6 +1873,13 @@ fn launch_mpv_with_window(
             "sub-start",
             "sub-end",
             "chapter-list",
+            "video-params",
+            "video-out-params",
+            "hwdec-current",
+            "decoder-frame-drop-count",
+            "frame-drop-count",
+            "mistimed-frame-count",
+            "avsync",
         ]);
         // Register the session before loadfile can produce asynchronous
         // property/ready events. The event loop drops events from sessions
@@ -2597,7 +2614,7 @@ pub fn get_player_snapshot() -> Result<PlayerSnapshot, String> {
         time_pos: number("time-pos"),
         duration: number("duration"),
         paused: boolean("pause"),
-        buffering: boolean("buffering"),
+        buffering: boolean("paused-for-cache"),
         cache_buffering_state: number("cache-buffering-state"),
         demuxer_cache_duration: number("demuxer-cache-duration"),
         eof_reached: boolean("eof-reached"),

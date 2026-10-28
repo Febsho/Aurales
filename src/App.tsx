@@ -10,6 +10,7 @@ import ProfileSwitchTransition from './components/ProfileSwitchTransition'
 import { getProfileSetting } from './services/profiles'
 import { disconnectDisabledServerIntegrations } from './services/serverIntegrations'
 import { syncAddonsFromStore } from './services/addons'
+import { getPlatformCapabilities } from './platform/capabilities'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -24,6 +25,8 @@ const PersonPage = lazy(() => import('./pages/PersonPage'))
 const WatchTogetherPage = lazy(() => import('./pages/WatchTogetherPage'))
 const UpcomingPage = lazy(() => import('./pages/UpcomingPage'))
 const UpdatePrompt = lazy(() => import('./components/UpdatePrompt'))
+const SimklCallbackPage = lazy(() => import('./pages/SimklCallbackPage'))
+const MdblistCallbackPage = lazy(() => import('./pages/MdblistCallbackPage'))
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
@@ -63,7 +66,9 @@ function hasConfiguredAuralesSync(): boolean {
 }
 
 export default function App() {
+  const isAuthCallback = window.location.pathname === '/auth/simkl/callback' || window.location.pathname === '/auth/mdblist/callback'
   const [chooseProfile, setChooseProfile] = useState(() => {
+    if (isAuthCallback) return false
     const switched = sessionStorage.getItem('aurales_profile_switched_v1')
     if (switched) sessionStorage.removeItem('aurales_profile_switched_v1')
     // A profile can opt into direct launch. Profile switching still uses its
@@ -77,8 +82,9 @@ export default function App() {
   const [updatePromptReady, setUpdatePromptReady] = useState(false)
 
   useEffect(() => {
+    if (isAuthCallback) return
     void disconnectDisabledServerIntegrations()
-  }, [])
+  }, [isAuthCallback])
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)
@@ -110,14 +116,16 @@ export default function App() {
   const progressConnections = useAppStore((s) => [s.traktConnected, s.simklConnected, s.anilistConnected, Boolean(s.pmdbApiKey), Boolean(s.mdblistApiKey)].map(Number).join(''))
 
   useEffect(() => {
+    if (isAuthCallback) return
     markPerformance('app-shell-visible')
     measurePerformance('bootstrap-to-shell', 'bootstrap-start', 'app-shell-visible')
-  }, [])
+  }, [isAuthCallback])
 
   // Pull durable account state soon after startup, then make a best-effort
   // checkpoint when the window is hidden or closed. Local state remains the
   // source of truth if the network is unavailable.
   useEffect(() => {
+    if (isAuthCallback) return
     const runSync = () => {
       if (!hasConfiguredAuralesSync()) return
       void import('./services/sync/auralesSync').then(({ syncIfConfigured }) => {
@@ -151,13 +159,13 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibility)
       runSync()
     }
-  }, [])
+  }, [isAuthCallback])
 
   // Most settings and provider clients are intentionally local-first and
   // write directly to storage. Observe the active profile's durable state so
   // every small setting/account change is backed up without a manual button.
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback) return
     let fingerprint = ''
     let stopped = false
     const checkForChanges = () => {
@@ -176,22 +184,22 @@ export default function App() {
     // hashing a potentially multi-megabyte profile while the app is idle.
     const interval = window.setInterval(checkForChanges, 15000)
     return () => { stopped = true; window.clearInterval(interval) }
-  }, [chooseProfile])
+  }, [chooseProfile, isAuthCallback])
 
   // Route chunks stay off the critical path, but likely first destinations are
   // ready by the time people reach the navigation after the Home shell paints.
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback) return
     return prefetchLikelyRoutes()
-  }, [chooseProfile])
+  }, [chooseProfile, isAuthCallback])
 
   // The updater and its markdown UI are irrelevant to first paint. Mount it
   // after startup settles; UpdatePrompt keeps its own delayed network check.
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback) return
     const timer = window.setTimeout(() => setUpdatePromptReady(true), 1800)
     return () => window.clearTimeout(timer)
-  }, [chooseProfile])
+  }, [chooseProfile, isAuthCallback])
 
   useEffect(() => {
     const syncSources = () => {
@@ -208,6 +216,7 @@ export default function App() {
   }, [primaryProgressProvider, progressConnections, setWatchedCheckmarkSources, watchedCheckmarkSources])
 
   useEffect(() => {
+    if (isAuthCallback) return
     const refreshWatchedSources = () => {
       const current = useAppStore.getState()
       const sources = current.primaryProgressProvider === 'all'
@@ -219,15 +228,15 @@ export default function App() {
     }
     window.addEventListener('aurales:provider-account-changed', refreshWatchedSources)
     return () => window.removeEventListener('aurales:provider-account-changed', refreshWatchedSources)
-  }, [])
+  }, [isAuthCallback])
 
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback) return
     return scheduleIdleWork(() => syncAddonsFromStore(addons), 500)
-  }, [addons, chooseProfile])
+  }, [addons, chooseProfile, isAuthCallback])
 
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback) return
     let cancelled = false
     let stopSync: (() => void) | undefined
 
@@ -257,11 +266,11 @@ export default function App() {
       stopSync?.()
       stopProviderSync?.()
     }
-  }, [watchedCheckmarkSources, chooseProfile])
+  }, [watchedCheckmarkSources, chooseProfile, isAuthCallback])
 
   // Discord idle presence — set "Browsing" when no player is active
   useEffect(() => {
-    if (chooseProfile) return
+    if (chooseProfile || isAuthCallback || getPlatformCapabilities().platform !== 'tauri') return
     let cancelled = false
     let clearActivity: (() => Promise<void>) | undefined
 
@@ -284,7 +293,7 @@ export default function App() {
       cancelIdle()
       clearActivity?.().catch(() => {})
     }
-  }, [discordRichPresence, chooseProfile])
+  }, [discordRichPresence, chooseProfile, isAuthCallback])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme-accent', accentColor)
@@ -371,6 +380,8 @@ export default function App() {
             }
           >
             <Routes>
+              <Route path="/auth/simkl/callback" element={<SimklCallbackPage />} />
+              <Route path="/auth/mdblist/callback" element={<MdblistCallbackPage />} />
               <Route element={<Layout />}>
                 <Route path="/" element={startPagePath === '/' ? <HomePage /> : <Navigate to={startPagePath} replace />} />
                 <Route path="/search" element={<SearchPage />} />

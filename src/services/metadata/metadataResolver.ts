@@ -5,10 +5,12 @@ import { classifyMediaItem } from './metadataClassifier'
 import { resolveExternalIds } from './externalIdResolver'
 import { addonFallback, appMediaToSearchResult } from './metadataNormalizer'
 import { fetchAppProviderMetadata } from './metadataProviders'
-import { cacheClearCategory } from '../cache/sqliteCache'
+import { cacheClearCategory, cacheDelete, cacheGet, cacheSet } from '../cache/sqliteCache'
+import { CACHE_CATEGORIES } from '../cache/constants'
 import { clearAnimeSeasonMemoryCache } from './animeSeasonCache'
 import type { AddonMediaInput, AppMediaItem } from './types'
 import type { SearchResult } from '../../types'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 
 /** Bump this when the anime metadata mapping changes to invalidate stale cache entries. */
 const ANIME_RESOLVER_VERSION = 8
@@ -64,6 +66,49 @@ const cacheKey = (input: AddonMediaInput) => JSON.stringify([
   input.id, input.title, input.year, input.imdbId, input.tmdbId, input.tvdbId,
   input.traktId, input.simklId, input.anilistId, input.malId,
 ])
+const persistentMetadataKey = (input: AddonMediaInput) => `app_metadata_v1:${cacheKey(input)}`
+
+async function persistAppMetadata(input: AddonMediaInput, item: AppMediaItem): Promise<void> {
+  if (getPlatformCapabilities().platform === 'web') {
+    return cacheSet(persistentMetadataKey(input), item, {
+      category: item.type === 'anime' || item.isAnime ? CACHE_CATEGORIES.ANIME_METADATA : CACHE_CATEGORIES.APP_METADATA,
+      ttlSeconds: null,
+    })
+  }
+  return serializeMetadataMutation(() => invoke('save_app_metadata', {
+    mediaJson: JSON.stringify(item), addonId: input.addonId,
+    addonItemId: input.id || '', mediaType: item.type,
+  }).catch(() => undefined)).then(() => undefined)
+}
+
+function deleteAppMetadata(input: AddonMediaInput): Promise<void> {
+  if (getPlatformCapabilities().platform === 'web') return cacheDelete(persistentMetadataKey(input))
+  return serializeMetadataMutation(() => invoke('delete_app_metadata', {
+    addonId: input.addonId, addonItemId: input.id || '',
+  }).then(() => undefined))
+}
+
+function lookupToAddonInput(item: {
+  id?: string; sourceAddonId?: string; sourceAddonItemId?: string; mediaType?: string; addonType?: string
+  addonUrl?: string; title?: string; year?: number; imdbId?: string; tmdbId?: number; tvdbId?: number
+  anilistId?: number; malId?: number; traktId?: number; simklId?: number
+}): AddonMediaInput {
+  return {
+    addonId: item.sourceAddonId || 'tmdb',
+    addonUrl: item.addonUrl,
+    addonType: item.addonType || item.mediaType,
+    id: item.sourceAddonItemId || item.id,
+    title: item.title,
+    year: item.year,
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId,
+    tvdbId: item.tvdbId,
+    anilistId: item.anilistId,
+    malId: item.malId,
+    traktId: item.traktId,
+    simklId: item.simklId,
+  }
+}
 
 const metadataMemCache = new Map<string, { item: AppMediaItem; ts: number }>()
 const MEM_CACHE_TTL = 5 * 60 * 1000
@@ -117,6 +162,7 @@ export async function getAppMetadataByIds(ids: {
   tvdbId?: number
   anilistId?: number
 }): Promise<AppMediaItem | null> {
+  if (getPlatformCapabilities().platform === 'web') return null
   try {
     const raw = await readAfterMetadataMutations(() => invoke<string | null>('get_app_metadata_by_ids', {
       id: ids.id || null,
@@ -132,14 +178,19 @@ export async function getAppMetadataByIds(ids: {
   }
 }
 
-export async function getAppMetadataByIdsBatch(items: {
-  id?: string
-  imdbId?: string
-  tmdbId?: number
-  tvdbId?: number
-  anilistId?: number
-}[]): Promise<(AppMediaItem | null)[]> {
+export async function getAppMetadataByIdsBatch(items: Array<{
+  id?: string; sourceAddonId?: string; sourceAddonItemId?: string; mediaType?: string; addonType?: string
+  addonUrl?: string; title?: string; year?: number; imdbId?: string; tmdbId?: number; tvdbId?: number
+  anilistId?: number; malId?: number; traktId?: number; simklId?: number
+}>): Promise<(AppMediaItem | null)[]> {
   if (items.length === 0) return []
+  if (getPlatformCapabilities().platform === 'web') {
+    return Promise.all(items.map(async (item) => {
+      const input = lookupToAddonInput(item)
+      const cached = await cacheGet<AppMediaItem>(persistentMetadataKey(input))
+      return cached?.data?.sourceMetadataProvider === 'fallback_addon' ? null : cached?.data || null
+    }))
+  }
   try {
     const results = await readAfterMetadataMutations(() => invoke<(string | null)[]>('get_app_metadata_by_ids_batch', { items }))
     return results.map((raw) => raw ? JSON.parse(raw) as AppMediaItem : null)
@@ -163,7 +214,7 @@ export async function enrichSearchResultsWithAppMetadata(
   const memResults: (AppMediaItem | null)[] = items.map((item) => {
     const ids = {
       id: item.id,
-      sourceAddonId: item.sourceAddonId || item.provider || item.addonUrl,
+      sourceAddonId: item.sourceAddonId || item.provider || 'tmdb',
       sourceAddonItemId: item.sourceAddonItemId || item.id,
       mediaType: item.type,
       imdbId: item.imdbId,
@@ -183,9 +234,13 @@ export async function enrichSearchResultsWithAppMetadata(
   if (needsDbLookup.length > 0) {
     const batchInput = needsDbLookup.map((i) => ({
       id: items[i].id,
-      sourceAddonId: items[i].sourceAddonId || items[i].provider || items[i].addonUrl,
+      sourceAddonId: items[i].sourceAddonId || items[i].provider || 'tmdb',
       sourceAddonItemId: items[i].sourceAddonItemId || items[i].id,
       mediaType: items[i].type,
+      addonType: items[i].type,
+      addonUrl: items[i].addonUrl,
+      title: items[i].title,
+      year: items[i].year,
       imdbId: items[i].imdbId,
       tmdbId: numericProviderId(items[i].tmdbId),
       tvdbId: numericProviderId(items[i].tvdbId),
@@ -202,7 +257,7 @@ export async function enrichSearchResultsWithAppMetadata(
       needsDbLookup.forEach((origIdx, batchIdx) => {
         const item = fetched[batchIdx]
         dbResults[origIdx] = item
-        if (item) memCacheSet(batchInput[batchIdx], item)
+        if (item) memCacheSet({ ...batchInput[batchIdx], sourceAddonId: batchInput[batchIdx].sourceAddonId }, item)
       })
     }
   }
@@ -230,6 +285,7 @@ export async function enrichSearchResultsWithAppMetadata(
         index,
         input: {
           addonId: item.sourceAddonId || item.provider || 'tmdb',
+          addonUrl: item.addonUrl,
           addonType: item.type,
           id: item.sourceAddonItemId || item.id,
           title: item.title,
@@ -255,7 +311,23 @@ export async function enrichSearchResultsWithAppMetadata(
         if (!resolvedItem) return
         if (resolvedItem.sourceMetadataProvider === 'fallback_addon') return
         const targetIndex = uncachedInputs[resolvedIndex]?.index
-        if (targetIndex != null) cacheLookupResults[targetIndex].cached = resolvedItem
+        if (targetIndex != null) {
+          cacheLookupResults[targetIndex].cached = resolvedItem
+          const resolvedInput = uncachedInputs[resolvedIndex]?.input
+          if (resolvedInput) memCacheSet({
+            id: resolvedInput.id,
+            sourceAddonId: resolvedInput.addonId,
+            sourceAddonItemId: resolvedInput.id,
+            mediaType: resolvedInput.addonType,
+            imdbId: resolvedInput.imdbId,
+            tmdbId: resolvedInput.tmdbId,
+            tvdbId: resolvedInput.tvdbId,
+            anilistId: resolvedInput.anilistId,
+            malId: resolvedInput.malId,
+            traktId: resolvedInput.traktId,
+            simklId: resolvedInput.simklId,
+          }, resolvedItem)
+        }
       })
     } catch (e) {
       console.error('[metadata] Batch enrichment failed:', e)
@@ -291,9 +363,11 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
   const work = (async () => {
     const settings = useAppStore.getState()
     if (settings.appManagedMetadata) {
-      const cached = await readAfterMetadataMutations(() =>
-        invoke<string | null>('get_app_metadata_for_addon', { addonId: input.addonId, addonItemId: input.id || '' })
-      ).catch(() => null)
+      const cached = getPlatformCapabilities().platform === 'web'
+        ? await cacheGet<AppMediaItem>(persistentMetadataKey(input)).then((result) => result?.data ? JSON.stringify(result.data) : null).catch(() => null)
+        : await readAfterMetadataMutations(() =>
+            invoke<string | null>('get_app_metadata_for_addon', { addonId: input.addonId, addonItemId: input.id || '' })
+          ).catch(() => null)
       if (generation !== metadataGeneration) return resolveAppMetadata(input)
       if (settingsSignatureAtStart !== metadataSettingsSignature()) return resolveAppMetadata(input)
       if (cached) {
@@ -304,18 +378,18 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
           console.warn('[metadata] Discarding malformed cached metadata:', input.id, error)
         }
         if (!parsed) {
-          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+          await deleteAppMetadata(input).catch(() => undefined)
         } else if (parsed.sourceMetadataProvider === 'fallback_addon') {
-          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+          await deleteAppMetadata(input).catch(() => undefined)
         } else if (parsed.metadataClassifierVersion !== METADATA_CLASSIFIER_VERSION) {
-          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+          await deleteAppMetadata(input).catch(() => undefined)
         } else if (parsed.metadataSettingsSignature !== settingsSignatureAtStart) {
-          await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+          await deleteAppMetadata(input).catch(() => undefined)
         } else if (parsed.type === 'anime' || parsed.isAnime) {
           const activeSettings = animeSettingsSignature()
           if (parsed.animeResolverVersion !== ANIME_RESOLVER_VERSION || parsed.animeSettingsSignature !== activeSettings) {
             console.log('[metadata] Anime cache stale, re-resolving:', input.id)
-            await serializeMetadataMutation(() => invoke('delete_app_metadata', { addonId: input.addonId, addonItemId: input.id || '' })).catch(() => undefined)
+            await deleteAppMetadata(input).catch(() => undefined)
           } else {
             return parsed
           }
@@ -374,9 +448,7 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
           }
         }
         if (generation === metadataGeneration && settingsSignatureAtStart === metadataSettingsSignature() && ratingItem.sourceMetadataProvider !== 'fallback_addon') {
-          await serializeMetadataMutation(() => invoke('save_app_metadata', { mediaJson: JSON.stringify(ratingItem), addonId: input.addonId,
-            addonItemId: input.id || '', mediaType: ratingItem.type }).catch(() => undefined)
-          )
+          await persistAppMetadata(input, ratingItem).catch(() => undefined)
         }
       })().catch(() => undefined)
     }
@@ -393,9 +465,7 @@ export async function resolveAppMetadata(input: AddonMediaInput): Promise<AppMed
     item.metadataSettingsSignature = settingsSignatureAtStart
     if (generation !== metadataGeneration) return resolveAppMetadata(input)
     if (item.sourceMetadataProvider !== 'fallback_addon') {
-      await serializeMetadataMutation(() => invoke('save_app_metadata', { mediaJson: JSON.stringify(item), addonId: input.addonId,
-        addonItemId: input.id || '', mediaType: item.type }).catch(() => undefined)
-      )
+      await persistAppMetadata(input, item)
     }
     if (generation !== metadataGeneration || settingsSignatureAtStart !== metadataSettingsSignature()) {
       return resolveAppMetadata(input)
@@ -418,12 +488,14 @@ export async function clearAppMetadataCache(): Promise<void> {
     cacheClearCategory('provider_list'),
     cacheClearCategory('simkl_list'),
     cacheClearCategory('anime_mapping'),
+    cacheClearCategory(CACHE_CATEGORIES.APP_METADATA),
+    cacheClearCategory(CACHE_CATEGORIES.ANIME_METADATA),
   ])
   clearAnimeSeasonMemoryCache(cacheClear)
-  await Promise.all([
-    serializeMetadataMutation(() => invoke('clear_app_metadata')),
-    cacheClear,
-  ])
+  const nativeClear = getPlatformCapabilities().platform === 'web'
+    ? Promise.resolve()
+    : serializeMetadataMutation(() => invoke('clear_app_metadata'))
+  await Promise.all([nativeClear, cacheClear])
 }
 
 export async function clearAnimeMetadataCache(): Promise<void> {
@@ -436,6 +508,7 @@ export async function clearAnimeMetadataCache(): Promise<void> {
   const cacheClear = Promise.all([
     cacheClearCategory('anime_mapping'),
     cacheClearCategory('provider_list'),
+    cacheClearCategory(CACHE_CATEGORIES.ANIME_METADATA),
   ])
   clearAnimeSeasonMemoryCache(cacheClear)
   // Clear all TVDB season caches from localStorage
@@ -449,10 +522,10 @@ export async function clearAnimeMetadataCache(): Promise<void> {
   for (const key of keysToRemove) {
     localStorage.removeItem(key)
   }
-  await Promise.all([
-    serializeMetadataMutation(() => invoke('clear_anime_app_metadata')).catch(() => undefined),
-    cacheClear,
-  ])
+  const nativeClear = getPlatformCapabilities().platform === 'web'
+    ? Promise.resolve()
+    : serializeMetadataMutation(() => invoke('clear_anime_app_metadata')).catch(() => undefined)
+  await Promise.all([nativeClear, cacheClear])
   console.log('[metadata] Anime metadata cache cleared, removed', keysToRemove.length, 'season cache entries')
 }
 

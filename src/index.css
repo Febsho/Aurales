@@ -2413,6 +2413,37 @@ html[data-platform="linux"] .context-menu-glass {
     transition: none;
   }
 }
+
+/* Phone-width layouts keep the same floating navigation but compress its
+   labels and allow horizontal scrolling instead of clipping the last action. */
+@media (max-width: 520px) {
+  .cinematic-nav-capsule {
+    max-width: calc(100vw - 1rem);
+    gap: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: .25rem;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cinematic-nav-capsule::-webkit-scrollbar { display: none; }
+  .cinematic-nav-link {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: .42rem;
+    font-size: .68rem;
+  }
+  .cinematic-nav-search { width: 44px; min-width: 44px; min-height: 44px; }
+  /* Leave a small rendered-pixel margin for the floating panel's scale
+     transition so the final hit area remains at least 44 CSS pixels. */
+  .app-sidebar__nav a { min-height: 46px; }
+  .app-sidebar__header > button { min-width: 44px; min-height: 44px; }
+
+  .home-hero--under-nav .hero-content-overlay { padding-inline: 1rem; }
+  .home-hero-ratings > :nth-child(n + 5) { display: none; }
+  .hero-carousel-arrow { display: none; }
+}
 /* The brand shares the nav's height and top offset so the two read as one
    floating layer, rather than the logo sitting a few pixels off the bar. */
 .cinematic-nav-brand {
@@ -2678,6 +2709,14 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--landscape .c
   height: var(--fixed-cinematic-landscape-height) !important;
 }
 html[data-interface-theme="cinematic"] .fixed-hero-home .cinematic-row-track > button[data-show-all-layout="poster"] {
+  width: var(--fixed-cinematic-card-width) !important;
+  height: var(--fixed-cinematic-card-height) !important;
+  border-radius: 1rem;
+}
+/* Keep poster cards and the trailing Show All action on the same viewport
+   footprint in Fixed Focus, independent of the card focus animation setting.
+   The hero shelf slots wrap MediaCard, so size the card button inside each slot. */
+html[data-interface-theme="cinematic"] .fixed-hero-home .media-row--poster .cinematic-row-track > .media-row-card-slot > button {
   width: var(--fixed-cinematic-card-width) !important;
   height: var(--fixed-cinematic-card-height) !important;
   border-radius: 1rem;
@@ -4506,6 +4545,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 }
 
 /* Reduced motion */
+@media (pointer: coarse) {
+  .inapp-player-controls button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -4513,4 +4559,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+@media (max-width: 520px) {
+  .cinematic-nav-link {
+    padding-inline: .2rem;
+    font-size: .62rem;
+  }
+  .cinematic-nav-search { width: 1.75rem; }
+  .home-hero-ratings > :nth-child(n + 4) { display: none; }
 }

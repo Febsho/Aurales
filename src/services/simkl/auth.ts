@@ -5,6 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 import type {
   SimklAccount,
   SimklConfig,
@@ -38,10 +39,13 @@ export function getSimklClientId(): string {
 }
 
 export async function getSimklConfig(): Promise<SimklConfig> {
+  const web = getPlatformCapabilities().platform === 'web'
   return {
     clientId: getSimklClientId(),
     clientSecret: '',
-    redirectUri: import.meta.env.VITE_SIMKL_REDIRECT_URI || DEFAULT_REDIRECT_URI,
+    redirectUri: web
+      ? import.meta.env.VITE_SIMKL_WEB_REDIRECT_URI || `${window.location.origin}/auth/simkl/callback`
+      : import.meta.env.VITE_SIMKL_REDIRECT_URI || DEFAULT_REDIRECT_URI,
   }
 }
 
@@ -69,13 +73,21 @@ export function initiateSimklLogin(): Promise<SimklPinAuth> {
       const challenge = await sha256UrlSafe(verifier)
       if (generation !== authGeneration) throw new DOMException('Simkl sign-in was cancelled.', 'AbortError')
       sessionStorage.setItem('simkl_oauth_v2', JSON.stringify({ verifier, state, redirectUri: config.redirectUri }))
+      const params = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'media:read media:write', state, code_challenge: challenge, code_challenge_method: 'S256' })
+      if (getPlatformCapabilities().platform === 'web') {
+        const redirect = new URL(config.redirectUri)
+        if (redirect.origin !== window.location.origin || (redirect.protocol !== 'https:' && redirect.hostname !== 'localhost' && redirect.hostname !== '127.0.0.1')) {
+          throw new Error('Simkl browser redirect URI must use this app origin over HTTPS and be registered with Simkl.')
+        }
+        window.location.assign(`https://simkl.com/oauth2/authorize?${params}`)
+        return OAUTH_PENDING
+      }
       // The callback server must own the port before the browser is sent away.
       callback = invoke<string>('start_simkl_callback_server')
       pendingCallback = callback
       void callback.catch(() => {})
       await new Promise((resolve) => setTimeout(resolve, 75))
       if (generation !== authGeneration) throw new DOMException('Simkl sign-in was cancelled.', 'AbortError')
-      const params = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'media:read media:write', state, code_challenge: challenge, code_challenge_method: 'S256' })
       await invoke('open_simkl_auth', { url: `https://simkl.com/oauth2/authorize?${params}` })
       return OAUTH_PENDING
     } catch (error) {
@@ -97,11 +109,38 @@ export async function completeSimklLogin(code: string): Promise<SimklAccount> {
   const config = await getSimklConfig()
   const pending = readPendingOauth()
   if (!code.trim()) throw new Error('Simkl did not return an authorization code.')
-  const tokenJson = await invoke<string>('exchange_simkl_v2_token', { code: code.trim(), clientId: config.clientId, redirectUri: pending.redirectUri, codeVerifier: pending.verifier })
+  const tokenJson = getPlatformCapabilities().platform === 'web'
+    ? await requestSimklToken({ grant_type: 'authorization_code', code: code.trim(), client_id: config.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier })
+    : await invoke<string>('exchange_simkl_v2_token', { code: code.trim(), clientId: config.clientId, redirectUri: pending.redirectUri, codeVerifier: pending.verifier })
   if (generation !== authGeneration) throw new Error('Simkl sign-in was cancelled.')
   const token = parseTokenResponse(tokenJson)
   sessionStorage.removeItem('simkl_oauth_v2')
   return finaliseSimklLogin(token, generation)
+}
+
+/** Validate the browser redirect and finish the same AUTH V2 PKCE flow. */
+export async function completeSimklBrowserCallback(search: string): Promise<SimklAccount> {
+  const params = new URLSearchParams(search)
+  const pending = readPendingOauth()
+  if (params.get('state') !== pending.state || params.get('iss') !== 'https://simkl.com') {
+    throw new Error('Rejected an unexpected Simkl authorization response.')
+  }
+  const error = params.get('error')
+  if (error) throw new Error(error === 'access_denied' ? 'Simkl sign-in was cancelled.' : `Simkl authorization failed: ${error}`)
+  const code = params.get('code')
+  if (!code) throw new Error('Simkl did not return an authorization code.')
+  return completeSimklLogin(code)
+}
+
+async function requestSimklToken(params: Record<string, string>): Promise<string> {
+  const response = await fetch('https://api.simkl.com/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams(params),
+  })
+  const body = await response.text()
+  if (!response.ok) throw new Error(`Simkl token request failed (${response.status}): ${body.slice(0, 300)}`)
+  return body
 }
 
 /** @deprecated kept for older call sites. */
@@ -214,7 +253,9 @@ async function refreshSimklTokenImpl(token: SimklToken, clientId: string): Promi
   const generation = authGeneration
   if (!token?.refreshToken || !clientId) return null
   try {
-    const json = await invoke<string>('refresh_simkl_v2_token', { refreshToken: token.refreshToken, clientId })
+    const json = getPlatformCapabilities().platform === 'web'
+      ? await requestSimklToken({ grant_type: 'refresh_token', refresh_token: token.refreshToken, client_id: clientId })
+      : await invoke<string>('refresh_simkl_v2_token', { refreshToken: token.refreshToken, clientId })
     const current = getStoredSimklToken()
     if (generation !== authGeneration || !current || current.refreshToken !== token.refreshToken || current.accessToken !== token.accessToken) return null
     const response = parseTokenResponse(json)
@@ -261,7 +302,9 @@ export function disconnectSimkl(): void {
   pendingCallback = null
   pendingAccount = null
   startingLogin = null
-  const cancellation = invoke<void>('cancel_simkl_callback_server').catch(() => {})
+  const cancellation = getPlatformCapabilities().platform === 'web'
+    ? Promise.resolve()
+    : invoke<void>('cancel_simkl_callback_server').catch(() => {})
   cancellingCallback = cancellation
   void cancellation.finally(() => { if (cancellingCallback === cancellation) cancellingCallback = null })
   localStorage.removeItem(LS_TOKEN)
@@ -283,10 +326,13 @@ export function getSimklConnectionStatus(): SimklConnectionStatus {
 }
 
 async function fetchSimklAccount(accessToken: string, clientId: string): Promise<SimklAccount> {
-  const json = await invoke<string>('fetch_simkl_user', {
-    accessToken,
-    clientId,
-  })
+  const json = getPlatformCapabilities().platform === 'web'
+    ? await (async () => {
+      const response = await fetch('https://api.simkl.com/users/settings', { headers: { Authorization: `Bearer ${accessToken}`, 'simkl-api-key': clientId, Accept: 'application/json' } })
+      if (!response.ok) throw new Error(`Simkl account request failed (${response.status}). Check browser CORS or try again.`)
+      return JSON.stringify(await response.json())
+    })()
+    : await invoke<string>('fetch_simkl_user', { accessToken, clientId })
   const data = JSON.parse(json) as Record<string, unknown>
   const user = (data.user || data) as Record<string, unknown>
   return {

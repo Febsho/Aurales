@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getMediaWorkerConfig, proxyAuralesSyncRequest } from '../mediaWorker'
 import type { SyncRecord } from './syncQueue'
 
 const SYNC_BATCH_TIMEOUT_MS = 30_000
@@ -102,18 +103,24 @@ export async function runSyncBatch(
     controller.abort(new DOMException('Sync request timed out', 'TimeoutError'))
   }, SYNC_BATCH_TIMEOUT_MS)
   try {
-    const response = await fetcher(`${input.endpoint.replace(/\/$/, '')}/v1/sync`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${input.accessToken}` },
-      body: JSON.stringify({
-        schemaVersion: input.schemaVersion,
-        deviceId: input.deviceId,
-        deviceName: input.deviceName,
-        cursor: input.cursor,
-        records: input.records,
-      }),
-      signal: controller.signal,
+    const body = JSON.stringify({
+      schemaVersion: input.schemaVersion,
+      deviceId: input.deviceId,
+      deviceName: input.deviceName,
+      cursor: input.cursor,
+      records: input.records,
     })
+    const response = fetcher === fetch && getMediaWorkerConfig()
+      ? await proxyAuralesSyncRequest('/v1/sync', body, input.accessToken, controller.signal).then((result) => {
+        if (!result.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${result.status})`)
+        return new Response(result.body, { status: 200, headers: { 'content-type': 'application/json' } })
+      })
+      : await fetcher(`${input.endpoint.replace(/\/$/, '')}/v1/sync`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${input.accessToken}` },
+        body,
+        signal: controller.signal,
+      })
     if (!response.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${response.status})`)
     return await readSyncResponse(response)
   } finally {

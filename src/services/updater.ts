@@ -3,6 +3,7 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { APP_VERSION } from './appVersion'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 export interface UpdateInfo {
   version: string
@@ -30,6 +31,10 @@ export function getFlatpakInstallCommand(version: string): string | null {
 }
 
 export async function openFlatpakRelease(version: string): Promise<void> {
+  if (getPlatformCapabilities().platform === 'web') {
+    window.open(`${RELEASE_BASE_URL}/tag/v${encodeURIComponent(version)}`, '_blank', 'noopener,noreferrer')
+    return
+  }
   await invoke('open_simkl_auth', { url: `${RELEASE_BASE_URL}/tag/v${encodeURIComponent(version)}` })
 }
 
@@ -45,11 +50,15 @@ function getInstallKind(): Promise<string> {
  * signed updater; standalone Flatpak bundles use the native host installer.
  */
 export async function canSelfUpdate(): Promise<boolean> {
+  if (getPlatformCapabilities().platform === 'web') return false
   await getInstallKind()
   return true
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  // Browser deployments update with the site; Tauri's signed updater only
+  // applies to the installed desktop application.
+  if (getPlatformCapabilities().platform === 'web') return null
   try {
     const update = await check()
     if (!update) return null
@@ -67,6 +76,9 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 export async function downloadAndInstall(
   onProgress?: (progress: UpdateProgress) => void
 ): Promise<void> {
+  if (getPlatformCapabilities().platform === 'web') {
+    throw new Error('Browser deployments update when the Aurales site is redeployed.')
+  }
   const update = await check()
   if (!update) throw new Error('No update available')
 
@@ -111,6 +123,7 @@ export interface ReleaseNotes {
 
 /** Patch notes from the latest GitHub release; null when unavailable. */
 export async function getLatestReleaseNotes(): Promise<ReleaseNotes | null> {
+  if (getPlatformCapabilities().platform === 'web') return null
   try {
     const raw = await invoke<string>('github_release_notes')
     const data = JSON.parse(raw) as { tag_name?: string; name?: string; body?: string; published_at?: string }

@@ -288,7 +288,8 @@ export default function WatchlistButton({ mediaRef, item, mediaType = 'movie', i
         })())
       }
 
-      // AniList checking not implemented yet — just mark done
+      // Resolve every known split-cour candidate so a title is considered in
+      // the list when any mapped season/cour is already tracked.
       if (anilistActive) {
         checks.push((async () => {
           try {

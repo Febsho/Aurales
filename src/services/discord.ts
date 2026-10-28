@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 export interface DiscordActivity {
   details?: string
@@ -22,6 +23,7 @@ const defaultBrowsingActivity: DiscordActivity = {
 let browsingActivity: DiscordActivity = defaultBrowsingActivity
 
 export async function setDiscordActivity(activity: DiscordActivity): Promise<void> {
+  if (getPlatformCapabilities().platform !== 'tauri') return
   await invoke('discord_set_activity', {
     details: activity.details,
     state: activity.state,
@@ -45,9 +47,11 @@ export async function restoreDiscordBrowsingActivity(): Promise<void> {
 }
 
 export async function clearDiscordActivity(): Promise<void> {
+  if (getPlatformCapabilities().platform !== 'tauri') return
   await invoke('discord_clear_activity')
 }
 
 export async function disconnectDiscord(): Promise<void> {
+  if (getPlatformCapabilities().platform !== 'tauri') return
   await invoke('discord_disconnect')
 }

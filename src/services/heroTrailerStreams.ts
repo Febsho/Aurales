@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { TrailerSource } from './trailers'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 export interface ResolvedHeroStreams {
   videoUrl: string
@@ -21,6 +22,7 @@ function rememberResolvedHeroStream(key: string, promise: Promise<ResolvedHeroSt
 }
 
 export function resolveHeroStreams(videoId: string, maxHeight = 2160): Promise<ResolvedHeroStreams | null> {
+  if (!getPlatformCapabilities().nativePlayer) return Promise.resolve(null)
   const cacheKey = `${videoId}:${maxHeight}`
   const cached = resolveCache.get(cacheKey)
   if (cached) {

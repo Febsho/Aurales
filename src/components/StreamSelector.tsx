@@ -140,7 +140,36 @@ const STREAM_FILTER_GROUPS: { id: FilterGroupId; title: string; options: StreamF
   },
 ]
 
-export default function StreamSelector({ open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange, onNextEpisode, nextEpisodeHint }: StreamSelectorProps) {
+function playbackSessionKey(props: StreamSelectorProps): string {
+  return JSON.stringify([
+    props.mediaType, props.mediaId,
+    props.seasonEpisode?.season, props.seasonEpisode?.episode,
+    props.sourceAddonId, props.sourceAddonItemId,
+    props.sourceConnectionId, props.sourceItemId,
+  ])
+}
+
+export default function StreamSelector(props: StreamSelectorProps) {
+  const [nextEpisodeKey, setNextEpisodeKey] = useState<string | null>(null)
+  const sessionKey = playbackSessionKey(props)
+  const startFirstStream = nextEpisodeKey === sessionKey
+  return <StreamSelectorSession
+    {...props}
+    key={sessionKey}
+    startFirstStream={startFirstStream}
+    startTime={startFirstStream ? 0 : props.startTime}
+    forceManualSelection={startFirstStream ? false : props.forceManualSelection}
+    onClose={() => { setNextEpisodeKey(null); props.onClose() }}
+    onNextEpisode={props.onNextEpisode ? (season, episode) => {
+      // Update the owner's episode as well as the player. The keyed session
+      // discards the previous episode's source list, recovery queue and URLs.
+      setNextEpisodeKey(playbackSessionKey({ ...props, seasonEpisode: { season, episode } }))
+      props.onNextEpisode!(season, episode)
+    } : undefined}
+  />
+}
+
+function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange, onNextEpisode, nextEpisodeHint }: StreamSelectorProps & { startFirstStream: boolean }) {
   const nativePlayerAvailable = useNativePlayerSupported()
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
@@ -171,7 +200,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   const playbackEvidenceTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const [subtitles, setSubtitles] = useState<SubtitleResult[]>([])
   const addons = useAppStore((s) => s.addons)
-  const autoPlayFirstStream = useAppStore((s) => s.autoPlayFirstStream)
+  const configuredAutoPlay = useAppStore((s) => s.autoPlayFirstStream)
+  const autoPlayFirstStream = startFirstStream || configuredAutoPlay
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const automaticStreamRecovery = useAppStore((s) => s.automaticStreamRecovery)
@@ -639,7 +669,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
   // above has already kicked off, so streams/subtitles still arrive for the
   // fallback queue.
   useEffect(() => {
-    if (!open || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || autoSmartStartedRef.current || fastPathTriedRef.current) return
+    if (startFirstStream || !open || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || autoSmartStartedRef.current || fastPathTriedRef.current) return
     fastPathTriedRef.current = true
     const cleanMediaId = String(mediaId).trim().replace(/:(\d+):(\d+)$/, '')
     if (!cleanMediaId) return
@@ -679,13 +709,20 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       if (prepareTimeout !== undefined) window.clearTimeout(prepareTimeout)
       prepareController.abort()
     }
-  }, [open, playback, autoPlayFirstStream, mediaId, mediaType, seasonEpisode, tmdbId, title, sourceAddonId, sourceAddonItemId])
+  }, [open, playback, autoPlayFirstStream, startFirstStream, mediaId, mediaType, seasonEpisode, tmdbId, title, sourceAddonId, sourceAddonItemId])
 
   useEffect(() => {
     if (!open || loading || torBoxChecking || playback || !autoPlayFirstStream || manualSelectionRequestedRef.current || filteredStreams.length === 0 || autoSmartStartedRef.current) return
     autoSmartStartedRef.current = true
+    if (startFirstStream) {
+      smartQueueRef.current = new SmartFallbackQueue(scoredStreams.map((candidate) => candidate.stream))
+      smartActiveRef.current = true
+      const first = smartQueueRef.current.next()
+      if (first) handlePlayRef.current(first, streams.indexOf(first))
+      return
+    }
     startSmartPlayRef.current()
-  }, [open, loading, torBoxChecking, playback, autoPlayFirstStream, filteredStreams.length])
+  }, [open, loading, torBoxChecking, playback, autoPlayFirstStream, startFirstStream, filteredStreams.length, scoredStreams, streams])
 
   // A fast-path stream failed before the addon results had arrived: resume the
   // smart fallback as soon as there is something to fall back to.
@@ -702,7 +739,7 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
     return () => onResolvingChange?.(false)
   }, [open, autoPlayFirstStream, playback, loading, torBoxChecking, streams.length, onResolvingChange])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     playRequestGenerationRef.current += 1
     if (!open) return
     autoSmartStartedRef.current = false
@@ -959,7 +996,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
       contentType: mediaType,
       isAnime: isAnimePlayback,
       // imdbId derived from mediaId if it looks like an IMDB id
-      imdbId: mediaId.startsWith('tt') ? mediaId : undefined,
+      imdbId: /^tt\d+$/i.test(String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''))
+        ? String(mediaId).trim().replace(/:(\d+):(\d+)$/, '') : undefined,
       tmdbId: tmdbId || (/^tmdb[-:]/i.test(mediaId) ? Number(mediaId.replace(/^tmdb[-:]/i, '')) : undefined),
       // tvdbId enables the TVDBâ†’AniList/PMDB episode mapping during scrobbling
       tvdbId: tvdbId != null
@@ -991,6 +1029,8 @@ export default function StreamSelector({ open, onClose, mediaType, mediaId, titl
           onPlaybackError={handlePlaybackError}
           onPlaybackStarted={handlePlaybackStarted}
           onReportBad={reportBad}
+          onNextEpisode={onNextEpisode}
+          nextEpisodeHint={nextEpisodeHint}
         />,
         document.body
       )

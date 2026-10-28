@@ -5,11 +5,11 @@
 <h1 align="center">Aurales</h1>
 
 <p align="center">
-  <strong>A modern desktop media hub for discovery, streaming, watch tracking and native playback.</strong>
+  <strong>A media hub for desktop and web: discovery, streaming and watch tracking with native playback on supported desktops.</strong>
 </p>
 
 <p align="center">
-  Browse movies, series and anime, connect your services, install Stremio addons and play everything through a powerful native mpv player.
+  Browse movies, series and anime, connect your services, install Stremio addons and play through native mpv on supported desktops or the browser player on web.
 </p>
 
 <p align="center">
@@ -42,13 +42,13 @@
 
 ## What is Aurales?
 
-Aurales is a desktop media application built around a simple idea:
+Aurales is a cross-platform media application built around a simple idea:
 
 **finding something to watch, playing it and keeping track of it should happen in one app.**
 
-It combines metadata, discovery, watch tracking, Stremio-compatible addons, connected services and native media playback into a fast desktop experience for Windows and Linux.
+It combines metadata, discovery, watch tracking, Stremio-compatible addons and connected services in one shared application. Windows and Linux use native mpv playback; macOS and browser/PWA builds use the shared HTML video player where browser support allows.
 
-Aurales is designed to feel like a dedicated streaming application rather than a browser wrapped around several services.
+Aurales keeps the same interface and data contracts across desktop and web, with browser playback subject to each device's codec, CORS and media-provider support.
 
 ---
 
@@ -757,7 +757,44 @@ npm run tauri build
 # Linux
 npm run tauri dev -- --config src-tauri/tauri.linux.conf.json
 npm run tauri build -- --config src-tauri/tauri.linux.conf.json
+
+# macOS (Apple Silicon app bundle)
+npm run build:macos
 ```
+
+The macOS bundle uses the shared WebView player and packages the universal
+`yt-dlp` sidecar. Embedded libmpv surfaces remain available on Windows and
+Linux; the macOS configuration intentionally excludes the empty mpv sidecar.
+`npm run build:macos` creates a local `.app` bundle. To package it in a
+drag-to-Applications disk image, run `npm run package:macos:dmg` after the app
+build; public distribution still requires signing and notarization.
+
+The browser and PWA build is separate from the desktop bundles:
+
+```bash
+npm run build:web
+```
+
+Run browser integration coverage with `npm run test:browser`. To verify direct
+playback against a live CORS-enabled source, set `AURALES_LIVE_MEDIA_URL` to an
+authorized HTTPS media URL and run `npm run test:browser:live`. For example,
+the public CC0 sample used by the browser project is:
+
+```bash
+AURALES_LIVE_MEDIA_URL=https://developer.mozilla.org/shared-assets/videos/flower.mp4 npm run test:browser:live
+```
+
+The live test checks CORS playback, HTTP byte ranges, and seeking across all
+five Playwright browser profiles. It does not replace testing signed streams
+from each configured media provider.
+
+Deploy `dist-web/` to an HTTPS static host with SPA history fallback. See
+[`WEB_PLATFORM_AUDIT.md`](WEB_PLATFORM_AUDIT.md) and
+[`docs/media-worker.md`](docs/media-worker.md) for browser environment variables
+and optional worker setup. A production Nginx example with PWA-safe cache headers
+is provided at [`deploy/nginx/aurales-web.conf`](deploy/nginx/aurales-web.conf).
+The optional worker includes systemd and Caddy deployment examples in
+[`docs/media-worker.md`](docs/media-worker.md).
 
 Run the frontend:
 

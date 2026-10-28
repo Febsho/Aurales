@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { probeStreamWithWorker } from '../mediaWorker'
 
 export interface StreamProbeResult {
   ok: boolean
@@ -16,12 +17,12 @@ export interface StreamProbeResult {
 
 interface StreamProbeResponse {
   status: number
-  content_type: string | null
-  accept_ranges: boolean
-  content_length: number | null
-  final_url: string
-  sampled_bytes: number
-  elapsed_ms: number
+  contentType: string | null
+  acceptRanges: boolean
+  contentLength: number | null
+  finalUrl: string
+  sampledBytes: number
+  elapsedMs: number
 }
 
 const PROBE_TIMEOUT_MS = 4_000
@@ -38,19 +39,36 @@ function verdict(status: number, contentType?: string): boolean {
 // Returns null when probing is unavailable (web build — arbitrary stream hosts
 // don't send CORS headers, so a browser-side probe cannot succeed).
 export async function probeStreamUrl(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<StreamProbeResult | null> {
-  if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return null
+  if (typeof window === 'undefined') return null
+  if (!(window as any).__TAURI_INTERNALS__) {
+    const response = await probeStreamWithWorker(url, timeoutMs)
+    if (!response) return null
+    return {
+      ok: verdict(response.status, response.contentType),
+      status: response.status,
+      contentType: response.contentType,
+      acceptsRanges: response.acceptRanges,
+      contentLength: response.contentLength,
+      finalUrl: response.finalUrl,
+      sampledBytes: response.sampledBytes,
+      elapsedMs: response.elapsedMs,
+      throughputMbps: response.elapsedMs > 0 ? (response.sampledBytes * 8) / response.elapsedMs / 1000 : undefined,
+      probedAt: Date.now(),
+      error: response.error,
+    }
+  }
   try {
     const response = await invoke<StreamProbeResponse>('http_probe_stream', { url, timeoutMs })
     return {
-      ok: verdict(response.status, response.content_type ?? undefined),
+      ok: verdict(response.status, response.contentType ?? undefined),
       status: response.status,
-      contentType: response.content_type ?? undefined,
-      acceptsRanges: response.accept_ranges,
-      contentLength: response.content_length ?? undefined,
-      finalUrl: response.final_url || undefined,
-      sampledBytes: response.sampled_bytes,
-      elapsedMs: response.elapsed_ms,
-      throughputMbps: response.elapsed_ms > 0 ? (response.sampled_bytes * 8) / response.elapsed_ms / 1000 : undefined,
+      contentType: response.contentType ?? undefined,
+      acceptsRanges: response.acceptRanges,
+      contentLength: response.contentLength ?? undefined,
+      finalUrl: response.finalUrl || undefined,
+      sampledBytes: response.sampledBytes,
+      elapsedMs: response.elapsedMs,
+      throughputMbps: response.elapsedMs > 0 ? (response.sampledBytes * 8) / response.elapsedMs / 1000 : undefined,
       probedAt: Date.now(),
     }
   } catch (error) {

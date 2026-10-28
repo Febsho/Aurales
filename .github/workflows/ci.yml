@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: aurales-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, test, and browser verification
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install desktop and browser test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file \
+            libwebkit2gtk-4.1-dev libx11-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev ffmpeg
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+            media-worker -> target
+            packages/aurales-domain -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build desktop frontend
+        run: npm run build
+
+      - name: Build browser app and verify public bundle
+        run: npm run build:web
+
+      - name: Rust domain tests
+        run: cargo test --manifest-path packages/aurales-domain/Cargo.toml
+
+      - name: Media worker tests
+        run: cargo test --manifest-path media-worker/Cargo.toml
+
+      - name: Tauri Rust tests
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":null,"resources":null}}'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Browser integration tests
+        run: npm run test:browser
+
+      - name: PWA production-preview test
+        run: npm run test:pwa
+
+      - name: Upload browser deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurales-web-${{ github.sha }}
+          path: dist-web/
+          if-no-files-found: error
+          retention-days: 7
+
+  native-platforms:
+    name: Native Rust compile (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - ubuntu-22.04
+          - windows-latest
+          - macos-latest
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 30
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":null,"resources":null}}'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file \
+            libwebkit2gtk-4.1-dev libx11-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Compile native player and IPC for this platform
+        run: cargo check --manifest-path src-tauri/Cargo.toml --lib

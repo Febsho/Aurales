@@ -2,6 +2,10 @@ import { invoke } from '@tauri-apps/api/core'
 
 function hasTauriBridge(): boolean { return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window }
 
+/** Password persistence uses the native OS keyring. Browser storage deliberately
+ * does not retain the account password or vault-unlock secret. */
+export function syncPasswordPersistenceAvailable(): boolean { return hasTauriBridge() }
+
 export async function saveSyncPassword(email: string, password: string): Promise<void> {
   if (!hasTauriBridge()) return
   await invoke('sync_password_store', { email, password })

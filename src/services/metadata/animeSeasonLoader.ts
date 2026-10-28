@@ -4,6 +4,7 @@ import { getTvdbApiKey } from '../apiKeys'
 import { cacheGet, cacheSet } from '../cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 import { tvdbProvider } from '../tvdb'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 
 interface NativeAnimeSeasonResponse {
   data: SeasonDetails
@@ -89,7 +90,10 @@ export async function loadAnimeSeason(
     if (cached) {
       ensureCurrent(group, key, generation)
       if (cached.stale) {
-        void invokeNative(id, season, key, `background:${key}`, 'background', true)
+        const refresh = getPlatformCapabilities().platform === 'web'
+          ? tvdbProvider.getSeason(`tvdb-${id}`, season).then((data) => ({ data, stale: false, cacheStatus: 'miss' as const }))
+          : invokeNative(id, season, key, `background:${key}`, 'background', true)
+        void refresh
           .then((response) => {
             if (response.stale) throw staleError()
             return cacheSet(key, response.data, {
@@ -105,6 +109,16 @@ export async function loadAnimeSeason(
           .catch(() => undefined)
       }
       return cached.data
+    }
+
+    if (getPlatformCapabilities().platform === 'web') {
+      const data = await tvdbProvider.getSeason(`tvdb-${id}`, season)
+      ensureCurrent(group, key, generation)
+      await cacheSet(key, data, {
+        category: CACHE_CATEGORIES.TVDB_SEASON,
+        ttlSeconds: CACHE_TTLS.TVDB_SEASON,
+      })
+      return data
     }
 
     try {

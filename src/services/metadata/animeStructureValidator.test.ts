@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
@@ -11,6 +11,11 @@ const episode = (episodeNumber: number, overrides = {}) => ({
 })
 
 describe('anime structure validation compatibility', () => {
+  afterEach(() => {
+    vi.resetAllMocks()
+    vi.unstubAllGlobals()
+  })
+
   it('characterizes flattened multi-season scoring', () => {
     const seasons = [{ id: 's1', seasonNumber: 1, episodeCount: 14, episodes: Array.from({ length: 14 }, (_, i) => episode(i + 1, { absoluteEpisodeNumber: i + 1 })), airDate: '2020-01-01' }]
     expect(validateAnimeTvdbStructure(seasons, true)).toEqual({
@@ -30,5 +35,12 @@ describe('anime structure validation compatibility', () => {
     await expect(validateAnimeTvdbStructureWithNativeFallback(seasons)).resolves.toMatchObject({ hasMultipleRealSeasons: true })
     invoke.mockRejectedValueOnce(new Error('older binary'))
     await expect(validateAnimeTvdbStructureWithNativeFallback(seasons)).resolves.toEqual(validateAnimeTvdbStructure(seasons))
+  })
+
+  it('uses the TypeScript structure validator directly in browser builds', async () => {
+    vi.stubGlobal('window', {})
+    const seasons = [{ id: 's1', seasonNumber: 1, episodeCount: 1, episodes: [episode(1)], airDate: '2020-01-01' }]
+    await expect(validateAnimeTvdbStructureWithNativeFallback(seasons)).resolves.toEqual(validateAnimeTvdbStructure(seasons))
+    expect(invoke).not.toHaveBeenCalled()
   })
 })

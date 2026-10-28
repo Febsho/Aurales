@@ -42,6 +42,14 @@ afterEach(() => {
 })
 
 describe('native anime-list episode mapping compatibility', () => {
+  it('uses the TypeScript episode resolver directly in browser builds', async () => {
+    vi.stubGlobal('window', {})
+    await expect(resolveAnimeEpisodeMappingWithNativeFallback({
+      operation: 'tvdbToAnilist', entries, season: 1, episode: 12,
+    })).resolves.toEqual({ anilistId: 101, absoluteEpisode: 12 })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   it('uses the native indexed dataset lookup without changing raw mappings', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
     const mapping = { anilist_id: 101, mal_id: 201, tvdb_id: 900, imdb_id: ['tt1', 'tt2'] }

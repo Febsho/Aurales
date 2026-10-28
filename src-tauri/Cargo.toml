@@ -7,6 +7,24 @@ license = "MIT"
 edition = "2021"
 rust-version = "1.88"
 default-run = "aurales-app"
+autobins = false
+
+[features]
+dev-tools = []
+
+[[bin]]
+name = "aurales-app"
+path = "src/main.rs"
+
+[[bin]]
+name = "inspect_db"
+path = "src/bin/inspect_db.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "debug_pmdb"
+path = "src/bin/debug_pmdb.rs"
+required-features = ["dev-tools"]
 
 [lib]
 name = "app_lib"
@@ -16,6 +34,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
+aurales-domain = { path = "../packages/aurales-domain" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
