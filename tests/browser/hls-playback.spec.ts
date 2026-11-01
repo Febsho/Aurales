@@ -45,3 +45,29 @@ test('InAppPlayer plays and seeks an HLS VOD source', async ({ page }, testInfo)
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
   await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
 })
+
+
+test('native Safari HLS plays the checked-in fixture and seeks', async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes('webkit'), 'Native HLS is specific to WebKit in this browser matrix.')
+  const manifestBody = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/h264-aac.m3u8'), 'utf8')
+  await page.route('**/tests/browser/fixtures/h264-aac.m3u8', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl; charset=utf-8',
+    body: manifestBody,
+  }))
+  const manifestResponse = page.waitForResponse((response) => response.url().endsWith('/tests/browser/fixtures/h264-aac.m3u8'))
+  const segmentResponse = page.waitForResponse((response) => response.url().endsWith('/tests/browser/fixtures/hls-segment-000.m2ts'))
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.m3u8')}`)
+  const manifest = await manifestResponse
+  expect(manifest.status()).toBe(200)
+  expect(manifest.headers()['content-type']).toContain('application/vnd.apple.mpegurl')
+
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  expect((await segmentResponse).status()).toBe(200)
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.duration), { timeout: 15_000 }).toBeGreaterThan(11.9)
+  await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 5 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(4.9)
+  await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
+})

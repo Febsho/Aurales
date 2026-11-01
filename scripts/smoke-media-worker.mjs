@@ -53,6 +53,23 @@ if (!preflight.ok || preflight.headers.get('access-control-allow-origin') !== or
 
 console.log('Worker health, API-key enforcement, capabilities, and configured-origin CORS passed.')
 
+if (capabilities.mediaDirectProxy) {
+  const blockedSession = await request('/v1/media/sessions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Origin: origin.origin,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ url: 'https://not-allowlisted.invalid/video.mp4' }),
+  })
+  const blockedBody = await blockedSession.json()
+  if (blockedSession.status !== 403 || blockedBody.error !== 'media_host_not_allowed') {
+    throw new Error('Worker did not reject a media host outside the exact hostname allowlist.')
+  }
+  console.log('Unallowlisted media-host rejection passed.')
+}
+
 if (mediaUrl) {
   const source = new URL(mediaUrl)
   if (source.protocol !== 'https:') throw new Error('AURALES_MEDIA_SMOKE_URL must use HTTPS.')

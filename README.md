@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/Febsho/Aurales/releases/latest">
-    <img src="https://img.shields.io/badge/Download-v0.5.1-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+    <img src="https://img.shields.io/badge/Download-v0.5.2-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
   </a>
 </p>
 
@@ -67,7 +67,7 @@ Movies, series and anime from multiple metadata providers, recommendation engine
 
 ### Watch
 
-Choose a stream and play through native **mpv** with hardware acceleration, subtitles and advanced playback controls.
+Choose a stream and play through native **mpv** with hardware acceleration on Windows/Linux, or the shared browser player on macOS and web.
 
 </td>
 <td width="33%" align="center">
@@ -252,6 +252,17 @@ The player supports:
 * Configurable subtitle styling
 
 Aurales can use an embedded player or native mpv playback depending on platform and configuration.
+
+macOS, browser, and PWA builds use Aurales' shared `InAppPlayer` with the
+browser's HTML video engine. It supports direct-play media, native HLS where
+available, HLS.js on compatible Media Source browsers, stream selection and
+fallback, resume/progress, subtitles, language preferences, next episodes,
+and Watch Together. Browser codec support and provider CORS, Range, and signed
+URL behavior vary by source and device. Embedded mpv tracks, some subtitle
+formats, DRM/header-dependent sources, HDR, and Dolby Vision do not have
+universal browser support. Aurales only shows PiP/AirPlay controls when the
+active browser reports those APIs; Chromecast currently has no receiver
+integration.
 
 ### Fast track switching
 
@@ -769,11 +780,19 @@ Linux; the macOS configuration intentionally excludes the empty mpv sidecar.
 drag-to-Applications disk image, run `npm run package:macos:dmg` after the app
 build; public distribution still requires signing and notarization.
 
-The browser and PWA build is separate from the desktop bundles:
+The shared browser/PWA build is separate from the desktop bundles:
 
 ```bash
+npm run dev:web
 npm run build:web
+npm run preview:web
 ```
+
+The PWA manifest, icons, and service worker are included in the browser build.
+The service worker caches the app shell and same-origin static files only; it
+does not cache accounts, APIs, provider catalogs, subtitles, or media. Serve
+`dist-web/` over HTTPS with SPA history fallback to install the PWA. Run
+`npm run test:pwa` to verify the production preview and offline shell behavior.
 
 Run browser integration coverage with `npm run test:browser`. To verify direct
 playback against a live CORS-enabled source, set `AURALES_LIVE_MEDIA_URL` to an
