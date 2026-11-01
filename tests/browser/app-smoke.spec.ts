@@ -134,6 +134,13 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
 
   const home = page.locator('[data-home-presentation]')
   await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
+  const emptyContinueState = home.locator('.cw-empty-state')
+  await expect(emptyContinueState).toContainText('Nothing in progress')
+  const emptyContinueBounds = await emptyContinueState.boundingBox()
+  expect(emptyContinueBounds).not.toBeNull()
+  expect(emptyContinueBounds!.height, 'an empty Continue Watching shelf should not reserve four landscape cards').toBeLessThanOrEqual(72)
+  expect(emptyContinueBounds!.x + emptyContinueBounds!.width).toBeLessThanOrEqual(391)
+
   // This test environment has no configured catalogue provider, so seed the
   // actual responsive selectors as a DOM fixture instead of silently skipping
   // the measurements when the Home shelves are empty.

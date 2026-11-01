@@ -817,14 +817,8 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             {headerRightControls}
           </div>
         </div>
-        <div className="px-6">
-          <div className="flex gap-4 overflow-x-hidden pt-4 -mt-4 pb-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="flex-shrink-0 w-72 aspect-video rounded-xl border border-dashed border-white/5 bg-white/[0.02] flex items-center justify-center">
-                <span className="text-label text-white/60 select-none">Nothing in progress</span>
-              </div>
-            ))}
-          </div>
+        <div className="cw-empty-state mx-6 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/60">
+          <span className="select-none">Nothing in progress</span>
         </div>
         {sourceMenuPortal}
       </div>
