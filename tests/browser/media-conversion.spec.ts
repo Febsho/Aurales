@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
-test('decode failures offer worker conversion and load a signed seekable result', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic decoder failure or allow its recovery overlay to be clicked.')
+test('decode failures automatically try worker conversion and load a signed seekable result', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic decoder failure.')
   const jobId = '0123456789abcdef0123456789abcdef'
   const mediaId = 'abcdef0123456789abcdef0123456789'
   const sessionUrl = `/v1/media/${mediaId}?expires=1893456000&signature=test-signature`
@@ -32,14 +32,54 @@ test('decode failures offer worker conversion and load a signed seekable result'
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
     element.dispatchEvent(new Event('error'))
   })
-  const remuxButton = page.getByRole('button', { name: 'Try stream-copy remux' })
-  await expect(remuxButton).toBeVisible()
-  // Player state updates while the mocked conversion capabilities and signed
-  // job status arrive; use the already-visible action without waiting for a
-  // stability window on a button that is intentionally re-rendered.
-  await remuxButton.click({ force: true })
+  await expect.poll(() => requestedMode).toBe('remux')
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => new URL(element.querySelector('source')?.src || element.currentSrc).pathname)).toBe(`/v1/media/${mediaId}`)
   expect(requestedMode).toBe('remux')
+})
+
+test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic unsupported-format error.')
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, audioTranscode: true, videoTranscode: true }),
+  }))
+  const modes: string[] = []
+  const jobIds: Record<string, string> = {
+    remux: '11111111111111111111111111111111',
+    audioAac: '22222222222222222222222222222222',
+    h264Aac: '33333333333333333333333333333333',
+  }
+  await page.route('**/v1/media/conversions', async (route) => {
+    const mode = JSON.parse(route.request().postData() || '{}').mode as string
+    modes.push(mode)
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: jobIds[mode], status: 'processing' }) })
+  })
+  await page.route('**/v1/media/conversions/*', (route) => {
+    const jobId = route.request().url().split('/').pop()
+    const mode = Object.keys(jobIds).find((candidate) => jobIds[candidate] === jobId)
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mode === 'h264Aac'
+        ? { jobId, status: 'ready', mode, bytes: 1024, url: new URL('/v1/media/abcdef0123456789abcdef0123456789?expires=1893456000&signature=test', route.request().url()).toString() }
+        : { jobId, status: 'failed', error: 'unsupported codec' }),
+    })
+  })
+  await page.route('**/v1/media/abcdef0123456789abcdef0123456789?*', (route) => route.fulfill({ status: 503, body: 'test fixture ends after the signed URL is attached' }))
+  await page.goto('/tests/browser/player-harness.html?source=' + encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm'))
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => modes.length).toBe(3)
+  expect(modes).toEqual(['remux', 'audioAac', 'h264Aac'])
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.includes('/v1/media/abcdef0123456789abcdef0123456789'))).toBe(true)
 })
 
 test('expired media-worker sessions renew while preserving playback position', async ({ page }) => {

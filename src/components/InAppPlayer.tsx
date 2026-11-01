@@ -1200,8 +1200,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     }
   }
 
-  const convertWithWorker = async (mode: MediaConversionMode) => {
-    if (conversionBusy || conversionModesTriedRef.current.includes(mode)) return
+  const convertWithWorker = async (mode: MediaConversionMode): Promise<boolean> => {
+    if (conversionModesTriedRef.current.includes(mode)) return false
     conversionModesTriedRef.current = [...conversionModesTriedRef.current, mode]
     const controller = new AbortController()
     conversionControllerRef.current?.abort()
@@ -1231,7 +1231,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         if (status.status === 'failed') throw new Error('The media worker could not convert this stream.')
         if (status.status !== 'ready') continue
         const video = videoRef.current
-        if (!video || controller.signal.aborted) return
+        if (!video || controller.signal.aborted) return false
         const position = Number.isFinite(video.currentTime) ? video.currentTime : 0
         mediaProxyResumeRef.current = position
         mediaProxySessionRef.current = null
@@ -1242,12 +1242,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         setError('')
         setPlayerNotice(`Playing worker-converted media (${mode === 'remux' ? 'stream copy' : mode === 'audioAac' ? 'AAC audio' : 'H.264/AAC'}).`)
         setConversionMessage('Conversion is ready. Resuming from the previous position when the browser loads the new stream.')
-        return
+        return true
       }
       throw new Error('The media worker conversion took too long. Try another source.')
     } catch (error) {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       setConversionMessage(error instanceof Error ? error.message : 'The media worker conversion failed.')
+      return false
     } finally {
       if (conversionControllerRef.current === controller) {
         conversionControllerRef.current = null
@@ -1365,11 +1366,12 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             })
             return
           }
-          if (video && getPlatformCapabilities(video).platform === 'web' && video.error?.code === 3 && getMediaWorkerConfig()) {
+          const unsupportedMedia = video?.error?.code === 3 || video?.error?.code === 4
+          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && getMediaWorkerConfig()) {
             const message = browserPlaybackFailureMessage(url, video)
             setLoading(false)
             setPaused(true)
-            setError(message)
+            setError('This browser cannot decode the selected stream. Aurales is checking whether your media worker can prepare a compatible version…')
             autoplayBlockedRef.current = true
             if (!conversionOptionsCheckedRef.current) {
               conversionOptionsCheckedRef.current = true
@@ -1379,8 +1381,25 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
                 if (capabilities.audioTranscode) modes.push('audioAac')
                 if (capabilities.audioTranscode && capabilities.videoTranscode) modes.push('h264Aac')
                 setConversionModes(modes)
-                if (modes.length === 0) onPlaybackError?.(message, video.currentTime)
-              }).catch(() => onPlaybackError?.(message, video.currentTime))
+                if (modes.length === 0) {
+                  const unavailable = `${message} The configured media worker does not offer a compatible conversion.`
+                  setError(unavailable)
+                  onPlaybackError?.(unavailable, video.currentTime)
+                  return
+                }
+                setError('The stream is not browser-compatible. Aurales is trying a stream-copy remux first; the original file is not modified.')
+                void (async () => {
+                  for (const mode of modes) {
+                    if (await convertWithWorker(mode)) return
+                  }
+                  const failed = `${message} Automatic conversion attempts failed. Pick another stream or check the media worker logs.`
+                  setError(failed)
+                  onPlaybackError?.(failed, video.currentTime)
+                })()
+              }).catch(() => {
+                setError(`${message} The media worker could not be reached to check conversion support.`)
+                onPlaybackError?.(message, video.currentTime)
+              })
             } else {
               const available = conversionModes.filter((mode) => !conversionModesTriedRef.current.includes(mode))
               if (available.length === 0) onPlaybackError?.(message, video.currentTime)
