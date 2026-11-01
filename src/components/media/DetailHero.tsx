@@ -355,7 +355,7 @@ export default function DetailHero({
         </div>
 
         {/* Kind · genres · certification */}
-        <div className="flex items-center gap-2.5 flex-wrap mb-4">
+        <div className="detail-hero-classification flex items-center gap-2.5 flex-wrap mb-4">
           <span className="text-lg text-white/90 tracking-[0.01em]">{classificationLine}</span>
           {certStr && (
             <span className="inline-flex items-center h-[22px] px-1.5 text-xs font-semibold uppercase tracking-wide text-white/85 border border-white/35 rounded-[5px] leading-none">
@@ -399,7 +399,7 @@ export default function DetailHero({
 
         {/* Release specs + tech badges from the top available stream */}
         {(specParts.length > 0 || features.length > 0) && (
-          <div className="flex items-center gap-x-2.5 gap-y-2 flex-wrap mb-6">
+          <div className="detail-hero-specs flex items-center gap-x-2.5 gap-y-2 flex-wrap mb-6">
             {specParts.length > 0 && (
               <span className="mr-1.5 text-lg text-white/90 tracking-[0.01em]">{specParts.join(' · ')}</span>
             )}

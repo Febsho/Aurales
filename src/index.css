@@ -5101,7 +5101,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   /* Detail pages keep one readable left edge and a shorter hero so the season
      picker and episode rail are reachable without a long empty backdrop. */
   html[data-runtime-platform="web"] .detail-page { --detail-inline: .9rem; --detail-hero-overlap: 2rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(33rem, 68svh, 38rem) !important; min-height: 0; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(30rem, 64svh, 35rem) !important; min-height: 0; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel__content {
     width: 100%; max-width: none; padding-inline: .9rem; padding-bottom: 1.1rem;
     transform: none; margin: 0;
@@ -5109,7 +5109,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel__brand { min-height: 2.25rem; margin-bottom: .35rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel__logo { max-width: 82%; max-height: 3.75rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel__title { max-width: 100%; font-size: clamp(1.4rem, 6vw, 1.8rem); line-height: 1.08; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-overview { max-width: 100%; margin-bottom: .45rem; font-size: .72rem; line-height: 1.05rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-classification { gap: .3rem .45rem; margin-bottom: .45rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-classification > span { font-size: .82rem; line-height: 1.2; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-specs { gap: .35rem .55rem; margin-bottom: .75rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-specs > span { font-size: .82rem; line-height: 1.2; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-overview { max-width: 100%; margin-bottom: .45rem; font-size: .82rem; line-height: 1.15rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-overview > p { font-size: .82rem; line-height: 1.2rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions { width: 100%; max-width: 22rem; gap: .45rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__play { min-height: 2.8rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__secondary { gap: .4rem; }
@@ -5117,11 +5122,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button,
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__room { min-height: 2.65rem !important; padding-inline: .55rem !important; font-size: .75rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell { padding-top: 1rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell { min-height: 0; padding-bottom: 1.5rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell__inner { padding-inline: .875rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand { min-height: 3rem; margin-bottom: .75rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand h2 { font-size: clamp(1.35rem, 5.5vw, 1.7rem); line-height: 1.15; }
   html[data-runtime-platform="web"] .detail-page .detail-episodes-section { width: 100%; padding-inline: .875rem !important; }
-  html[data-runtime-platform="web"] .detail-page .detail-episodes-heading { margin-bottom: .7rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-episodes-heading { margin-bottom: .55rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-episodes-heading h2 { font-family: inherit; font-size: clamp(1.1rem, 4.8vw, 1.25rem); font-weight: 600; line-height: 1.2; letter-spacing: -.01em; }
   html[data-runtime-platform="web"] .detail-page .detail-season-picker { margin-bottom: .75rem !important; }
   html[data-runtime-platform="web"] .detail-page .season-scroll { gap: .45rem; }
   html[data-runtime-platform="web"] .detail-page .season-scroll > button { min-height: 2.55rem; padding-inline: .8rem; font-size: .75rem; }
@@ -5175,7 +5182,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .cinematic-nav-link { padding-inline: .38rem; font-size: .68rem; }
   html[data-runtime-platform="web"] .discover-hero { min-height: 420px !important; }
   html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 420px !important; padding: .85rem !important; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: 33rem !important; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: 30rem !important; }
 }
 
 @media (max-width: 700px) {

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-test('Aurales InAppPlayer starts, tracks progress, and seeks a browser-compatible source', async ({ page }, testInfo) => {
+test('Aurales InAppPlayer renders video frames, tracks progress, and seeks a browser-compatible source', async ({ page }, testInfo) => {
   const useMp4 = testInfo.project.name.includes('webkit')
   const fixture = useMp4 ? 'h264-aac.mp4' : 'vp8-opus.webm'
   const seekTarget = useMp4 ? 1.5 : 6
@@ -22,6 +22,23 @@ test('Aurales InAppPlayer starts, tracks progress, and seeks a browser-compatibl
   expect(duration).toBeLessThan(useMp4 ? 3.1 : 12.1)
   await page.getByRole('button', { name: 'Play', exact: true }).click()
   await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  // A moving media clock can still be a black/empty video surface. Read a
+  // downsampled same-origin frame so these fixtures prove actual decode output.
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => {
+    if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || element.videoWidth === 0) return 0
+    const canvas = document.createElement('canvas')
+    canvas.width = 32
+    canvas.height = 18
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return 0
+    context.drawImage(element, 0, 0, canvas.width, canvas.height)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    let visible = 0
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 96) visible += 1
+    }
+    return visible
+  }), { message: 'the playing fixture should contain decoded non-black video frames' }).toBeGreaterThan(250)
   await video.evaluate((element: HTMLVideoElement, target: number) => { element.currentTime = target }, seekTarget)
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThanOrEqual(seekTarget)
   await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)

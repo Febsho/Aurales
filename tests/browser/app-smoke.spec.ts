@@ -280,7 +280,13 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()
   const rankedShelf = page.locator('[data-home-shelves] .media-row--ranked .cinematic-row-track')
   const rankedCard = rankedShelf.locator('.media-row-card-slot').first().locator('button')
+  const rankedArt = rankedCard.locator('[data-hero-viewport]').first()
   await expect(rankedCard).toBeVisible()
+  await expect(rankedArt).toBeVisible()
+  await expect.poll(
+    () => rankedArt.evaluate((art) => art.getBoundingClientRect().width),
+    { message: 'the ranked poster artwork should finish applying its responsive width' },
+  ).toBeGreaterThan(0)
   const showAllCard = page.locator('[data-home-shelves] .show-all-card').first()
   await expect(showAllCard).toBeVisible()
   const showAllHeight = await showAllCard.evaluate((element) => element.getBoundingClientRect().height)
@@ -325,7 +331,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   expect(measurements!.posterWidth).toBeGreaterThan(0)
   expect(measurements!.posterWidth).toBeGreaterThanOrEqual(100)
   expect(measurements!.posterWidth).toBeLessThanOrEqual(124)
-  const rankedMeasurements = await rankedCard.locator('[data-hero-viewport]').evaluate((art) => ({
+  const rankedMeasurements = await rankedArt.evaluate((art) => ({
     width: art.getBoundingClientRect().width,
     height: art.getBoundingClientRect().height,
   }))
@@ -454,4 +460,55 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     return width
   })
   expect(episodeCardWidth, 'phone episode cards should stay compact and horizontally browsable').toBeLessThanOrEqual(280)
+})
+
+test('mobile series detail uses compact system typography and contained episode cards', async ({ page }) => {
+  const renderLoopWarnings: string[] = []
+  page.on('console', (message) => {
+    if (/Maximum update depth exceeded/i.test(message.text())) renderLoopWarnings.push(message.text())
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(() => localStorage.setItem('aurales_app_managed_metadata', 'false'))
+  await page.goto('/series/pwa-mobile-detail-layout')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  const detail = page.locator('.detail-page--series')
+  await expect(detail).toBeVisible()
+  await expect(detail.locator('.detail-episodes-heading h2')).toBeVisible()
+
+  const layout = await page.evaluate(() => {
+    const detail = document.querySelector<HTMLElement>('.detail-page--series')!
+    const hero = detail.querySelector<HTMLElement>('.detail-hero-panel')!
+    const brand = detail.querySelector<HTMLElement>('.detail-hero-panel__brand')!
+    const classification = detail.querySelector<HTMLElement>('.detail-hero-classification')!
+    const overview = detail.querySelector<HTMLElement>('.detail-hero-overview')
+    const actions = detail.querySelector<HTMLElement>('.detail-hero-actions')
+    const heading = detail.querySelector<HTMLElement>('.detail-episodes-heading h2')!
+    const episode = detail.querySelector<HTMLElement>('.episode-showcase-card')
+    const font = getComputedStyle(detail).fontFamily
+    const bounds = (element: HTMLElement | null) => element?.getBoundingClientRect().toJSON() ?? null
+    return {
+      viewport: document.documentElement.clientWidth,
+      document: document.documentElement.scrollWidth,
+      font,
+      hero: bounds(hero),
+      brand: bounds(brand),
+      classification: bounds(classification),
+      overview: bounds(overview),
+      actions: bounds(actions),
+      headingFontSize: Number.parseFloat(getComputedStyle(heading).fontSize),
+      episode: bounds(episode),
+    }
+  })
+
+  expect(layout.document).toBeLessThanOrEqual(layout.viewport + 1)
+  expect(layout.font).toContain('system-ui')
+  expect(layout.hero?.height).toBeLessThanOrEqual(570)
+  expect(layout.headingFontSize).toBeLessThanOrEqual(20)
+  expect(layout.episode?.width).toBeGreaterThan(120)
+  expect(layout.episode?.width).toBeLessThanOrEqual(layout.viewport * .46 + 1)
+  const content = [layout.brand, layout.classification, layout.overview, layout.actions].filter((box) => box !== null)
+  for (let index = 1; index < content.length; index += 1) {
+    expect(content[index]!.top, 'detail hero copy and actions must not overlap').toBeGreaterThanOrEqual(content[index - 1]!.bottom - 1)
+  }
+  expect(renderLoopWarnings).toEqual([])
 })
