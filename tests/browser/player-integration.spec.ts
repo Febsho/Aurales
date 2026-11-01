@@ -36,14 +36,22 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
   const metrics = await page.locator('.inapp-player-controls > div').nth(1).evaluate((row) => ({
     width: row.clientWidth,
     scrollWidth: row.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+    optionsDisplay: getComputedStyle(row.querySelector<HTMLElement>('.inapp-player-options')!).display,
     buttons: Array.from(row.querySelectorAll('button')).map((button) => {
       const rect = button.getBoundingClientRect()
-      return { width: rect.width, height: rect.height }
+      return { width: rect.width, height: rect.height, left: rect.left, right: rect.right }
     }),
   }))
   expect(metrics.scrollWidth, 'playback controls must not extend beyond the phone viewport').toBeLessThanOrEqual(metrics.width + 1)
+  expect(metrics.optionsDisplay, 'portrait player options should use the compact settings grid').toBe('grid')
   expect(metrics.buttons.length).toBeGreaterThan(0)
   expect(metrics.buttons.every((button) => button.width >= 44 && button.height >= 44), JSON.stringify(metrics.buttons)).toBe(true)
+  expect(metrics.buttons.every((button) => button.left >= 0 && button.right <= metrics.viewportWidth + 1), JSON.stringify(metrics.buttons)).toBe(true)
+
+  const fullscreen = await page.getByRole('button', { name: 'Full screen' }).boundingBox()
+  expect(fullscreen).not.toBeNull()
+  expect(fullscreen!.x + fullscreen!.width).toBeLessThanOrEqual(metrics.viewportWidth + 1)
 
   const notice = page.locator('.inapp-player-notice')
   if (await notice.isVisible()) {

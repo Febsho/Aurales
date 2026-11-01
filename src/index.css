@@ -4679,6 +4679,36 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     width: 100%;
   }
 
+  /* Use a predictable two-column settings grid in portrait. A wrapping flex
+     row could still let the nested AirPlay/PiP/fullscreen group keep its
+     intrinsic width and push fullscreen beyond Safari's right edge. */
+  .inapp-player-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+  }
+
+  .inapp-player-options > div:first-child,
+  .inapp-player-options > select,
+  .inapp-player-options > input[type="range"],
+  .inapp-player-options > button {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .inapp-player-options > button { padding-inline: .4rem; }
+
+  .inapp-player-options > div:last-child {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  .inapp-player-options > div:first-child > button {
+    width: 100%;
+    min-height: 44px;
+  }
+
   .inapp-player-transport > button,
   .inapp-player-options > button,
   .inapp-player-options > div > button,
@@ -4727,6 +4757,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
   .inapp-player-transport,
   .inapp-player-options {
+    display: flex;
     flex-wrap: nowrap;
     width: auto;
   }
