@@ -9,6 +9,9 @@ RUN npm run build:web
 
 FROM rust:1.88-bookworm AS worker-build
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY packages/aurales-domain ./packages/aurales-domain
 COPY media-worker ./media-worker
 RUN cargo build --release --manifest-path media-worker/Cargo.toml
