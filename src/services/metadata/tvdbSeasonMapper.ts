@@ -96,6 +96,7 @@ export async function mapTvdbSeasons(
       seasonsData.push({ season, data })
     }
   }))
+  restoreBridgeSeasonBoundaries(seasonsData)
   // Mapping and absolute episode numbering must remain chronological even
   // though the network requests were scheduled visible-season-first.
   seasonsData.sort((a, b) => a.season.seasonNumber - b.season.seasonNumber)
@@ -238,4 +239,48 @@ export async function mapTvdbSeasons(
   }
 
   return results
+}
+
+/**
+ * Some TVDB responses flatten a later anime cour into Season 1 even though
+ * AniBridge has separate, exact-TVDB-ID scopes for both seasons. When the
+ * first season contains exactly the sum of its and the next season's trusted
+ * scope counts, while that next season is empty, split the contiguous list at
+ * the AniBridge boundary and restart numbering for the later season.
+ */
+function restoreBridgeSeasonBoundaries(seasons: RawSeasonData[]): void {
+  const byNumber = new Map(seasons.map((entry) => [entry.season.seasonNumber, entry]))
+  for (const current of seasons) {
+    const currentNumber = current.season.seasonNumber
+    if (currentNumber < 1 || !current.data || current.season.episodeCount <= 0) continue
+    const next = byNumber.get(currentNumber + 1)
+    if (!next || next.season.episodeCount <= 0) continue
+
+    const currentCount = current.season.episodeCount
+    const nextCount = next.season.episodeCount
+    const episodes = current.data.episodes
+    const nextEpisodes = next.data?.episodes || []
+    if (nextEpisodes.length > 0 && nextEpisodes.length !== nextCount) continue
+    if (episodes.length !== currentCount + nextCount) continue
+    const isContiguousFlatSeason = episodes.every((episode, index) =>
+      episode.seasonNumber === currentNumber && episode.episodeNumber === index + 1,
+    )
+    if (!isContiguousFlatSeason) continue
+
+    current.data = {
+      ...current.data,
+      episodes: episodes.slice(0, currentCount),
+    }
+    if (nextEpisodes.length === 0) {
+      next.data = {
+        seasonNumber: currentNumber + 1,
+        name: next.season.title || `Season ${currentNumber + 1}`,
+        episodes: episodes.slice(currentCount).map((episode, index) => ({
+          ...episode,
+          seasonNumber: currentNumber + 1,
+          episodeNumber: index + 1,
+        })),
+      }
+    }
+  }
 }

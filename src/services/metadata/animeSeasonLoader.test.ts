@@ -20,7 +20,7 @@ describe('anime season native compatibility loader', () => {
     mocks.invoke.mockResolvedValue({ data: season, stale: false, cacheStatus: 'miss' })
     await expect(loadAnimeSeason('tvdb-42', 1)).resolves.toEqual(season)
     expect(mocks.invoke).toHaveBeenCalledWith('load_anime_season', { request: expect.objectContaining({
-      tvdbId: '42', season: 1, cacheKey: 'tvdb_season:english-v2:42:1', apiKey: 'tvdb-key',
+      tvdbId: '42', season: 1, cacheKey: 'tvdb_season:english-v3:42:1', apiKey: 'tvdb-key',
     }) })
   })
 
@@ -29,7 +29,7 @@ describe('anime season native compatibility loader', () => {
     mocks.invoke.mockResolvedValue({ data: { ...season, name: 'Fresh' }, stale: false, cacheStatus: 'miss' })
     await expect(loadAnimeSeason(42, 1)).resolves.toEqual(season)
     await vi.waitFor(() => expect(mocks.cacheSet).toHaveBeenCalledWith(
-      'tvdb_season:english-v2:42:1',
+      'tvdb_season:english-v3:42:1',
       expect.objectContaining({ name: 'Fresh' }),
       expect.objectContaining({ category: 'tvdb_season' }),
     ))

@@ -320,10 +320,9 @@ function artworkSettingsKey(): string {
 
 function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
   const animeRoute = Boolean(state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' || (id && /^(mal|anilist)[-:]/i.test(id)))
-  // v13 invalidates anime detail entries created before AniBridge TVDB season
-  // scopes were merged into the detail shell. Those entries are durable and
-  // could otherwise keep mobile clients pinned to a Season 1-only structure.
-  const versions = animeRoute ? ['v13'] : ['v2', 'v13']
+  // v14 invalidates anime detail entries created before AniBridge TVDB scope
+  // counts became authoritative for splitting flattened cour episodes.
+  const versions = animeRoute ? ['v14'] : ['v2', 'v14']
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -382,7 +381,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${entry.show.isAnime ? 'v13' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `${entry.show.isAnime ? 'v14' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)

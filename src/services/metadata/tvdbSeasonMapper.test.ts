@@ -53,6 +53,32 @@ describe('mapTvdbSeasons', () => {
     expect(result[1].episodes[0].absoluteEpisodeNumber).toBe(51)
   })
 
+  it('splits a flattened later cour using exact AniBridge season counts', async () => {
+    mockedGetSeason.mockImplementation(async (_id, season) => season === 1
+      ? {
+        seasonNumber: 1,
+        name: 'Frieren Season 1',
+        episodes: Array.from({ length: 38 }, (_, index) => ({
+          id: `frieren-${index + 1}`,
+          seasonNumber: 1,
+          episodeNumber: index + 1,
+          name: `Episode ${index + 1}`,
+          airDate: '2024-01-01',
+        })),
+      }
+      : { seasonNumber: season, name: `Season ${season}`, episodes: [] })
+
+    const result = await mapTvdbSeasons(424536, [
+      { ...makeSeasonSummary(1), episodeCount: 28 },
+      { ...makeSeasonSummary(2), episodeCount: 10 },
+    ], { today: '2026-11-01' })
+
+    expect(result.map(({ seasonNumber, episodeCount }) => [seasonNumber, episodeCount])).toEqual([[1, 28], [2, 10]])
+    expect(result[0].episodes.at(-1)).toMatchObject({ seasonNumber: 1, episodeNumber: 28 })
+    expect(result[1].episodes[0]).toMatchObject({ seasonNumber: 2, episodeNumber: 1, title: 'Episode 29' })
+    expect(result[1].episodes.at(-1)).toMatchObject({ seasonNumber: 2, episodeNumber: 10, title: 'Episode 38' })
+  })
+
   it('bounds pending season requests while fetching the selected season first', async () => {
     const releases: Array<() => void> = []
     mockedGetSeason.mockImplementation((_id, season) => new Promise(resolve => {

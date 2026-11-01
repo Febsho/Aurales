@@ -50,7 +50,7 @@ function nativeCancelled(error: unknown): boolean {
 }
 
 function cacheKey(tvdbId: string, season: number): string {
-  return `tvdb_season:english-v2:${tvdbId}:${season}`
+  return `tvdb_season:english-v3:${tvdbId}:${season}`
 }
 
 async function invokeNative(

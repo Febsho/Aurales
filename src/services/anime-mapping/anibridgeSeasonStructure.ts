@@ -82,12 +82,13 @@ export function mergeAniBridgeTvdbSeasons(show: ShowDetails, bridged: SeasonSumm
       merged.set(scope.seasonNumber, scope)
       continue
     }
-    // TVDB retains preferred names/artwork; AniBridge fills absent counts and
-    // release dates and contributes real season numbers omitted by TVDB.
+    // TVDB retains preferred names/artwork; the exact-ID AniBridge scope is
+    // authoritative for season episode counts because TVDB can flatten later
+    // cours into the first season while still returning those counts per scope.
     merged.set(scope.seasonNumber, {
       ...scope,
       ...current,
-      episodeCount: current.episodeCount > 0 ? current.episodeCount : scope.episodeCount,
+      episodeCount: scope.episodeCount > 0 ? scope.episodeCount : current.episodeCount,
       airDate: current.airDate || scope.airDate,
     })
   }

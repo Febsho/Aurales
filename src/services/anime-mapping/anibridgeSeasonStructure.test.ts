@@ -32,16 +32,20 @@ describe('AniBridge TVDB season scopes', () => {
   })
 
   it('adds bridge seasons while preserving TVDB names and artwork', () => {
+    const tvdbShow: ShowDetails = {
+      ...show,
+      seasons: [{ seasonNumber: 1, name: 'Season One', episodeCount: 38 }],
+    }
     const bridged = [
-      { seasonNumber: 1, name: 'Bridge title', episodeCount: 12 },
-      { seasonNumber: 2, name: 'Season 2', episodeCount: 13 },
+      { seasonNumber: 1, name: 'Bridge title', episodeCount: 28 },
+      { seasonNumber: 2, name: 'Season 2', episodeCount: 10 },
     ]
 
-    const merged = mergeAniBridgeTvdbSeasons(show, bridged)
+    const merged = mergeAniBridgeTvdbSeasons(tvdbShow, bridged)
 
     expect(merged.seasons).toEqual([
-      expect.objectContaining({ seasonNumber: 1, name: 'Season One', episodeCount: 12 }),
-      expect.objectContaining({ seasonNumber: 2, name: 'Season 2', episodeCount: 13 }),
+      expect.objectContaining({ seasonNumber: 1, name: 'Season One', episodeCount: 28 }),
+      expect.objectContaining({ seasonNumber: 2, name: 'Season 2', episodeCount: 10 }),
     ])
   })
 })
