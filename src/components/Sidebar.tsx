@@ -102,8 +102,8 @@ export default function Sidebar() {
   return (
     <>
       <aside
-        onMouseEnter={() => !pinned && handleMouseEnter()}
-        onMouseLeave={() => !pinned && handleMouseLeave()}
+        onPointerEnter={(event) => !pinned && event.pointerType !== 'touch' && handleMouseEnter()}
+        onPointerLeave={(event) => !pinned && event.pointerType !== 'touch' && handleMouseLeave()}
         className={[
           'app-sidebar app-sidebar--glass flex flex-col',
           pinned
