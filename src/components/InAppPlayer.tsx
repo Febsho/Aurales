@@ -191,6 +191,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
   const playbackStartedRef = useRef(false)
+  const bufferingRef = useRef(true)
   const autoplayBlockedRef = useRef(false)
   const playbackRunRef = useRef(0)
   const translatedSubtitleUrlsRef = useRef<Set<string>>(new Set())
@@ -642,6 +643,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     hideTimerRef.current = setTimeout(() => {
+      const video = videoRef.current
+      // Keep the full control deck available while paused, stalled, or before
+      // the first decoded frame. On touch devices this is also the recovery
+      // path when a stream never reaches playable state.
+      if (!video || video.paused || bufferingRef.current || !playbackStartedRef.current) {
+        setControlsVisible(true)
+        return
+      }
       setControlsVisible(false)
     }, 2600)
   }
@@ -665,6 +674,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     setTranslationError('')
     setPaused(false)
     playbackStartedRef.current = false
+    bufferingRef.current = true
     autoplayBlockedRef.current = false
     lastAniListPlaybackSaveRef.current = 0
     lastPmdbPlaybackSaveRef.current = 0
@@ -704,11 +714,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           setLoading(false)
           setPaused(true)
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
+          showControlsTemporarily()
           return
         }
         const message = 'The browser could not start this stream. Check that the source URL is still valid, then choose another source if playback does not begin.'
         setPaused(true)
         setError(message)
+        showControlsTemporarily()
         playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
       })
     }, 50)
@@ -718,6 +730,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       setLoading(false)
       setPaused(true)
       setError(message)
+      showControlsTemporarily()
       playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
     }, 15_000)
     return () => {
@@ -1288,11 +1301,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         autoPlay
         onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
         onPause={() => { setPaused(true); showControlsTemporarily(); wtSendPause() }}
-        onWaiting={() => { setLoading(true); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
+        onWaiting={() => { bufferingRef.current = true; setLoading(true); showControlsTemporarily(); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
+          bufferingRef.current = false
           setLoading(false)
         }}
         onPlaying={() => {
+          bufferingRef.current = false
           setLoading(false)
           setPaused(false)
           // A recovered HLS or media-worker fallback can reach `playing`
@@ -1321,6 +1336,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         }}
         onEnded={handleEnded}
         onError={() => {
+          bufferingRef.current = true
+          showControlsTemporarily()
           const video = videoRef.current
           const activeProxySession = mediaProxySessionRef.current
           if (video && getPlatformCapabilities(video).platform === 'web'

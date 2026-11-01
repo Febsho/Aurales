@@ -382,10 +382,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const value = element.getBoundingClientRect()
       return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }
     }
+    const visualTitle = hero.querySelector<HTMLElement>('.detail-hero-panel__logo, .detail-hero-panel__title')
     return {
       viewport: document.documentElement.clientWidth,
       document: document.documentElement.scrollWidth,
-      hero: rect(hero), title: rect(title), overview: rect(overview), actions: rect(actions), nav: rect(nav),
+      hero: rect(hero), title: rect(title), visualTitle: visualTitle ? rect(visualTitle) : null,
+      classification: rect(hero.querySelector<HTMLElement>('.detail-hero-classification')!),
+      overview: rect(overview), actions: rect(actions), nav: rect(nav),
       actionLayout: getComputedStyle(actions).display,
       episodeCardWidth: (() => {
         const card = document.createElement('button')
@@ -406,6 +409,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   expect(detailLayout!.overview.top).toBeGreaterThanOrEqual(detailLayout!.title.bottom - 1)
   expect(detailLayout!.actions.top).toBeGreaterThanOrEqual(detailLayout!.overview.bottom - 1)
+  for (const element of [detailLayout!.visualTitle, detailLayout!.classification, detailLayout!.overview, detailLayout!.actions]) {
+    expect(Math.abs((element.left + element.right) / 2 - detailLayout!.viewport / 2), 'mobile detail hero content should be centered').toBeLessThanOrEqual(12)
+  }
   expect(detailLayout!.nav.bottom).toBeLessThanOrEqual(845)
   expect(detailLayout!.actionLayout).toBe('flex')
   expect(detailLayout!.episodeCardWidth).toBeLessThanOrEqual(390 * .5)

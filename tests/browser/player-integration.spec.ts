@@ -91,25 +91,52 @@ test('landscape touch player keeps transport and track controls inside the safe 
 
   const layout = await controls.evaluate((element) => {
     const row = element.querySelector<HTMLElement>('.inapp-player-control-row')!
-    const options = row.querySelector<HTMLElement>('.inapp-player-options')!
+    const transport = row.querySelector<HTMLElement>('.inapp-player-transport')!
     return {
       viewportWidth: document.documentElement.clientWidth,
       viewportHeight: document.documentElement.clientHeight,
       controls: element.getBoundingClientRect().toJSON(),
-      direction: getComputedStyle(element).flexDirection,
-      rowDirection: getComputedStyle(row).flexDirection,
-      optionsDisplay: getComputedStyle(options).display,
-      buttons: Array.from(row.querySelectorAll('button, select')).map((control) => {
+      display: getComputedStyle(element).display,
+      rowDisplay: getComputedStyle(row).display,
+      transport: transport.getBoundingClientRect().toJSON(),
+      controlsBounds: Array.from(row.querySelectorAll('button, select, input')).map((control) => {
         const rect = control.getBoundingClientRect()
         return { left: rect.left, right: rect.right, width: rect.width, height: rect.height }
       }),
     }
   })
-  expect(layout.direction).toBe('column-reverse')
-  expect(layout.rowDirection).toBe('column')
-  expect(layout.optionsDisplay).toBe('flex')
+  expect(layout.display).toBe('block')
+  expect(layout.rowDisplay).toBe('contents')
   expect(layout.controls.height).toBeLessThanOrEqual(layout.viewportHeight + 1)
-  expect(layout.buttons.every((button) => button.left >= 0 && button.right <= layout.viewportWidth + 1), JSON.stringify(layout.buttons)).toBe(true)
+  expect(Math.abs(layout.transport.x + layout.transport.width / 2 - layout.viewportWidth / 2)).toBeLessThanOrEqual(2)
+  expect(Math.abs(layout.transport.y + layout.transport.height / 2 - layout.viewportHeight / 2)).toBeLessThanOrEqual(2)
+  expect(layout.controlsBounds.every((control) => control.left >= -1 && control.right <= layout.viewportWidth + 1), JSON.stringify(layout.controlsBounds)).toBe(true)
+
+  await page.locator('video').evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  const alert = page.getByRole('alert')
+  await expect(alert).toBeVisible()
+  await expect(controls).toBeVisible()
+  const [alertBox, transportBox] = await Promise.all([alert.boundingBox(), controls.locator('.inapp-player-transport').boundingBox()])
+  expect(alertBox).not.toBeNull()
+  expect(transportBox).not.toBeNull()
+  expect(alertBox!.y + alertBox!.height).toBeLessThan(transportBox!.y)
+})
+
+test('player controls stay visible when a touch stream fails before playback starts', async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.use.isMobile, 'Persistent recovery controls are verified in mobile browser projects.')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  await page.locator('video').evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible()
+  await page.waitForTimeout(2900)
+  await expect(page.locator('.inapp-player-controls')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible()
 })
 
 test('iOS player uses Safari native fullscreen when the standard API is unavailable', async ({ page }, testInfo) => {
