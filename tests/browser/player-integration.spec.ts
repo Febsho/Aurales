@@ -141,14 +141,15 @@ test('player controls stay visible when a touch stream fails before playback sta
   await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible()
 })
 
-test('browser codec failures explain that conversion requires an Aurales media worker', async ({ page }, testInfo) => {
+test('browser media failures explain possible causes and worker-based conversion', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'Synthetic MediaError delivery is unreliable in WebKit.')
   await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
   await page.locator('video').evaluate((element: HTMLVideoElement) => {
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
     element.dispatchEvent(new Event('error'))
   })
-  await expect(page.getByRole('alert')).toContainText('It cannot convert media on-device')
+  await expect(page.getByRole('alert')).toContainText('Its format may be incompatible')
+  await expect(page.getByRole('alert')).toContainText('Browsers cannot convert media on-device')
   await expect(page.getByRole('alert')).toContainText('Add an Aurales media worker in Settings')
 })
 

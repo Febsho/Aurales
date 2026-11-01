@@ -1388,7 +1388,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             const message = browserPlaybackFailureMessage(url, video)
             setLoading(false)
             setPaused(true)
-            setError('This browser cannot decode the selected stream. Aurales is checking whether your media worker can prepare a compatible version…')
+            setError('The browser could not play this stream. Aurales is checking whether your media worker can prepare a browser-compatible copy…')
             autoplayBlockedRef.current = true
             if (!conversionOptionsCheckedRef.current) {
               conversionOptionsCheckedRef.current = true
@@ -1424,7 +1424,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             return
           }
           if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && !getMediaWorkerConfig()) {
-            const message = 'This browser cannot decode the stream. It cannot convert media on-device. Add an Aurales media worker in Settings for an automatic playback copy, or choose another stream.'
+            const message = 'The browser could not play this stream. Its format may be incompatible, cross-origin access may be blocked, or the signed URL may have expired. Browsers cannot convert media on-device. Add an Aurales media worker in Settings for an automatic playback copy, or choose another stream.'
             setLoading(false)
             setPaused(true)
             setError(message)
