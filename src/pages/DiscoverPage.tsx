@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { RefreshCw, Shuffle, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
@@ -114,6 +115,59 @@ const DISCOVERY_SECTION_TITLES: Record<string, string> = {
   'hidden-gems': 'Hidden Gems',
   new: 'Recently Released',
   critics: 'Critically Acclaimed',
+}
+
+function readDiscoveryPicks(key: string): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) || '[]')
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, 3) : []
+  } catch {
+    return []
+  }
+}
+
+function DiscoveryPicker({ item, onClose, onSpin, onOpen }: {
+  item: SearchResult
+  onClose: () => void
+  onSpin: () => void
+  onOpen: () => void
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Tab') return
+      const controls = Array.from(document.querySelectorAll<HTMLElement>('.discover-picker button'))
+      if (!controls.length) return
+      const first = controls[0]!
+      const last = controls[controls.length - 1]!
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+    window.addEventListener('keydown', onKeyDown)
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', onKeyDown); returnFocusTo?.focus() }
+  }, [onClose])
+
+  const poster = item.poster || item.backdrop
+  const genre = item.genres?.slice(0, 2).join(' · ') || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')
+  return <div className="discover-picker-backdrop" role="presentation" onClick={onClose}>
+    <section className="discover-picker" role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" onClick={(event) => event.stopPropagation()}>
+      <div className="discover-picker__grabber" aria-hidden="true" />
+      <button ref={closeButtonRef} className="discover-picker__close" type="button" aria-label="Close picker" onClick={onClose}><X size={19} /></button>
+      {poster ? <img className="discover-picker__poster" src={poster} alt={`${item.title} poster`} /> : <div className="discover-picker__poster discover-picker__poster--empty" aria-hidden="true">A</div>}
+      <p className="discover-picker__eyebrow">Tonight, try</p>
+      <h2 id="discover-picker-title">{item.title}</h2>
+      <p className="discover-picker__meta">{genre}{item.year ? ` · ${item.year}` : ''}{item.rating != null ? ` · ★ ${Number(item.rating).toFixed(1)}` : ''}</p>
+      <div className="discover-picker__actions">
+        <button className="discover-picker__open" type="button" onClick={onOpen}>Open</button>
+        <button className="discover-picker__spin" type="button" onClick={onSpin}><Shuffle size={17} /> <span>Spin Again</span></button>
+      </div>
+    </section>
+  </div>
 }
 
 // Anime = explicitly flagged, or Japanese-language animation. Plain genre-16 animation
@@ -380,6 +434,7 @@ export default function DiscoverPage() {
   const [trailerOpen, setTrailerOpen] = useState(false)
   const [initialWaitComplete, setInitialWaitComplete] = useState(false)
   const [serverDiscoverItems, setServerDiscoverItems] = useState<SearchResult[]>([])
+  const [moodIndex, setMoodIndex] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -427,6 +482,12 @@ export default function DiscoverPage() {
   const [heroIndex,setHeroIndex]=useState(0)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickOffset, setPickOffset] = useState(0)
+  const pickStorageKey = `aurales_discovery_picks:${getActiveProfileId()}:${tab}`
+  const [pickedIds, setPickedIds] = useState<string[]>(() => readDiscoveryPicks(pickStorageKey))
+
+  useEffect(() => { setPickedIds(readDiscoveryPicks(pickStorageKey)); setPickOffset(0) }, [pickStorageKey])
 
   useEffect(() => {
     const refreshDate = () => setBerlinDateKey((current) => {
@@ -475,10 +536,10 @@ export default function DiscoverPage() {
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const mood = useMemo(() => {
     const pool = tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS
-    // Use the same Berlin day that drives the snapshot key. This keeps the
-    // mood stable across hosts whose local timezone differs from the product day.
-    return pool[berlinDaySeed(new Date(`${berlinDateKey}T12:00:00.000Z`)) % pool.length]
-  }, [tab, berlinDateKey])
+    return pool[moodIndex % pool.length]
+  }, [tab, moodIndex])
+
+  useEffect(() => { setMoodIndex(berlinDaySeed(new Date(`${berlinDateKey}T12:00:00.000Z`)) % 3) }, [tab, berlinDateKey])
 
   const animeOverrides = tab === 'anime' ? {
     originalLanguage: 'ja',
@@ -729,6 +790,22 @@ export default function DiscoverPage() {
   const activeHeroIndex = heroPool.length ? heroIndex % heroPool.length : 0
   const heroRecommendation = heroPool[activeHeroIndex]
   const heroItem = heroRecommendation?.item
+  const pickerPool = useMemo(() => {
+    const seen = new Set<string>()
+    return ranked.filter((entry) => {
+      const key = mediaIdentity(entry.item)
+      if (!entry.item.poster || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [ranked])
+  const tastePickCandidates = useMemo(() => {
+    if (!ranked.length) return []
+    const pool = ranked.filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)))
+    if (!pool.length) return []
+    const start = pickOffset % pool.length
+    return Array.from({ length: Math.min(6, pool.length) }, (_, index) => pool[(start + index) % pool.length]!.item)
+  }, [ranked, pickedIds, pickOffset])
 
   useEffect(() => { setHeroIndex(0) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [activeHeroIndex])
@@ -786,11 +863,30 @@ export default function DiscoverPage() {
     setFeedback(saveRecommendationFeedback(item, kind))
   }
 
+  const pickRandomTitle = (currentId?: string) => {
+    if (!pickerPool.length) return
+    const choices = pickerPool.filter((entry) => entry.item.id !== currentId)
+    const choice = (choices.length ? choices : pickerPool)[Math.floor(Math.random() * (choices.length || pickerPool.length))]
+    if (choice) setRandomPickerItem(choice.item)
+  }
+
+  const [randomPickerItem, setRandomPickerItem] = useState<SearchResult | null>(null)
+  const spinPicker = () => pickRandomTitle(randomPickerItem?.id)
+  const selectTastePick = (item: SearchResult) => {
+    const id = mediaIdentity(item)
+    if (pickedIds.includes(id) || pickedIds.length >= 3) return
+    const next = [...pickedIds, id]
+    setPickedIds(next)
+    try { localStorage.setItem(pickStorageKey, JSON.stringify(next)) } catch { /* use this session's selection */ }
+    submitFeedback(item, 'more-like-this')
+  }
+
   const handleTabChange = (nextTab: DiscoverTab) => {
     setTab(nextTab)
   }
 
-  const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) navigate(heroRecommendation.item.type === 'movie' ? `/movie/${heroRecommendation.item.id}` : `/series/${heroRecommendation.item.id}`, { state: { ...heroRecommendation.item, autoPlay } }) }
+  const openItemDetail = (item: SearchResult, autoPlay = false) => navigate(item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...item, autoPlay } })
+  const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) openItemDetail(heroRecommendation.item, autoPlay) }
   const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
   const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
   const heroGlassButton = 'focus-ring cursor-pointer rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white/90 transition-colors hover:border-white/25 hover:bg-white/20 hover:text-white active:scale-[0.97]'
@@ -823,6 +919,9 @@ export default function DiscoverPage() {
             </button>
           ))}
         </div>
+        <button className="discover-surprise-trigger" type="button" onClick={() => { pickRandomTitle(); setPickerOpen(true) }} disabled={!pickerPool.length}>
+          <Shuffle size={16} aria-hidden="true" /> Surprise Me
+        </button>
       </div>
 
       <>
@@ -855,6 +954,35 @@ export default function DiscoverPage() {
             </div>
             {heroPoster && <div className="discover-spotlight__poster"><img src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" /></div>}
           </section> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="discover-loading mx-6 mb-8 animate-pulse"><div className="h-56 rounded-[1.5rem] bg-white/[.06] sm:h-72"/><div className="mt-5 flex gap-3 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-[10.5rem] w-28 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
+          {ranked.length > 0 && <section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
+            <p className="discover-section-eyebrow">Refine your taste</p>
+            <div className="discover-refine__heading">
+              <h2 id="discover-refine-title">Pick Three You Like</h2>
+              <div className="discover-refine__progress" aria-label={`${pickedIds.length} of 3 titles selected`}>
+                {[0, 1, 2].map((index) => <span key={index} className={index < pickedIds.length ? 'is-complete' : ''} />)}
+                <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
+              </div>
+            </div>
+            {pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 3)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
+            <div className="discover-taste-picks">
+              {tastePickCandidates.slice(0, 6).map((item) => {
+                const id = mediaIdentity(item)
+                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} aria-label={`Choose ${item.title}`}>
+                  <span className="discover-taste-pick__poster">{item.poster && <img src={item.poster} alt="" loading="lazy" decoding="async"/>}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
+                  <span className="discover-taste-pick__title">{item.title}</span>
+                  <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
+                </button>
+              })}
+            </div>
+          </section>}
+          <section className="discover-moods row-contain" aria-label="Choose a mood">
+            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Tuned to your taste</p><h2>Sunday Night Moods</h2></div></div>
+            <div className="discover-moods__options" role="group" aria-label="Mood">
+              {(tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS).slice(0, 3).map((option, index) => <button type="button" key={option.title} aria-pressed={moodIndex === index} className={moodIndex === index ? 'is-active' : ''} onClick={() => setMoodIndex(index)}>{option.title}</button>)}
+            </div>
+            {moodItems.length > 0 && <MediaRow title={`${mood.title} Picks`} items={moodItems} layout="poster" />}
+          </section>
+          {pickerOpen && randomPickerItem && <DiscoveryPicker item={randomPickerItem} onClose={() => setPickerOpen(false)} onSpin={spinPicker} onOpen={() => openItemDetail(randomPickerItem)} />}
           {personalizedSections.map((section) => {
             const title = DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, '')
             return <div key={section.id} className="row-contain discover-shelf"><MediaRow title={title} items={section.items.map((entry)=>entry.item)} layout="poster" showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div>
