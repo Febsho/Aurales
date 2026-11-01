@@ -9,6 +9,7 @@ import RatingsStrip from './RatingsStrip'
 import { warmCachedImages } from '../services/imageCache'
 import { applySearchResultArt, resolveBetterPoster } from '../services/artwork'
 import { getShelfView, rememberShelfView, routeViewKey } from '../services/sessionViewState'
+import { isMobileWebViewport } from '../platform/mobileWeb'
 
 // A Home page can activate several shelves together. Rendering every preview
 // card on each one makes WebKit decode hundreds of full-resolution posters at
@@ -96,7 +97,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   const rowEntryCount = useAppStore((s) => s.rowEntryCount)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
-  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/'
+  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/' && !isMobileWebViewport()
   // Titles are not unique: a page can show several sections called "Trending".
   // Include their leading media identities so each rail gets its own restored
   // position and progressive-render count.

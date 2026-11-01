@@ -8,6 +8,8 @@ const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8')
 const shellSource = readFileSync(new URL('./DetailContentShell.tsx', import.meta.url), 'utf8')
 const stickySource = readFileSync(new URL('./DetailStickyHeader.tsx', import.meta.url), 'utf8')
 const seriesSource = readFileSync(new URL('../../pages/SeriesDetailPage.tsx', import.meta.url), 'utf8')
+const discoverSource = readFileSync(new URL('../../pages/DiscoverPage.tsx', import.meta.url), 'utf8')
+const mobileNavigationSource = readFileSync(new URL('../MobileWebNavigation.tsx', import.meta.url), 'utf8')
 
 describe('cinematic detail responsive and scroll contracts', () => {
   it('keeps the hero within the requested cinematic viewport range', () => {
@@ -43,5 +45,19 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(css).not.toContain('.detail-page .episode-showcase-card:hover,')
     expect(seriesSource).toContain("import SelectMenu from '../components/ui/SelectMenu'")
     expect(seriesSource).toContain('className="detail-season-menu"')
+  })
+
+  it('keeps mobile shelves, discovery hero, details, and navigation inside touch-sized layouts', () => {
+    expect(css).toContain('.media-row--ranked .media-row-card-slot > button')
+    expect(css).toContain('--ranked-card-height: clamp(7.25rem, 31vw, 8.25rem)')
+    expect(css).toContain('.discover-hero { min-height: 370px !important;')
+    expect(css).toContain('.detail-page .episode-showcase-card { width: min(76vw, 17rem); }')
+    expect(css).toContain('.cinematic-nav-capsule::-webkit-scrollbar { display: none; }')
+    expect(css).toContain('.discover-page__heading h1')
+    expect(css).toContain('.mobile-web-nav {')
+    expect(css).toContain('env(safe-area-inset-bottom)')
+    expect(discoverSource).toContain('className="discover-page pb-12"')
+    expect(discoverSource).toContain('className="discover-hero group relative')
+    expect(mobileNavigationSource).toContain('aria-label="Mobile navigation"')
   })
 })

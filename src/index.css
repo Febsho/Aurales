@@ -4709,6 +4709,15 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     aspect-ratio: 2 / 3;
   }
 
+  /* Ranked shelves (for example Trending Movies) keep a separate, larger
+     cinematic sizing path. Cap both sizing variables on phones so the rank
+     gutter and poster shrink together instead of leaving 200px artwork after
+     ordinary poster shelves have already become compact. */
+  html[data-runtime-platform="web"] [data-home-shelves] .media-row--ranked .media-row-card-slot > button {
+    --cinematic-special-height: clamp(7.5rem, 28vw, 8.25rem) !important;
+    --ranked-card-height: clamp(7.5rem, 28vw, 8.25rem) !important;
+  }
+
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot h3 {
     font-size: .7rem;
     line-height: .95rem;
@@ -4874,6 +4883,187 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .inapp-player-options select { max-width: 23vw; }
 }
 
+/* Shared touch layout: keep the desktop art direction, but remove its fixed
+   card and hero dimensions where a narrow viewport cannot display them well. */
+@media (max-width: 700px) {
+  html[data-runtime-platform="web"] .app-theme-shell[data-mobile-web] {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  html[data-runtime-platform="web"] .app-theme-shell[data-mobile-web] .app-scroll-root {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
+  }
+
+  html[data-runtime-platform="web"] .mobile-web-nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 80;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: .1rem;
+    padding: .35rem max(.4rem, env(safe-area-inset-left)) max(.4rem, env(safe-area-inset-bottom)) max(.4rem, env(safe-area-inset-right));
+    border-top: 1px solid rgba(255,255,255,.09);
+    background: rgba(12, 13, 16, .94);
+    box-shadow: 0 -12px 32px rgba(0,0,0,.3);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    backdrop-filter: blur(24px) saturate(140%);
+  }
+
+  html[data-runtime-platform="web"] .mobile-web-nav__item {
+    display: flex;
+    min-width: 0;
+    min-height: 3.15rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .2rem;
+    border-radius: .75rem;
+    color: rgba(255,255,255,.54);
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html[data-runtime-platform="web"] .mobile-web-nav__item svg { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; }
+  html[data-runtime-platform="web"] .mobile-web-nav__item span { max-width: 100%; overflow: hidden; font-size: .58rem; font-weight: 600; line-height: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+  html[data-runtime-platform="web"] .mobile-web-nav__item.is-active { color: #fff; background: rgba(255,255,255,.105); }
+  html[data-runtime-platform="web"] .mobile-web-nav__item:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: -2px; }
+
+  html[data-runtime-platform="web"] { --space-page-inline: .875rem; }
+
+  html[data-runtime-platform="web"] .cinematic-top-nav {
+    top: max(.4rem, env(safe-area-inset-top));
+    height: 3.25rem;
+    padding-inline: .55rem;
+  }
+
+  html[data-runtime-platform="web"] .cinematic-nav-capsule {
+    width: max-content;
+    max-width: calc(100vw - 1.1rem);
+    gap: 0;
+    padding: .2rem;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  html[data-runtime-platform="web"] .cinematic-nav-capsule::-webkit-scrollbar { display: none; }
+
+  html[data-runtime-platform="web"] .cinematic-nav-link {
+    flex: 0 0 auto;
+    min-height: 2.75rem;
+    padding-inline: clamp(.42rem, 2vw, .68rem);
+    font-size: clamp(.69rem, 2.8vw, .78rem);
+  }
+
+  html[data-runtime-platform="web"] .cinematic-nav-search {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  html[data-runtime-platform="web"] .app-scroll-root { overscroll-behavior-y: contain; }
+
+  /* All shelves use the same compact rhythm across Home, Discover and Catalog. */
+  html[data-runtime-platform="web"] .media-row { margin-bottom: 1rem !important; }
+  html[data-runtime-platform="web"] .media-row > div:first-child,
+  html[data-runtime-platform="web"] .media-row > div:last-of-type { padding-inline: .75rem !important; }
+  html[data-runtime-platform="web"] .media-row > div:first-child { margin-bottom: .45rem !important; }
+  html[data-runtime-platform="web"] .media-row > div:first-child h2 { font-size: .95rem !important; line-height: 1.25rem; }
+  html[data-runtime-platform="web"] .cinematic-row-track { gap: .5rem !important; padding-inline: .75rem !important; padding-bottom: .7rem !important; }
+  html[data-runtime-platform="web"] .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(4rem, 18vw, 4.65rem); }
+  html[data-runtime-platform="web"] .media-row--ranked .media-row-card-slot > button {
+    --cinematic-special-height: clamp(7.25rem, 31vw, 8.25rem) !important;
+    --ranked-card-height: clamp(7.25rem, 31vw, 8.25rem) !important;
+  }
+  html[data-runtime-platform="web"] .media-row--feature .media-row-card-slot > button {
+    --cinematic-special-height: clamp(7.5rem, 34vw, 9rem) !important;
+  }
+  html[data-runtime-platform="web"] .media-row--landscape .media-row-card-slot { width: clamp(10rem, 46vw, 12rem); }
+  html[data-runtime-platform="web"] .media-row--landscape .media-row-card-slot > button {
+    --cinematic-special-height: clamp(5.5rem, 25vw, 6.75rem) !important;
+  }
+  html[data-runtime-platform="web"] .media-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(27vw, 6.25rem), 1fr)) !important;
+    gap: .7rem;
+  }
+  html[data-runtime-platform="web"] .media-grid > button { max-width: none; }
+
+  /* Discover's desktop banner used a 460px minimum plus 460px inner content.
+     Give it a phone-specific crop and let its copy/actions wrap naturally. */
+  html[data-runtime-platform="web"] .discover-page { padding-bottom: calc(1.5rem + env(safe-area-inset-bottom)); }
+  html[data-runtime-platform="web"] .discover-page__notice { padding-top: 3.5rem; }
+  html[data-runtime-platform="web"] .discover-page__heading { padding: 1rem .875rem .8rem; }
+  html[data-runtime-platform="web"] .discover-page__heading > div:first-child { align-items: flex-start; gap: .75rem; }
+  html[data-runtime-platform="web"] .discover-page__heading h1 { font-size: 2rem; line-height: 1.05; }
+  html[data-runtime-platform="web"] .discover-page__heading p { margin-top: .4rem; line-height: 1.35rem; }
+  html[data-runtime-platform="web"] .discover-page__tabs { margin-top: .9rem; width: 100%; }
+  html[data-runtime-platform="web"] .discover-page__tabs button { min-height: 2.75rem; padding-inline: .75rem; font-size: .78rem; }
+  html[data-runtime-platform="web"] .discover-page__heading > span { font-size: .65rem; }
+  html[data-runtime-platform="web"] .discover-page__modes { margin-bottom: .75rem; padding-inline: .875rem; }
+  html[data-runtime-platform="web"] .discover-page__modes button { min-height: 2.75rem; padding-inline: .8rem; font-size: .7rem; }
+  html[data-runtime-platform="web"] .discover-hero { min-height: 370px !important; margin: 0 .875rem 1.5rem !important; border-radius: 1rem !important; }
+  html[data-runtime-platform="web"] .discover-hero__gradient { background-image: linear-gradient(to top, rgba(0,0,0,.96), rgba(0,0,0,.68) 46%, rgba(0,0,0,.1)) !important; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 370px !important; max-width: none; padding: 1.15rem !important; }
+  html[data-runtime-platform="web"] .discover-hero h2 { font-size: clamp(1.8rem, 8vw, 2.4rem); line-height: 1.05; overflow-wrap: anywhere; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative > p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .78rem; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex { gap: .4rem; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex > button { min-height: 2.65rem; padding: .55rem .8rem; font-size: .75rem; }
+  html[data-runtime-platform="web"] .discover-hero > button[aria-label^="Previous"],
+  html[data-runtime-platform="web"] .discover-hero > button[aria-label^="Next"] { display: none; }
+  html[data-runtime-platform="web"] .discover-hero > div.absolute.bottom-7 { right: 1rem; bottom: 1rem; }
+
+  /* Detail pages keep one readable left edge and a shorter hero so the season
+     picker and episode rail are reachable without a long empty backdrop. */
+  html[data-runtime-platform="web"] .detail-page { --detail-inline: .9rem; --detail-hero-overlap: 2rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(30rem, 68svh, 36rem) !important; min-height: 0; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__content {
+    width: 100%; max-width: none; padding-inline: .9rem; padding-bottom: 1.1rem;
+    transform: none; margin: 0;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__brand { min-height: 2.5rem; margin-bottom: .5rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__logo { max-width: 82%; max-height: 4.25rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__title { max-width: 100%; font-size: clamp(1.8rem, 8vw, 2.6rem); line-height: 1.05; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-overview { max-width: 100%; margin-bottom: .65rem; font-size: .78rem; line-height: 1.25rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions { width: 100%; max-width: 22rem; gap: .45rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__play { min-height: 3rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__secondary { gap: .4rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__watchlist > button,
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button,
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__room { min-height: 2.65rem !important; padding-inline: .55rem !important; font-size: .75rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell { padding-top: 1rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell__inner { padding-inline: .875rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand { min-height: 3rem; margin-bottom: .75rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand h2 { font-size: clamp(1.7rem, 7vw, 2.5rem); }
+  html[data-runtime-platform="web"] .detail-page .detail-episodes-section { width: 100%; padding-inline: .875rem !important; }
+  html[data-runtime-platform="web"] .detail-page .detail-episodes-heading { margin-bottom: .7rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-season-picker { margin-bottom: .75rem !important; }
+  html[data-runtime-platform="web"] .detail-page .season-scroll { gap: .45rem; }
+  html[data-runtime-platform="web"] .detail-page .season-scroll > button { min-height: 2.55rem; padding-inline: .8rem; font-size: .75rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-episode-track { gap: .65rem; padding-top: .8rem; padding-bottom: 1rem; }
+  html[data-runtime-platform="web"] .detail-page .episode-showcase-card { width: min(76vw, 17rem); }
+  html[data-runtime-platform="web"] .episode-card { gap: .6rem; }
+  html[data-runtime-platform="web"] .episode-card__thumbnail { width: clamp(6rem, 29vw, 8rem); }
+  html[data-runtime-platform="web"] .episode-card h3 { font-size: .9rem; line-height: 1.2; }
+
+  html[data-runtime-platform="web"] .detail-sticky-header { inset-inline: 0 !important; min-height: 3.4rem; gap: .45rem; padding: .4rem .75rem; }
+  html[data-runtime-platform="web"] .detail-sticky-header strong { font-size: .85rem; }
+  html[data-runtime-platform="web"] .detail-sticky-header__back,
+  html[data-runtime-platform="web"] .detail-sticky-header__action { min-height: 2.5rem; padding-inline: .65rem; font-size: .75rem; }
+}
+
+@media (min-width: 701px) {
+  html[data-runtime-platform="web"] .mobile-web-nav { display: none; }
+}
+
+@media (max-width: 390px) {
+  html[data-runtime-platform="web"] .cinematic-nav-link { padding-inline: .38rem; font-size: .68rem; }
+  html[data-runtime-platform="web"] .discover-hero { min-height: 340px !important; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 340px !important; padding: .9rem !important; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: 31rem !important; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -4884,10 +5074,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 }
 
 @media (max-width: 520px) {
-  .cinematic-nav-link {
-    padding-inline: .2rem;
-    font-size: .62rem;
+  html[data-runtime-platform="web"] .cinematic-nav-link {
+    padding-inline: .38rem;
+    font-size: .68rem;
   }
-  .cinematic-nav-search { width: 1.75rem; }
-  .home-hero-ratings > :nth-child(n + 4) { display: none; }
+  html[data-runtime-platform="web"] .cinematic-nav-search { width: 2.75rem; min-width: 2.75rem; min-height: 2.75rem; }
+  html[data-runtime-platform="web"] .home-hero-ratings > :nth-child(n + 4) { display: none; }
 }

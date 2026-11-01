@@ -15,6 +15,7 @@ import type { HomeRowConfig, SearchResult } from '../types'
 import { getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { formatTime } from '../services/player'
 import { cachedImage, warmCachedImages } from '../services/imageCache'
+import { isMobileWebViewport } from '../platform/mobileWeb'
 import { streamPreloadManager } from '../services/streams/preloadManager'
 import {
   getContinueWatchingAccountScope,
@@ -209,7 +210,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const pmdbConnected = useAppStore((s) => Boolean(s.pmdbApiKey))
   const mdblistConnected = useAppStore((s) => Boolean(s.mdblistApiKey)) || hasMdblistOAuth()
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
-  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed'
+  const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && !isMobileWebViewport()
   const [focusedFixedItemId, setFocusedFixedItemId] = useState<string | null>(null)
   const posterSize = useAppStore((s) => s.posterSize)
   // Landscape cards scale with the global poster-size setting so the Continue

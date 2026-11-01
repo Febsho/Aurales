@@ -6,6 +6,8 @@ import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import TitleBar from './TitleBar'
 import CinematicTopNav from './CinematicTopNav'
+import MobileWebNavigation from './MobileWebNavigation'
+import { useIsMobileWeb } from '../platform/mobileWeb'
 import { isEditableKeyboardTarget, isWatchTogetherShortcut } from '../services/keyboardShortcuts'
 import { flushSessionViewState, getRouteScroll, rememberRouteScroll, routeViewKey } from '../services/sessionViewState'
 
@@ -16,6 +18,7 @@ const WatchTogetherAutoPlayer = lazy(() => import('./watch-together/WatchTogethe
 const WatchTogetherPanel = lazy(() => import('./watch-together/WatchTogetherPanel'))
 
 export default function Layout() {
+  const mobileWeb = useIsMobileWeb()
   const sidebarPinned = !useAppStore((s) => s.sidebarCollapsed)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
@@ -316,14 +319,16 @@ export default function Layout() {
   )
 
   return (
-    <div className={`app-theme-shell h-screen overflow-hidden bg-black hero-bg-transparent ${!usesTopNav && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`} data-nav-mode={usesTopNav ? 'topbar' : sidebarPinned ? 'sidebar-pinned' : 'sidebar-overlay'}>
-      <TitleBar />
-      {usesTopNav
-        ? <CinematicTopNav hidden={cinematicNavHidden} />
-        : <Sidebar />}
+    <div className={`app-theme-shell h-screen overflow-hidden bg-black hero-bg-transparent ${!mobileWeb && !usesTopNav && sidebarPinned ? 'flex' : 'relative'} ${cinematic ? 'cinematic-tv-shell' : ''}`} data-mobile-web={mobileWeb || undefined} data-nav-mode={mobileWeb ? 'mobile-bottom' : usesTopNav ? 'topbar' : sidebarPinned ? 'sidebar-pinned' : 'sidebar-overlay'}>
+      {!mobileWeb && <TitleBar />}
+      {mobileWeb
+        ? <MobileWebNavigation />
+        : usesTopNav
+          ? <CinematicTopNav hidden={cinematicNavHidden} />
+          : <Sidebar />}
       {/* Cinematic brand: fixed top-left, independent of the top nav. Shown on
           Home (until scrolled) and Settings; hidden on Discover/Library/etc. */}
-      {usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
+      {!mobileWeb && usesTopNav && cinematic && (location.pathname === '/' ? cinematicAtTop : location.pathname.startsWith('/settings')) && (
         <div className="cinematic-nav-brand">
           <img src="/app-logo.png?v=3" alt="" className="h-10 w-10 object-contain" />
           <span className="text-xl font-black tracking-tight text-white">Aurales</span>
@@ -339,7 +344,7 @@ export default function Layout() {
             'fixed z-[60] left-1/2',
             'w-[min(38rem,calc(100vw-2rem))]',
             'transition-all duration-300 ease-expo',
-            `-translate-x-1/2 ${usesTopNav ? 'top-[7.25rem]' : 'top-[calc(var(--window-chrome-height)+1rem)]'} opacity-100 pointer-events-auto`,
+            `-translate-x-1/2 ${usesTopNav && !mobileWeb ? 'top-[7.25rem]' : 'top-[calc(var(--window-chrome-height)+1rem)]'} opacity-100 pointer-events-auto`,
           ].join(' ')}
         >
           {searchInput}

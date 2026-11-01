@@ -42,6 +42,7 @@ import { SERVER_INTEGRATIONS_ENABLED } from '../services/serverIntegrations'
 import { getActiveProfileId } from '../services/profiles'
 import { getHomeShelfId, rememberHomeShelfId } from '../services/sessionViewState'
 import { HomeEditRowContext } from '../components/home/HomeEditRowContext'
+import { isMobileWebViewport } from '../platform/mobileWeb'
 
 const HomeEditList = lazy(() => import('../components/home/HomeEditList'))
 
@@ -889,13 +890,13 @@ export default function HomePage() {
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
   const homeHeroMode = useAppStore((s) => s.homeHeroMode)
-  const [isCompactViewport, setIsCompactViewport] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches)
+  const [isCompactViewport, setIsCompactViewport] = useState(isMobileWebViewport)
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
   useEffect(() => {
     const query = window.matchMedia('(max-width: 700px)')
-    const update = () => setIsCompactViewport(query.matches)
+    const update = () => setIsCompactViewport(isMobileWebViewport())
     update()
     query.addEventListener('change', update)
     return () => query.removeEventListener('change', update)

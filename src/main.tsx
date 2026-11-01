@@ -26,6 +26,8 @@ const MdblistCallbackPage = lazy(() => import('./pages/MdblistCallbackPage'))
 // WebKitGTK has to use its non-DMA-BUF renderer on GPU/driver combinations
 // where GBM allocation fails. Mark Linux early so CSS can avoid effects that
 // are disproportionately expensive on that reliable fallback path.
+const isTauriRuntime = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+document.documentElement.dataset.runtimePlatform = isTauriRuntime ? 'tauri' : 'web'
 if (navigator.userAgent.includes('Linux')) {
   document.documentElement.dataset.platform = 'linux'
 }

@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
 import { getPlatformCapabilities } from '../platform/capabilities'
+import { useIsMobileWeb } from '../platform/mobileWeb'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   getDeviceCode,
@@ -810,6 +811,7 @@ const AUDIENCE_OPTIONS = [
 ] as const
 
 export default function SettingsPage() {
+  const mobileWeb = useIsMobileWeb()
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [searchParams] = useSearchParams()
@@ -2173,7 +2175,7 @@ export default function SettingsPage() {
                     ]}
                   />
                 </SettingRow>
-                <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
+                {!mobileWeb && <SettingRow label="Navigation" description="Choose either navigation layout independently from the interface theme.">
                   <SettingSelect
                     label="Navigation style"
                     value={store.navigationStyle}
@@ -2183,7 +2185,7 @@ export default function SettingsPage() {
                       { value: 'topbar', label: 'Cinematic top bar' },
                     ]}
                   />
-                </SettingRow>
+                </SettingRow>}
                 <SettingRow label="Entries per row" description="Choose how many titles each horizontal shelf shows before the Show all shortcut.">
                   <SettingSelect
                     label="Entries per row"
@@ -2201,7 +2203,7 @@ export default function SettingsPage() {
               </SettingSection>
 
               <SettingSection title="Home presentation" description="Choose how the unified Cinematic Home presents featured artwork and shelves.">
-                <SettingRow label="Hero layout" description="Dynamic Banner uses the inset carousel. Fixed Focus turns the active shelf into a full-screen TV browsing experience.">
+                {!mobileWeb && <SettingRow label="Hero layout" description="Dynamic Banner uses the inset carousel. Fixed Focus turns the active shelf into a full-screen TV browsing experience.">
                   <SettingSelect
                     label="Home hero layout"
                     value={store.homeHeroMode}
@@ -2212,7 +2214,7 @@ export default function SettingsPage() {
                       { value: 'fixed', label: 'Fixed Focus' },
                     ]}
                   />
-                </SettingRow>
+                </SettingRow>}
                 <SettingRow label="Card focus animations" description="Animate focused-card expansion in Dynamic Banner and the artwork/detail handoff in Fixed Focus.">
                   <SettingToggle checked={store.homeCardAnimations} onChange={(enabled) => store.setHomeCardAnimations(enabled)} />
                 </SettingRow>

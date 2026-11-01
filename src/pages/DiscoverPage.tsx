@@ -795,9 +795,9 @@ export default function DiscoverPage() {
   const heroGlassButton = 'focus-ring cursor-pointer rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white/90 shadow-lg shadow-black/20 backdrop-blur-xl transition-all hover:border-white/25 hover:bg-white/20 hover:text-white active:scale-[0.97]'
 
   return (
-    <div className="pb-12">
-      <div className="pt-8"><CatalogKeyNotice /></div>
-      <div className="px-6 pt-10 pb-7 md:px-10">
+    <div className="discover-page pb-12">
+      <div className="discover-page__notice pt-8"><CatalogKeyNotice /></div>
+      <div className="discover-page__heading px-6 pt-10 pb-7 md:px-10">
         <div className="flex flex-wrap items-end justify-between gap-5">
           <div className="max-w-2xl">
             <p className="mb-3 text-[11px] font-bold uppercase tracking-[.24em] text-accent">Curated for your next watch</p>
@@ -807,7 +807,7 @@ export default function DiscoverPage() {
           <span className="rounded-full border border-white/[0.09] bg-white/[0.035] px-4 py-2 text-xs font-medium text-white/50">Daily picks <span className="mx-1.5 text-white/20">·</span> {region} <span className="mx-1.5 text-white/20">·</span> {minRating > 0 ? `${minRating}+ rating` : 'All ratings'}</span>
         </div>
 
-        <div className="mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5">
+        <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5">
           {(['movies', 'series', 'anime'] as DiscoverTab[]).map((item) => (
             <button
               key={item}
@@ -826,10 +826,10 @@ export default function DiscoverPage() {
 
       <>
 
-          <div className="mb-7 flex gap-2 overflow-x-auto px-6 pb-1 md:px-10" aria-label="Browse recommendations">
+          <div className="discover-page__modes mb-7 flex gap-2 overflow-x-auto px-6 pb-1 md:px-10" aria-label="Browse recommendations">
             {([['for-you','Recommended'],['new','Something New'],['hidden-gems','Hidden Gems'],['critically-acclaimed','Critically Acclaimed'],['recently-released','Recently Released'],['quick-watch','Quick Watch']] as const).map(([value,label]) => <button key={value} onClick={() => changeMode(value)} className={`focus-ring whitespace-nowrap rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${mode === value ? 'border-white bg-white text-black' : 'border-white/10 bg-transparent text-white/55 hover:border-white/25 hover:text-white'}`}>{label}</button>)}
           </div>
-          {viewState==='content'&&heroRecommendation ? <section onClick={()=>openHeroDetail(false)} className="group relative mx-6 mb-10 min-h-[460px] cursor-pointer select-none overflow-hidden rounded-[1.75rem] border border-white/[.1] bg-[#111] shadow-2xl shadow-black/25 md:mx-10">
+          {viewState==='content'&&heroRecommendation ? <section onClick={()=>openHeroDetail(false)} className="discover-hero group relative mx-6 mb-10 min-h-[460px] cursor-pointer select-none overflow-hidden rounded-[1.75rem] border border-white/[.1] bg-[#111] shadow-2xl shadow-black/25 md:mx-10">
             {heroPool.map((entry, index) => {
               const previousHeroIndex = (activeHeroIndex - 1 + heroPool.length) % heroPool.length
               const nextHeroIndex = (activeHeroIndex + 1) % heroPool.length
@@ -840,7 +840,7 @@ export default function DiscoverPage() {
               return <img key={String(entry.item.id)} src={src} alt="" draggable={false} loading={index === activeHeroIndex ? 'eager' : 'lazy'} decoding="async" fetchPriority={index === activeHeroIndex ? 'high' : 'low'} className="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ease-in-out" style={{ opacity: index === activeHeroIndex ? 1 : 0 }} />
             })}
             <div className="absolute inset-0 bg-gradient-to-r from-black/95 via-black/65 to-black/5" />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/10" />
+            <div className="discover-hero__gradient absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/10" />
             <div className="relative z-10 flex min-h-[460px] max-w-2xl flex-col justify-end p-7 md:p-14">
               {heroLogo && !heroLogoError
                 ? <img src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="mb-1 max-h-[110px] max-w-[75%] object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)] md:max-h-[140px]" />

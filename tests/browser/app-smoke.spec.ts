@@ -69,22 +69,17 @@ test('browser cache settings describe IndexedDB and browser-managed artwork stor
   await expect(page.getByRole('button', { name: 'Clear Image Cache' })).toHaveCount(0)
 })
 
-test('mobile cinematic navigation gives every destination a 44px touch target', async ({ page }) => {
+test('mobile web always uses a bottom navigation with 44px touch targets', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.addInitScript(() => localStorage.setItem('aurales_navigation_style', 'topbar'))
   await page.goto('/')
   await page.getByRole('button', { name: /select profile/i }).click()
   await expect(page.getByRole('heading', { name: 'Who’s watching?' })).toHaveCount(0)
 
-  const navigation = page.getByRole('navigation', { name: 'Primary navigation' })
+  await expect(page.locator('.app-theme-shell')).toHaveAttribute('data-mobile-web', 'true')
+  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toHaveCount(0)
+  const navigation = page.getByRole('navigation', { name: 'Mobile navigation' })
   await expect(navigation).toBeVisible()
-  await page.waitForFunction(() => {
-    const links = document.querySelectorAll<HTMLElement>('nav[aria-label="Primary navigation"] a')
-    return links.length > 1 && Array.from(links).every((link) => {
-      const rect = link.getBoundingClientRect()
-      return rect.width >= 44 && rect.height >= 44
-    })
-  })
   const targets = await navigation.locator('a').evaluateAll((links) => links.map((link) => {
     const rect = link.getBoundingClientRect()
     return { label: link.getAttribute('aria-label') || link.textContent?.trim(), width: rect.width, height: rect.height }
@@ -93,44 +88,35 @@ test('mobile cinematic navigation gives every destination a 44px touch target', 
   expect(targets.every((target) => target.width >= 44 && target.height >= 44), JSON.stringify(targets)).toBe(true)
 })
 
-test('mobile sidebar destinations meet the same 44px touch target', async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.addInitScript(() => localStorage.setItem('aurales_navigation_style', 'sidebar'))
-  await page.goto('/')
-  await page.getByRole('button', { name: /select profile/i }).click()
-  await expect(page.getByRole('heading', { name: 'Who’s watching?' })).toHaveCount(0)
-  const trigger = page.getByRole('button', { name: /open navigation/i })
-  // Use the explicit trigger so this test covers the same interaction that
-  // works on touch devices, where hover cannot open the floating sidebar.
-  if (testInfo.project.use.isMobile) await trigger.tap()
-  else await trigger.click()
-  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-  await expect(page.locator('.app-sidebar')).toHaveAttribute('data-expanded', 'true')
-  await page.waitForFunction(() => {
-    const links = document.querySelectorAll<HTMLElement>('.app-sidebar__nav a')
-    return links.length > 1 && Array.from(links).every((link) => {
-      const rect = link.getBoundingClientRect()
-      return rect.width >= 44 && rect.height >= 44
-    })
-  })
-
-  const targets = await page.locator('.app-sidebar__nav a').evaluateAll((links) => links.map((link) => {
-    const rect = link.getBoundingClientRect()
-    return { label: link.textContent?.trim(), width: rect.width, height: rect.height }
-  }))
-  expect(targets.length).toBeGreaterThan(1)
-  expect(targets.every((target) => target.width >= 44 && target.height >= 44), JSON.stringify(targets)).toBe(true)
-})
-
-test('fixed hero preference uses a swipeable mobile presentation and restores Fixed Focus on desktop', async ({ page }) => {
+test('mobile web hides desktop navigation and Home hero layout preferences', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
   await page.getByRole('button', { name: /select profile/i }).click()
   await page.getByRole('link', { name: 'Settings' }).click()
   await page.getByRole('button', { name: /Interface/ }).click()
-  await page.getByLabel('Home hero layout').click()
-  await page.getByRole('option', { name: 'Fixed Focus' }).click()
-  await page.getByRole('link', { name: 'Home' }).evaluate((link: HTMLAnchorElement) => link.click())
+  await expect(page.getByLabel('Navigation style')).toHaveCount(0)
+  await expect(page.getByLabel('Home hero layout')).toHaveCount(0)
+})
+
+test('desktop web still honors the configured sidebar navigation', async ({ page }, testInfo) => {
+  test.skip(Boolean(testInfo.project.use.isMobile), 'A mobile device profile remains mobile even when its viewport is resized.')
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => localStorage.setItem('aurales_navigation_style', 'sidebar'))
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await expect(page.getByRole('heading', { name: 'Who’s watching?' })).toHaveCount(0)
+  await expect(page.locator('.app-theme-shell')).not.toHaveAttribute('data-mobile-web', 'true')
+  await expect(page.locator('.app-theme-shell')).toHaveAttribute('data-nav-mode', 'sidebar-overlay')
+  await page.getByRole('button', { name: /open navigation/i }).click()
+  await expect(page.locator('.app-sidebar__nav')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Mobile navigation' })).toHaveCount(0)
+})
+
+test('fixed hero preference uses a swipeable mobile presentation and restores Fixed Focus on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(() => localStorage.setItem('aurales_home_hero_mode', 'fixed'))
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
 
   const home = page.locator('[data-home-presentation]')
   await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
@@ -155,7 +141,7 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
           </section>
         </div>
       </div>`
-    document.body.append(fixture)
+    document.querySelector('.app-theme-shell')!.append(fixture)
     const hero = fixture.querySelector<HTMLElement>('[data-home-hero] > div')!
     const track = fixture.querySelector<HTMLElement>('.cinematic-row-track')!
     const slot = fixture.querySelector<HTMLElement>('.media-row-card-slot')!
@@ -188,6 +174,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
     { id: 'mobile-upcoming', title: 'Upcoming', layout: 'upcoming', enabled: true, order: 2, sourceType: 'local' },
     {
       id: 'mobile-posters', title: 'Mobile test shelf', layout: 'poster', enabled: true, order: 3, sourceType: 'discover',
+      discoverConfig: { source: 'TMDB', contentType: 'movie', sortBy: 'popularity.desc', cacheTtl: 3600, releasedOnly: true, includeAdult: false, includeGenres: [], excludeGenres: [], genreMatchMode: 'OR', people: [], peopleMatchMode: 'OR', includeCompanies: [], excludeCompanies: [], companyMatchMode: 'OR', includeKeywords: [], excludeKeywords: [], keywordMatchMode: 'OR', watchRegion: 'US', providerMatchMode: 'OR', selectedProviders: [], voteAverageMin: 0, voteAverageMax: 10, voteCountMin: 0 },
+    },
+    {
+      id: 'mobile-ranked', title: 'Mobile ranked shelf', layout: 'ranked', enabled: true, order: 4, sourceType: 'discover',
       discoverConfig: { source: 'TMDB', contentType: 'movie', sortBy: 'popularity.desc', cacheTtl: 3600, releasedOnly: true, includeAdult: false, includeGenres: [], excludeGenres: [], genreMatchMode: 'OR', people: [], peopleMatchMode: 'OR', includeCompanies: [], excludeCompanies: [], companyMatchMode: 'OR', includeKeywords: [], excludeKeywords: [], keywordMatchMode: 'OR', watchRegion: 'US', providerMatchMode: 'OR', selectedProviders: [], voteAverageMin: 0, voteAverageMax: 10, voteCountMin: 0 },
     },
   ]
@@ -239,6 +229,9 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   ).toBeGreaterThan(0)
   const posterShelf = page.locator('[data-home-shelves] .media-row--poster .cinematic-row-track')
   await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()
+  const rankedShelf = page.locator('[data-home-shelves] .media-row--ranked .cinematic-row-track')
+  const rankedCard = rankedShelf.locator('.media-row-card-slot').first().locator('button')
+  await expect(rankedCard).toBeVisible()
   const continueEmpty = page.locator('[data-home-shelves] [data-home-row="continue-empty"]')
   const upcomingRow = page.locator('[data-home-shelves] [data-home-row="upcoming"]')
   await expect(continueEmpty.locator('.cw-empty-state')).toBeVisible()
@@ -269,6 +262,12 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   expect(measurements!.gap).toBeLessThanOrEqual(8)
   expect(measurements!.posterWidth).toBeGreaterThan(0)
   expect(measurements!.posterWidth).toBeLessThanOrEqual(80)
+  const rankedMeasurements = await rankedCard.locator('[data-hero-viewport]').evaluate((art) => ({
+    width: art.getBoundingClientRect().width,
+    height: art.getBoundingClientRect().height,
+  }))
+  expect(rankedMeasurements.width, 'mobile ranked artwork should be compact like poster shelves').toBeLessThanOrEqual(96)
+  expect(rankedMeasurements.height, 'mobile ranked cards should not retain desktop poster height').toBeLessThanOrEqual(144)
   expect(measurements!.heroShelfGap).toBeLessThanOrEqual(9)
   expect(measurements!.continueUpcomingGap).toBeLessThanOrEqual(21)
   expect(measurements!.upcomingPosterHeadingGap).toBeLessThanOrEqual(21)
