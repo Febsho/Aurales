@@ -4883,6 +4883,33 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .inapp-player-options select { max-width: 23vw; }
 }
 
+/* Landscape phones and compact touch tablets get a cinema-player control
+   deck: transport controls stay centred above the seek rail, while audio and
+   subtitle selectors occupy their own readable row. */
+@media (max-width: 960px) and (max-height: 600px) and (pointer: coarse) {
+  html[data-runtime-platform="web"] .inapp-player-header {
+    padding: max(.55rem, env(safe-area-inset-top)) max(.75rem, env(safe-area-inset-right)) .4rem max(.75rem, env(safe-area-inset-left)) !important;
+  }
+  html[data-runtime-platform="web"] .inapp-player-controls {
+    inset-block: 0; display: flex; flex-direction: column-reverse; justify-content: flex-start;
+    gap: .5rem; padding: .75rem max(.75rem, env(safe-area-inset-right)) max(.55rem, env(safe-area-inset-bottom)) max(.75rem, env(safe-area-inset-left)) !important;
+    background: linear-gradient(to top, rgba(0,0,0,.92), rgba(0,0,0,.56) 22%, transparent 58%);
+  }
+  html[data-runtime-platform="web"] .inapp-player-control-row {
+    flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: center; gap: .4rem; width: 100%;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport,
+  html[data-runtime-platform="web"] .inapp-player-options {
+    flex: 0 0 auto; justify-content: center; flex-wrap: nowrap; width: 100%; gap: .45rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:not(:last-child),
+  html[data-runtime-platform="web"] .inapp-player-options > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > select { min-width: 44px; min-height: 44px; }
+  html[data-runtime-platform="web"] .inapp-player-options select { max-width: min(31vw, 13rem); }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child { margin-bottom: 0; }
+}
+
 /* Shared touch layout: keep the desktop art direction, but remove its fixed
    card and hero dimensions where a narrow viewport cannot display them well. */
 @media (max-width: 700px) {
@@ -5042,10 +5069,36 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .detail-page .season-scroll { gap: .45rem; }
   html[data-runtime-platform="web"] .detail-page .season-scroll > button { min-height: 2.55rem; padding-inline: .8rem; font-size: .75rem; }
   html[data-runtime-platform="web"] .detail-page .detail-episode-track { gap: .65rem; padding-top: .8rem; padding-bottom: 1rem; }
-  html[data-runtime-platform="web"] .detail-page .episode-showcase-card { width: min(76vw, 17rem); }
+  html[data-runtime-platform="web"] .detail-page .episode-showcase-card { width: min(48vw, 17rem); }
   html[data-runtime-platform="web"] .episode-card { gap: .6rem; }
   html[data-runtime-platform="web"] .episode-card__thumbnail { width: clamp(6rem, 29vw, 8rem); }
   html[data-runtime-platform="web"] .episode-card h3 { font-size: .9rem; line-height: 1.2; }
+
+  /* Match the compact streaming-app detail layout: the play action gets the
+     available width and the secondary actions stay icon-sized beside it. */
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions {
+    display: flex; align-items: center; width: 100%; max-width: none; gap: .45rem;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__play {
+    flex: 1 1 auto; width: auto; min-width: 0; min-height: 3rem; padding-inline: .65rem;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__secondary {
+    display: flex; flex: 0 0 auto; align-items: center; width: auto; gap: .4rem;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__watchlist,
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark,
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__room {
+    display: grid; flex: 0 0 2.9rem; width: 2.9rem; height: 2.9rem; min-height: 2.9rem !important;
+    padding: 0 !important; place-items: center; overflow: hidden;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__watchlist > button,
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button {
+    width: 2.9rem !important; height: 2.9rem !important; min-height: 2.9rem !important; padding: 0 !important;
+  }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__room > :not(svg) { display: none; }
+  html[data-runtime-platform="web"] .detail-page .ratings-hero { gap: .3rem .55rem; }
+  html[data-runtime-platform="web"] .detail-page .ratings-hero__lead,
+  html[data-runtime-platform="web"] .detail-page .ratings-hero__item { font-size: .85rem; }
 
   html[data-runtime-platform="web"] .detail-sticky-header { inset-inline: 0 !important; min-height: 3.4rem; gap: .45rem; padding: .4rem .75rem; }
   html[data-runtime-platform="web"] .detail-sticky-header strong { font-size: .85rem; }

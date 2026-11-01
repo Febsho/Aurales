@@ -65,6 +65,36 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
   }
 })
 
+test('landscape touch player keeps transport and track controls inside the safe viewport', async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.use.isMobile, 'The landscape control deck is verified in mobile browser projects.')
+  await page.setViewportSize({ width: 844, height: 390 })
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  const controls = page.locator('.inapp-player-controls')
+  await expect(controls).toBeVisible()
+
+  const layout = await controls.evaluate((element) => {
+    const row = element.querySelector<HTMLElement>('.inapp-player-control-row')!
+    const options = row.querySelector<HTMLElement>('.inapp-player-options')!
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: document.documentElement.clientHeight,
+      controls: element.getBoundingClientRect().toJSON(),
+      direction: getComputedStyle(element).flexDirection,
+      rowDirection: getComputedStyle(row).flexDirection,
+      optionsDisplay: getComputedStyle(options).display,
+      buttons: Array.from(row.querySelectorAll('button, select')).map((control) => {
+        const rect = control.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, width: rect.width, height: rect.height }
+      }),
+    }
+  })
+  expect(layout.direction).toBe('column-reverse')
+  expect(layout.rowDirection).toBe('column')
+  expect(layout.optionsDisplay).toBe('flex')
+  expect(layout.controls.height).toBeLessThanOrEqual(layout.viewportHeight + 1)
+  expect(layout.buttons.every((button) => button.left >= 0 && button.right <= layout.viewportWidth + 1), JSON.stringify(layout.buttons)).toBe(true)
+})
+
 test('iOS player uses Safari native fullscreen when the standard API is unavailable', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'ios-webkit', 'Safari native fullscreen fallback is iOS-specific.')
   await page.setViewportSize({ width: 390, height: 844 })

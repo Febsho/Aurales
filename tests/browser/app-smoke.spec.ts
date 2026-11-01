@@ -317,6 +317,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       viewport: document.documentElement.clientWidth,
       document: document.documentElement.scrollWidth,
       hero: rect(hero), title: rect(title), overview: rect(overview), actions: rect(actions), nav: rect(nav),
+      actionLayout: getComputedStyle(actions).display,
+      episodeCardWidth: (() => {
+        const card = document.createElement('button')
+        card.className = 'episode-showcase-card'
+        document.querySelector('.detail-page')?.append(card)
+        const width = card.getBoundingClientRect().width
+        card.remove()
+        return width
+      })(),
     }
   })
   expect(detailLayout).not.toBeNull()
@@ -329,6 +338,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(detailLayout!.overview.top).toBeGreaterThanOrEqual(detailLayout!.title.bottom - 1)
   expect(detailLayout!.actions.top).toBeGreaterThanOrEqual(detailLayout!.overview.bottom - 1)
   expect(detailLayout!.nav.bottom).toBeLessThanOrEqual(845)
+  expect(detailLayout!.actionLayout).toBe('flex')
+  expect(detailLayout!.episodeCardWidth).toBeLessThanOrEqual(390 * .5)
 
   await page.getByRole('link', { name: 'Discover' }).click()
   await expect(page.locator('.discover-page')).toBeVisible()

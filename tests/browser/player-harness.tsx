@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import '../../src/index.css'
 import InAppPlayer from '../../src/components/InAppPlayer'
 
+document.documentElement.dataset.runtimePlatform = 'web'
+
 const params = new URLSearchParams(location.search)
 const initialUrl = params.get('source')
 if (!initialUrl) throw new Error('Harness requires a source query parameter')
