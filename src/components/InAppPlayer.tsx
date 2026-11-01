@@ -1403,7 +1403,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           />
         ))}
       </video>
-      {playerNotice && <div className="absolute left-4 top-4 z-10 max-w-xl rounded-lg bg-black/70 px-3 py-2 text-xs text-white/70" style={{ top: 'max(1rem, env(safe-area-inset-top))', left: 'max(1rem, env(safe-area-inset-left))' }}>{playerNotice}</div>}
+      {playerNotice && <div className="inapp-player-notice absolute left-4 top-4 z-10 max-w-xl rounded-lg bg-black/70 px-3 py-2 text-xs text-white/70" style={{ top: 'max(1rem, env(safe-area-inset-top))', left: 'max(1rem, env(safe-area-inset-left))' }}>{playerNotice}</div>}
 
       {/* Watch Together overlays */}
       {isInWatchTogether && (

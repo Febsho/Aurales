@@ -4610,6 +4610,15 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     gap: .75rem;
   }
 
+  .inapp-player-notice {
+    top: max(6.5rem, calc(env(safe-area-inset-top) + 4rem)) !important;
+    right: max(.75rem, env(safe-area-inset-right));
+    left: max(.75rem, env(safe-area-inset-left)) !important;
+    width: auto;
+    max-width: 34rem;
+    margin-inline: auto;
+  }
+
   .inapp-player-header > div:last-child {
     min-width: 0;
     max-width: 68%;

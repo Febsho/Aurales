@@ -44,6 +44,17 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
   expect(metrics.scrollWidth, 'playback controls must not extend beyond the phone viewport').toBeLessThanOrEqual(metrics.width + 1)
   expect(metrics.buttons.length).toBeGreaterThan(0)
   expect(metrics.buttons.every((button) => button.width >= 44 && button.height >= 44), JSON.stringify(metrics.buttons)).toBe(true)
+
+  const notice = page.locator('.inapp-player-notice')
+  if (await notice.isVisible()) {
+    const [noticeBox, headerBox] = await Promise.all([
+      notice.boundingBox(),
+      page.locator('.inapp-player-header').boundingBox(),
+    ])
+    expect(noticeBox).not.toBeNull()
+    expect(headerBox).not.toBeNull()
+    expect(noticeBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height)
+  }
 })
 
 test('a late rejection from an earlier play request does not replace active playback with an error', async ({ page }, testInfo) => {
