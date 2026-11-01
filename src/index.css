@@ -5095,6 +5095,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button {
     width: 2.9rem !important; height: 2.9rem !important; min-height: 2.9rem !important; padding: 0 !important;
   }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button > span:not(:first-child) { display: none; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__room > :not(svg) { display: none; }
   html[data-runtime-platform="web"] .detail-page .ratings-hero { gap: .3rem .55rem; }
   html[data-runtime-platform="web"] .detail-page .ratings-hero__lead,
