@@ -41,6 +41,7 @@ import { resolveAnimeMetadata } from '../services/metadata/animeResolver'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
 import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
+import { getAniBridgeTvdbSeasonScopes, mergeAniBridgeTvdbSeasons } from '../services/anime-mapping/anibridgeSeasonStructure'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { usePreparedStream } from '../hooks/usePreparedStream'
@@ -132,7 +133,7 @@ async function resolveAddonAnimeTvdbStructure(
     : resolved?.tvdbId
   if (!tvdbId) return null
 
-  const tvdbShow = await cachedProviderShow('tvdb', String(tvdbId))
+  const tvdbShow = await cachedAnimeProviderShow(String(tvdbId))
   const settings = useAppStore.getState()
   const summaries: AppSeason[] = processSeasons(tvdbShow.seasons, true).map((season) => ({
     id: `tvdb_${tvdbId}_s${season.seasonNumber}`,
@@ -283,6 +284,14 @@ async function cachedProviderShow(provider: 'tmdb' | 'tvdb', id: string): Promis
   return loadDetailPage(provider, id)
 }
 
+async function cachedAnimeProviderShow(id: string): Promise<ShowDetails> {
+  const tvdbId = Number(String(id).replace(/^(?:tvdb[-:]|app_tvdb_)/i, ''))
+  const show = await cachedProviderShow('tvdb', String(tvdbId))
+  if (!Number.isSafeInteger(tvdbId) || tvdbId <= 0) return show
+  const scopes = await getAniBridgeTvdbSeasonScopes(tvdbId).catch(() => [])
+  return mergeAniBridgeTvdbSeasons(show, scopes)
+}
+
 function animeStructureSettingsKey(): string {
   const settings = useAppStore.getState()
   return [
@@ -313,7 +322,7 @@ function seriesDetailCacheKeys(id: string | undefined, state: LocationState): st
   const animeRoute = Boolean(state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' || (id && /^(mal|anilist)[-:]/i.test(id)))
   // v11 restores episodes that have valid TVDB metadata but no air date. Old
   // cache entries may have persisted the resulting empty/incomplete season.
-  const versions = animeRoute ? ['v11'] : ['v2', 'v11']
+  const versions = animeRoute ? ['v12'] : ['v2', 'v12']
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -372,7 +381,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${entry.show.isAnime ? 'v11' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `${entry.show.isAnime ? 'v12' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)
@@ -1280,7 +1289,7 @@ export default function SeriesDetailPage() {
       // season summary at the same time as TMDB art instead of waiting for the
       // ID resolver to finish first.
       if (appManagedMetadata && routeIsAnime && routeTvdbId) {
-        void cachedProviderShow('tvdb', routeTvdbId).then((tvdbShow) => {
+        void cachedAnimeProviderShow(routeTvdbId).then((tvdbShow) => {
           if (cancelled) return
           const tvdbSeasons = processSeasons(tvdbShow.seasons, true)
           setShow((current) => applyShowArt({
@@ -1619,7 +1628,7 @@ export default function SeriesDetailPage() {
         // TVDB is source of truth for anime season/episode structure
         if (tvdbId) {
           try {
-            const tvdbData = await cachedProviderShow('tvdb', tvdbId)
+            const tvdbData = await cachedAnimeProviderShow(tvdbId)
             if (cancelled) return
             console.log('[SeriesDetailPage] TVDB anime data:', {
               title: tvdbData.title,
@@ -2038,7 +2047,7 @@ export default function SeriesDetailPage() {
             }
             if (tvdbId) {
               try {
-                const tvdbData = await cachedProviderShow('tvdb', tvdbId)
+                const tvdbData = await cachedAnimeProviderShow(tvdbId)
                 if (tvdbData.seasons.length > 0) {
                   const { mapTvdbSeasons } = await import('../services/metadata/tvdbSeasonMapper')
                   const animeSettings = useAppStore.getState()
@@ -2170,7 +2179,7 @@ export default function SeriesDetailPage() {
         // If no TMDB data, try TVDB directly
         if (!appResult && knownIds.tvdbId) {
           try {
-             appResult = await cachedProviderShow('tvdb', String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, ''))
+             appResult = await cachedAnimeProviderShow(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, ''))
             if (cancelled) return
             appResult = { ...appResult, id: id || appResult.id, malId: knownIds.malId, anilistId: knownIds.anilistId }
           } catch (_) { /* continue */ }
