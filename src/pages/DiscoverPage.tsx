@@ -792,7 +792,8 @@ export default function DiscoverPage() {
 
   const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) navigate(heroRecommendation.item.type === 'movie' ? `/movie/${heroRecommendation.item.id}` : `/series/${heroRecommendation.item.id}`, { state: { ...heroRecommendation.item, autoPlay } }) }
   const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
-  const heroGlassButton = 'focus-ring cursor-pointer rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white/90 shadow-lg shadow-black/20 backdrop-blur-xl transition-all hover:border-white/25 hover:bg-white/20 hover:text-white active:scale-[0.97]'
+  const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
+  const heroGlassButton = 'focus-ring cursor-pointer rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white/90 transition-colors hover:border-white/25 hover:bg-white/20 hover:text-white active:scale-[0.97]'
 
   return (
     <div className="discover-page pb-12">
@@ -800,9 +801,9 @@ export default function DiscoverPage() {
       <div className="discover-page__heading px-6 pt-10 pb-7 md:px-10">
         <div className="flex flex-wrap items-end justify-between gap-5">
           <div className="max-w-2xl">
-            <p className="mb-3 text-[11px] font-bold uppercase tracking-[.24em] text-accent">Curated for your next watch</p>
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[.2em] text-accent">Picked around your taste</p>
             <h1 className="text-4xl font-semibold tracking-[-.04em] text-white md:text-5xl">Discover</h1>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-white/55">A fresh selection shaped around what you watch and enjoy.</p>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-white/55">Find something worth watching tonight.</p>
           </div>
           <span className="rounded-full border border-white/[0.09] bg-white/[0.035] px-4 py-2 text-xs font-medium text-white/50">Daily picks <span className="mx-1.5 text-white/20">·</span> {region} <span className="mx-1.5 text-white/20">·</span> {minRating > 0 ? `${minRating}+ rating` : 'All ratings'}</span>
         </div>
@@ -829,36 +830,34 @@ export default function DiscoverPage() {
           <div className="discover-page__modes mb-7 flex gap-2 overflow-x-auto px-6 pb-1 md:px-10" aria-label="Browse recommendations">
             {([['for-you','Recommended'],['new','Something New'],['hidden-gems','Hidden Gems'],['critically-acclaimed','Critically Acclaimed'],['recently-released','Recently Released'],['quick-watch','Quick Watch']] as const).map(([value,label]) => <button key={value} onClick={() => changeMode(value)} className={`focus-ring flex-none whitespace-nowrap rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${mode === value ? 'border-white bg-white text-black' : 'border-white/10 bg-transparent text-white/55 hover:border-white/25 hover:text-white'}`}>{label}</button>)}
           </div>
-          {viewState==='content'&&heroRecommendation ? <section onClick={()=>openHeroDetail(false)} className="discover-hero group relative mx-6 mb-10 min-h-[460px] cursor-pointer select-none overflow-hidden rounded-[1.75rem] border border-white/[.1] bg-[#111] shadow-2xl shadow-black/25 md:mx-10">
-            {heroPool.map((entry, index) => {
-              const previousHeroIndex = (activeHeroIndex - 1 + heroPool.length) % heroPool.length
-              const nextHeroIndex = (activeHeroIndex + 1) % heroPool.length
-              if (index !== activeHeroIndex && index !== previousHeroIndex && index !== nextHeroIndex) return null
-              const art = heroArt[String(entry.item.id)]
-              const src = entry.item.backdrop || art?.backdrop || entry.item.poster || art?.poster
-              if (!src) return null
-              return <img key={String(entry.item.id)} src={src} alt="" draggable={false} loading={index === activeHeroIndex ? 'eager' : 'lazy'} decoding="async" fetchPriority={index === activeHeroIndex ? 'high' : 'low'} className="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ease-in-out" style={{ opacity: index === activeHeroIndex ? 1 : 0 }} />
-            })}
-            <div className="absolute inset-0 bg-gradient-to-r from-black/95 via-black/65 to-black/5" />
-            <div className="discover-hero__gradient absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/10" />
-            <div className="relative z-10 flex min-h-[460px] max-w-2xl flex-col justify-end p-7 md:p-14">
+          {viewState==='content'&&heroRecommendation ? <section className="discover-spotlight">
+            <div className="discover-spotlight__ambient" aria-hidden="true">{heroRecommendation.item.backdrop && <img src={heroRecommendation.item.backdrop} alt="" draggable={false} decoding="async" />}</div>
+            <div className="discover-spotlight__copy">
+              <p className="discover-spotlight__eyebrow">Tonight’s pick <span>·</span> {heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences') || 'Picked for you'}</p>
               {heroLogo && !heroLogoError
-                ? <img src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="mb-1 max-h-[110px] max-w-[75%] object-contain object-left drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)] md:max-h-[140px]" />
-                : <h2 className="text-5xl font-bold leading-[1.05] tracking-tight drop-shadow-xl md:text-6xl">{heroRecommendation.item.title}</h2>}
-              <div className="my-3 flex flex-wrap items-center gap-2.5 text-sm font-medium text-white/65">{heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}<span>{heroRecommendation.runtimeMinutes?`${heroRecommendation.runtimeMinutes} min`:heroRecommendation.item.type==='series'?'Series':'Movie'}</span>{heroRecommendation.item.genres?.slice(0,3).map((genre)=><span key={genre} className="rounded-full border border-white/15 bg-black/20 px-2.5 py-1 text-xs text-white/80">{genre}</span>)}</div>
-              <p className="mb-2 text-sm font-medium text-accent">{heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences')}</p>
-              {heroRecommendation.item.overview && <p className="mb-5 line-clamp-3 max-w-xl text-sm leading-relaxed text-white/60">{heroRecommendation.item.overview}</p>}
-              <div className="flex flex-wrap items-center gap-2.5" onClick={(event)=>event.stopPropagation()}><button onClick={() => openHeroDetail(true)} className="focus-ring cursor-pointer rounded-full bg-white px-7 py-2.5 font-bold text-black shadow-lg transition-all hover:bg-white/90 active:scale-[0.97]">Watch</button>{heroTrailer&&<button onClick={()=>setTrailerOpen(true)} className={heroGlassButton}>Trailer</button>}<WatchlistButton item={heroRecommendation.item} mediaRef={{localId:heroRecommendation.item.id,title:heroRecommendation.item.title,year:heroRecommendation.item.year,type:heroRecommendation.item.isAnime?'anime':heroRecommendation.item.type==='series'?'show':'movie',imdbId:heroRecommendation.item.imdbId,tmdbId:heroRecommendation.item.tmdbId?Number(heroRecommendation.item.tmdbId):undefined}} mediaType={heroRecommendation.item.type} isAnime={tab==='anime'||Boolean(heroRecommendation.item.isAnime)} anilistId={heroRecommendation.item.anilistId} malId={heroRecommendation.item.malId} tvdbId={heroRecommendation.item.tvdbId}/><button onClick={() => submitFeedback(heroRecommendation.item,'not-interested')} className={heroGlassButton}>Not interested</button></div>
+                ? <img src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="discover-spotlight__logo" />
+                : <h2>{heroRecommendation.item.title}</h2>}
+              <div className="discover-spotlight__meta">
+                {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
+                <span>{heroRecommendation.runtimeMinutes ? `${heroRecommendation.runtimeMinutes} min` : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
+                {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
+                {heroRecommendation.item.genres?.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
+              </div>
+              {heroRecommendation.item.overview && <p className="discover-spotlight__overview">{heroRecommendation.item.overview}</p>}
+              <div className="discover-spotlight__actions">
+                <button onClick={() => openHeroDetail(true)} className="discover-spotlight__play">▶ <span>Play</span></button>
+                <button onClick={() => openHeroDetail(false)} className={heroGlassButton}>Details</button>
+                <WatchlistButton className="discover-spotlight__watchlist" item={heroRecommendation.item} mediaRef={{localId:heroRecommendation.item.id,title:heroRecommendation.item.title,year:heroRecommendation.item.year,type:heroRecommendation.item.isAnime?'anime':heroRecommendation.item.type==='series'?'show':'movie',imdbId:heroRecommendation.item.imdbId,tmdbId:heroRecommendation.item.tmdbId?Number(heroRecommendation.item.tmdbId):undefined}} mediaType={heroRecommendation.item.type} isAnime={tab==='anime'||Boolean(heroRecommendation.item.isAnime)} anilistId={heroRecommendation.item.anilistId} malId={heroRecommendation.item.malId} tvdbId={heroRecommendation.item.tvdbId}/>
+                {heroPool.length > 1 && <button onClick={() => setHeroIndex((activeHeroIndex + 1) % heroPool.length)} className={heroGlassButton}>Another pick</button>}
+                {heroTrailer && <button onClick={() => setTrailerOpen(true)} className={`${heroGlassButton} discover-spotlight__trailer`}>Trailer</button>}
+                <button onClick={() => submitFeedback(heroRecommendation.item,'not-interested')} className={`${heroGlassButton} discover-spotlight__feedback`}>Not for me</button>
+              </div>
             </div>
-            {heroPool.length > 1 && <>
-              <button onClick={(event)=>{event.stopPropagation();setHeroIndex((activeHeroIndex - 1 + heroPool.length) % heroPool.length)}} aria-label="Previous recommendation" className="absolute left-5 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/10 bg-black/30 text-white/60 opacity-0 shadow-lg backdrop-blur-xl transition-all duration-200 hover:bg-black/60 hover:text-white group-hover:opacity-100"><svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
-              <button onClick={(event)=>{event.stopPropagation();setHeroIndex((activeHeroIndex + 1) % heroPool.length)}} aria-label="Next recommendation" className="absolute right-5 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/10 bg-black/30 text-white/60 opacity-0 shadow-lg backdrop-blur-xl transition-all duration-200 hover:bg-black/60 hover:text-white group-hover:opacity-100"><svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
-            </>}
-            {heroPool.length > 1 && <div className="absolute bottom-7 right-8 z-10 flex items-center gap-1.5" onClick={(event)=>event.stopPropagation()}>{heroPool.map((entry, index) => <button key={String(entry.item.id)} onClick={()=>setHeroIndex(index)} aria-label={`Go to recommendation ${index+1}`} className={`cursor-pointer rounded-full transition-all duration-300 ${index === activeHeroIndex ? 'h-2 w-7 bg-white' : 'h-2 w-2 bg-white/25 hover:bg-white/50'}`} />)}</div>}
-          </section> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="mx-6 mb-8 animate-pulse"><div className="h-[430px] rounded-[2rem] bg-white/[.06]"/><div className="mt-5 flex gap-4 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-64 w-44 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
-          {personalizedSections.map((section, sectionIndex) => {
+            {heroPoster && <div className="discover-spotlight__poster"><img src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" /></div>}
+          </section> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="discover-loading mx-6 mb-8 animate-pulse"><div className="h-56 rounded-[1.5rem] bg-white/[.06] sm:h-72"/><div className="mt-5 flex gap-3 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-[10.5rem] w-28 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
+          {personalizedSections.map((section) => {
             const title = DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, '')
-            return <div key={section.id} className="row-contain"><MediaRow title={title} items={section.items.map((entry)=>entry.item)} layout={sectionIndex === 0 ? 'ranked' : section.id==='made-for-you'||section.id==='mode' ? 'feature' : 'poster'} showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div>
+            return <div key={section.id} className="row-contain discover-shelf"><MediaRow title={title} items={section.items.map((entry)=>entry.item)} layout="poster" showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div>
           })}
           {serverDiscoverItems.length > 0 && <div className="row-contain"><MediaRow title="From Your Servers" items={serverDiscoverItems} layout="poster" showAllPath={`/catalog/discover-servers-${tab}?title=${encodeURIComponent('From Your Servers')}`} /></div>}
           {trailerOpen&&heroTrailer&&<div role="dialog" aria-modal="true" aria-label="Trailer" className="fixed inset-0 z-[10000] grid place-items-center bg-black/80 p-6" onClick={()=>setTrailerOpen(false)}><div className="aspect-video w-[min(70rem,92vw)] overflow-hidden rounded-3xl border border-white/15 bg-black" onClick={(event)=>event.stopPropagation()}><TrailerPreview trailer={heroTrailer} title={heroRecommendation?.item.title||'Trailer'} muted={false} eager/></div></div>}

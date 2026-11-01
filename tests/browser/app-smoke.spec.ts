@@ -324,6 +324,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.addInitScript(() => {
     localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
     if (location.pathname === '/movie/mobile-layout-fixture') {
       history.replaceState({
         usr: {
@@ -339,6 +340,25 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       }, '', location.href)
     }
   })
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const results = Array.from({ length: 24 }, (_, index) => ({
+      id: 81000 + index,
+      title: `Discovery fixture ${index + 1}`,
+      name: `Discovery fixture ${index + 1}`,
+      poster_path: '/discovery-fixture-poster.jpg',
+      backdrop_path: '/discovery-fixture-backdrop.jpg',
+      overview: 'A mocked recommendation used to check the Discovery spotlight and responsive shelves.',
+      release_date: '2025-05-01',
+      first_air_date: '2025-05-01',
+      vote_average: 8.2,
+      vote_count: 1200,
+      popularity: 160 - index,
+      genre_ids: [18],
+      original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#222"/></svg>' }))
 
   await page.goto('/movie/mobile-layout-fixture')
   await page.getByRole('button', { name: /select profile/i }).click()
@@ -391,13 +411,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
 
   await page.getByRole('link', { name: 'Discover' }).click()
   await expect(page.locator('.discover-page')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Discover', exact: true })).toBeVisible()
   const discoveryLayout = await page.evaluate(() => {
     const viewport = document.documentElement.clientWidth
     const heading = document.querySelector<HTMLElement>('.discover-page__heading')
     const tabs = document.querySelector<HTMLElement>('.discover-page__tabs')
     const modes = document.querySelector<HTMLElement>('.discover-page__modes')
-    const hero = document.querySelector<HTMLElement>('.discover-hero')
+    const hero = document.querySelector<HTMLElement>('.discover-spotlight')
+    const poster = document.querySelector<HTMLElement>('.discover-spotlight__poster')
     if (!heading || !tabs || !modes) return null
     const contained = (element: HTMLElement) => {
       const bounds = element.getBoundingClientRect()
@@ -419,6 +440,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         left: hero.getBoundingClientRect().left,
         right: hero.getBoundingClientRect().right,
       } : null,
+      posterVisible: Boolean(poster && poster.getBoundingClientRect().width > 0),
+      actionsFit: hero ? hero.getBoundingClientRect().right <= viewport + 1 : false,
     }
   })
   expect(discoveryLayout).not.toBeNull()
@@ -434,9 +457,30 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
-    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(450)
+    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(400)
+    expect(discoveryLayout!.posterVisible).toBe(true)
+    expect(discoveryLayout!.actionsFit).toBe(true)
   }
 
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const desktopDiscovery = await page.evaluate(() => {
+    const spotlight = document.querySelector<HTMLElement>('.discover-spotlight')
+    const page = document.querySelector<HTMLElement>('.discover-page')
+    if (!spotlight || !page) return null
+    const bounds = spotlight.getBoundingClientRect()
+    return { width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, left: bounds.left, right: bounds.right, poster: Boolean(spotlight.querySelector('.discover-spotlight__poster img')) }
+  })
+  const desktopPageLayout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, heading: Boolean(document.querySelector('.discover-page__heading h1')) }))
+  expect(desktopPageLayout.scrollWidth).toBeLessThanOrEqual(desktopPageLayout.width + 1)
+  expect(desktopPageLayout.heading).toBe(true)
+  if (desktopDiscovery) {
+    expect(desktopDiscovery.scrollWidth).toBeLessThanOrEqual(desktopDiscovery.width + 1)
+    expect(desktopDiscovery.left).toBeGreaterThanOrEqual(0)
+    expect(desktopDiscovery.right).toBeLessThanOrEqual(desktopDiscovery.width)
+    expect(desktopDiscovery.poster).toBe(true)
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 })
   const episodeCardWidth = await page.evaluate(() => {
     const fixture = document.createElement('div')
     fixture.className = 'detail-page'

@@ -50,7 +50,9 @@ describe('cinematic detail responsive and scroll contracts', () => {
   it('keeps mobile shelves, discovery hero, details, and navigation inside touch-sized layouts', () => {
     expect(css).toContain('.media-row--ranked .media-row-card-slot > button')
     expect(css).toContain('--ranked-card-height: clamp(10.5rem, 42vw, 11.25rem)')
-    expect(css).toContain('.discover-hero { min-height: 440px !important;')
+    expect(css).toContain('.discover-spotlight {')
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr) 6.2rem')
+    expect(css).toContain('.discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot')
     expect(css).toContain('.detail-page .episode-showcase-card { width: min(44vw, 15rem); }')
     expect(css).toContain('.detail-page .detail-hero-actions {')
     expect(css).toContain('flex-direction: column-reverse')
@@ -61,7 +63,8 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(css).toContain('font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;')
     expect(css).toContain('html[data-runtime-platform="web"] .media-row { margin-bottom: .35rem !important; }')
     expect(discoverSource).toContain('className="discover-page pb-12"')
-    expect(discoverSource).toContain('className="discover-hero group relative')
+    expect(discoverSource).toContain('className="discover-spotlight"')
+    expect(discoverSource).toContain('className="discover-spotlight__poster"')
     expect(mobileNavigationSource).toContain('aria-label="Mobile navigation"')
   })
 
