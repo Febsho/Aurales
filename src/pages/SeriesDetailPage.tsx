@@ -108,6 +108,93 @@ function mergeMappedAnimeSeasons(summaries: AppSeason[], mapped: AppSeason[]): A
   return summaries.map((summary) => mappedByNumber.get(summary.seasonNumber) || summary)
 }
 
+async function resolveAddonAnimeTvdbStructure(
+  show: ShowDetails,
+  preferredSeason?: number | null,
+): Promise<{ show: ShowDetails; selectedSeason: number | null; seasonCache: Record<number, SeasonDetails> } | null> {
+  const { resolveAnimeIds } = await import('../services/animeLists')
+  const resolved = await resolveAnimeIds({
+    anilistId: show.anilistId,
+    malId: show.malId,
+    tmdbId: show.tmdbId,
+    tvdbId: show.tvdbId,
+    imdbId: show.imdbId,
+    contentType: 'series',
+  })
+  const tvdbId = resolved?.tvdbId || (show.tvdbId ? Number(String(show.tvdbId).replace(/^(?:tvdb[-:]|app_tvdb_)/i, '')) : undefined)
+  if (!tvdbId) return null
+
+  const tvdbShow = await cachedProviderShow('tvdb', String(tvdbId))
+  const settings = useAppStore.getState()
+  const summaries: AppSeason[] = processSeasons(tvdbShow.seasons, true).map((season) => ({
+    id: `tvdb_${tvdbId}_s${season.seasonNumber}`,
+    seasonNumber: season.seasonNumber,
+    title: season.name,
+    overview: season.overview,
+    poster: season.poster,
+    episodeCount: season.episodeCount || 0,
+    episodes: [],
+    airDate: season.airDate,
+  }))
+  const selectedSeason = preferredSeason != null && summaries.some((season) => season.seasonNumber === preferredSeason)
+    ? preferredSeason
+    : summaries.find((season) => season.seasonNumber > 0)?.seasonNumber ?? summaries[0]?.seasonNumber ?? null
+  const mapped = selectedSeason == null ? [] : await import('../services/metadata/tvdbSeasonMapper').then(({ mapTvdbSeasons }) => mapTvdbSeasons(
+    tvdbId,
+    initialAnimeSeason(summaries, selectedSeason),
+    {
+      hideUnairedSeasons: settings.hideUnairedAnimeSeasons,
+      hideUnairedEpisodes: settings.hideUnairedAnimeEpisodes,
+      includeSpecials: settings.includeAnimeSpecials,
+      prioritySeason: selectedSeason,
+      requestTimeoutMs: 8_000,
+    },
+  ))
+  const seasons = mergeMappedAnimeSeasons(summaries, mapped)
+  const mappedBySeason: Record<number, SeasonDetails> = {}
+  for (const season of mapped) {
+    if (!season.episodes?.length) continue
+    mappedBySeason[season.seasonNumber] = {
+      seasonNumber: season.seasonNumber,
+      name: season.title || `Season ${season.seasonNumber}`,
+      episodes: season.episodes.map((episode) => ({
+        id: episode.id,
+        seasonNumber: episode.seasonNumber,
+        episodeNumber: episode.episodeNumber,
+        name: episode.title || `Episode ${episode.episodeNumber}`,
+        overview: episode.overview,
+        airDate: episode.airDate,
+        runtime: episode.runtime,
+        still: episode.still,
+        debugSource: episode.debugSource || 'tvdb',
+        debugResolverStep: episode.debugResolverStep || 'tvdbSeasonMapper.mapTvdbSeasons',
+        absoluteEpisodeNumber: episode.absoluteEpisodeNumber,
+      })),
+    }
+  }
+
+  return {
+    show: {
+      ...tvdbShow,
+      ...show,
+      tvdbId,
+      anilistId: show.anilistId || resolved?.anilistId,
+      malId: show.malId || resolved?.malId,
+      isAnime: true,
+      seasons: seasons.map((season) => ({
+        seasonNumber: season.seasonNumber,
+        name: season.title || `Season ${season.seasonNumber}`,
+        episodeCount: season.episodeCount,
+        poster: season.poster,
+        overview: season.overview,
+        airDate: season.airDate,
+      })),
+    },
+    selectedSeason,
+    seasonCache: mappedBySeason,
+  }
+}
+
 function initialAnimeSeason(summaries: AppSeason[], preferred?: number | null): AppSeason[] {
   const selected = (preferred != null
     ? summaries.find((season) => season.seasonNumber === preferred)
@@ -1020,16 +1107,23 @@ export default function SeriesDetailPage() {
           isAnime: addonIsAnime,
           seasons: processSeasons(parsed.seasons || [], addonIsAnime),
         }, 'series', addonIsAnime))
-        const firstSeason = directShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
-          ?? directShow.seasons[0]?.seasonNumber
+        const tvdbStructure = addonIsAnime && useAppStore.getState().preferTvdbAnimeSeasons
+          ? await resolveAddonAnimeTvdbStructure(directShow, resumeProgress?.season).catch((error) => {
+            console.warn('[SeriesDetailPage] Add-on anime TVDB structure unavailable:', error)
+            return null
+          })
+          : null
+        const resolvedShow = tvdbStructure?.show || directShow
+        const firstSeason = resolvedShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
+          ?? resolvedShow.seasons[0]?.seasonNumber
           ?? null
-        const selected = resumeProgress?.season != null && directShow.seasons.some((season) => season.seasonNumber === resumeProgress.season)
+        const selected = tvdbStructure?.selectedSeason ?? (resumeProgress?.season != null && resolvedShow.seasons.some((season) => season.seasonNumber === resumeProgress.season)
           ? resumeProgress.season
-          : firstSeason
-        const seasonDetails: Record<number, SeasonDetails> = {}
+          : firstSeason)
+        const seasonDetails: Record<number, SeasonDetails> = { ...(tvdbStructure?.seasonCache || {}) }
         const episodeMap: Record<number, SeasonDetails['episodes']> = {}
-        if (Array.isArray(state.addonMeta.videos)) {
-          for (const season of directShow.seasons) {
+        if (!tvdbStructure && Array.isArray(state.addonMeta.videos)) {
+          for (const season of resolvedShow.seasons) {
             const details = addonVideosToSeason(state.addonMeta, season.seasonNumber)
             seasonDetails[season.seasonNumber] = details
             episodeMap[season.seasonNumber] = details.episodes
@@ -1037,15 +1131,16 @@ export default function SeriesDetailPage() {
         }
         if (cancelled) return
         setAddonMeta(state.addonMeta)
-        setShow(directShow)
-        showRef.current = directShow
+        setShow(resolvedShow)
+        showRef.current = resolvedShow
         setSeasonCache(seasonDetails)
         setSelectedSeason(selected)
+        tvdbMappedEpisodesRef.current = Object.fromEntries(Object.entries(seasonDetails).map(([season, details]) => [Number(season), details.episodes]))
         setDetailResolved(true)
         setMetadataStatus('resolved')
         setLoading(false)
         writeSeriesDetailCache(id, locationStateRef.current, {
-          show: directShow,
+          show: resolvedShow,
           selectedSeason: selected,
           episodeMap,
           metadataStatus: 'resolved',
@@ -1389,30 +1484,41 @@ export default function SeriesDetailPage() {
           isAnime: addonIsAnime,
           seasons: processSeasons(result.seasons || [], addonIsAnime),
         }, 'series', addonIsAnime))
+        const tvdbStructure = addonIsAnime && useAppStore.getState().preferTvdbAnimeSeasons
+          ? await resolveAddonAnimeTvdbStructure(directShow, resumeProgress?.season).catch((error) => {
+            console.warn('[SeriesDetailPage] Add-on anime TVDB structure unavailable:', error)
+            return null
+          })
+          : null
+        if (cancelled) return
+        const resolvedShow = tvdbStructure?.show || directShow
         const resumedSeason = resumeProgress?.season
-        const firstSeason = directShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
-          ?? directShow.seasons[0]?.seasonNumber
+        const firstSeason = resolvedShow.seasons.find((season) => season.seasonNumber > 0)?.seasonNumber
+          ?? resolvedShow.seasons[0]?.seasonNumber
           ?? null
-        const selected = resumedSeason != null && directShow.seasons.some((season) => season.seasonNumber === resumedSeason)
+        const selected = tvdbStructure?.selectedSeason ?? (resumedSeason != null && resolvedShow.seasons.some((season) => season.seasonNumber === resumedSeason)
           ? resumedSeason
-          : firstSeason
-        const seasonDetails: Record<number, SeasonDetails> = {}
+          : firstSeason)
+        const seasonDetails: Record<number, SeasonDetails> = { ...(tvdbStructure?.seasonCache || {}) }
         const episodeMap: Record<number, SeasonDetails['episodes']> = {}
-        if (loadedAddonMeta && Array.isArray(loadedAddonMeta.videos)) {
-          for (const season of directShow.seasons) {
+        if (!tvdbStructure && loadedAddonMeta && Array.isArray(loadedAddonMeta.videos)) {
+          for (const season of resolvedShow.seasons) {
             const details = addonVideosToSeason(loadedAddonMeta, season.seasonNumber)
             seasonDetails[season.seasonNumber] = details
             episodeMap[season.seasonNumber] = details.episodes
           }
         }
         setSeasonCache(seasonDetails)
-        setShow(directShow)
+        setShow(resolvedShow)
+        showRef.current = resolvedShow
+        setAddonMeta(loadedAddonMeta)
         setDetailResolved(true)
         setSelectedSeason(selected)
+        tvdbMappedEpisodesRef.current = Object.fromEntries(Object.entries(seasonDetails).map(([season, details]) => [Number(season), details.episodes]))
         setMetadataStatus('resolved')
         setLoading(false)
         writeSeriesDetailCache(id, locationStateRef.current, {
-          show: directShow,
+          show: resolvedShow,
           selectedSeason: selected,
           episodeMap,
           metadataStatus: 'resolved',
