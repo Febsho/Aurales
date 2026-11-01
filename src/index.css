@@ -984,9 +984,9 @@ select option {
 }
 
 .select-menu__option-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .select-menu__marker {

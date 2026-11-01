@@ -976,10 +976,12 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     showControlsTemporarily()
 
     if (video.paused) {
+      const playbackRun = playbackRunRef.current
       autoplayBlockedRef.current = false
       if (playerNotice === AUTOPLAY_GESTURE_MESSAGE) setPlayerNotice('')
       setError('')
       video.play().then(() => {
+        if (playbackRun !== playbackRunRef.current) return
         setPaused(false)
         if (playbackItem) {
           const progress = video.duration > 0 ? video.currentTime / video.duration : 0
@@ -997,6 +999,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           sendMdblistScrobble('start', progress)
         }
       }).catch((error: unknown) => {
+        // A prior play request can reject after this video has already started
+        // (notably while HLS.js replaces the source through MediaSource). That
+        // rejection must not turn working playback into a fatal player error.
+        if (playbackRun !== playbackRunRef.current || playbackStartedRef.current || !video.paused) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
           setPaused(true)

@@ -693,22 +693,6 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
   )
 }
 
-function ArtProviderSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <SettingSelect
-      label="Artwork provider"
-      value={value === 'default' ? 'tmdb' : value}
-      onChange={onChange}
-      className="w-36"
-      options={[
-        { value: 'tmdb', label: 'TMDb' },
-        { value: 'tvdb', label: 'TVDb' },
-        { value: 'fanart', label: 'Fanart.tv' },
-      ]}
-    />
-  )
-}
-
 interface BetterPostersPreview {
   catalogId: 'trending-shows' | 'trending-movies' | 'trending-anime'
   label: string
@@ -723,8 +707,6 @@ const DEFAULT_BETTER_POSTERS_PREVIEWS: BetterPostersPreview[] = [
 ]
 
 function ArtworkSettingsSection() {
-  const artProviders = useAppStore((s) => s.artProviders)
-  const setArtProviders = useAppStore((s) => s.setArtProviders)
   const betterPosters = useAppStore((s) => s.betterPosters)
   const setBetterPosters = useAppStore((s) => s.setBetterPosters)
   const previewRef = useRef<HTMLDivElement>(null)
@@ -744,51 +726,15 @@ function ArtworkSettingsSection() {
     return () => { cancelled = true }
   }, [])
 
-  const updateProvider = (key: string, value: string) => {
-    setArtProviders({ ...artProviders, [key]: value })
-  }
-
   const updateBetterPosters = (settings: Partial<typeof betterPosters>) => {
     setBetterPosters({ ...betterPosters, ...settings })
     window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
   }
   const previewPosterPattern = getBetterPostersUrl(betterPosters)
 
-  const sections = [
-    { title: 'Movies', color: 'text-amber-400/80', prefix: 'movie' },
-    { title: 'Series', color: 'text-blue-400/80', prefix: 'series' },
-    { title: 'Anime', color: 'text-pink-400/80', prefix: 'anime' },
-  ] as const
-
   return (
     <>
-      {sections.map(({ title, color, prefix }) => (
-        <div key={prefix}>
-          <h3 className={`text-sm font-bold ${color} ${prefix !== 'movie' ? 'mt-8' : ''} mb-3`}>{title}</h3>
-          <SettingSection>
-            <SettingRow label="Poster provider" description={`Source for ${title.toLowerCase()} poster artwork.`}>
-              <ArtProviderSelect
-                value={(artProviders as any)[`${prefix}Poster`]}
-                onChange={(v) => updateProvider(`${prefix}Poster`, v)}
-              />
-            </SettingRow>
-            <SettingRow label="Background provider" description={`Source for ${title.toLowerCase()} backdrop/background artwork.`}>
-              <ArtProviderSelect
-                value={(artProviders as any)[`${prefix}Backdrop`]}
-                onChange={(v) => updateProvider(`${prefix}Backdrop`, v)}
-              />
-            </SettingRow>
-            <SettingRow label="Logo provider" description={`Source for ${title.toLowerCase()} title logo artwork.`}>
-              <ArtProviderSelect
-                value={(artProviders as any)[`${prefix}Logo`]}
-                onChange={(v) => updateProvider(`${prefix}Logo`, v)}
-              />
-            </SettingRow>
-          </SettingSection>
-        </div>
-      ))}
-
-      <h3 className="text-sm font-bold text-emerald-400/80 mt-8 mb-3">Better Posters</h3>
+      <h3 className="text-sm font-bold text-emerald-400/80 mb-3">Better Posters</h3>
       <SettingSection>
         <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. Made and hosted by mousa.a on Discord. It takes priority over a custom poster URL while enabled.">
           <SettingToggle checked={betterPosters.enabled} onChange={(enabled) => updateBetterPosters({ enabled })} />
@@ -1873,8 +1819,8 @@ export default function SettingsPage() {
         },
         {
           id: 'artwork',
-          label: 'Artwork',
-          description: 'Art providers, custom poster/backdrop/logo URLs, and overrides.',
+          label: 'Poster',
+          description: 'Customize poster labels, ratings, and language with Better Posters.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />

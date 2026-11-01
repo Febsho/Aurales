@@ -113,13 +113,20 @@ export default function SelectMenu({
   }, [open, selectedIndex])
 
   // Open upward when the menu would otherwise run past the viewport bottom.
-  // Settings rows sit in a scroll container, so a menu near the fold would
-  // otherwise be clipped rather than merely overflowing.
+  // Measure the rendered list instead of estimating from its option count:
+  // wrapped labels and CSS padding can make the actual menu taller than that
+  // estimate, leaving the final choices clipped at the bottom of the window.
   useLayoutEffect(() => {
-    if (!open || !rootRef.current) return
+    if (!open || !rootRef.current || !listRef.current) return
     const trigger = rootRef.current.getBoundingClientRect()
-    const estimated = Math.min(options.length * 42 + 12, 288)
-    setFlipUp(trigger.bottom + estimated > window.innerHeight - 16 && trigger.top > estimated)
+    const spaceBelow = window.innerHeight - trigger.bottom - 16
+    const spaceAbove = trigger.top - 16
+    // On a short window neither side may fit the default 18rem menu. Let the
+    // list scroll within the larger available side instead of clipping at the
+    // viewport edge.
+    listRef.current.style.maxHeight = `${Math.max(80, Math.min(288, Math.max(spaceAbove, spaceBelow)))}px`
+    const menuHeight = listRef.current.getBoundingClientRect().height
+    setFlipUp(menuHeight > spaceBelow && spaceAbove > spaceBelow)
   }, [open, options.length])
 
   useEffect(() => {
