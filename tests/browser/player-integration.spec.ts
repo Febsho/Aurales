@@ -152,6 +152,24 @@ test('browser codec failures explain that conversion requires an Aurales media w
   await expect(page.getByRole('alert')).toContainText('Add an Aurales media worker in Settings')
 })
 
+test('a failed media source clears buffering and explains why iOS fullscreen is unavailable', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'ios-webkit', 'The native fullscreen prerequisite is iOS-specific.')
+  await page.setViewportSize({ width: 844, height: 390 })
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  const video = page.locator('video')
+  await video.evaluate((element: HTMLVideoElement & { webkitEnterFullscreen?: () => void }) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
+    Object.defineProperty(element, 'webkitEnterFullscreen', { configurable: true, value: () => element.setAttribute('data-webkit-fullscreen-requested', 'true') })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect(page.getByRole('alert')).toBeVisible()
+  await video.evaluate((element) => element.dispatchEvent(new Event('waiting')))
+  await expect(page.getByText('Buffering stream...')).toBeHidden()
+  await page.getByRole('button', { name: 'Full screen' }).tap()
+  await expect(video).not.toHaveAttribute('data-webkit-fullscreen-requested', 'true')
+  await expect(page.locator('.inapp-player-notice')).toContainText('after a playable stream has loaded')
+})
+
 test('iOS player uses Safari native fullscreen when the standard API is unavailable', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'ios-webkit', 'Safari native fullscreen fallback is iOS-specific.')
   await page.setViewportSize({ width: 390, height: 844 })

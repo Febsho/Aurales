@@ -1301,7 +1301,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         autoPlay
         onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
         onPause={() => { setPaused(true); showControlsTemporarily(); wtSendPause() }}
-        onWaiting={() => { bufferingRef.current = true; setLoading(true); showControlsTemporarily(); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
+        onWaiting={() => { bufferingRef.current = true; if (!videoRef.current?.error && !error) setLoading(true); showControlsTemporarily(); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
           bufferingRef.current = false
           setLoading(false)
@@ -1570,7 +1570,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               // Safari's native video fullscreen needs the original tap event;
               // calling it after a rejected requestFullscreen promise loses
               // that gesture on iPhone and iPad.
-              if (isAppleMobile && video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return }
+              if (isAppleMobile && video.webkitEnterFullscreen) {
+                if (video.error || video.readyState < HTMLMediaElement.HAVE_METADATA) {
+                  setPlayerNotice('Safari can open native full screen after a playable stream has loaded.')
+                  return
+                }
+                video.webkitEnterFullscreen()
+                return
+              }
               if (document.fullscreenElement) { void document.exitFullscreen(); return }
               if (video.requestFullscreen) {
                 void video.requestFullscreen().catch(() => {
