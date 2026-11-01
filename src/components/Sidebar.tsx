@@ -102,7 +102,11 @@ export default function Sidebar() {
   return (
     <>
       <aside
-        onPointerEnter={(event) => !pinned && event.pointerType !== 'touch' && handleMouseEnter()}
+        onPointerEnter={(event) => {
+          const enteredTarget = event.target instanceof HTMLElement ? event.target : null
+          const enteredTrigger = enteredTarget?.closest('.app-sidebar__collapsed-trigger')
+          if (!pinned && event.pointerType !== 'touch' && !enteredTrigger) handleMouseEnter()
+        }}
         onPointerLeave={(event) => !pinned && event.pointerType !== 'touch' && handleMouseLeave()}
         className={[
           'app-sidebar app-sidebar--glass flex flex-col',
