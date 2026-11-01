@@ -73,4 +73,11 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(mediaRowSource).toContain('cinematicExpand={cinematicExpand && homeCardAnimations && !fixedHome && !isMobileWebViewport()}')
     expect(settingsSource).toContain('{!mobileWeb && <SettingRow label="Card focus animations"')
   })
+
+  it('removes invisible desktop expansion space and caps mobile show-all cards', () => {
+    expect(css).toContain('[data-home-shelves] .media-row .cinematic-row-track')
+    expect(css).toContain('padding-bottom: .4rem !important;')
+    expect(css).toContain('.show-all-card[data-show-all-layout="ranked"]')
+    expect(css).toContain('height: auto !important;')
+  })
 })

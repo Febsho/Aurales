@@ -4556,6 +4556,35 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
    and settings remain available; settings wrap below transport on portrait
    screens and return to a single compact rail in landscape. */
 @media (max-width: 700px) {
+  /* The desktop cinematic card row reserves an 8rem description band even
+     when focus expansion is disabled. The mobile rails never expand cards,
+     so that invisible band turns into a large blank gap between every shelf.
+     Use a deliberately specific selector to beat the utility padding classes
+     on the row track. */
+  html[data-runtime-platform="web"] [data-home-shelves] .media-row .cinematic-row-track {
+    padding-bottom: .4rem !important;
+  }
+
+  /* The inline desktop dimensions of each rail's "Show all" card otherwise
+     become the flex row's tallest child and recreate a ~300px blank shelf.
+     Match those actions to the compact card geometry on phones. */
+  html[data-runtime-platform="web"] .media-row .show-all-card[data-show-all-layout="poster"],
+  html[data-runtime-platform="web"] .media-row .show-all-card[data-show-all-layout="ranked"] {
+    width: clamp(6.25rem, 28vw, 7.5rem) !important;
+    height: auto !important;
+    aspect-ratio: 2 / 3;
+  }
+  html[data-runtime-platform="web"] .media-row .show-all-card[data-show-all-layout="feature"] {
+    width: clamp(6.5rem, 30vw, 8rem) !important;
+    height: auto !important;
+    aspect-ratio: 4 / 5;
+  }
+  html[data-runtime-platform="web"] .media-row .show-all-card[data-show-all-layout="landscape"] {
+    width: clamp(10rem, 46vw, 12rem) !important;
+    height: auto !important;
+    aspect-ratio: 16 / 9;
+  }
+
   /* Keep the Dynamic home feature compact enough that the first catalogue
      shelf starts near the fold on a phone. The hero remains swipeable, while
      posters use a denser rail instead of desktop cinema-card dimensions. */
