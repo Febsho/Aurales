@@ -4556,8 +4556,16 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
    and settings remain available; settings wrap below transport on portrait
    screens and return to a single compact rail in landscape. */
 @media (max-width: 700px) {
+  /* Keep the Dynamic home feature compact enough that the first catalogue
+     shelf starts near the fold on a phone. The hero remains swipeable, while
+     posters use a denser rail instead of desktop cinema-card dimensions. */
+  [data-home-presentation="dynamic"] .home-hero {
+    height: clamp(280px, 36vh, 340px) !important;
+    height: clamp(280px, 36svh, 340px) !important;
+  }
+
   [data-home-shelves] .media-row {
-    margin-bottom: 1.1rem;
+    margin-bottom: .9rem;
   }
 
   [data-home-shelves] .media-row > div:first-child h2,
@@ -4566,14 +4574,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .cinematic-row-track {
-    gap: .65rem !important;
-    padding-inline: .75rem !important;
-    padding-bottom: 1rem !important;
-    scroll-padding-inline: .75rem;
+    gap: .5rem !important;
+    padding-inline: .65rem !important;
+    padding-bottom: .75rem !important;
+    scroll-padding-inline: .65rem;
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot {
-    width: clamp(5rem, 22vw, 6rem);
+    width: clamp(4.5rem, 19vw, 5.5rem);
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button,
@@ -4587,13 +4595,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot h3 {
-    font-size: .75rem;
-    line-height: 1rem;
+    font-size: .7rem;
+    line-height: .95rem;
   }
 
   [data-home-shelves] .cw-track {
-    gap: .65rem;
-    padding-inline: .75rem;
+    gap: .5rem;
+    padding-inline: .65rem;
   }
 
   .home-hero--under-nav {

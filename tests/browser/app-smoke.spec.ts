@@ -134,6 +134,22 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
 
   const home = page.locator('[data-home-presentation]')
   await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
+  const hero = home.locator('.home-hero').first()
+  if (await hero.count()) {
+    const heroHeight = await hero.evaluate((element) => element.getBoundingClientRect().height)
+    expect(heroHeight, 'phone Dynamic hero should leave more room for the first shelves').toBeLessThanOrEqual(340)
+  }
+
+  const posterRail = home.locator('[data-home-shelves] .media-row--poster .cinematic-row-track').first()
+  if (await posterRail.count()) {
+    const railMetrics = await posterRail.evaluate((track) => ({
+      gap: Number.parseFloat(getComputedStyle(track).gap),
+      firstPosterWidth: track.querySelector<HTMLElement>('.media-row-card-slot')?.getBoundingClientRect().width ?? 0,
+    }))
+    expect(railMetrics.gap).toBeLessThanOrEqual(8)
+    if (railMetrics.firstPosterWidth > 0) expect(railMetrics.firstPosterWidth).toBeLessThanOrEqual(88)
+  }
+
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(home).toHaveAttribute('data-home-presentation', 'fixed')
 })
