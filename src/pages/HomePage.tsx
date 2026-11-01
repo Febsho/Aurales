@@ -609,7 +609,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   )
 }
 
-function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeRowConfig; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
+function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem }: { row: HomeRowConfig; heroMode: 'dynamic' | 'fixed' | 'disabled'; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
   const memCacheGet = useHomeCatalogCache((state) => state.get)
   const memCacheSet = useHomeCatalogCache((state) => state.set)
   const addons = useAppStore((s) => s.addons)
@@ -618,7 +618,6 @@ function HeroCatalogSection({ row, onBackdropChange, focusedItem }: { row: HomeR
   const cached = memCacheGet(cacheKey) || readHeroStartupSnapshot(row, addonUrl)
   const [items, setItems] = useState<SearchResult[]>(cached || [])
   const [itemsCacheKey, setItemsCacheKey] = useState(cacheKey)
-  const heroMode = useAppStore((s) => s.homeHeroMode)
   const heroSource = useAppStore((s) => s.fixedHeroSource)
   const manualItem = useAppStore((s) => s.fixedHeroManualItem)
   const recentlyWatched = useAppStore((s) => s.recentlyWatched)
@@ -889,9 +888,20 @@ export default function HomePage() {
   const isEditing = searchParams.get('edit') === 'true';
   const [heroBackdrop, setHeroBackdrop] = useState<string | undefined>(undefined)
   const homeHeroMode = useAppStore((s) => s.homeHeroMode)
+  const [isCompactViewport, setIsCompactViewport] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches)
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const handleBackdropChange = useCallback((url: string | undefined) => setHeroBackdrop(url), [])
   const usesTopNav = useAppStore((s) => s.navigationStyle) === 'topbar'
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 700px)')
+    const update = () => setIsCompactViewport(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  // Fixed Focus is a TV/desktop browsing interaction. On phone-sized screens
+  // preserve the saved preference but render the swipeable Dynamic Banner.
+  const presentationHeroMode = homeHeroMode === 'fixed' && isCompactViewport ? 'dynamic' : homeHeroMode
 
   useEffect(() => {
     if (SERVER_INTEGRATIONS_ENABLED || !homeRows.some((row) => row.enabled && (row.sourceType === 'jellyfin' || row.sourceType === 'webdav'))) return
@@ -1137,7 +1147,7 @@ export default function HomePage() {
   }
 
   const shelvesContent = cachePreloaded ? (
-    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={homeHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
+    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={presentationHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
   ) : (
     <div className="space-y-8">
       {activeRows.slice(0, 3).map((row) => (
@@ -1147,7 +1157,7 @@ export default function HomePage() {
   );
 
   return (
-    <div ref={homeRootRef} data-home-card-motion={homeCardAnimations ? 'on' : 'off'} className={`pb-12 relative ${homeHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${homeHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
+    <div ref={homeRootRef} data-home-card-motion={homeCardAnimations ? 'on' : 'off'} data-home-presentation={presentationHeroMode} className={`pb-12 relative ${presentationHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${presentationHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
 
       <CatalogKeyNotice />
 
@@ -1162,7 +1172,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {heroRow && homeHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
+      {heroRow && presentationHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} heroMode={presentationHeroMode} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
 
       {activeRows.length === 0 && !heroRow ? (
         <EmptyState
@@ -1175,7 +1185,7 @@ export default function HomePage() {
         />
       ) : (
         <>
-          <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && homeHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
+          <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && presentationHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
               <Suspense fallback={shelvesContent}>
                 <HomeEditList rows={activeRows} onReorder={handleReorder}>{shelvesContent}</HomeEditList>

@@ -27,6 +27,25 @@ test('Aurales InAppPlayer starts, tracks progress, and seeks a browser-compatibl
   await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
 })
 
+test('touch player controls fit a phone viewport and meet the minimum hit area', async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.use.isMobile, 'Touch-sized playback controls are verified in mobile browser projects.')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  await expect(page.locator('.inapp-player-controls')).toBeVisible()
+
+  const metrics = await page.locator('.inapp-player-controls > div').nth(1).evaluate((row) => ({
+    width: row.clientWidth,
+    scrollWidth: row.scrollWidth,
+    buttons: Array.from(row.querySelectorAll('button')).map((button) => {
+      const rect = button.getBoundingClientRect()
+      return { width: rect.width, height: rect.height }
+    }),
+  }))
+  expect(metrics.scrollWidth, 'playback controls must not extend beyond the phone viewport').toBeLessThanOrEqual(metrics.width + 1)
+  expect(metrics.buttons.length).toBeGreaterThan(0)
+  expect(metrics.buttons.every((button) => button.width >= 44 && button.height >= 44), JSON.stringify(metrics.buttons)).toBe(true)
+})
+
 test('a late rejection from an earlier play request does not replace active playback with an error', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit playback timing is covered by the real fixture test; synthetic autoplay races are unreliable there.')
   await page.addInitScript(() => {

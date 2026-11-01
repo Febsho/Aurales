@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import '../../src/index.css'
 import InAppPlayer from '../../src/components/InAppPlayer'
 
 const params = new URLSearchParams(location.search)

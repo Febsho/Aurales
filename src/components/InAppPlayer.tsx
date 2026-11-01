@@ -1429,7 +1429,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         </button>
       )}
 
-      <div className={`absolute inset-x-0 top-0 flex items-start justify-between p-7 bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+      <div className={`inapp-player-header absolute inset-x-0 top-0 flex items-start justify-between p-7 bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
         <button onClick={handleClose} className="w-11 h-11 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center">
           <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M15 19l-7-7 7-7" />
@@ -1485,22 +1485,22 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           <span className="tabular-nums">{duration ? formatTime(duration) : '--:--'}</span>
         </div>
 
-        <div className="flex items-center justify-between gap-6">
-          <div className="flex items-center gap-4">
-            <button onClick={() => seekBy(-10)} title="Back 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+        <div className="inapp-player-control-row flex items-center justify-between gap-6">
+          <div className="inapp-player-transport flex items-center gap-4">
+            <button onClick={() => seekBy(-10)} aria-label="Back 10 seconds" title="Back 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
                 <text x="11.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
               </svg>
             </button>
-            <button onClick={togglePlay} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors">
+            <button onClick={togglePlay} aria-label={paused ? 'Resume playback' : 'Pause playback'} className="w-14 h-14 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors">
               {paused ? (
                 <svg className="w-7 h-7 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
               ) : (
                 <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
               )}
             </button>
-            <button onClick={() => seekBy(10)} title="Forward 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+            <button onClick={() => seekBy(10)} aria-label="Forward 10 seconds" title="Forward 10s" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M11.5 8c2.65 0 5.05.99 6.9 2.6L22 7v9h-9l3.62-3.62c-1.39-1.16-3.16-1.88-5.12-1.88-3.54 0-6.55 2.31-7.6 5.5l-2.37-.78C2.92 11.03 6.85 8 11.5 8z" />
                 <text x="12.5" y="17.5" textAnchor="middle" fontSize="7" fontWeight="bold" fill="currentColor">10</text>
@@ -1520,7 +1520,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="inapp-player-options flex items-center gap-3">
             <div className="relative">
               {showSpeedMenu && (
                 <div className="absolute bottom-full mb-2 left-0 bg-black/90 backdrop-blur-xl border border-white/15 rounded-xl py-1.5 shadow-2xl z-50 min-w-[100px]">
@@ -1590,7 +1590,13 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
                   <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2" /><path d="m8 21 4-5 4 5H8Z" fill="currentColor" stroke="none" /></svg>
                 </button>
               )}
-              <button type="button" onClick={() => { void videoRef.current?.requestFullscreen() }} aria-label="Full screen" title="Full screen" className="grid h-11 w-11 place-items-center rounded-lg text-white/75 hover:bg-white/10 hover:text-white">
+              <button type="button" onClick={() => {
+                const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
+                if (!video) return
+                if (document.fullscreenElement) { void document.exitFullscreen(); return }
+                if (video.requestFullscreen) { void video.requestFullscreen().catch(() => video.webkitEnterFullscreen?.()); return }
+                video.webkitEnterFullscreen?.()
+              }} aria-label="Full screen" title="Full screen" className="grid h-11 w-11 place-items-center rounded-lg text-white/75 hover:bg-white/10 hover:text-white">
                 <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3" /></svg>
               </button>
             </div>

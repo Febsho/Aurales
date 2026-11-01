@@ -4552,6 +4552,165 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 }
 
+/* Keep every browser player control inside a phone viewport. The transport
+   and settings remain available; settings wrap below transport on portrait
+   screens and return to a single compact rail in landscape. */
+@media (max-width: 700px) {
+  [data-home-shelves] .media-row {
+    margin-bottom: 1.1rem;
+  }
+
+  [data-home-shelves] .media-row > div:first-child h2,
+  [data-home-shelves] .cw-fixed > div:first-child h2 {
+    font-size: .95rem;
+  }
+
+  [data-home-shelves] .cinematic-row-track {
+    gap: .65rem !important;
+    padding-inline: .75rem !important;
+    padding-bottom: 1rem !important;
+    scroll-padding-inline: .75rem;
+  }
+
+  [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot {
+    width: clamp(5rem, 22vw, 6rem);
+  }
+
+  [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button,
+  [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button > [data-hero-viewport] {
+    width: 100% !important;
+  }
+
+  [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button > [data-hero-viewport] {
+    height: auto !important;
+    aspect-ratio: 2 / 3;
+  }
+
+  [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot h3 {
+    font-size: .75rem;
+    line-height: 1rem;
+  }
+
+  [data-home-shelves] .cw-track {
+    gap: .65rem;
+    padding-inline: .75rem;
+  }
+
+  .home-hero--under-nav {
+    margin-top: calc(var(--layout-nav-offset) + var(--layout-nav-height) - .75rem);
+  }
+
+  .home-hero--inset {
+    width: calc(100% - (2 * var(--space-page-inline)));
+    border-radius: 1rem;
+  }
+
+  .inapp-player-header {
+    padding: max(.75rem, env(safe-area-inset-top)) .75rem .5rem !important;
+    gap: .75rem;
+  }
+
+  .inapp-player-header > div:last-child {
+    min-width: 0;
+    max-width: 68%;
+  }
+
+  .inapp-player-header h2 {
+    overflow: hidden;
+    font-size: .9rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .inapp-player-header p {
+    overflow: hidden;
+    font-size: .58rem;
+    letter-spacing: .12em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .inapp-player-controls {
+    padding: .75rem !important;
+    padding-bottom: max(.75rem, env(safe-area-inset-bottom)) !important;
+    padding-left: max(.75rem, env(safe-area-inset-left)) !important;
+    padding-right: max(.75rem, env(safe-area-inset-right)) !important;
+  }
+
+  .inapp-player-control-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: .5rem;
+    min-width: 0;
+  }
+
+  .inapp-player-transport,
+  .inapp-player-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .4rem;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .inapp-player-transport > button,
+  .inapp-player-options > button,
+  .inapp-player-options > div > button,
+  .inapp-player-options > div > select {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .inapp-player-transport > button:nth-child(2) {
+    width: 48px;
+    height: 48px;
+  }
+
+  .inapp-player-transport > button:last-child {
+    padding-inline: .75rem;
+    font-size: .75rem;
+  }
+
+  .inapp-player-options select {
+    max-width: min(42vw, 10rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .inapp-player-options input[type="range"] {
+    width: clamp(4rem, 22vw, 7rem);
+  }
+}
+
+@media (max-width: 700px) and (orientation: landscape) {
+  .inapp-player-header {
+    padding-top: max(.4rem, env(safe-area-inset-top)) !important;
+  }
+
+  .inapp-player-controls {
+    padding-bottom: max(.4rem, env(safe-area-inset-bottom)) !important;
+  }
+
+  .inapp-player-control-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+  }
+
+  .inapp-player-transport,
+  .inapp-player-options {
+    flex-wrap: nowrap;
+    width: auto;
+  }
+
+  .inapp-player-transport { flex: 0 0 auto; }
+  .inapp-player-options { flex: 1 1 auto; }
+  .inapp-player-options select { max-width: 23vw; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

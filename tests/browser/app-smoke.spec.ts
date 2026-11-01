@@ -114,3 +114,19 @@ test('mobile sidebar destinations meet the same 44px touch target', async ({ pag
   expect(targets.length).toBeGreaterThan(1)
   expect(targets.every((target) => target.width >= 44 && target.height >= 44), JSON.stringify(targets)).toBe(true)
 })
+
+test('fixed hero preference uses a swipeable mobile presentation and restores Fixed Focus on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: /Interface/ }).click()
+  await page.getByLabel('Home hero layout').click()
+  await page.getByRole('option', { name: 'Fixed Focus' }).click()
+  await page.getByRole('link', { name: 'Home' }).click()
+
+  const home = page.locator('[data-home-presentation]')
+  await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await expect(home).toHaveAttribute('data-home-presentation', 'fixed')
+})
