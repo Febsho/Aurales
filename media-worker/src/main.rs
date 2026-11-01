@@ -570,10 +570,11 @@ async fn create_access_session(
     state.access_attempts.lock().await.remove(forwarded_ip);
 
     let expires = unix_timestamp().saturating_add(ACCESS_SESSION_TTL_SECONDS);
-    let Some(signature) = sign_access_session(&state.session_key, expires) else {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let Some(signature) = sign_access_session(&state.session_key, expires, &nonce) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let cookie = format!("{ACCESS_COOKIE}={expires}.{signature}; Path=/v1; HttpOnly; Secure; SameSite=Strict; Max-Age={ACCESS_SESSION_TTL_SECONDS}");
+    let cookie = format!("{ACCESS_COOKIE}={expires}.{nonce}.{signature}; Path=/v1; HttpOnly; Secure; SameSite=Strict; Max-Age={ACCESS_SESSION_TTL_SECONDS}");
     let mut response = (StatusCode::NO_CONTENT, "").into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(SET_COOKIE, value);
@@ -616,9 +617,9 @@ fn unix_timestamp() -> u64 {
         .as_secs()
 }
 
-fn sign_access_session(key: &[u8], expires: u64) -> Option<String> {
+fn sign_access_session(key: &[u8], expires: u64, nonce: &str) -> Option<String> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
-    mac.update(format!("aurales-worker-access:{expires}").as_bytes());
+    mac.update(format!("aurales-worker-access:{expires}:{nonce}").as_bytes());
     Some(
         mac.finalize()
             .into_bytes()
@@ -636,16 +637,25 @@ fn verify_access_session(headers: &HeaderMap, key: &[u8]) -> bool {
         let Some(value) = cookie.strip_prefix(&format!("{ACCESS_COOKIE}=")) else {
             continue;
         };
-        let Some((expires, signature)) = value.split_once('.') else {
+        let mut parts = value.split('.');
+        let (Some(expires), Some(nonce), Some(signature)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
             return false;
         };
+        if parts.next().is_some()
+            || nonce.len() != 32
+            || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return false;
+        }
         let Ok(expires) = expires.parse::<u64>() else {
             return false;
         };
         if expires <= unix_timestamp() {
             return false;
         }
-        let Some(expected) = sign_access_session(key, expires) else {
+        let Some(expected) = sign_access_session(key, expires, nonce) else {
             return false;
         };
         return expected.len() == signature.len()
