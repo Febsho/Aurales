@@ -15,6 +15,24 @@ if (import.meta.env.VITE_WEB_BUILD === 'true' && 'serviceWorker' in navigator) {
       console.warn('[PWA] Service worker registration failed:', error)
     })
   }, { once: true })
+
+  // A tab that stayed open across a deployment can still point at a lazy
+  // module hash that the new static release no longer serves. Recover once by
+  // reloading the current route so the browser fetches the new HTML manifest.
+  // The session guard prevents a broken deploy from creating a reload loop.
+  window.addEventListener('vite:preloadError', (event) => {
+    const recoveryKey = 'aurales:web-preload-recovery'
+    const now = Date.now()
+    try {
+      const previous = JSON.parse(sessionStorage.getItem(recoveryKey) || 'null') as { path?: string; at?: number } | null
+      if (previous?.path === location.pathname && typeof previous.at === 'number' && now - previous.at < 60_000) return
+      sessionStorage.setItem(recoveryKey, JSON.stringify({ path: location.pathname, at: now }))
+      event.preventDefault()
+      location.reload()
+    } catch {
+      // Leave Vite's normal error UI available if storage is disabled.
+    }
+  })
 }
 
 const App = lazy(() => import('./App'))
