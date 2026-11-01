@@ -22,7 +22,7 @@ function rememberSeason(key: string, season: SeasonDetails, expiresAt = Date.now
 }
 
 export function animeSeasonCacheKey(tvdbId: string | number, season: number, settingsKey: string): string {
-  return `anime-tvdb-season:v1:${settingsKey}:${String(tvdbId).replace(/^[a-z_]+[-:]/i, '')}:${season}`
+  return `anime-tvdb-season:v2:${settingsKey}:${String(tvdbId).replace(/^[a-z_]+[-:]/i, '')}:${season}`
 }
 
 export async function getCachedAnimeSeason(key: string): Promise<SeasonDetails | null> {

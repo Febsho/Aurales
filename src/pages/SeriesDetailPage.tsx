@@ -121,7 +121,15 @@ async function resolveAddonAnimeTvdbStructure(
     imdbId: show.imdbId,
     contentType: 'series',
   })
-  const tvdbId = resolved?.tvdbId || (show.tvdbId ? Number(String(show.tvdbId).replace(/^(?:tvdb[-:]|app_tvdb_)/i, '')) : undefined)
+  // An explicit TVDB ID came from the selected catalog item and is more
+  // specific than a Fribb lookup keyed by AniList/MAL (which can return a
+  // different cour/series when those IDs have multiple mapping rows).
+  const suppliedTvdbId = show.tvdbId
+    ? Number(String(show.tvdbId).replace(/^(?:tvdb[-:]|app_tvdb_)/i, ''))
+    : undefined
+  const tvdbId = suppliedTvdbId != null && Number.isFinite(suppliedTvdbId) && suppliedTvdbId > 0
+    ? suppliedTvdbId
+    : resolved?.tvdbId
   if (!tvdbId) return null
 
   const tvdbShow = await cachedProviderShow('tvdb', String(tvdbId))
@@ -305,7 +313,7 @@ function seriesDetailCacheKeys(id: string | undefined, state: LocationState): st
   const animeRoute = Boolean(state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' || (id && /^(mal|anilist)[-:]/i.test(id)))
   // Invalidate only anime entries that may contain Japanese TVDB prose. Keep
   // the established v2 cache hot for ordinary shows.
-  const versions = animeRoute ? ['v9'] : ['v2', 'v9']
+  const versions = animeRoute ? ['v10'] : ['v2', 'v10']
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -364,7 +372,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${entry.show.isAnime ? 'v9' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `${entry.show.isAnime ? 'v10' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)

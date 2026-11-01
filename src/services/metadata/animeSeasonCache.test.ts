@@ -18,7 +18,7 @@ describe('anime season cache', () => {
   })
 
   it('uses a stable key scoped by TVDB season and structure settings', () => {
-    expect(animeSeasonCacheKey('tvdb-42', 2, '101')).toBe('anime-tvdb-season:v1:101:42:2')
+    expect(animeSeasonCacheKey('tvdb-42', 2, '101')).toBe('anime-tvdb-season:v2:101:42:2')
   })
 
   it('deduplicates concurrent loads and reuses the resolved season', async () => {
