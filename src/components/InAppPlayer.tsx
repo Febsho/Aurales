@@ -698,7 +698,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         // The user can start playback while the initial autoplay request is
         // still pending. Ignore a late rejection once the video has produced
         // a frame; it belongs to the superseded play attempt, not this session.
-        if (!isCurrentRun() || playbackStartedRef.current) return
+        if (!isCurrentRun() || playbackStartedRef.current || !video.paused) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
           setLoading(false)
