@@ -4953,6 +4953,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     inset: 0 !important; display: block; padding: 0 !important;
     background: linear-gradient(to top, rgba(0,0,0,.86), transparent 26%, rgba(0,0,0,.36) 100%);
   }
+  html[data-runtime-platform="web"] .inapp-player-paused-overlay { display: none; }
   html[data-runtime-platform="web"] .inapp-player-controls > div:first-child {
     position: absolute; inset-inline: max(.85rem, env(safe-area-inset-left)) max(.85rem, env(safe-area-inset-right));
     bottom: max(.75rem, env(safe-area-inset-bottom)); margin: 0; gap: .65rem;
@@ -4979,8 +4980,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-options > div:last-child { right: max(.75rem, env(safe-area-inset-right)); bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + 2rem); gap: .25rem; }
   html[data-runtime-platform="web"] .inapp-player-options > button { right: max(.75rem, env(safe-area-inset-right)); bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + 5rem); }
   html[data-runtime-platform="web"] .inapp-player-header + [role="alert"] {
-    top: max(3.5rem, env(safe-area-inset-top)) !important; width: min(78vw, 48rem); padding: .6rem .85rem;
-    font-size: .76rem; line-height: 1.2rem; text-align: center;
+    top: max(3.5rem, env(safe-area-inset-top)) !important; right: auto; left: max(.85rem, env(safe-area-inset-left));
+    width: min(42vw, 24rem); padding: .6rem .75rem; font-size: .72rem; line-height: 1.1rem; text-align: left;
   }
 }
 

@@ -1423,6 +1423,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             }
             return
           }
+          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && !getMediaWorkerConfig()) {
+            const message = 'This browser cannot decode the stream. It cannot convert media on-device. Add an Aurales media worker in Settings for an automatic playback copy, or choose another stream.'
+            setLoading(false)
+            setPaused(true)
+            setError(message)
+            onPlaybackError?.(message, video.currentTime)
+            return
+          }
           const message = browserPlaybackFailureMessage(url, videoRef.current)
           setLoading(false)
           setError(message)
@@ -1456,7 +1464,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       )}
 
       {paused && !loading && (
-        <button onClick={togglePlay} aria-label="Play" className="absolute inset-0 flex items-center justify-center">
+        <button onClick={togglePlay} aria-label="Play" className="inapp-player-paused-overlay absolute inset-0 flex items-center justify-center">
           <span className="w-24 h-24 rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl flex items-center justify-center">
             <svg className="w-12 h-12 ml-1" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />

@@ -46,7 +46,7 @@ export default function MediaWorkerSettings() {
     <section className="space-y-3" aria-labelledby="media-worker-title">
       <div>
         <h3 id="media-worker-title" className="px-1 text-sm font-semibold text-white/65">Optional self-hosted media worker</h3>
-        <p className="px-1 mt-1 text-xs text-white/45">The optional worker can rank and range-probe allowlisted streams, proxy configured HTTPS hostnames when browser playback fails, rewrite HLS playlists, relay provider requests and Aurales Sync calls to fixed API origins, and optionally convert browser-incompatible media when FFmpeg is enabled on the worker.</p>
+        <p className="px-1 mt-1 text-xs text-white/45">The optional worker can rank and range-probe allowlisted streams, proxy configured HTTPS hostnames when browser playback fails, rewrite HLS playlists, relay provider requests and Aurales Sync calls to fixed API origins, and optionally convert browser-incompatible media when FFmpeg is enabled on the worker. If a browser rejects a direct-play source, Aurales automatically tries a stream-copy remux, then AAC audio with the original video, then H.264/AAC when available. The original file is not changed.</p>
       </div>
       <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4 sm:p-5 space-y-3">
         <label className="block space-y-1.5">

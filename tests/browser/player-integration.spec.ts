@@ -139,6 +139,17 @@ test('player controls stay visible when a touch stream fails before playback sta
   await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible()
 })
 
+test('browser codec failures explain that conversion requires an Aurales media worker', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('webkit'), 'Synthetic MediaError delivery is unreliable in WebKit.')
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  await page.locator('video').evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect(page.getByRole('alert')).toContainText('It cannot convert media on-device')
+  await expect(page.getByRole('alert')).toContainText('Add an Aurales media worker in Settings')
+})
+
 test('iOS player uses Safari native fullscreen when the standard API is unavailable', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'ios-webkit', 'Safari native fullscreen fallback is iOS-specific.')
   await page.setViewportSize({ width: 390, height: 844 })
@@ -241,11 +252,15 @@ test('changing stream resets browser conversion attempts for the next source', a
     contentType: 'application/json',
     body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true }),
   }))
-  await page.route('**/v1/media/conversions', (route) => route.fulfill({
-    status: 503,
-    contentType: 'application/json',
-    body: JSON.stringify({ error: 'ffmpeg_not_configured' }),
-  }))
+  const conversionSources: string[] = []
+  await page.route('**/v1/media/conversions', (route) => {
+    conversionSources.push(String(JSON.parse(route.request().postData() || '{}').url))
+    return route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'ffmpeg_not_configured' }),
+    })
+  })
 
   await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(initial)}`)
   const video = page.locator('video')
@@ -256,14 +271,13 @@ test('changing stream resets browser conversion attempts for the next source', a
     element.dispatchEvent(new Event('error'))
   })
   await causeDecodeError()
-  const remux = page.getByRole('button', { name: 'Try stream-copy remux' })
-  await expect(remux).toBeVisible()
-  await remux.click()
-  await expect(remux).toHaveCount(0)
+  await expect.poll(() => conversionSources.length).toBe(1)
+  expect(conversionSources[0]).toContain('/vp8-opus.webm')
 
   await page.evaluate(() => (window as Window & { __loadNextSource?: () => void }).__loadNextSource?.())
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain('/h264-aac.mp4')
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState >= 1)).toBe(true)
   await causeDecodeError()
-  await expect(remux).toBeVisible()
+  await expect.poll(() => conversionSources.length).toBe(2)
+  expect(conversionSources[1]).toContain('/h264-aac.mp4')
 })
