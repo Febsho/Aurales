@@ -176,3 +176,64 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(home).toHaveAttribute('data-home-presentation', 'fixed')
 })
+
+test('mobile Home keeps a real catalogue hero and poster shelf compact', async ({ page }) => {
+  const profileId = 'mobile-layout-test'
+  const profileRows = [
+    {
+      id: 'mobile-hero', title: 'Spotlight', layout: 'hero', enabled: true, order: 0, sourceType: 'discover',
+      discoverConfig: { source: 'TMDB', contentType: 'movie', sortBy: 'popularity.desc', cacheTtl: 3600, releasedOnly: true, includeAdult: false, includeGenres: [], excludeGenres: [], genreMatchMode: 'OR', people: [], peopleMatchMode: 'OR', includeCompanies: [], excludeCompanies: [], companyMatchMode: 'OR', includeKeywords: [], excludeKeywords: [], keywordMatchMode: 'OR', watchRegion: 'US', providerMatchMode: 'OR', selectedProviders: [], voteAverageMin: 0, voteAverageMax: 10, voteCountMin: 0 },
+    },
+    { id: 'mobile-continue', title: 'Continue Watching', layout: 'continue', enabled: true, order: 1, sourceType: 'local' },
+    { id: 'mobile-upcoming', title: 'Upcoming', layout: 'upcoming', enabled: true, order: 2, sourceType: 'local' },
+    {
+      id: 'mobile-posters', title: 'Mobile test shelf', layout: 'poster', enabled: true, order: 3, sourceType: 'discover',
+      discoverConfig: { source: 'TMDB', contentType: 'movie', sortBy: 'popularity.desc', cacheTtl: 3600, releasedOnly: true, includeAdult: false, includeGenres: [], excludeGenres: [], genreMatchMode: 'OR', people: [], peopleMatchMode: 'OR', includeCompanies: [], excludeCompanies: [], companyMatchMode: 'OR', includeKeywords: [], excludeKeywords: [], keywordMatchMode: 'OR', watchRegion: 'US', providerMatchMode: 'OR', selectedProviders: [], voteAverageMin: 0, voteAverageMax: 10, voteCountMin: 0 },
+    },
+  ]
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(({ id, rows }) => {
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{ id, name: 'Mobile test', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', isDefault: true }]))
+    localStorage.setItem('aurales_active_profile_v1', id)
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem(`aurales_home_rows:profile:${id}`, JSON.stringify(rows))
+    localStorage.setItem(`aurales_home_hero_mode:profile:${id}`, 'dynamic')
+  }, { id: profileId, rows: profileRows })
+
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname.endsWith('/discover/movie') || pathname.endsWith('/discover/tv')) {
+      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 1, results: [{ id: 43125, title: 'Mobile Fixture Film', poster_path: '/mobile-fixture-poster.jpg', backdrop_path: '/mobile-fixture-backdrop.jpg', overview: 'A fixture for responsive Home layout verification.', release_date: '2025-05-01', vote_average: 8.2, vote_count: 4200, popularity: 220, genre_ids: [18], original_language: 'en' }] } })
+      return
+    }
+    await route.fulfill({ json: {} })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#222"/></svg>' }))
+
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await expect(page.locator('[data-home-presentation="dynamic"] [data-home-hero]')).toBeVisible()
+  const posterShelf = page.locator('[data-home-shelves] .media-row--poster .cinematic-row-track')
+  await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()
+
+  const measurements = await page.evaluate(() => {
+    const hero = document.querySelector<HTMLElement>('[data-home-presentation="dynamic"] [data-home-hero] > div:first-child')
+    const track = document.querySelector<HTMLElement>('[data-home-shelves] .media-row--poster .cinematic-row-track')
+    const poster = document.querySelector<HTMLElement>('[data-home-shelves] .media-row--poster .cinematic-row-track .media-row-card-slot')
+    return hero && track && poster ? {
+      heroHeight: hero.getBoundingClientRect().height,
+      gap: Number.parseFloat(getComputedStyle(track).gap),
+      posterWidth: poster.getBoundingClientRect().width,
+      horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    } : null
+  })
+  expect(measurements).not.toBeNull()
+  expect(measurements!.heroHeight).toBeGreaterThan(0)
+  expect(measurements!.heroHeight).toBeLessThanOrEqual(340)
+  expect(measurements!.gap).toBeLessThanOrEqual(8)
+  expect(measurements!.posterWidth).toBeGreaterThan(0)
+  expect(measurements!.posterWidth).toBeLessThanOrEqual(88)
+  expect(measurements!.horizontalOverflow).toBe(false)
+})
