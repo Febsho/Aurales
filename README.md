@@ -823,6 +823,8 @@ and optional worker setup. A production Nginx example with PWA-safe cache header
 is provided at [`deploy/nginx/aurales-web.conf`](deploy/nginx/aurales-web.conf).
 The optional worker includes systemd and Caddy deployment examples in
 [`docs/media-worker.md`](docs/media-worker.md).
+For one deployment containing both the web app and media worker behind a single
+HTTPS hostname, use the [Docker Compose self-hosting guide](docs/self-hosted-stack.md).
 
 Run the frontend:
 

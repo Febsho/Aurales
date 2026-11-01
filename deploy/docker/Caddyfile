@@ -1,0 +1,22 @@
+# Domain is provided by compose. Caddy manages HTTPS automatically.
+{$AURALES_DOMAIN} {
+	# Signed media URLs contain short-lived bearer signatures. Keep request
+	# logging disabled so query strings are not recorded.
+	log {
+		output discard
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	@worker path /health /v1/*
+	reverse_proxy @worker media-worker:8188
+
+	root * /srv
+	encode zstd gzip
+	try_files {path} {path}/ /index.html
+	file_server
+}

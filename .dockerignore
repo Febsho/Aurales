@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+!.env.docker.example
+node_modules
+dist
+dist-web
+test-results
+playwright-report
+media-worker/target
+src-tauri/target

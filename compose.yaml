@@ -1,0 +1,37 @@
+services:
+  web:
+    build:
+      context: .
+      target: web-runtime
+    restart: unless-stopped
+    ports:
+      - "${AURALES_HTTP_PORT:-80}:80"
+      - "${AURALES_HTTPS_PORT:-443}:443"
+    environment:
+      AURALES_DOMAIN: ${AURALES_DOMAIN:?Set AURALES_DOMAIN to the public hostname}
+    depends_on:
+      media-worker:
+        condition: service_started
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+  media-worker:
+    build:
+      context: .
+      target: worker-runtime
+    restart: unless-stopped
+    environment:
+      AURALES_MEDIA_API_KEY: ${AURALES_MEDIA_API_KEY:?Set a private key of at least 32 characters}
+      AURALES_MEDIA_SESSION_KEY: ${AURALES_MEDIA_SESSION_KEY:?Set a different private key of at least 32 characters}
+      AURALES_MEDIA_WEB_ORIGINS: https://${AURALES_DOMAIN:?Set AURALES_DOMAIN}
+      AURALES_MEDIA_ALLOWED_HOSTS: ${AURALES_MEDIA_ALLOWED_HOSTS:-}
+    volumes:
+      - media-conversions:/var/lib/aurales/conversions
+    expose:
+      - "8188"
+
+volumes:
+  media-conversions:
+  caddy-data:
+  caddy-config:
