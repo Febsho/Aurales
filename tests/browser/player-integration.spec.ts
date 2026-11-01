@@ -122,6 +122,8 @@ test('landscape touch player keeps transport and track controls inside the safe 
   const [alertBox, transportBox] = await Promise.all([alert.boundingBox(), controls.locator('.inapp-player-transport').boundingBox()])
   expect(alertBox).not.toBeNull()
   expect(transportBox).not.toBeNull()
+  expect(alertBox!.x).toBeGreaterThanOrEqual(0)
+  expect(alertBox!.x + alertBox!.width).toBeLessThanOrEqual(layout.viewportWidth + 1)
   expect(alertBox!.y + alertBox!.height).toBeLessThan(transportBox!.y)
 })
 

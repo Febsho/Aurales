@@ -4981,7 +4981,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-options > button { right: max(.75rem, env(safe-area-inset-right)); bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + 5rem); }
   html[data-runtime-platform="web"] .inapp-player-header + [role="alert"] {
     top: max(3.5rem, env(safe-area-inset-top)) !important; right: auto; left: max(.85rem, env(safe-area-inset-left));
-    width: min(42vw, 24rem); padding: .6rem .75rem; font-size: .72rem; line-height: 1.1rem; text-align: left;
+    width: min(42vw, 24rem); transform: none !important; translate: none !important; padding: .6rem .75rem; font-size: .72rem; line-height: 1.1rem; text-align: left;
+    overflow-wrap: anywhere;
   }
 }
 
