@@ -1,5 +1,25 @@
 # Aurales browser platform audit
 
+## Summary
+
+Aurales already has one React 19/Vite application and a native Tauri/Rust/mpv
+desktop client. The browser target reuses that UI, routes, stores, provider
+services, and local data contracts; typed platform adapters keep SQLite,
+filesystem, window, updater, and mpv operations out of the browser bundle. The
+browser player uses HTML video/HLS.js, with the Rust media worker available for
+allowlisted proxying and FFmpeg conversion. A same-origin Docker Compose stack
+bundles the PWA and worker; a shared instance code grants a browser session
+without exposing server keys. Mobile web uses fixed bottom navigation and
+responsive Home, Discover, detail, search, catalog, and player layouts.
+
+The audited code and CI verify browser-safe builds, PWA behavior, player
+fixtures, and desktop compilation. Browser media remains subject to source
+authorization, CORS, expiry, DRM, and device codec support; FFmpeg conversion
+needs the full source downloaded first. Physical provider streams, Android
+hardware, AirPlay output, and Chromecast are not certified by this repository's
+automated checks. The detailed module inventory, implementation stages,
+deployment steps, and platform limits follow.
+
 ## Existing architecture
 
 Aurales is already one React 19 + TypeScript + Vite application. `src/App.tsx` owns the routed shell and profile bootstrap; `src/components/Layout.tsx`, the page components, Zustand stores in `src/stores/`, metadata/addon services in `src/services/`, and localStorage profile contracts are reusable. `src/services/sync/auralesSync.ts`, `syncBatch.ts`, `outbox.ts`, and `encryptedVault.ts` implement the current sync contracts and should remain the source of truth.
