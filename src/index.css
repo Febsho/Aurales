@@ -5105,8 +5105,15 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .discover-page__tabs { margin-top: .9rem; width: 100%; }
   html[data-runtime-platform="web"] .discover-page__tabs button { min-height: 2.75rem; padding-inline: .75rem; font-size: .78rem; }
   html[data-runtime-platform="web"] .discover-page__heading > span { font-size: .65rem; }
-  html[data-runtime-platform="web"] .discover-page__modes { margin-bottom: .75rem; padding-inline: .875rem; }
-  html[data-runtime-platform="web"] .discover-page__modes button { min-height: 2.75rem; padding-inline: .8rem; font-size: .7rem; }
+  html[data-runtime-platform="web"] .discover-page__modes {
+    display: flex; flex-wrap: nowrap; gap: .5rem; margin-bottom: .75rem; padding-inline: .875rem;
+    overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; scroll-snap-type: x proximity;
+  }
+  html[data-runtime-platform="web"] .discover-page__modes::-webkit-scrollbar { display: none; }
+  html[data-runtime-platform="web"] .discover-page__modes button {
+    flex: 0 0 auto; min-height: 2.75rem; padding-inline: .8rem; font-size: .7rem; scroll-snap-align: start;
+  }
   html[data-runtime-platform="web"] .discover-hero { min-height: 440px !important; margin: 0 .875rem .75rem !important; border-radius: 1rem !important; }
   html[data-runtime-platform="web"] .discover-hero__gradient { background-image: linear-gradient(to top, rgba(0,0,0,.96), rgba(0,0,0,.68) 46%, rgba(0,0,0,.1)) !important; }
   html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 440px !important; max-width: none; padding: .9rem !important; }

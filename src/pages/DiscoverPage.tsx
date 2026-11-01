@@ -827,7 +827,7 @@ export default function DiscoverPage() {
       <>
 
           <div className="discover-page__modes mb-7 flex gap-2 overflow-x-auto px-6 pb-1 md:px-10" aria-label="Browse recommendations">
-            {([['for-you','Recommended'],['new','Something New'],['hidden-gems','Hidden Gems'],['critically-acclaimed','Critically Acclaimed'],['recently-released','Recently Released'],['quick-watch','Quick Watch']] as const).map(([value,label]) => <button key={value} onClick={() => changeMode(value)} className={`focus-ring whitespace-nowrap rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${mode === value ? 'border-white bg-white text-black' : 'border-white/10 bg-transparent text-white/55 hover:border-white/25 hover:text-white'}`}>{label}</button>)}
+            {([['for-you','Recommended'],['new','Something New'],['hidden-gems','Hidden Gems'],['critically-acclaimed','Critically Acclaimed'],['recently-released','Recently Released'],['quick-watch','Quick Watch']] as const).map(([value,label]) => <button key={value} onClick={() => changeMode(value)} className={`focus-ring flex-none whitespace-nowrap rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${mode === value ? 'border-white bg-white text-black' : 'border-white/10 bg-transparent text-white/55 hover:border-white/25 hover:text-white'}`}>{label}</button>)}
           </div>
           {viewState==='content'&&heroRecommendation ? <section onClick={()=>openHeroDetail(false)} className="discover-hero group relative mx-6 mb-10 min-h-[460px] cursor-pointer select-none overflow-hidden rounded-[1.75rem] border border-white/[.1] bg-[#111] shadow-2xl shadow-black/25 md:mx-10">
             {heroPool.map((entry, index) => {

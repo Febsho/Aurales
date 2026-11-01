@@ -409,6 +409,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       headingFits: contained(heading),
       tabsFit: contained(tabs),
       modesFit: contained(modes),
+      modeButtons: modes ? Array.from(modes.querySelectorAll<HTMLButtonElement>('button'), (button) => {
+        const bounds = button.getBoundingClientRect()
+        return { left: bounds.left, right: bounds.right, height: bounds.height }
+      }) : [],
       hero: hero ? {
         width: hero.getBoundingClientRect().width,
         height: hero.getBoundingClientRect().height,
@@ -422,6 +426,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.headingFits).toBe(true)
   expect(discoveryLayout!.tabsFit).toBe(true)
   expect(discoveryLayout!.modesFit).toBe(true)
+  expect(discoveryLayout!.modeButtons.length).toBeGreaterThan(1)
+  expect(discoveryLayout!.modeButtons.every((button) => button.height >= 44), JSON.stringify(discoveryLayout!.modeButtons)).toBe(true)
+  for (let index = 1; index < discoveryLayout!.modeButtons.length; index += 1) {
+    expect(discoveryLayout!.modeButtons[index]!.left).toBeGreaterThanOrEqual(discoveryLayout!.modeButtons[index - 1]!.right + 3)
+  }
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
