@@ -231,7 +231,20 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
     const pathname = new URL(route.request().url()).pathname
     if (pathname.endsWith('/discover/movie') || pathname.endsWith('/discover/tv')) {
       await new Promise((resolve) => setTimeout(resolve, 350))
-      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 1, results: [{ id: 43125, title: 'Mobile Fixture Film', poster_path: '/mobile-fixture-poster.jpg', backdrop_path: '/mobile-fixture-backdrop.jpg', overview: 'A fixture for responsive Home layout verification.', release_date: '2025-05-01', vote_average: 8.2, vote_count: 4200, popularity: 220, genre_ids: [18], original_language: 'en' }] } })
+      const results = Array.from({ length: 28 }, (_, index) => ({
+        id: 43125 + index,
+        title: `Mobile Fixture Film ${index + 1}`,
+        poster_path: '/mobile-fixture-poster.jpg',
+        backdrop_path: '/mobile-fixture-backdrop.jpg',
+        overview: 'A fixture for responsive Home layout verification.',
+        release_date: '2025-05-01',
+        vote_average: 8.2,
+        vote_count: 4200,
+        popularity: 220 - index,
+        genre_ids: [18],
+        original_language: 'en',
+      }))
+      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
       return
     }
     await route.fulfill({ json: {} })
@@ -268,6 +281,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   const rankedShelf = page.locator('[data-home-shelves] .media-row--ranked .cinematic-row-track')
   const rankedCard = rankedShelf.locator('.media-row-card-slot').first().locator('button')
   await expect(rankedCard).toBeVisible()
+  const showAllCard = page.locator('[data-home-shelves] .show-all-card').first()
+  await expect(showAllCard).toBeVisible()
+  const showAllHeight = await showAllCard.evaluate((element) => element.getBoundingClientRect().height)
+  expect(showAllHeight, 'the desktop-sized Show all action must not stretch a mobile catalog row').toBeLessThanOrEqual(190)
   const continueEmpty = page.locator('[data-home-shelves] [data-home-row="continue-empty"]')
   const upcomingRow = page.locator('[data-home-shelves] [data-home-row="upcoming"]')
   await expect(continueEmpty.locator('.cw-empty-state')).toBeVisible()
