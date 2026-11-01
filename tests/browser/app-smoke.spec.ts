@@ -35,6 +35,13 @@ test('shared layouts remain navigable on tablet and TV-sized viewports', async (
     const navigation = page.getByRole('navigation', { name: 'Primary navigation' })
     await expect(navigation).toBeVisible()
     await expect(navigation.locator('a').first()).toBeVisible()
+    await page.waitForFunction(() => {
+      const links = document.querySelectorAll<HTMLElement>('nav[aria-label="Primary navigation"] a')
+      return links.length > 0 && Array.from(links).every((link) => {
+        const rect = link.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      })
+    })
 
     const dimensions = await page.evaluate(() => ({
       viewport: document.documentElement.clientWidth,
@@ -71,6 +78,13 @@ test('mobile cinematic navigation gives every destination a 44px touch target', 
 
   const navigation = page.getByRole('navigation', { name: 'Primary navigation' })
   await expect(navigation).toBeVisible()
+  await page.waitForFunction(() => {
+    const links = document.querySelectorAll<HTMLElement>('nav[aria-label="Primary navigation"] a')
+    return links.length > 1 && Array.from(links).every((link) => {
+      const rect = link.getBoundingClientRect()
+      return rect.width >= 44 && rect.height >= 44
+    })
+  })
   const targets = await navigation.locator('a').evaluateAll((links) => links.map((link) => {
     const rect = link.getBoundingClientRect()
     return { label: link.getAttribute('aria-label') || link.textContent?.trim(), width: rect.width, height: rect.height }
