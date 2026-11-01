@@ -18,3 +18,10 @@ export async function deleteSyncPassword(email: string): Promise<void> {
   if (!hasTauriBridge()) return
   await invoke('sync_password_delete', { email })
 }
+
+/** A keyring failure must not undo a successful server login. The password
+ * remains in memory only and the user can unlock the vault again after restart. */
+export async function trySaveSyncPassword(email: string, password: string): Promise<boolean> {
+  try { await saveSyncPassword(email, password); return true }
+  catch { return false }
+}

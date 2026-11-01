@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
-import { deleteSyncPassword, loadSyncPassword, saveSyncPassword, syncPasswordPersistenceAvailable } from './secureLogin'
+import { deleteSyncPassword, loadSyncPassword, saveSyncPassword, syncPasswordPersistenceAvailable, trySaveSyncPassword } from './secureLogin'
 
 afterEach(() => vi.unstubAllGlobals())
 beforeEach(() => vi.clearAllMocks())
@@ -31,4 +31,10 @@ describe('sync password persistence adapter', () => {
       'sync_password_store', 'sync_password_load', 'sync_password_delete',
     ])
   })
+  it('allows a successful login to continue when the OS keyring is unavailable', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    invokeMock.mockRejectedValue(new Error('keyring unavailable'))
+    await expect(trySaveSyncPassword('user@example.test', 'long password')).resolves.toBe(false)
+  })
+
 })
