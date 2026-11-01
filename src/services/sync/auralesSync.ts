@@ -25,7 +25,6 @@ export type { SyncRecord }
 
 const CONFIG_KEY = 'aurales_sync_config_v1'
 export const DEFAULT_SYNC_ENDPOINT = 'https://sync.febsho.me'
-const SYNC_PAGE_SIZE = 500
 
 export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string; autoSync?: boolean }
 export function getSyncConfig(): AuralesSyncConfig {
@@ -324,17 +323,19 @@ async function uploadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded:
   let activeVaultRestored = false
   const drain = async () => {
     let result: { uploaded: number; downloaded: number; activeVaultRestored: boolean }
+    let cursorBefore: string | undefined
     do {
-      const cursorBefore = getSyncConfig().cursor
+      cursorBefore = getSyncConfig().cursor
       result = await syncNowUnlocked(fetcher)
       uploaded += result.uploaded; downloaded += result.downloaded
       activeVaultRestored ||= result.activeVaultRestored
-      // A sync response can be full even when every local outbox entry was
-      // acknowledged. Keep advancing its cursor so large remote libraries do
-      // not remain partially downloaded until the next manual sync.
+      // The server advances its cursor over tombstones, but does not return
+      // those deleted records. Therefore a short visible page can still have
+      // more server rows behind it. Probe again after any cursor movement;
+      // the empty, unchanged response marks the end of the server history.
       if (getSyncOutbox().length === 0
-        && (result.downloaded < SYNC_PAGE_SIZE || getSyncConfig().cursor === cursorBefore)) break
-    } while (getSyncOutbox().length > 0 || result.downloaded >= SYNC_PAGE_SIZE)
+        && getSyncConfig().cursor === cursorBefore) break
+    } while (getSyncOutbox().length > 0 || getSyncConfig().cursor !== cursorBefore)
   }
   await drain()
   if (isSyncVaultUnlocked()) {
@@ -372,7 +373,11 @@ async function downloadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ downloa
     activeVaultRestored ||= await applyRemoteRecords(records)
     downloaded += records.length
     const nextCursor = body.cursor || cursor
-    if (records.length < SYNC_PAGE_SIZE || nextCursor === cursor) { cursor = nextCursor; break }
+    // The API omits tombstones from `records` while still advancing the
+    // cursor across them. A page can consequently contain fewer than 500 live
+    // records even when another page is waiting. Continue until the cursor
+    // stops moving (the final empty page).
+    if (nextCursor === cursor) { cursor = nextCursor; break }
     cursor = nextCursor
   } while (true)
   setSyncConfig({ cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
@@ -391,14 +396,12 @@ export async function syncIfConfigured(): Promise<void> {
   if (configuredSyncPending) return configuredSyncPending
   const cursorBefore = config.cursor
   configuredSyncPending = syncNow()
-    .then((result) => {
+    .then(() => {
       automaticSyncRetryAttempt = 0
       // A sync round sends one bounded batch. Keep draining on successful
       // rounds so initial snapshots and full remote pages do not stall until
       // another local edit happens.
-      if (getSyncOutbox().length > 0 || (
-        result.downloaded >= SYNC_PAGE_SIZE && getSyncConfig().cursor !== cursorBefore
-      )) scheduleAutomaticSync(1200)
+      if (getSyncOutbox().length > 0 || getSyncConfig().cursor !== cursorBefore) scheduleAutomaticSync(1200)
     })
     .catch((error) => {
       if (shouldRetryAutomaticSync(error)) {
