@@ -729,17 +729,11 @@ export async function getAniListFullList(force = false): Promise<AniListFullEntr
  * implies it was completed at least once. PAUSED/DROPPED/CURRENT partials are not
  * title-watched but still carry episode progress used elsewhere.
  */
-function isEntryFullyWatched(entry: Pick<AniListFullEntry, 'status' | 'repeat' | 'episodes' | 'progress'>): boolean {
+function isEntryFullyWatched(entry: AniListFullEntry): boolean {
   if (entry.status === 'COMPLETED' || entry.status === 'REPEATING') return true
   if (entry.repeat > 0) return true
   if (entry.episodes && entry.episodes > 0 && entry.progress >= entry.episodes) return true
   return false
-}
-
-/** AniList and MAL keys are available even when cross-provider mapping is not. */
-export function getAniListPrimaryWatchedKeys(entry: Pick<AniListFullEntry, 'mediaId' | 'idMal' | 'status' | 'repeat' | 'episodes' | 'progress'>): string[] {
-  if (!isEntryFullyWatched(entry)) return []
-  return [`anilist:${entry.mediaId}`, ...(entry.idMal ? [`mal:${entry.idMal}`] : [])]
 }
 
 /**
@@ -804,11 +798,6 @@ export async function syncAniListWatchedHistory(): Promise<AniListSyncReport> {
         const entry = list[cursor++]
         report.episodesImported += entry.progress
         const fully = isEntryFullyWatched(entry)
-        // AniList's own IDs are authoritative and do not depend on the
-        // optional cross-provider mapping service. Keep them even when an
-        // anime has no TMDB/TVDB/IMDB mapping so local AniList-backed titles
-        // still receive their watched state.
-        for (const key of getAniListPrimaryWatchedKeys(entry)) keys.add(key)
         let method = 'anilist-id'
         let resolvedLocal: string | undefined
         try {
@@ -819,6 +808,8 @@ export async function syncAniListWatchedHistory(): Promise<AniListSyncReport> {
           if (resolvedLocal) {
             report.matched++
             if (fully) {
+              keys.add(`anilist:${entry.mediaId}`)
+              if (entry.idMal) keys.add(`mal:${entry.idMal}`)
               if (ids?.tmdbId) keys.add(`tmdb:${ids.tmdbId}`)
               if (ids?.tvdbId) keys.add(`tvdb:${ids.tvdbId}`)
               if (ids?.imdbId) keys.add(`imdb:${ids.imdbId}`)
