@@ -41,7 +41,7 @@ import { resolveAnimeMetadata } from '../services/metadata/animeResolver'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
 import { saveAnimeMapping } from '../services/anime-mapping/animeMappingCache'
 import type { AnimeMappingResult } from '../services/anime-mapping/types'
-import { getAniBridgeTvdbSeasonScopes, mergeAniBridgeTvdbSeasons } from '../services/anime-mapping/anibridgeSeasonStructure'
+import { getAniBridgeTvdbSeasonScopes, isAniBridgeAnimeTvdbId, mergeAniBridgeTvdbSeasons } from '../services/anime-mapping/anibridgeSeasonStructure'
 import { isLikelyJapaneseOnly } from '../services/metadata/animeTitleResolver'
 import { useGlobalBackdrop } from '../hooks/useGlobalBackdrop'
 import { usePreparedStream } from '../hooks/usePreparedStream'
@@ -1425,6 +1425,16 @@ export default function SeriesDetailPage() {
           }
         } catch (_) { /* ignore */ }
         if (cancelled) return
+
+        // Mobile browsers may not have the large local anime-list index in
+        // cache. Use the same public TVDB metadata bridge as desktop once the
+        // show already has a TVDB ID, so its season mapper is selected equally.
+        if (!isAnimeLocal) {
+          try {
+            isAnimeLocal = await isAniBridgeAnimeTvdbId(Number(String(knownIds.tvdbId).replace(/^[a-z_]+[-:]/i, '')))
+          } catch (_) { /* optional classification source */ }
+          if (cancelled) return
+        }
       }
 
       if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
@@ -2026,13 +2036,22 @@ export default function SeriesDetailPage() {
           } catch (_) { /* ignore fallback errors */ }
         }
 
-        // Detect anime late (via anime-lists) and apply TVDB override
+        // Detect anime late via local ID maps and TVDB metadata, then apply
+        // the same TVDB season override even when a browser lacks local maps.
         if (appResult) {
           isAnimeLate = !!(
             (appResult.imdbId && await import('../services/animeLists').then(m => m.lookupByImdbId(appResult!.imdbId!)).then(e => !!e).catch(() => false)) ||
              (appResult.tvdbId && await import('../services/animeLists').then(m => m.lookupByTvdbId(Number(String(appResult!.tvdbId).replace(/^[a-z_]+[-:]/i, '')))).then(e => e.length > 0).catch(() => false))
           )
           if (cancelled) return
+
+          const resolvedTvdbId = appResult.tvdbId
+            ? Number(String(appResult.tvdbId).replace(/^[a-z_]+[-:]/i, ''))
+            : Number(String(knownIds.tvdbId || '').replace(/^[a-z_]+[-:]/i, ''))
+          if (!isAnimeLate && Number.isSafeInteger(resolvedTvdbId) && resolvedTvdbId > 0) {
+            isAnimeLate = await isAniBridgeAnimeTvdbId(resolvedTvdbId).catch(() => false)
+            if (cancelled) return
+          }
 
           if (isAnimeLate) {
             console.log('[SeriesDetailPage] Late anime detection — applying TVDB season override')

@@ -16,11 +16,17 @@ interface AniBridgeMetadataResponse {
   metadata?: {
     id?: { provider?: string; provider_id?: string; descriptor?: string }
     scopes?: Record<string, AniBridgeSeasonScope>
+    classification?: { genres?: string[] }
   }
 }
 
-const seasonCache = new Map<number, { expiresAt: number; seasons: SeasonSummary[] }>()
-const pending = new Map<number, Promise<SeasonSummary[]>>()
+interface AniBridgeTvdbInfo {
+  seasons: SeasonSummary[]
+  isAnime: boolean
+}
+
+const seasonCache = new Map<number, { expiresAt: number; info: AniBridgeTvdbInfo }>()
+const pending = new Map<number, Promise<AniBridgeTvdbInfo | null>>()
 
 /**
  * AniBridge's public metadata API exposes TVDB season scopes independently of
@@ -28,9 +34,18 @@ const pending = new Map<number, Promise<SeasonSummary[]>>()
  * flattened while keeping TVDB's season numbers authoritative.
  */
 export async function getAniBridgeTvdbSeasonScopes(tvdbId: number): Promise<SeasonSummary[]> {
-  if (!Number.isSafeInteger(tvdbId) || tvdbId <= 0) return []
+  return (await getAniBridgeTvdbInfo(tvdbId))?.seasons || []
+}
+
+/** AniBridge provides an independent anime classification when local ID maps fail. */
+export async function isAniBridgeAnimeTvdbId(tvdbId: number): Promise<boolean> {
+  return Boolean((await getAniBridgeTvdbInfo(tvdbId))?.isAnime)
+}
+
+async function getAniBridgeTvdbInfo(tvdbId: number): Promise<AniBridgeTvdbInfo | null> {
+  if (!Number.isSafeInteger(tvdbId) || tvdbId <= 0) return null
   const cached = seasonCache.get(tvdbId)
-  if (cached && cached.expiresAt > Date.now()) return cached.seasons
+  if (cached && cached.expiresAt > Date.now()) return cached.info
   const existing = pending.get(tvdbId)
   if (existing) return existing
 
@@ -40,10 +55,10 @@ export async function getAniBridgeTvdbSeasonScopes(tvdbId: number): Promise<Seas
     try {
       const descriptor = `tvdb_show:${tvdbId}`
       const response = await fetch(`${API_BASE_URL}/${encodeURIComponent(descriptor)}`, { signal: controller.signal })
-      if (!response.ok) return []
+      if (!response.ok) return null
       const payload = await readBoundedResponseJson<AniBridgeMetadataResponse>(response, MAX_RESPONSE_BYTES, 'AniBridge season metadata')
       const metadata = payload.metadata
-      if (metadata?.id?.provider !== 'tvdb_show' || metadata.id.provider_id !== String(tvdbId)) return []
+      if (metadata?.id?.provider !== 'tvdb_show' || metadata.id.provider_id !== String(tvdbId)) return null
 
       const seasons = Object.entries(metadata.scopes || {}).flatMap(([scope, value]): SeasonSummary[] => {
         const match = /^s(\d+)$/.exec(scope)
@@ -61,8 +76,12 @@ export async function getAniBridgeTvdbSeasonScopes(tvdbId: number): Promise<Seas
         }]
       }).sort((left, right) => left.seasonNumber - right.seasonNumber)
 
-      if (seasons.length) seasonCache.set(tvdbId, { seasons, expiresAt: Date.now() + CACHE_TTL_MS })
-      return seasons
+      const info = {
+        seasons,
+        isAnime: (metadata.classification?.genres || []).some((genre) => genre.trim().toLowerCase() === 'anime'),
+      }
+      seasonCache.set(tvdbId, { info, expiresAt: Date.now() + CACHE_TTL_MS })
+      return info
     } finally {
       clearTimeout(timeout)
     }

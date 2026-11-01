@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAniBridgeTvdbSeasonScopes, mergeAniBridgeTvdbSeasons } from './anibridgeSeasonStructure'
+import { getAniBridgeTvdbSeasonScopes, isAniBridgeAnimeTvdbId, mergeAniBridgeTvdbSeasons } from './anibridgeSeasonStructure'
 import type { ShowDetails } from '../../types'
 
 const show: ShowDetails = {
@@ -14,6 +14,7 @@ describe('AniBridge TVDB season scopes', () => {
   it('loads TVDB season numbers and episode counts from AniBridge scopes', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ metadata: {
       id: { provider: 'tvdb_show', provider_id: '42', descriptor: 'tvdb_show:42' },
+      classification: { genres: ['Animation', 'Anime'] },
       scopes: {
         s1: { id: { descriptor: 'tvdb_show:42:s1' }, titles: { display: 'First Cour' }, units: 12, release: { start_date: '2020-01-01' } },
         s2: { id: { descriptor: 'tvdb_show:42:s2' }, units: 13, release: { start_date: '2021-01-01' } },
@@ -29,6 +30,8 @@ describe('AniBridge TVDB season scopes', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(seasons.map(({ seasonNumber, episodeCount }) => [seasonNumber, episodeCount])).toEqual([[1, 12], [2, 13]])
+    expect(await isAniBridgeAnimeTvdbId(42)).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('adds bridge seasons while preserving TVDB names and artwork', () => {
