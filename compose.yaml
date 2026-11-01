@@ -5,8 +5,8 @@ services:
       target: web-runtime
     restart: unless-stopped
     ports:
-      - "${AURALES_HTTP_PORT:-80}:80"
-      - "${AURALES_HTTPS_PORT:-443}:443"
+      - "80:80"
+      - "443:443"
     environment:
       AURALES_DOMAIN: ${AURALES_DOMAIN:?Set AURALES_DOMAIN to the public hostname}
     depends_on:
@@ -24,6 +24,7 @@ services:
     environment:
       AURALES_MEDIA_API_KEY: ${AURALES_MEDIA_API_KEY:?Set a private key of at least 32 characters}
       AURALES_MEDIA_SESSION_KEY: ${AURALES_MEDIA_SESSION_KEY:?Set a different private key of at least 32 characters}
+      AURALES_MEDIA_ACCESS_CODE: ${AURALES_MEDIA_ACCESS_CODE:?Set an instance access code of at least 16 characters}
       AURALES_MEDIA_WEB_ORIGINS: https://${AURALES_DOMAIN:?Set AURALES_DOMAIN}
       AURALES_MEDIA_ALLOWED_HOSTS: ${AURALES_MEDIA_ALLOWED_HOSTS:-}
     volumes:

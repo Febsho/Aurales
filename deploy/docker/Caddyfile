@@ -13,7 +13,9 @@
 	}
 
 	@worker path /health /v1/*
-	reverse_proxy @worker media-worker:8188
+	reverse_proxy @worker media-worker:8188 {
+		header_up X-Forwarded-For {remote_host}
+	}
 
 	root * /srv
 	encode zstd gzip

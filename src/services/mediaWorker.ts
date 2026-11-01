@@ -30,7 +30,8 @@ export async function createMediaSession(url: string, signal?: AbortSignal): Pro
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/sessions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ url }),
     signal: signal ?? AbortSignal.timeout(10_000),
   })
@@ -46,7 +47,8 @@ export async function startMediaConversion(url: string, mode: MediaConversionMod
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/conversions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ url, mode }),
     signal: signal ?? AbortSignal.timeout(10_000),
   })
@@ -62,7 +64,8 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
   if (!/^[a-f\d]{32}$/i.test(jobId)) throw new Error('Invalid media conversion job ID.')
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
-    headers: { Authorization: `Bearer ${config.apiKey}`, Accept: 'application/json' },
+    headers: workerHeaders(config, { Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     signal: signal ?? AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error(workerError(response.status))
@@ -116,7 +119,8 @@ export async function proxyPmdbRequest(
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/providers/pmdb`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, apiKey: providerApiKey, body: body ?? null }),
     signal: signal ?? AbortSignal.timeout(32_000),
   })
@@ -144,7 +148,8 @@ export async function proxyMdblistRequest(
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/providers/mdblist`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, ...credentials, body: body ?? null, contentType }),
     signal: signal ?? AbortSignal.timeout(32_000),
   })
@@ -184,7 +189,8 @@ export async function proxyTraktRequest(
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/providers/trakt`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ method, path: `${target.pathname}${target.search}`, headers: safeHeaders, body: body ?? null }),
     signal: signal ?? AbortSignal.timeout(32_000),
   })
@@ -212,7 +218,8 @@ export async function proxyTorboxRequest(
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/providers/torbox`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, token: token || null, body: body ?? null, contentType }),
     signal: signal ?? AbortSignal.timeout(32_000),
   })
@@ -234,7 +241,8 @@ export async function proxyAuralesSyncRequest(
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/providers/aurales-sync`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ method: 'POST', path, bearerToken: bearerToken ?? null, body }),
     signal: signal ?? AbortSignal.timeout(35_000),
   })
@@ -257,7 +265,8 @@ export async function probeStreamWithWorker(
   try {
     response = await fetch(`${config.baseUrl}/v1/media/probe`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
       body: JSON.stringify({ url, timeoutMs }),
       signal: signal ?? AbortSignal.timeout(Math.min(35_000, Math.max(8_000, timeoutMs + 5_000))),
     })
@@ -285,12 +294,55 @@ export async function probeStreamWithWorker(
 }
 
 const CONFIG_KEY = 'aurales_media_worker_secret_v1'
+const INTEGRATED_ACCESS_KEY = 'aurales_integrated_media_worker_access_v1'
+const INTEGRATED_MEDIA_WORKER = import.meta.env.VITE_AURALES_INTEGRATED_MEDIA_WORKER === 'true'
+
+export function isIntegratedMediaWorkerBuild(): boolean {
+  return INTEGRATED_MEDIA_WORKER
+}
+
+export function isIntegratedMediaWorkerConnected(): boolean {
+  try { return localStorage.getItem(INTEGRATED_ACCESS_KEY) === '1' } catch { return false }
+}
+
+export async function connectIntegratedMediaWorker(accessCode: string): Promise<void> {
+  if (!INTEGRATED_MEDIA_WORKER || typeof window === 'undefined') throw new Error('The integrated media worker is not enabled for this site.')
+  const response = await fetch(`${window.location.origin}/v1/access/session`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ accessCode }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error(response.status === 429 ? 'Too many attempts. Wait before trying again.' : 'The instance access code is incorrect or unavailable.')
+  localStorage.setItem(INTEGRATED_ACCESS_KEY, '1')
+  try { await getMediaWorkerCapabilities() }
+  catch (error) {
+    localStorage.removeItem(INTEGRATED_ACCESS_KEY)
+    await fetch(`${window.location.origin}/v1/access/session`, { method: 'DELETE', credentials: 'same-origin' }).catch(() => undefined)
+    throw error
+  }
+}
+
+export async function disconnectIntegratedMediaWorker(): Promise<void> {
+  if (typeof window !== 'undefined' && INTEGRATED_MEDIA_WORKER) {
+    await fetch(`${window.location.origin}/v1/access/session`, { method: 'DELETE', credentials: 'same-origin' }).catch(() => undefined)
+  }
+  try { localStorage.removeItem(INTEGRATED_ACCESS_KEY) } catch { /* private browsing storage may be unavailable */ }
+}
 
 export function getMediaWorkerConfig(): MediaWorkerConfig | null {
+  if (INTEGRATED_MEDIA_WORKER) {
+    return isIntegratedMediaWorkerConnected() && typeof window !== 'undefined'
+      ? { baseUrl: window.location.origin, apiKey: '' }
+      : null
+  }
   try {
     const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null') as Partial<MediaWorkerConfig> | null
-    if (!parsed || typeof parsed.baseUrl !== 'string' || typeof parsed.apiKey !== 'string') return null
-    return parsed.baseUrl && parsed.apiKey ? { baseUrl: parsed.baseUrl, apiKey: parsed.apiKey } : null
+    if (parsed && typeof parsed.baseUrl === 'string' && typeof parsed.apiKey === 'string' && parsed.baseUrl && parsed.apiKey) {
+      return { baseUrl: parsed.baseUrl, apiKey: parsed.apiKey }
+    }
+    return null
   } catch {
     return null
   }
@@ -299,6 +351,7 @@ export function getMediaWorkerConfig(): MediaWorkerConfig | null {
 export function saveMediaWorkerConfig(config: MediaWorkerConfig | null): void {
   if (!config) {
     localStorage.removeItem(CONFIG_KEY)
+    localStorage.removeItem(INTEGRATED_ACCESS_KEY)
     return
   }
   const baseUrl = normalizeBaseUrl(config.baseUrl)
@@ -309,7 +362,8 @@ export function saveMediaWorkerConfig(config: MediaWorkerConfig | null): void {
 export async function getMediaWorkerCapabilities(signal?: AbortSignal): Promise<MediaWorkerCapabilities> {
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/capabilities`, {
-    headers: { Authorization: `Bearer ${config.apiKey}`, Accept: 'application/json' },
+    headers: workerHeaders(config, { Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     signal: signal ?? AbortSignal.timeout(8_000),
   })
   if (!response.ok) throw new Error(workerError(response.status))
@@ -325,7 +379,8 @@ export async function rankStreamsWithWorker(
   if (!config) return null
   const response = await fetch(`${config.baseUrl}/v1/streams/rank`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+    credentials: workerCredentials(config),
     body: JSON.stringify({ streams, context }),
     signal: signal ?? AbortSignal.timeout(8_000),
   })
@@ -347,6 +402,14 @@ function requireConfig(): MediaWorkerConfig {
   const config = getMediaWorkerConfig()
   if (!config) throw new Error('Configure the Aurales media worker URL and API key first.')
   return config
+}
+
+function workerHeaders(config: MediaWorkerConfig, headers: Record<string, string>): Record<string, string> {
+  return config.apiKey ? { ...headers, Authorization: `Bearer ${config.apiKey}` } : headers
+}
+
+function workerCredentials(config: MediaWorkerConfig): RequestCredentials {
+  return config.apiKey ? 'omit' : 'same-origin'
 }
 
 function normalizeBaseUrl(value: string): string {
@@ -371,7 +434,7 @@ function validateMediaSessionUrl(value: string, baseUrl: string): string {
 }
 
 function workerError(status: number): string {
-  if (status === 401) return 'Worker rejected its API key. Check the saved key.'
+  if (status === 401) return INTEGRATED_MEDIA_WORKER ? 'Aurales media service session expired. Unlock the service again in Settings.' : 'Worker rejected its API key. Check the saved key.'
   if (status === 413) return 'Worker rejected the request because it is too large.'
   if (status === 429) return 'Worker is busy. Try again shortly.'
   if (status === 503) return 'This media conversion mode is unavailable on the configured worker.'

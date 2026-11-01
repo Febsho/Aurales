@@ -13,6 +13,7 @@ export default defineConfig(({ command }) => ({
     __APP_VERSION__: JSON.stringify(pkg.version),
     __AURALES_WEB__: 'true',
     'import.meta.env.VITE_WEB_BUILD': JSON.stringify(command === 'build' ? 'true' : 'false'),
+    'import.meta.env.VITE_AURALES_INTEGRATED_MEDIA_WORKER': JSON.stringify(process.env.VITE_AURALES_INTEGRATED_MEDIA_WORKER === 'true' ? 'true' : 'false'),
   },
   resolve: {
     alias: [

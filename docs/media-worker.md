@@ -122,8 +122,9 @@ Set these variables for the service:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `AURALES_MEDIA_API_KEY` | Yes | Private bearer key, at least 32 bytes. Enter this key in Aurales Settings on each device that should use this worker. |
-| `AURALES_MEDIA_SESSION_KEY` | When proxy is enabled | Separate private signing key, at least 32 bytes. Required with `AURALES_MEDIA_ALLOWED_HOSTS`; never reuse the API key. |
+| `AURALES_MEDIA_API_KEY` | Yes | Private bearer key, at least 32 bytes. Used by trusted standalone clients; integrated browser deployments use `AURALES_MEDIA_ACCESS_CODE` and keep this key server-side. |
+| `AURALES_MEDIA_SESSION_KEY` | When proxy or access code is enabled | Separate private signing key, at least 32 bytes. Required with `AURALES_MEDIA_ALLOWED_HOSTS` or `AURALES_MEDIA_ACCESS_CODE`; never reuse the API key. |
+| `AURALES_MEDIA_ACCESS_CODE` | Optional | Shared access code for an integrated public web deployment, at least 16 bytes. It exchanges for a 30-day same-origin HttpOnly cookie. The API key remains server-side. Use HTTPS and share the code only with authorized users. |
 | `AURALES_MEDIA_WEB_ORIGINS` | Yes | Comma-separated exact HTTPS origins, such as `https://aurales.example`. `http://localhost` is accepted for local development. Wildcards, paths, credentials, and non-local HTTP origins are rejected. |
 | `AURALES_MEDIA_ALLOWED_HOSTS` | For media proxy | Comma-separated exact DNS hostnames permitted as upstream media sources, such as `cdn.example.net,video.example.org`. Wildcards, ports, IP addresses, HTTP URLs, and unlisted hosts are rejected. Leave empty to disable proxy sessions. |
 | `AURALES_MEDIA_BIND` | No | Listen address; defaults to `127.0.0.1:8188`. |

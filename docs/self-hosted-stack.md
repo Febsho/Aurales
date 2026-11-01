@@ -5,17 +5,15 @@ browser app and the Rust media worker from the same checkout. A single
 `docker compose up -d --build` starts both behind Caddy on one hostname. Caddy
 serves the PWA and forwards `/health` and `/v1/*` to the worker over the private
 Compose network; there is no second hostname or separately exposed worker
-port. The worker keeps its API and session keys server-side. They are not
-embedded in `dist-web` or sent to browsers.
+port. The worker keeps its API, session, and access-code credentials server-side.
+The private API key is not embedded in `dist-web` or sent to browsers.
 
 ## Requirements
 
 - A Linux server with Docker Engine and the Docker Compose plugin.
 - A DNS `A`/`AAAA` record for the hostname pointing to that server.
 - Inbound TCP ports 80 and 443 available so Caddy can issue and renew HTTPS
-  certificates. If these ports are already occupied, set the host port
-  overrides and configure the existing reverse proxy to forward the same
-  HTTPS hostname to the Compose web service.
+  certificates.
 - Exact media CDN hostnames for `AURALES_MEDIA_ALLOWED_HOSTS`. Leave this empty
   to disable media proxying and conversion. Wildcards are rejected by the
   worker by design.
@@ -28,12 +26,14 @@ cd Aurales
 cp .env.docker.example .env
 openssl rand -hex 32
 openssl rand -hex 32
+openssl rand -hex 24
 ```
 
 Put the two different generated values in `.env` for
-`AURALES_MEDIA_API_KEY` and `AURALES_MEDIA_SESSION_KEY`. Set
-`AURALES_DOMAIN` and the exact allowed media hostnames. Restrict the file and
-start the stack:
+`AURALES_MEDIA_API_KEY` and `AURALES_MEDIA_SESSION_KEY`. Set a separate
+`AURALES_MEDIA_ACCESS_CODE` of at least 16 characters and share it only with
+people allowed to use the worker. Set `AURALES_DOMAIN` and the exact allowed
+media hostnames. Restrict the file and start the stack:
 
 ```sh
 chmod 600 .env
@@ -46,14 +46,20 @@ Open `https://<AURALES_DOMAIN>`. The first build compiles the browser client and
 worker. Caddy stores its certificates in a named volume. Future updates use
 `git pull` followed by `docker compose up -d --build`.
 
-## Connect the browser client to its bundled worker
+## Unlock the bundled worker in Aurales
 
-In **Settings → Player → Optional self-hosted media worker**, use the same site
-origin (for example `https://aurales.example.com`) as the worker URL and enter
-`AURALES_MEDIA_API_KEY` from the private `.env` file. Save and test. Do this on
-each browser/device that should use the worker. The key is stored only in that
-browser's local storage and remains excluded from profile exports and Aurales
-Sync. The same-origin setup avoids separate CORS and hostname configuration.
+In **Settings → Player → Aurales media service**, enter the instance access code
+and choose **Unlock service** on each browser/device. The browser receives a
+30-day, same-origin `HttpOnly`, `Secure`, `SameSite=Strict` cookie. The private
+API key and signing key stay server-side. The app uses the worker on its own
+HTTPS origin, so no separate URL or CORS hostname is needed. Choose
+**Disconnect** to expire the cookie.
+
+The access code is shared by the instance owner with authorized users. Failed
+attempts are throttled per forwarded client IP. Rotate the code and session
+signing key in `.env` and recreate the worker container to revoke sessions.
+The code is shared across authorized users rather than tied to individual
+Aurales accounts; rotate it to revoke all access if it is shared too broadly.
 
 The app remains usable without configuring the worker: browser-direct playback
 and local stream ranking continue to work. Proxy playback and media conversion
@@ -67,9 +73,9 @@ Treat `.env` as a server secret and expose only the Caddy web ports. Do not add
 the worker key to a Vite variable, HTML bootstrap response, or public JavaScript.
 The worker API performs provider relays and bounded media proxy operations, so
 its bearer key must remain private. Use an Aurales deployment you trust. This
-stack does not add a shared Aurales account or an instance-level sign-in gate;
-Aurales profiles remain local to each browser and sync behavior stays governed
-by the existing Aurales Sync service.
+access gate applies only to the media worker; Aurales profiles remain local to
+each browser and sync behavior stays governed by the existing Aurales Sync
+service.
 
 The worker can remux or transcode allowlisted direct files, but must download
 the whole source before conversion. It cannot bypass DRM, provider-specific

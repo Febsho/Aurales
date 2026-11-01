@@ -5,8 +5,8 @@ use aurales_domain::streams::{rank_streams, RankStreamCandidatesResponse, SmartS
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
-    IF_RANGE, LAST_MODIFIED, RANGE,
+    ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    COOKIE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE, SET_COOKIE,
 };
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{Mutex, Semaphore};
@@ -39,6 +40,10 @@ const MAX_HLS_NESTING_DEPTH: u8 = 8;
 const MAX_MEDIA_REDIRECTS: usize = 3;
 const MAX_CONVERSION_JOBS: usize = 8;
 const MAX_CONVERSION_INPUT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const ACCESS_COOKIE: &str = "aurales_worker_session";
+const ACCESS_SESSION_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+const MAX_ACCESS_ATTEMPTS: usize = 8;
+const ACCESS_ATTEMPT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 struct AppState {
@@ -55,6 +60,9 @@ struct AppState {
     conversion_dir: Arc<PathBuf>,
     conversion_slots: Arc<Semaphore>,
     conversion_jobs: Arc<Mutex<HashMap<String, ConversionJob>>>,
+    access_code: Option<Arc<Vec<u8>>>,
+    access_attempts: Arc<Mutex<HashMap<String, (usize, Instant)>>>,
+    allowed_origins: Arc<HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -232,6 +240,12 @@ struct CreateMediaSessionResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccessSessionRequest {
+    access_code: String,
+}
+
+#[derive(Deserialize)]
 struct SignedSession {
     expires: u64,
     signature: String,
@@ -257,15 +271,21 @@ async fn run() -> Result<(), String> {
     if api_key.as_bytes().len() < 32 {
         return Err("AURALES_MEDIA_API_KEY must be at least 32 bytes".into());
     }
+    let access_code = std::env::var("AURALES_MEDIA_ACCESS_CODE")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if access_code.as_ref().is_some_and(|value| value.len() < 16) {
+        return Err("AURALES_MEDIA_ACCESS_CODE must be at least 16 bytes when configured".into());
+    }
     let allowed_media_hosts =
         parse_allowed_hosts(&std::env::var("AURALES_MEDIA_ALLOWED_HOSTS").unwrap_or_default())?;
     let session_key = std::env::var("AURALES_MEDIA_SESSION_KEY").ok();
     let session_key = match session_key {
         Some(key) if key.as_bytes().len() >= 32 => key,
         Some(_) => return Err("AURALES_MEDIA_SESSION_KEY must be at least 32 bytes".into()),
-        None if allowed_media_hosts.is_empty() => "media-proxy-disabled-signing-key".to_string(),
+        None if allowed_media_hosts.is_empty() && access_code.is_none() => "media-proxy-disabled-signing-key".to_string(),
         None => return Err(
-            "AURALES_MEDIA_SESSION_KEY must be set when AURALES_MEDIA_ALLOWED_HOSTS is configured"
+            "AURALES_MEDIA_SESSION_KEY must be set when media proxying or access-code sessions are configured"
                 .into(),
         ),
     };
@@ -319,6 +339,10 @@ async fn run() -> Result<(), String> {
     }
 
     let conversion_enabled = ffmpeg_path.is_some();
+    let allowed_origins = origins
+        .iter()
+        .filter_map(|origin| origin.to_str().ok().map(str::to_owned))
+        .collect();
     let state = AppState {
         api_key: Arc::new(api_key.into_bytes()),
         ranking_slots: Arc::new(Semaphore::new(4)),
@@ -333,6 +357,9 @@ async fn run() -> Result<(), String> {
         conversion_dir,
         conversion_slots: Arc::new(Semaphore::new(2)),
         conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+        access_code: access_code.map(|value| Arc::new(value.into_bytes())),
+        access_attempts: Arc::new(Mutex::new(HashMap::new())),
+        allowed_origins: Arc::new(allowed_origins),
     };
     if conversion_enabled {
         clean_stale_conversion_files(state.conversion_dir.as_ref()).await;
@@ -404,9 +431,14 @@ fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
             ETAG,
             LAST_MODIFIED,
         ])
+        .allow_credentials(true)
         .max_age(std::time::Duration::from_secs(600));
     Router::new()
         .route("/health", get(health))
+        .route(
+            "/v1/access/session",
+            post(create_access_session).delete(delete_access_session),
+        )
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/streams/rank", post(rank))
         .route("/v1/media/probe", post(probe_media))
@@ -467,8 +499,163 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+async fn create_access_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AccessSessionRequest>,
+) -> Response {
+    let Some(access_code) = state.access_code.as_deref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "access_code_disabled",
+            }),
+        )
+            .into_response();
+    };
+    if !request_origin_allowed(&headers, &state.allowed_origins) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "origin_not_allowed",
+            }),
+        )
+            .into_response();
+    }
+
+    let forwarded_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .unwrap_or("unknown");
+    let now = Instant::now();
+    {
+        let mut attempts = state.access_attempts.lock().await;
+        attempts.retain(|_, (_, reset)| *reset > now);
+        if attempts
+            .get(forwarded_ip)
+            .is_some_and(|(count, _)| *count >= MAX_ACCESS_ATTEMPTS)
+        {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "access_rate_limited",
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let provided = request.access_code.as_bytes();
+    let matches = provided.len() == access_code.len() && bool::from(provided.ct_eq(access_code));
+    if !matches {
+        let mut attempts = state.access_attempts.lock().await;
+        let entry = attempts
+            .entry(forwarded_ip.to_string())
+            .or_insert((0, now + ACCESS_ATTEMPT_WINDOW));
+        entry.0 = entry.0.saturating_add(1);
+        if attempts.len() > 4096 {
+            attempts.retain(|_, (_, reset)| *reset > now);
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "invalid_access_code",
+            }),
+        )
+            .into_response();
+    }
+    state.access_attempts.lock().await.remove(forwarded_ip);
+
+    let expires = unix_timestamp().saturating_add(ACCESS_SESSION_TTL_SECONDS);
+    let Some(signature) = sign_access_session(&state.session_key, expires) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let cookie = format!("{ACCESS_COOKIE}={expires}.{signature}; Path=/v1; HttpOnly; Secure; SameSite=Strict; Max-Age={ACCESS_SESSION_TTL_SECONDS}");
+    let mut response = (StatusCode::NO_CONTENT, "").into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, value);
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    response
+}
+
+async fn delete_access_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !request_origin_allowed(&headers, &state.allowed_origins) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "origin_not_allowed",
+            }),
+        )
+            .into_response();
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let cookie =
+        format!("{ACCESS_COOKIE}=; Path=/v1; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, value);
+    }
+    response
+}
+
+fn request_origin_allowed(headers: &HeaderMap, allowed_origins: &HashSet<String>) -> bool {
+    headers
+        .get("origin")
+        .and_then(|origin| origin.to_str().ok())
+        .is_some_and(|origin| allowed_origins.contains(origin))
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn sign_access_session(key: &[u8], expires: u64) -> Option<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    mac.update(format!("aurales-worker-access:{expires}").as_bytes());
+    Some(
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+fn verify_access_session(headers: &HeaderMap, key: &[u8]) -> bool {
+    let Some(cookie_header) = headers.get(COOKIE).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    for cookie in cookie_header.split(';').map(str::trim) {
+        let Some(value) = cookie.strip_prefix(&format!("{ACCESS_COOKIE}=")) else {
+            continue;
+        };
+        let Some((expires, signature)) = value.split_once('.') else {
+            return false;
+        };
+        let Ok(expires) = expires.parse::<u64>() else {
+            return false;
+        };
+        if expires <= unix_timestamp() {
+            return false;
+        }
+        let Some(expected) = sign_access_session(key, expires) else {
+            return false;
+        };
+        return expected.len() == signature.len()
+            && bool::from(expected.as_bytes().ct_eq(signature.as_bytes()));
+    }
+    false
+}
+
 async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -498,7 +685,7 @@ async fn create_media_session(
     headers: HeaderMap,
     Json(request): Json<CreateMediaSessionRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     if state.allowed_media_hosts.is_empty() {
@@ -587,7 +774,7 @@ async fn create_media_conversion(
     headers: HeaderMap,
     Json(request): Json<CreateMediaConversionRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     let Some(ffmpeg) = state.ffmpeg_path.clone() else {
@@ -698,7 +885,7 @@ async fn media_conversion_status(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -1742,7 +1929,7 @@ async fn rank(
     headers: HeaderMap,
     Json(request): Json<RankRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -1796,7 +1983,7 @@ async fn probe_media(
     headers: HeaderMap,
     Json(request): Json<ProbeRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     if state.allowed_media_hosts.is_empty() {
@@ -1840,7 +2027,7 @@ async fn proxy_pmdb(
     headers: HeaderMap,
     Json(request): Json<PmdbRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     let method = match request.method.to_ascii_uppercase().as_str() {
@@ -1873,7 +2060,7 @@ async fn proxy_mdblist(
     headers: HeaderMap,
     Json(request): Json<MdblistRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     let method = match request.method.to_ascii_uppercase().as_str() {
@@ -1936,7 +2123,7 @@ async fn proxy_trakt(
     headers: HeaderMap,
     Json(request): Json<TraktRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     let method = match request.method.to_ascii_uppercase().as_str() {
@@ -1980,7 +2167,7 @@ async fn proxy_torbox(
     headers: HeaderMap,
     Json(request): Json<TorboxRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     let method = match request.method.to_ascii_uppercase().as_str() {
@@ -2029,7 +2216,7 @@ async fn proxy_aurales_sync(
     headers: HeaderMap,
     Json(request): Json<AuralesSyncRequest>,
 ) -> Response {
-    if !is_authorized(&headers, &state.api_key) {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
         return unauthorized();
     }
     if request.method != "POST"
@@ -2603,17 +2790,15 @@ async fn probe_upstream(
     Err(StatusCode::BAD_GATEWAY)
 }
 
-fn is_authorized(headers: &HeaderMap, api_key: &[u8]) -> bool {
-    let Some(header) = headers
+fn is_authorized(headers: &HeaderMap, api_key: &[u8], session_key: &[u8]) -> bool {
+    let api_key_authorized = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let Some(provided) = header.strip_prefix("Bearer ") else {
-        return false;
-    };
-    provided.len() == api_key.len() && bool::from(provided.as_bytes().ct_eq(api_key))
+        .and_then(|header| header.strip_prefix("Bearer "))
+        .is_some_and(|provided| {
+            provided.len() == api_key.len() && bool::from(provided.as_bytes().ct_eq(api_key))
+        });
+    api_key_authorized || verify_access_session(headers, session_key)
 }
 
 #[cfg(test)]
@@ -2852,6 +3037,9 @@ mod tests {
             conversion_dir: Arc::new(std::env::temp_dir().join("aurales-media-worker-test")),
             conversion_slots: Arc::new(Semaphore::new(2)),
             conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+            access_code: None,
+            access_attempts: Arc::new(Mutex::new(HashMap::new())),
+            allowed_origins: Arc::new(HashSet::new()),
         };
         let expires_at = Instant::now() + MEDIA_SESSION_TTL;
         let targets = vec![
@@ -2923,14 +3111,26 @@ mod tests {
     fn api_key_comparison_requires_a_bearer_value_and_exact_length() {
         let key = b"a-private-api-key-that-is-long-enough";
         let mut headers = HeaderMap::new();
-        assert!(!is_authorized(&headers, key));
+        assert!(!is_authorized(
+            &headers,
+            key,
+            b"test-session-key-that-is-long-enough"
+        ));
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer shorter"));
-        assert!(!is_authorized(&headers, key));
+        assert!(!is_authorized(
+            &headers,
+            key,
+            b"test-session-key-that-is-long-enough"
+        ));
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_static("Bearer a-private-api-key-that-is-long-enough"),
         );
-        assert!(is_authorized(&headers, key));
+        assert!(is_authorized(
+            &headers,
+            key,
+            b"test-session-key-that-is-long-enough"
+        ));
     }
 
     #[test]
@@ -3063,8 +3263,113 @@ mod tests {
             conversion_dir: Arc::new(std::env::temp_dir().join("aurales-media-worker-test")),
             conversion_slots: Arc::new(Semaphore::new(2)),
             conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+            access_code: Some(Arc::new(b"test-access-code-long-enough".to_vec())),
+            access_attempts: Arc::new(Mutex::new(HashMap::new())),
+            allowed_origins: Arc::new(HashSet::from(["https://app.example".to_string()])),
         };
         let app = router(state, origins);
+        let wrong_origin = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/session")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("origin", "https://attacker.example")
+                    .body(Body::from(
+                        r#"{"accessCode":"test-access-code-long-enough"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_origin.status(), StatusCode::FORBIDDEN);
+        let wrong_code = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/session")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("origin", "https://app.example")
+                    .body(Body::from(r#"{"accessCode":"wrong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_code.status(), StatusCode::UNAUTHORIZED);
+        for _ in 0..MAX_ACCESS_ATTEMPTS {
+            let failed = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/v1/access/session")
+                        .header(CONTENT_TYPE, "application/json")
+                        .header("origin", "https://app.example")
+                        .header("x-forwarded-for", "198.51.100.25")
+                        .body(Body::from(r#"{"accessCode":"wrong"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(failed.status(), StatusCode::UNAUTHORIZED);
+        }
+        let rate_limited = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/session")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("origin", "https://app.example")
+                    .header("x-forwarded-for", "198.51.100.25")
+                    .body(Body::from(r#"{"accessCode":"wrong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rate_limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        let access_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/session")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("origin", "https://app.example")
+                    .body(Body::from(
+                        r#"{"accessCode":"test-access-code-long-enough"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access_response.status(), StatusCode::NO_CONTENT);
+        let session_cookie = access_response
+            .headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(session_cookie.starts_with(&format!("{ACCESS_COOKIE}=")));
+        let cookie_authorized = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/capabilities")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cookie_authorized.status(), StatusCode::OK);
+
         let capabilities_response = app
             .clone()
             .oneshot(

@@ -167,3 +167,6 @@ jobs:
 
       - name: Build integrated deployment images
         run: docker compose build --progress plain
+
+      - name: Validate bundled Caddy configuration
+        run: docker compose run --rm --no-deps web caddy validate --config /etc/caddy/Caddyfile

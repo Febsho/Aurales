@@ -2,6 +2,8 @@
 # checkout so the two deploy together as one self-hosted stack.
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /app
+ARG VITE_AURALES_INTEGRATED_MEDIA_WORKER=true
+ENV VITE_AURALES_INTEGRATED_MEDIA_WORKER=${VITE_AURALES_INTEGRATED_MEDIA_WORKER}
 COPY package*.json ./
 RUN npm ci
 COPY . .
