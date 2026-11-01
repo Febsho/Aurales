@@ -4979,9 +4979,9 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-options > input[type="range"] { top: max(.95rem, env(safe-area-inset-top)); right: calc(max(.75rem, env(safe-area-inset-right)) + 4.3rem); width: min(18vw, 8rem); }
   html[data-runtime-platform="web"] .inapp-player-options > div:last-child { right: max(.75rem, env(safe-area-inset-right)); bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + 2rem); gap: .25rem; }
   html[data-runtime-platform="web"] .inapp-player-options > button { right: max(.75rem, env(safe-area-inset-right)); bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + 5rem); }
-  html[data-runtime-platform="web"] .inapp-player-header + [role="alert"] {
+  html[data-runtime-platform="web"] .inapp-player-header ~ [role="alert"] {
     top: max(3.5rem, env(safe-area-inset-top)) !important; right: auto; left: max(.85rem, env(safe-area-inset-left));
-    width: min(42vw, 24rem); --tw-translate-x: 0px !important; --tw-translate-y: 0px !important; transform: none !important; padding: .6rem .75rem; font-size: .72rem; line-height: 1.1rem; text-align: left;
+    width: min(76vw, 42rem); --tw-translate-x: 0px !important; --tw-translate-y: 0px !important; transform: none !important; padding: .45rem .65rem; font-size: .72rem; line-height: 1rem; text-align: left;
     overflow-wrap: anywhere;
   }
 }

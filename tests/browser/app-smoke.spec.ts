@@ -298,6 +298,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   const upcomingRow = page.locator('[data-home-shelves] [data-home-row="upcoming"]')
   await expect(continueEmpty.locator('.cw-empty-state')).toBeVisible()
   await expect(upcomingRow.locator('[data-home-upcoming-empty]')).toBeVisible()
+  await expect.poll(
+    () => hero.evaluate((element) => element.getBoundingClientRect().height),
+    { message: 'the mobile catalogue hero should retain its responsive height after the shelves settle' },
+  ).toBeGreaterThanOrEqual(520)
 
   const measurements = await page.evaluate(() => {
     const hero = document.querySelector<HTMLElement>('[data-home-presentation="dynamic"] [data-home-hero] > div:first-child')
